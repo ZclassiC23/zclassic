@@ -76,7 +76,6 @@ zcode.work.start acceptance_tests_root # the nested improve handler reads this o
 zcode.work.start write_scope_root # the nested improve handler reads this only as an optional expert cross-check; work start derives scope authority itself.
 zcode.work.start max_changed_files # the nested improve handler applies its fixed product default; request->input never reaches it.
 zcode.work.start max_patch_bytes # the nested improve handler applies its fixed product default; request->input never reaches it.
-zcode.work.start max_cpu_seconds # the nested improve handler applies its fixed product default; request->input never reaches it.
 zcode.work.start max_memory_bytes # the nested improve handler applies its fixed product default; request->input never reaches it.
 zcode.work.start max_output_bytes # the nested improve handler applies its fixed product default; request->input never reaches it.
 zcode.work.start candidate_sequence # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.

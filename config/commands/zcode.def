@@ -459,7 +459,7 @@ ZCL_COMMAND_READY_COMMAND(
     "no source file and launches no model or build.", ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,start,goal,profile,context,c23",
     "zcl.zcode_work_start.input.v1", "zcl.zcode_work_start.v1",
-    "workspace,goal,profile,context_symbol", "workspace,goal",
+    "workspace,goal,profile,context_symbol,max_cpu_seconds", "workspace,goal",
     "zclassic23-dev zcode work start --input='{\"workspace\":\".\",\"goal\":\"Make the parser reject overflowing lengths\",\"profile\":\"standard\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,

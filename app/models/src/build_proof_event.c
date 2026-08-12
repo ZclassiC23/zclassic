@@ -19,7 +19,7 @@ DEFINE_MODEL_CALLBACKS(build_proof_event)
 static const char *const k_states[] = {
     "REQUESTED", "PEER_DISCOVERED", "RUNNING", "REMOTE_GREEN",
     "REMOTE_RED", "RECEIPT_VERIFIED", "REPRODUCED", "SUPERSEDED",
-    "READY_FOR_ACCEPTANCE",
+    "READY_FOR_ACCEPTANCE", "CONTEXT_READY",
 };
 
 static bool proof_event_hex(const char *value, bool optional)
@@ -62,6 +62,7 @@ bool db_build_proof_event_root(
     if (!row || !out_hex || proof_event_state_code(row->state) < 0 ||
         !proof_event_hex(row->prior_event_root, true) ||
         !proof_event_hex(row->action_id, false) ||
+        !proof_event_hex(row->source_root_sha3, true) ||
         !proof_event_hex(row->task_root_sha3, false) ||
         !proof_event_hex(row->candidate_root_sha3, false) ||
         !proof_event_hex(row->proof_policy_root_sha3, false) ||
@@ -71,17 +72,21 @@ bool db_build_proof_event_root(
         strlen(row->workspace) > BUILD_PROOF_EVENT_WORKSPACE_MAX ||
         row->deadline_at < 0 || row->elapsed_us < 0 || row->created_at <= 0)
         return false;
-    static const char domain[] = "zcl.build_proof_event.v1";
+    static const char domain_v1[] = "zcl.build_proof_event.v1";
+    static const char domain_v2[] = "zcl.build_proof_event.v2";
     struct sha3_256_ctx sha;
     uint8_t digest[32], root[32], number[8], state;
     sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    const char *domain = row->source_root_sha3[0] ? domain_v2 : domain_v1;
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain_v1));
     const char *roots[] = {
-        row->prior_event_root, row->action_id, row->task_root_sha3,
+        row->prior_event_root, row->action_id, row->source_root_sha3,
+        row->task_root_sha3,
         row->candidate_root_sha3, row->proof_policy_root_sha3,
         row->context_root_sha3, row->receipt_root_sha3,
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
+        if (i == 2u && !row->source_root_sha3[0]) continue;
         memset(root, 0, sizeof(root));
         if (roots[i][0] && !zcl_hex_decode_lower(roots[i], root, 32))
             return false;
@@ -123,6 +128,8 @@ bool db_build_proof_event_validate(
                      "prior_event_root", "must be empty or a SHA3 root");
     validates_custom(errors, proof_event_hex(row->action_id, false),
                      "action_id", "must be a lowercase action root");
+    validates_custom(errors, proof_event_hex(row->source_root_sha3, true),
+                     "source_root_sha3", "must be empty or a source root");
     validates_custom(errors, proof_event_hex(row->task_root_sha3, false),
                      "task_root_sha3", "must be a lowercase task root");
     validates_custom(errors,
@@ -163,27 +170,28 @@ bool db_build_proof_event_save(
     zcl_write_u64_le(request_id, row->request_id);
     AR_ADHOC_SAVE(ndb, st,
         "INSERT INTO build_proof_events "
-        "(event_root,prior_event_root,action_id,task_root_sha3,"
+        "(event_root,prior_event_root,action_id,source_root_sha3,task_root_sha3,"
         "candidate_root_sha3,proof_policy_root_sha3,context_root_sha3,"
         "receipt_root_sha3,workspace,state,peer_id,request_id,deadline_at,elapsed_us,"
-        "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "created_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         build_proof_event_callbacks_ready(), "build_proof_event", row,
         db_build_proof_event_validate,
         AR_BIND_TEXT(st, 1, row->event_root);
         AR_BIND_TEXT(st, 2, row->prior_event_root);
         AR_BIND_TEXT(st, 3, row->action_id);
-        AR_BIND_TEXT(st, 4, row->task_root_sha3);
-        AR_BIND_TEXT(st, 5, row->candidate_root_sha3);
-        AR_BIND_TEXT(st, 6, row->proof_policy_root_sha3);
-        AR_BIND_TEXT(st, 7, row->context_root_sha3);
-        AR_BIND_TEXT(st, 8, row->receipt_root_sha3);
-        AR_BIND_TEXT(st, 9, row->workspace);
-        AR_BIND_TEXT(st, 10, row->state);
-        AR_BIND_INT(st, 11, row->peer_id);
-        AR_BIND_BLOB(st, 12, request_id, sizeof(request_id));
-        AR_BIND_INT(st, 13, row->deadline_at);
-        AR_BIND_INT(st, 14, row->elapsed_us);
-        AR_BIND_INT(st, 15, row->created_at));
+        AR_BIND_TEXT(st, 4, row->source_root_sha3);
+        AR_BIND_TEXT(st, 5, row->task_root_sha3);
+        AR_BIND_TEXT(st, 6, row->candidate_root_sha3);
+        AR_BIND_TEXT(st, 7, row->proof_policy_root_sha3);
+        AR_BIND_TEXT(st, 8, row->context_root_sha3);
+        AR_BIND_TEXT(st, 9, row->receipt_root_sha3);
+        AR_BIND_TEXT(st, 10, row->workspace);
+        AR_BIND_TEXT(st, 11, row->state);
+        AR_BIND_INT(st, 12, row->peer_id);
+        AR_BIND_BLOB(st, 13, request_id, sizeof(request_id));
+        AR_BIND_INT(st, 14, row->deadline_at);
+        AR_BIND_INT(st, 15, row->elapsed_us);
+        AR_BIND_INT(st, 16, row->created_at));
 }
 
 static bool proof_event_read(sqlite3_stmt *st,
@@ -198,27 +206,28 @@ static bool proof_event_read(sqlite3_stmt *st,
     PROOF_EVENT_TEXT(0, event_root);
     PROOF_EVENT_TEXT(1, prior_event_root);
     PROOF_EVENT_TEXT(2, action_id);
-    PROOF_EVENT_TEXT(3, task_root_sha3);
-    PROOF_EVENT_TEXT(4, candidate_root_sha3);
-    PROOF_EVENT_TEXT(5, proof_policy_root_sha3);
-    PROOF_EVENT_TEXT(6, context_root_sha3);
-    PROOF_EVENT_TEXT(7, receipt_root_sha3);
-    PROOF_EVENT_TEXT(8, workspace);
-    PROOF_EVENT_TEXT(9, state);
+    PROOF_EVENT_TEXT(3, source_root_sha3);
+    PROOF_EVENT_TEXT(4, task_root_sha3);
+    PROOF_EVENT_TEXT(5, candidate_root_sha3);
+    PROOF_EVENT_TEXT(6, proof_policy_root_sha3);
+    PROOF_EVENT_TEXT(7, context_root_sha3);
+    PROOF_EVENT_TEXT(8, receipt_root_sha3);
+    PROOF_EVENT_TEXT(9, workspace);
+    PROOF_EVENT_TEXT(10, state);
 #undef PROOF_EVENT_TEXT
-    out->peer_id = (uint64_t)sqlite3_column_int64(st, 10);
-    const uint8_t *request_id = sqlite3_column_blob(st, 11);
-    if (!request_id || sqlite3_column_bytes(st, 11) != 8) return false;
+    out->peer_id = (uint64_t)sqlite3_column_int64(st, 11);
+    const uint8_t *request_id = sqlite3_column_blob(st, 12);
+    if (!request_id || sqlite3_column_bytes(st, 12) != 8) return false;
     out->request_id = zcl_read_u64_le(request_id);
-    out->deadline_at = sqlite3_column_int64(st, 12);
-    out->elapsed_us = sqlite3_column_int64(st, 13);
-    out->created_at = sqlite3_column_int64(st, 14);
+    out->deadline_at = sqlite3_column_int64(st, 13);
+    out->elapsed_us = sqlite3_column_int64(st, 14);
+    out->created_at = sqlite3_column_int64(st, 15);
     struct ar_errors errors;
     return db_build_proof_event_validate(out, &errors);
 }
 
 static const char k_event_select[] =
-    "SELECT event_root,prior_event_root,action_id,task_root_sha3,"
+    "SELECT event_root,prior_event_root,action_id,source_root_sha3,task_root_sha3,"
     "candidate_root_sha3,proof_policy_root_sha3,context_root_sha3,"
     "receipt_root_sha3,workspace,state,peer_id,request_id,deadline_at,elapsed_us,"
     "created_at "
@@ -264,7 +273,7 @@ int db_build_proof_events_pending(
 {
     if (!ndb || !ndb->open || !out || max == 0) return 0;
     static const char sql[] =
-        "SELECT e.event_root,e.prior_event_root,e.action_id,e.task_root_sha3,"
+        "SELECT e.event_root,e.prior_event_root,e.action_id,e.source_root_sha3,e.task_root_sha3,"
         "e.candidate_root_sha3,e.proof_policy_root_sha3,e.context_root_sha3,"
         "e.receipt_root_sha3,e.workspace,e.state,e.peer_id,e.request_id,e.deadline_at,"
         "e.elapsed_us,e.created_at FROM build_proof_events e WHERE NOT EXISTS "
@@ -293,7 +302,7 @@ int db_build_proof_events_for_task(
 {
     if (!ndb || !ndb->open || !task_root || !out || max == 0) return 0;
     static const char sql[] =
-        "SELECT e.event_root,e.prior_event_root,e.action_id,e.task_root_sha3,"
+        "SELECT e.event_root,e.prior_event_root,e.action_id,e.source_root_sha3,e.task_root_sha3,"
         "e.candidate_root_sha3,e.proof_policy_root_sha3,e.context_root_sha3,"
         "e.receipt_root_sha3,e.workspace,e.state,e.peer_id,e.request_id,e.deadline_at,"
         "e.elapsed_us,e.created_at FROM build_proof_events e WHERE "
@@ -304,6 +313,30 @@ int db_build_proof_events_for_task(
     sqlite3_stmt *st = NULL;
     AR_PREPARE_RET(ndb, st, sql, 0);
     AR_BIND_TEXT(st, 1, task_root);
+    AR_BIND_INT(st, 2, max);
+    int count = 0;
+    while ((size_t)count < max && AR_STEP_ROW(st)) {
+        if (!proof_event_read(st, &out[count])) {
+            AR_FINALIZE(st);
+            return 0;
+        }
+        count++;
+    }
+    AR_FINALIZE(st);
+    return count;
+}
+
+int db_build_proof_events_for_action(
+    struct node_db *ndb, const char *action_id,
+    struct db_build_proof_event *out, size_t max)
+{
+    if (!ndb || !ndb->open || !action_id || !out || max == 0) return 0;
+    char sql[768];
+    (void)snprintf(sql, sizeof(sql), "%s%s", k_event_select,
+                   "WHERE action_id=? ORDER BY rowid LIMIT ?");
+    sqlite3_stmt *st = NULL;
+    AR_PREPARE_RET(ndb, st, sql, 0);
+    AR_BIND_TEXT(st, 1, action_id);
     AR_BIND_INT(st, 2, max);
     int count = 0;
     while ((size_t)count < max && AR_STEP_ROW(st)) {

@@ -3,10 +3,12 @@
 
 #include "command/native_command.h"
 
+#include "controllers/rpc_client.h"
 #include "base/hex.h"
 #include "base/serialize_le.h"
 #include "crypto/sha256.h"
 #include "crypto/sha3.h"
+#include "config/runtime.h"
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "models/database.h"
@@ -53,10 +55,107 @@
 
 #define ZDEV_PATH_MAX 4096
 
+static void zdev_fail(struct zcl_command_reply *reply, const char *code,
+                      const char *detail);
+
 static const char *zdev_str(const struct json_value *input, const char *key)
 {
     const struct json_value *v = input ? json_get(input, key) : NULL;
     return v ? json_get_str(v) : NULL;
+}
+
+/* A native command may target the running full node's existing ledger or a
+ * new, isolated ZBuild fixture.  Existing node.db files are runtime-owned:
+ * reopening one must never run the boot-only quick-check/quarantine,
+ * migration, or crash-cleanup ceremony while the daemon still owns its
+ * canonical connection.  Only an absent scratch ledger may be boot-created. */
+static bool zdev_open_build_ledger(
+    struct node_db *ndb, const char *path, const char *reason)
+{
+    if (!ndb || !path || !path[0] || !reason || !reason[0]) return false;
+    if (access(path, F_OK) == 0)
+        return node_db_open_existing_runtime(ndb, path, reason);
+    return node_db_open(ndb, path);
+}
+
+static bool zdev_runtime_owns_ledger(const char *datadir)
+{
+    struct node_db *owned = app_runtime_node_db();
+    if (!owned || !app_runtime_node_db_handle_open(owned) ||
+        !datadir || !datadir[0])
+        return false;
+    char expected[ZDEV_PATH_MAX];
+    int n = snprintf(expected, sizeof(expected), "%s/node.db", datadir);
+    return n > 0 && (size_t)n < sizeof(expected) &&
+           strcmp(expected, owned->path) == 0;
+}
+
+/* A live node.db is never mutated by a one-shot CLI process.  Forward the
+ * exact canonical input to the authenticated daemon, where the same handler
+ * revalidates it and commits through app_runtime_node_db().  A closed scratch
+ * fixture has no cookie and keeps the deterministic local test path. */
+static bool zdev_forward_live_command(
+    const struct zcl_command_request *request, const char *datadir,
+    const char *rpc_method, const char *fallback_code,
+    const char *fallback_phase, const char *evidence,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !request->input || !datadir || !datadir[0] ||
+        zdev_runtime_owns_ledger(datadir))
+        return false;
+    char cookie[ZDEV_PATH_MAX];
+    int cn = snprintf(cookie, sizeof(cookie), "%s/.cookie", datadir);
+    if (cn <= 0 || (size_t)cn >= sizeof(cookie) || access(cookie, R_OK) != 0)
+        return false;
+    struct json_value params;
+    json_init(&params); json_set_array(&params);
+    bool built = json_push_back(&params, request->input);
+    size_t needed = built ? json_write(&params, NULL, 0) : 0;
+    char *wire = needed > 0 && needed < 256u * 1024u
+        ? zcl_malloc(needed + 1u, "zcode.live_rpc") : NULL;
+    if (!wire || json_write(&params, wire, needed + 1u) != needed) {
+        free(wire); json_free(&params);
+        zdev_fail(reply, "LIVE_ADMISSION_ENCODE_FAILED",
+                  "canonical live admission input could not be encoded");
+        return true;
+    }
+    json_free(&params);
+    zcl_native_bridge_ensure_rpc();
+    char *raw = node_rpc_call(rpc_method, wire);
+    free(wire);
+    struct json_value body;
+    bool parsed = raw && json_read(&body, raw, strlen(raw)) &&
+                  body.type == JSON_OBJ;
+    free(raw);
+    if (!parsed) {
+        json_free(&body);
+        zdev_fail(reply, "LIVE_ADMISSION_UNAVAILABLE",
+                  "the selected full node did not answer canonical admission");
+        return true;
+    }
+    const struct json_value *ok = json_get(&body, "ok");
+    const struct json_value *data = json_get(&body, "data");
+    if (ok && ok->type == JSON_BOOL && json_get_bool(ok) &&
+        data && data->type == JSON_OBJ) {
+        json_free(&reply->data);
+        json_init(&reply->data);
+        json_copy(&reply->data, data);
+    } else {
+        const char *code = json_get_str(json_get(&body, "code"));
+        const char *phase = json_get_str(json_get(&body, "phase"));
+        const char *message = json_get_str(json_get(&body, "message"));
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            code && code[0] ? code : fallback_code,
+            phase && phase[0] ? phase : fallback_phase,
+            json_get_bool(json_get(&body, "retryable")),
+            json_get_bool(json_get(&body, "mutated")),
+            message && message[0] ? message :
+                "the selected full node refused canonical admission",
+            evidence);
+    }
+    json_free(&body);
+    return true;
 }
 
 static int64_t zdev_int(const struct json_value *input, const char *key,
@@ -488,6 +587,10 @@ void zcl_native_handle_zcode_evidence(
     const char *action_id = zdev_str(request->input, "action_id");
     const char *datadir = zdev_str(request->input, "datadir");
     if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
+    if (zdev_forward_live_command(
+            request, datadir, "zcode_work_evidence",
+            "LIVE_EVIDENCE_FAILED", "evaluate", "zcode.evidence", reply))
+        return;
     char workspace[ZDEV_PATH_MAX];
     uint8_t action_check[32];
     if (!workspace_arg || !realpath(workspace_arg, workspace) || !datadir ||
@@ -501,9 +604,13 @@ void zcl_native_handle_zcode_evidence(
     }
     char db_path[ZDEV_PATH_MAX];
     int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    struct node_db ndb = {0};
+    struct node_db local_ndb = {0};
+    struct node_db *ndb = zdev_runtime_owns_ledger(datadir)
+        ? app_runtime_node_db() : &local_ndb;
+    bool owned = ndb != &local_ndb;
     if (n <= 0 || (size_t)n >= sizeof(db_path) ||
-        !node_db_open(&ndb, db_path)) {
+        (!owned && !node_db_open_existing_runtime(
+            ndb, db_path, "zcode.evidence"))) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
             "DATABASE_OPEN_FAILED", "evaluate", true, false,
@@ -512,9 +619,12 @@ void zcl_native_handle_zcode_evidence(
     }
     struct build_fabric_proof_evaluation evaluation;
     struct zcl_result result = build_fabric_proof_evaluate(
-        &ndb, workspace, action_id,
+        ndb, workspace, action_id,
         (int64_t)platform_time_wall_unix(), &evaluation);
-    node_db_close(&ndb);
+    struct build_fabric_proof_timings timings;
+    struct zcl_result timed = build_fabric_proof_timings(
+        ndb, action_id, &timings);
+    if (!owned) node_db_close(ndb);
     if (!result.ok) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
             ZCL_COMMAND_EXIT_FAILED, "EVIDENCE_EVALUATION_FAILED",
@@ -560,6 +670,29 @@ void zcl_native_handle_zcode_evidence(
         evaluation.local_reproduced ? "LOCAL_REPRODUCTION" :
         evaluation.quorum_satisfied ? "APPROVED_SIGNER_QUORUM" :
         "UNTRUSTED");
+    (void)json_push_kv_bool(&reply->data, "async_timings_available", timed.ok);
+    if (timed.ok) {
+        struct json_value latency;
+        json_init(&latency); json_set_object(&latency);
+        bool rendered = json_push_kv_int(
+                &latency, "local_submit_us", timings.local_submit_us) &&
+            json_push_kv_int(&latency, "peer_discovery_us",
+                             timings.peer_discovery_us) &&
+            json_push_kv_int(&latency, "transfer_us", timings.transfer_us) &&
+            json_push_kv_int(&latency, "remote_queue_us",
+                             timings.remote_queue_us) &&
+            json_push_kv_int(&latency, "remote_execution_us",
+                             timings.remote_execution_us) &&
+            json_push_kv_int(&latency, "receipt_verification_us",
+                             timings.receipt_verification_us) &&
+            json_push_kv_int(&latency, "total_background_proof_us",
+                             timings.total_background_proof_us) &&
+            json_push_kv(&reply->data, "latency", &latency);
+        json_free(&latency);
+        if (!rendered)
+            zdev_fail(reply, "TIMING_OUTPUT_FAILED",
+                      "async proof timing report exceeded its bound");
+    }
 }
 
 void zcl_native_handle_zcode_accept(
@@ -785,6 +918,10 @@ void zcl_native_handle_zcode_improve(
         zdev_fail(reply, "BAD_MODE", "mode must be plan or admit");
         return;
     }
+    if (!plan_only && zdev_forward_live_command(
+            request, datadir, "zcode_work_admit",
+            "LIVE_ADMISSION_FAILED", "admit", "zcode.improve", reply))
+        return;
     const char *context_symbol = zdev_str(request->input, "context_symbol");
     const char *planned_task_root =
         zdev_str(request->input, "planned_task_root");
@@ -1256,13 +1393,17 @@ void zcl_native_handle_zcode_improve(
     (void)snprintf(action.job_id, sizeof(action.job_id), "%s", job.job_id);
     char db_path[ZDEV_PATH_MAX];
     int dbn = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    struct node_db ndb = {0};
+    struct node_db local_ndb = {0};
+    struct node_db *ndb = zdev_runtime_owns_ledger(datadir)
+        ? app_runtime_node_db() : &local_ndb;
+    bool owned = ndb != &local_ndb;
     if (dbn <= 0 || (size_t)dbn >= sizeof(db_path) ||
-        !node_db_open(&ndb, db_path)) {
+        (!owned && !zdev_open_build_ledger(
+            ndb, db_path, "zcode.improve"))) {
         zdev_fail(reply, "DATABASE_OPEN_FAILED", "cannot open the task's ZBuild ledger");
         return;
     }
-    struct zcl_result planned = build_fabric_plan(&ndb, &job, &action);
+    struct zcl_result planned = build_fabric_plan(ndb, &job, &action);
     struct zcode_lane_status frontier_status = {0};
     struct db_build_worker frontier_signer;
     uint8_t frontier_secret[32] = {0}, frontier_pubkey[32] = {0};
@@ -1272,21 +1413,24 @@ void zcl_native_handle_zcode_improve(
             datadir, &frontier_signer, frontier_secret, frontier_pubkey);
         if (admitted.ok)
             admitted = zcode_lane_advance(
-                &ndb, workspace, action.action_id, VCS_ZCODE_LANE_FRONTIER,
+                ndb, workspace, action.action_id, VCS_ZCODE_LANE_FRONTIER,
                 now, frontier_secret, frontier_pubkey, &frontier_status);
     }
     memset(frontier_secret, 0, sizeof(frontier_secret));
     struct zcl_result submitted = admitted.ok
-        ? build_fabric_submit(&ndb, job.job_id, now) : admitted;
+        ? build_fabric_submit(ndb, job.job_id, now) : admitted;
     struct db_build_proof_event proof_request = {0};
     bool proof_request_created = false;
+    int64_t request_elapsed_us =
+        platform_time_monotonic_us() - submit_started_us;
     struct zcl_result proof_requested = submitted.ok
         ? build_fabric_proof_request(
-              &ndb, action.action_id, workspace, (uint64_t)remote_peer, now,
+              ndb, action.action_id, workspace, (uint64_t)remote_peer,
+              request_elapsed_us < 0 ? 0 : request_elapsed_us, now,
               &proof_request, &proof_request_created)
         : submitted;
     int64_t local_submit_us = platform_time_monotonic_us() - submit_started_us;
-    node_db_close(&ndb);
+    if (!owned) node_db_close(ndb);
     if (!planned.ok || !admitted.ok || !submitted.ok || !proof_requested.ok) {
         const char *code = !planned.ok ? "ZBUILD_PLAN_FAILED" :
             !admitted.ok ? "FRONTIER_ADMISSION_FAILED" :
@@ -1343,6 +1487,8 @@ void zcl_native_handle_zcode_improve(
     (void)json_push_kv_bool(&reply->data, "request_deduplicated",
                             !proof_request_created);
     (void)json_push_kv_int(&reply->data, "local_submit_us",
+                           local_submit_us < 0 ? 0 : local_submit_us);
+    (void)json_push_kv_int(&reply->data, "local_first_feedback_us",
                            local_submit_us < 0 ? 0 : local_submit_us);
     (void)json_push_kv_str(&reply->data, "remote_outcome",
                            "BACKGROUND_PENDING");

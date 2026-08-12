@@ -43,6 +43,13 @@ static const char *run_str(const struct json_value *input, const char *key)
     return value && value->type == JSON_STR ? json_get_str(value) : NULL;
 }
 
+static bool run_open_existing_ledger(
+    struct node_db *ndb, const char *path, const char *reason)
+{
+    return ndb && path && path[0] && reason && reason[0] &&
+           node_db_open_existing_runtime(ndb, path, reason);
+}
+
 static void run_fail(struct zcl_command_reply *reply, const char *code,
                      const char *phase, const char *detail, bool retryable,
                      bool mutated)
@@ -481,7 +488,8 @@ static struct zcl_result run_plan_standard_peer(
     int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     struct node_db ndb = {0};
     if (n <= 0 || (size_t)n >= sizeof(db_path) ||
-        !node_db_open(&ndb, db_path))
+        !run_open_existing_ledger(
+            &ndb, db_path, "zcode.work.run.standard_peer"))
         return ZCL_ERR(-1, "scratch ZBuild ledger could not be reopened");
     struct db_build_action action;
     struct db_build_job job;
@@ -536,7 +544,8 @@ static struct zcl_result run_execute_action(
     int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     struct node_db ndb = {0};
     if (n <= 0 || (size_t)n >= sizeof(db_path) ||
-        !node_db_open(&ndb, db_path))
+        !run_open_existing_ledger(
+            &ndb, db_path, "zcode.work.run.execute"))
         return ZCL_ERR(-1, "scratch ZBuild ledger could not be reopened");
     int64_t now = platform_time_wall_unix();
     worker->last_seen_at = now;
@@ -566,6 +575,69 @@ static struct zcl_result run_execute_action(
             secret, pubkey, receipt);
     node_db_close(&ndb);
     return result;
+}
+
+static bool run_render_async_admission(
+    struct zcl_command_reply *reply,
+    const struct vcs_zcode_task_index_entry *entry,
+    const struct zcl_command_reply *inner, const char *adapter_name)
+{
+    const struct json_value *changed = json_get(&inner->data, "changed_files");
+    const struct json_value *candidate = json_get(&inner->data, "candidate_root");
+    const struct json_value *candidate_source =
+        json_get(&inner->data, "candidate_source_root");
+    const struct json_value *patch = json_get(&inner->data, "patch_root");
+    const struct json_value *action = json_get(&inner->data, "action_id");
+    const struct json_value *proof_state =
+        json_get(&inner->data, "async_proof_state");
+    const struct json_value *proof_event =
+        json_get(&inner->data, "async_proof_event_root");
+    const struct json_value *proof_request =
+        json_get(&inner->data, "remote_request_id");
+    const struct json_value *submit_us =
+        json_get(&inner->data, "local_submit_us");
+    if (!changed || !candidate || !candidate_source || !patch || !action ||
+        !proof_state || !proof_event || !proof_request || !submit_us)
+        return false;
+    char work_id[32];
+    (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
+                   entry->task_root_hex);
+    struct json_value expert;
+    json_init(&expert); json_set_object(&expert);
+    bool ok = json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
+        json_push_kv_str(&expert, "candidate_root", json_get_str(candidate)) &&
+        json_push_kv_str(&expert, "candidate_source_root",
+                         json_get_str(candidate_source)) &&
+        json_push_kv_str(&expert, "patch_root", json_get_str(patch)) &&
+        json_push_kv_str(&expert, "action_id", json_get_str(action)) &&
+        json_push_kv_str(&reply->data, "work_id", work_id) &&
+        json_push_kv_str(&reply->data, "state", "CANDIDATE_ADMITTED") &&
+        json_push_kv_int(&reply->data, "changed_files",
+                         json_get_int(changed)) &&
+        json_push_kv_str(&reply->data, "candidate_root",
+                         json_get_str(candidate)) &&
+        json_push_kv_str(&reply->data, "patch_root", json_get_str(patch)) &&
+        json_push_kv_str(&reply->data, "async_proof_state",
+                         json_get_str(proof_state)) &&
+        json_push_kv_str(&reply->data, "async_proof_event_root",
+                         json_get_str(proof_event)) &&
+        json_push_kv_int(&reply->data, "remote_request_id",
+                         json_get_int(proof_request)) &&
+        json_push_kv_int(&reply->data, "local_submit_us",
+                         json_get_int(submit_us)) &&
+        json_push_kv_str(&reply->data, "build_result",
+                         "background_pending") &&
+        json_push_kv_int(&reply->data, "compile_receipts", 0) &&
+        json_push_kv_int(&reply->data, "test_receipts", 0) &&
+        json_push_kv_str(&reply->data, "sanitizer_result", "pending") &&
+        json_push_kv_str(&reply->data, "remote_outcome",
+                         "BACKGROUND_PENDING") &&
+        json_push_kv_str(&reply->data, "adapter", adapter_name) &&
+        json_push_kv_str(&reply->data, "next_safe_command",
+                         "zcode work status") &&
+        json_push_kv(&reply->data, "expert", &expert);
+    json_free(&expert);
+    return ok;
 }
 
 static bool run_admit(
@@ -671,6 +743,23 @@ static bool run_admit(
         json_get(&inner.data, "remote_request_id");
     const struct json_value *submit_us =
         json_get(&inner.data, "local_submit_us");
+    /* An explicit full-node datadir means the daemon now owns this immutable
+     * action.  Foreground work ends at admission: its enabled local worker or
+     * a peer may consume the action later, but the originating CLI must never
+     * race either owner by generically claiming the live queue.  Closed
+     * scratch ledgers (no explicit proof datadir) retain the contained local
+     * execution path used by deterministic unit/development fixtures. */
+    if (proof_datadir && proof_datadir[0]) {
+        memory_cleanse(secret, sizeof(secret));
+        bool rendered = run_render_async_admission(
+            reply, entry, &inner, adapter_name);
+        zcl_command_reply_free(&inner);
+        if (!rendered)
+            run_fail(reply, "ADMISSION_OUTPUT_FAILED", "render",
+                     "live async admission summary could not be rendered",
+                     false, true);
+        return true;
+    }
     struct db_build_receipt receipt;
     struct zcl_result executed = action && json_get_str(action)
         ? run_execute_action(workspace, datadir, json_get_str(action), &worker,
@@ -805,10 +894,20 @@ static bool run_admit(
     return true;
 }
 
+static void run_feedback_timing(
+    struct zcl_command_reply *reply, int64_t started_us)
+{
+    if (!reply || reply->status != ZCL_COMMAND_STATUS_PASSED) return;
+    int64_t elapsed = platform_time_monotonic_us() - started_us;
+    (void)json_push_kv_int(&reply->data, "local_first_feedback_us",
+                           elapsed < 0 ? 0 : elapsed);
+}
+
 void zcl_native_handle_zcode_work_run(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     if (!request || !reply) return;
+    int64_t feedback_started_us = platform_time_monotonic_us();
     const char *workspace_arg = run_str(request->input, "workspace");
     const char *work = run_str(request->input, "work");
     const char *adapter = run_str(request->input, "adapter");
@@ -954,6 +1053,7 @@ void zcl_native_handle_zcode_work_run(
                 workspace, candidate_workspace, proof_datadir, goal,
                 entry, context_entry,
                 &task, &context, &scope, candidate_sequence, "manual", reply);
+            if (handled) run_feedback_timing(reply, feedback_started_us);
             if (!handled)
                 run_fail(reply, "CANDIDATE_ADMISSION_FAILED", "admit",
                          "scratch identity or existing task composition failed",
@@ -1020,6 +1120,7 @@ void zcl_native_handle_zcode_work_run(
             workspace, candidate_workspace, proof_datadir, goal,
             entry, context_entry,
             &task, &context, &scope, candidate_sequence, "codex", reply);
+        if (handled) run_feedback_timing(reply, feedback_started_us);
         if (handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
             (void)json_push_kv_str(&reply->data, "adapter_output",
                                    adapter_output);

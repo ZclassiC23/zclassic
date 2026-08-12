@@ -82,7 +82,7 @@ int node_db_migrate_features_v67_up(struct node_db *ndb, int *version)
                 "CHECK(length(receipt_root_sha3) IN (0,64)),"
                 "workspace TEXT NOT NULL CHECK(length(workspace) BETWEEN 1 AND 4095),"
                 "state TEXT NOT NULL CHECK(state IN ('REQUESTED',"
-                "'PEER_DISCOVERED','RUNNING','REMOTE_GREEN','REMOTE_RED',"
+                "'PEER_DISCOVERED','CONTEXT_READY','RUNNING','REMOTE_GREEN','REMOTE_RED',"
                 "'RECEIPT_VERIFIED','REPRODUCED','SUPERSEDED',"
                 "'READY_FOR_ACCEPTANCE')),"
                 "peer_id INTEGER NOT NULL CHECK(peer_id>=0),"
@@ -111,6 +111,74 @@ int node_db_migrate_features_v67_up(struct node_db *ndb, int *version)
             LOG_ERR("db", "migrate v68: migration stamp failed");
         DB_MIGRATE_PERSIST_VERSION(ndb, 68);
         current_ver = 68;
+        applied++;
+    }
+    if (current_ver < 69) {
+        /* v69: new async events bind the candidate source root directly.
+         * Existing v68 rows retain their v1 event roots and an empty source;
+         * the next append upgrades that chain to the v2 root domain. */
+        if (!node_db_exec(ndb,
+                "CREATE TABLE build_proof_events_v69("
+                "event_root TEXT NOT NULL UNIQUE CHECK(length(event_root)=64),"
+                "prior_event_root TEXT NOT NULL DEFAULT '' "
+                "CHECK(length(prior_event_root) IN (0,64)),"
+                "action_id TEXT NOT NULL REFERENCES build_actions(action_id) "
+                "ON DELETE CASCADE CHECK(length(action_id)=64),"
+                "source_root_sha3 TEXT NOT NULL DEFAULT '' "
+                "CHECK(length(source_root_sha3) IN (0,64)),"
+                "task_root_sha3 TEXT NOT NULL CHECK(length(task_root_sha3)=64),"
+                "candidate_root_sha3 TEXT NOT NULL CHECK(length(candidate_root_sha3)=64),"
+                "proof_policy_root_sha3 TEXT NOT NULL CHECK(length(proof_policy_root_sha3)=64),"
+                "context_root_sha3 TEXT NOT NULL DEFAULT '' "
+                "CHECK(length(context_root_sha3) IN (0,64)),"
+                "receipt_root_sha3 TEXT NOT NULL DEFAULT '' "
+                "CHECK(length(receipt_root_sha3) IN (0,64)),"
+                "workspace TEXT NOT NULL CHECK(length(workspace) BETWEEN 1 AND 4095),"
+                "state TEXT NOT NULL CHECK(state IN ('REQUESTED','PEER_DISCOVERED',"
+                "'CONTEXT_READY','RUNNING','REMOTE_GREEN','REMOTE_RED',"
+                "'RECEIPT_VERIFIED','REPRODUCED','SUPERSEDED',"
+                "'READY_FOR_ACCEPTANCE')),"
+                "peer_id INTEGER NOT NULL CHECK(peer_id>=0),"
+                "request_id BLOB NOT NULL CHECK(length(request_id)=8),"
+                "deadline_at INTEGER NOT NULL CHECK(deadline_at>=0),"
+                "elapsed_us INTEGER NOT NULL CHECK(elapsed_us>=0),"
+                "created_at INTEGER NOT NULL CHECK(created_at>0))"))
+            LOG_ERR("db", "migrate v69: replacement table failed");
+        if (!node_db_exec(ndb,
+                "INSERT INTO build_proof_events_v69 "
+                "(event_root,prior_event_root,action_id,source_root_sha3,"
+                "task_root_sha3,candidate_root_sha3,proof_policy_root_sha3,"
+                "context_root_sha3,receipt_root_sha3,workspace,state,peer_id,"
+                "request_id,deadline_at,elapsed_us,created_at) SELECT "
+                "event_root,prior_event_root,action_id,'',task_root_sha3,"
+                "candidate_root_sha3,proof_policy_root_sha3,context_root_sha3,"
+                "receipt_root_sha3,workspace,state,peer_id,request_id,"
+                "deadline_at,elapsed_us,created_at FROM build_proof_events"))
+            LOG_ERR("db", "migrate v69: event copy failed");
+        if (!node_db_exec(ndb, "DROP TABLE build_proof_events"))
+            LOG_ERR("db", "migrate v69: prior table drop failed");
+        if (!node_db_exec(ndb,
+                "ALTER TABLE build_proof_events_v69 RENAME TO build_proof_events"))
+            LOG_ERR("db", "migrate v69: table rename failed");
+        if (!node_db_exec(ndb,
+                "CREATE INDEX idx_build_proof_events_action ON "
+                "build_proof_events(action_id,created_at,event_root)"))
+            LOG_ERR("db", "migrate v69: action index failed");
+        if (!node_db_exec(ndb,
+                "CREATE INDEX idx_build_proof_events_task ON "
+                "build_proof_events(task_root_sha3,created_at)"))
+            LOG_ERR("db", "migrate v69: task index failed");
+        if (!node_db_exec(ndb,
+                "CREATE UNIQUE INDEX idx_build_proof_events_one_successor "
+                "ON build_proof_events(prior_event_root) "
+                "WHERE prior_event_root<>''"))
+            LOG_ERR("db", "migrate v69: chain index failed");
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('069')"))
+            LOG_ERR("db", "migrate v69: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 69);
+        current_ver = 69;
         applied++;
     }
     *version = current_ver;

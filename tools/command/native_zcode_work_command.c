@@ -53,6 +53,23 @@ static const char *zwork_str(const struct json_value *input, const char *key)
     return value && value->type == JSON_STR ? json_get_str(value) : NULL;
 }
 
+static bool zwork_open_build_ledger(
+    struct node_db *ndb, const char *path, const char *reason,
+    bool allow_create)
+{
+    if (!ndb || !path || !path[0] || !reason || !reason[0]) return false;
+    if (access(path, F_OK) == 0)
+        return node_db_open_existing_runtime(ndb, path, reason);
+    return allow_create && node_db_open(ndb, path);
+}
+
+static int64_t zwork_int(
+    const struct json_value *input, const char *key, int64_t fallback)
+{
+    const struct json_value *value = input ? json_get(input, key) : NULL;
+    return value && value->type == JSON_INT ? json_get_int(value) : fallback;
+}
+
 static void zwork_fail(struct zcl_command_reply *reply, const char *code,
                        const char *phase, const char *detail, bool retryable,
                        bool mutated)
@@ -156,7 +173,7 @@ static bool zwork_plan_input(
     const struct vcs_package_prepared *prepared,
     const struct vcs_zcode_dev_profile *profile,
     const struct zcode_goal_selection *selection, const char *scopes,
-    int64_t expires_unix)
+    int64_t expires_unix, int64_t max_cpu_seconds)
 {
     uint8_t policy_wire[VCS_ZCODE_PROOF_POLICY_WIRE_BYTES];
     static const char model_policy[] =
@@ -188,6 +205,7 @@ static bool zwork_plan_input(
         json_push_kv_str(input, "context_symbol",
                          selection->selected_symbol_id) &&
         json_push_kv_int(input, "expires_unix", expires_unix) &&
+        json_push_kv_int(input, "max_cpu_seconds", max_cpu_seconds) &&
         json_push_kv_int(input, "max_context_bytes", 256 * 1024);
     free(policy_hex); free(recipe_hex); free(lock_hex);
     return ok;
@@ -274,10 +292,14 @@ void zcl_native_handle_zcode_work_start(
     const char *goal = zwork_str(request->input, "goal");
     const char *profile_name = zwork_str(request->input, "profile");
     const char *exact_symbol = zwork_str(request->input, "context_symbol");
+    int64_t max_cpu_seconds = zwork_int(
+        request->input, "max_cpu_seconds", 600);
     if (!profile_name || !profile_name[0]) profile_name = "standard";
-    if (!workspace || !workspace[0] || !goal || !goal[0]) {
+    if (!workspace || !workspace[0] || !goal || !goal[0] ||
+        max_cpu_seconds <= 0 || max_cpu_seconds > 600) {
         zwork_fail(reply, "MISSING_INPUT", "validate",
-                   "work start requires workspace and goal", false, false);
+                   "work start requires workspace/goal and max_cpu_seconds in 1..600",
+                   false, false);
         return;
     }
     struct vcs_zcode_dev_profile profile;
@@ -313,7 +335,8 @@ void zcl_native_handle_zcode_work_start(
     }
     struct json_value plan_input;
     if (!zwork_plan_input(&plan_input, workspace, goal, &prepared, &profile,
-                          &selection, scopes, (int64_t)expires)) {
+                          &selection, scopes, (int64_t)expires,
+                          max_cpu_seconds)) {
         zwork_fail(reply, "WORK_COMPOSE_FAILED", "compose",
                    "existing task inputs could not be composed", false, false);
         vcs_package_prepared_free(&prepared);
@@ -744,7 +767,8 @@ static void zwork_accept_inner(const char *workspace, const char *datadir,
     uint8_t secret[32] = {0}, pubkey[32] = {0};
     struct zcode_lane_status status;
     bool opened = target != 0 && n > 0 && (size_t)n < sizeof(db_path) &&
-        node_db_open(&ndb, db_path);
+        zwork_open_build_ledger(
+            &ndb, db_path, "zcode.work.accept", false);
     struct zcl_result result = opened
         ? build_fabric_worker_identity_load(
               datadir, &signer, secret, pubkey)
@@ -1036,7 +1060,8 @@ void zcl_native_handle_zcode_work_review(
     uint8_t secret[32] = {0}, pubkey[32] = {0};
     bool opened = dn > 0 && (size_t)dn < sizeof(datadir) && rn > 0 &&
         (size_t)rn < sizeof(reviewer_dir) && bn > 0 &&
-        (size_t)bn < sizeof(db_path) && node_db_open(&ndb, db_path);
+        (size_t)bn < sizeof(db_path) && zwork_open_build_ledger(
+            &ndb, db_path, "zcode.work.review", true);
     const char *failed_stage = opened ? "base_action" : "scratch_ledger";
     bool ready = opened && db_build_action_find(
         &ndb, entry->latest_action_root_hex, &base_action);

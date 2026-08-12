@@ -21,6 +21,12 @@ enum vcs_zcode_work_swarm_type {
     VCS_ZCODE_WORK_SWARM_REQUEST = 2,
     VCS_ZCODE_WORK_SWARM_RESULT = 3,
     VCS_ZCODE_WORK_SWARM_CANCEL = 4,
+    VCS_ZCODE_WORK_SWARM_PROGRESS = 5,
+};
+
+enum vcs_zcode_work_progress_stage {
+    VCS_ZCODE_WORK_PROGRESS_CONTEXT_READY = 1,
+    VCS_ZCODE_WORK_PROGRESS_EXECUTION_STARTED = 2,
 };
 
 enum vcs_zcode_work_target {
@@ -93,6 +99,19 @@ struct vcs_zcode_work_cancel_v1 {
     uint8_t signature[64];
 };
 
+/* Signed execution telemetry over the existing work swarm. It is an
+ * untrusted observation, never proof or acceptance authority. */
+struct vcs_zcode_work_progress_v1 {
+    uint64_t request_id;
+    uint8_t task_root[32];
+    uint8_t candidate_root[32];
+    uint8_t action_root[32];
+    uint8_t stage;
+    int64_t observed_unix;
+    uint8_t signer_pubkey[32];
+    uint8_t signature[64];
+};
+
 struct vcs_zcode_work_swarm_message {
     uint8_t type;
     union {
@@ -100,6 +119,7 @@ struct vcs_zcode_work_swarm_message {
         struct vcs_zcode_work_request_v1 request;
         struct vcs_zcode_work_result_v1 result;
         struct vcs_zcode_work_cancel_v1 cancel;
+        struct vcs_zcode_work_progress_v1 progress;
     } body;
 };
 
@@ -129,6 +149,15 @@ bool vcs_zcode_work_cancel_seal(
     const uint8_t secret[32], const uint8_t pubkey[32]);
 bool vcs_zcode_work_cancel_verify(
     const struct vcs_zcode_work_cancel_v1 *cancel);
+bool vcs_zcode_work_progress_seal(
+    struct vcs_zcode_work_progress_v1 *progress,
+    const uint8_t secret[32], const uint8_t pubkey[32]);
+bool vcs_zcode_work_progress_verify(
+    const struct vcs_zcode_work_progress_v1 *progress);
+bool vcs_zcode_work_progress_verify_for_request(
+    const struct vcs_zcode_work_request_v1 *request,
+    const struct vcs_zcode_work_progress_v1 *progress,
+    const uint8_t expected_signer[32]);
 
 /* Remote work is evidence, never authority. This verifies exact request
  * binding and a pinned approved signer. Quorum additionally requires distinct

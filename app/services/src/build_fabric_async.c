@@ -35,6 +35,9 @@ static bool proof_transition_allowed(const char *from, const char *to)
     if (strcmp(from, "REQUESTED") == 0)
         return strcmp(to, "PEER_DISCOVERED") == 0;
     if (strcmp(from, "PEER_DISCOVERED") == 0)
+        return strcmp(to, "CONTEXT_READY") == 0 ||
+               strcmp(to, "PEER_DISCOVERED") == 0;
+    if (strcmp(from, "CONTEXT_READY") == 0)
         return strcmp(to, "RUNNING") == 0 ||
                strcmp(to, "PEER_DISCOVERED") == 0;
     if (strcmp(from, "RUNNING") == 0)
@@ -57,6 +60,7 @@ static bool proof_transition_allowed(const char *from, const char *to)
 static bool proof_state_needs_peer(const char *state)
 {
     return strcmp(state, "PEER_DISCOVERED") == 0 ||
+           strcmp(state, "CONTEXT_READY") == 0 ||
            strcmp(state, "RUNNING") == 0 ||
            strcmp(state, "REMOTE_GREEN") == 0 ||
            strcmp(state, "REMOTE_RED") == 0 ||
@@ -111,6 +115,19 @@ struct zcl_result build_fabric_proof_transition(
     (void)snprintf(out->prior_event_root, sizeof(out->prior_event_root),
                    "%s", prior.event_root);
     (void)snprintf(out->action_id, sizeof(out->action_id), "%s", action_id);
+    (void)snprintf(out->source_root_sha3, sizeof(out->source_root_sha3),
+                   "%s", prior.source_root_sha3);
+    if (!out->source_root_sha3[0]) {
+        struct db_build_action action;
+        struct db_build_job job;
+        if (!db_build_action_find(ndb, action_id, &action) ||
+            !db_build_job_find(ndb, action.job_id, &job) ||
+            !job.source_cas_sha3[0])
+            return ZCL_ERR(-1, "async proof transition lost source binding");
+        (void)snprintf(out->source_root_sha3,
+                       sizeof(out->source_root_sha3), "%s",
+                       job.source_cas_sha3);
+    }
     (void)snprintf(out->task_root_sha3, sizeof(out->task_root_sha3), "%s",
                    prior.task_root_sha3);
     (void)snprintf(out->candidate_root_sha3,
@@ -167,11 +184,12 @@ static struct zcl_result proof_supersede_older(
 
 struct zcl_result build_fabric_proof_request(
     struct node_db *ndb, const char *action_id, const char *workspace,
-    uint64_t peer_hint,
+    uint64_t peer_hint, int64_t local_submit_us,
     int64_t now, struct db_build_proof_event *out, bool *created)
 {
     if (!ndb || !ndb->open || !action_id || !workspace ||
-        workspace[0] != '/' || !out || !created || now <= 0)
+        workspace[0] != '/' || !out || !created || local_submit_us < 0 ||
+        now <= 0)
         return ZCL_ERR(-1, "async proof request requires exact inputs");
     uint64_t request_id = build_fabric_proof_request_id(action_id);
     if (request_id == 0)
@@ -181,13 +199,18 @@ struct zcl_result build_fabric_proof_request(
         return ZCL_OK;
     }
     struct db_build_action action;
+    struct db_build_job job;
     if (!db_build_action_find(ndb, action_id, &action) ||
+        !db_build_job_find(ndb, action.job_id, &job) ||
+        !job.source_cas_sha3[0] ||
         !action.task_root_sha3[0] || !action.candidate_root_sha3[0] ||
         !action.proof_policy_root_sha3[0])
         return ZCL_ERR(-1, "async proof action is absent or not ZCODE-bound");
     ZCL_CHECK(proof_supersede_older(ndb, &action, request_id, now));
     memset(out, 0, sizeof(*out));
     (void)snprintf(out->action_id, sizeof(out->action_id), "%s", action_id);
+    (void)snprintf(out->source_root_sha3, sizeof(out->source_root_sha3),
+                   "%s", job.source_cas_sha3);
     (void)snprintf(out->task_root_sha3, sizeof(out->task_root_sha3), "%s",
                    action.task_root_sha3);
     (void)snprintf(out->candidate_root_sha3,
@@ -200,8 +223,48 @@ struct zcl_result build_fabric_proof_request(
     (void)snprintf(out->state, sizeof(out->state), "REQUESTED");
     out->peer_id = peer_hint;
     out->request_id = request_id;
+    out->elapsed_us = local_submit_us;
     out->created_at = now;
     ZCL_CHECK(proof_event_store(ndb, out));
     *created = true;
+    return ZCL_OK;
+}
+
+struct zcl_result build_fabric_proof_timings(
+    struct node_db *ndb, const char *action_id,
+    struct build_fabric_proof_timings *out)
+{
+    if (out) memset(out, 0, sizeof(*out));
+    if (!ndb || !ndb->open || !action_id || !out)
+        return ZCL_ERR(-1, "async proof timings require exact inputs");
+    struct db_build_proof_event events[64];
+    int count = db_build_proof_events_for_action(
+        ndb, action_id, events, sizeof(events) / sizeof(events[0]));
+    if (count <= 0)
+        return ZCL_ERR(-1, "async proof timing chain is absent or invalid");
+    for (int i = 0; i < count; i++) {
+        const char *state = events[i].state;
+        if (strcmp(state, "REQUESTED") == 0 && out->local_submit_us == 0)
+            out->local_submit_us = events[i].elapsed_us;
+        else if (strcmp(state, "PEER_DISCOVERED") == 0 &&
+                 out->peer_discovery_us == 0)
+            out->peer_discovery_us = events[i].elapsed_us;
+        else if (strcmp(state, "CONTEXT_READY") == 0 &&
+                 out->transfer_us == 0)
+            out->transfer_us = events[i].elapsed_us;
+        else if (strcmp(state, "RUNNING") == 0 &&
+                 out->remote_queue_us == 0)
+            out->remote_queue_us = events[i].elapsed_us;
+        else if ((strcmp(state, "REMOTE_GREEN") == 0 ||
+                  strcmp(state, "REMOTE_RED") == 0) &&
+                 out->remote_execution_us == 0)
+            out->remote_execution_us = events[i].elapsed_us;
+        else if (strcmp(state, "RECEIPT_VERIFIED") == 0 &&
+                 out->receipt_verification_us == 0)
+            out->receipt_verification_us = events[i].elapsed_us;
+        else if (strcmp(state, "READY_FOR_ACCEPTANCE") == 0 &&
+                 out->total_background_proof_us == 0)
+            out->total_background_proof_us = events[i].elapsed_us;
+    }
     return ZCL_OK;
 }

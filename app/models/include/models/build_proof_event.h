@@ -21,6 +21,7 @@ struct db_build_proof_event {
     char event_root[BUILD_PROOF_EVENT_ROOT_HEX + 1];
     char prior_event_root[BUILD_PROOF_EVENT_ROOT_HEX + 1];
     char action_id[BUILD_PROOF_EVENT_ROOT_HEX + 1];
+    char source_root_sha3[BUILD_PROOF_EVENT_ROOT_HEX + 1];
     char task_root_sha3[BUILD_PROOF_EVENT_ROOT_HEX + 1];
     char candidate_root_sha3[BUILD_PROOF_EVENT_ROOT_HEX + 1];
     char proof_policy_root_sha3[BUILD_PROOF_EVENT_ROOT_HEX + 1];
@@ -53,6 +54,9 @@ int db_build_proof_events_pending(
     struct node_db *ndb, struct db_build_proof_event *out, size_t max);
 int db_build_proof_events_for_task(
     struct node_db *ndb, const char *task_root,
+    struct db_build_proof_event *out, size_t max);
+int db_build_proof_events_for_action(
+    struct node_db *ndb, const char *action_id,
     struct db_build_proof_event *out, size_t max);
 
 #endif /* ZCL_DB_MODEL_BUILD_PROOF_EVENT_H */

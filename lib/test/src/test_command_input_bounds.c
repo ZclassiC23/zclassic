@@ -79,6 +79,20 @@ static bool cib_accepts(const char *path, const char *key, size_t len,
     return ok;
 }
 
+static bool cib_accepts_int(const char *path, const char *key, int64_t value)
+{
+    const struct zcl_command_spec *spec =
+        zcl_command_registry_find(zcl_command_catalog(), path, NULL);
+    if (!spec) return false;
+    struct json_value input;
+    json_init(&input); json_set_object(&input);
+    bool built = json_push_kv_int(&input, key, value);
+    bool ok = built && zcl_command_registry_input_validate(
+        spec, &input, NULL, 0);
+    json_free(&input);
+    return ok;
+}
+
 /* ── 1. Both edges of three differently-limited keys ─────────────────── */
 
 static int t_key_edges(void)
@@ -142,6 +156,14 @@ static int t_key_edges(void)
               zcl_command_registry_input_str_max("no_such_key_at_all") == 4096u);
     CIB_CHECK("a NULL key is answered, not dereferenced",
               zcl_command_registry_input_str_max(NULL) == 4096u);
+    CIB_CHECK("zcode work CPU floor is typed and reachable",
+              cib_accepts_int("zcode.work.start", "max_cpu_seconds", 1));
+    CIB_CHECK("zcode work CPU ceiling is typed and reachable",
+              cib_accepts_int("zcode.work.start", "max_cpu_seconds", 600));
+    CIB_CHECK("zcode work CPU zero is refused at transport",
+              !cib_accepts_int("zcode.work.start", "max_cpu_seconds", 0));
+    CIB_CHECK("zcode work CPU overflow is refused at transport",
+              !cib_accepts_int("zcode.work.start", "max_cpu_seconds", 601));
 
     /* The package bounds must stay DERIVED. If someone edits a wire's own
      * maximum, the input bound has to move with it in the same build; a

@@ -4,11 +4,15 @@
 #include "config/boot_zcode_async_proof.h"
 
 #include "base/hex.h"
+#include "command/native_command.h"
 #include "config/boot_internal.h"
 #include "config/runtime.h"
+#include "controllers/strong_params.h"
+#include "kernel/command_registry.h"
 #include "models/build_fabric.h"
 #include "models/build_proof_event.h"
 #include "platform/time_compat.h"
+#include "rpc/server.h"
 #include "services/build_fabric_async.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
@@ -26,6 +30,83 @@
 #include <string.h>
 
 enum { ASYNC_PROOF_BATCH = 16 };
+
+static bool async_proof_rpc_run(
+    const struct json_value *params, struct json_value *result,
+    const char *schema, zcl_command_handler_fn handler,
+    const char *fallback_code, const char *fallback_phase)
+{
+    const struct json_value *input = params && params->type == JSON_ARR &&
+        json_size(params) == 1 ? json_at(params, 0) : NULL;
+    if (!input || input->type != JSON_OBJ) {
+        json_set_object(result);
+        (void)json_push_kv_bool(result, "ok", false);
+        (void)json_push_kv_str(result, "code", "INVALID_INPUT");
+        (void)json_push_kv_str(result, "phase", "validate");
+        (void)json_push_kv_str(result, "message",
+                               "one canonical command input object is required");
+        return true;
+    }
+    struct zcl_command_request request = { .input = input };
+    struct zcl_command_reply reply;
+    zcl_command_reply_init(&reply, schema);
+    handler(&request, &reply);
+    json_set_object(result);
+    bool passed = reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                  reply.exit_code == ZCL_COMMAND_EXIT_OK;
+    (void)json_push_kv_bool(result, "ok", passed);
+    if (passed) {
+        (void)json_push_kv(result, "data", &reply.data);
+    } else {
+        (void)json_push_kv_str(result, "code",
+                               reply.error.code[0] ? reply.error.code :
+                                                     fallback_code);
+        (void)json_push_kv_str(result, "phase",
+                               reply.error.phase[0] ? reply.error.phase :
+                                                      fallback_phase);
+        (void)json_push_kv_str(result, "message",
+                               reply.error.message[0] ? reply.error.message :
+                                                        "live admission failed");
+        (void)json_push_kv_bool(result, "retryable", reply.error.retryable);
+        (void)json_push_kv_bool(result, "mutated", reply.error.mutated);
+    }
+    zcl_command_reply_free(&reply);
+    return true;
+}
+
+static bool async_proof_rpc_admit(
+    const struct json_value *params, bool help, struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "zcode_work_admit {input}\n"
+        "Admit one canonical immutable action through the live node's owned "
+        "proof ledger. Internal authenticated loopback surface.");
+    return async_proof_rpc_run(
+        params, result, "zcl.zcode_improve.v1",
+        zcl_native_handle_zcode_improve, "ADMISSION_FAILED", "admit");
+}
+
+static bool async_proof_rpc_evidence(
+    const struct json_value *params, bool help, struct json_value *result)
+{
+    RPC_HELP(help, result,
+        "zcode_work_evidence {input}\n"
+        "Evaluate one exact action through the live node's owned proof ledger. "
+        "Internal authenticated loopback surface.");
+    return async_proof_rpc_run(
+        params, result, "zcl.zcode_evidence.v1",
+        zcl_native_handle_zcode_evidence, "EVIDENCE_FAILED", "evaluate");
+}
+
+void boot_zcode_async_proof_register_rpc(struct rpc_table *table)
+{
+    const struct rpc_command commands[] = {
+        {"zcode", "zcode_work_admit", async_proof_rpc_admit, true},
+        {"zcode", "zcode_work_evidence", async_proof_rpc_evidence, true},
+    };
+    for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
+        rpc_table_must_append(table, &commands[i]);
+}
 
 static uint8_t s_requester_secret[32];
 static uint8_t s_requester_pubkey[32];
@@ -197,12 +278,21 @@ static bool async_select_peer(
     const struct db_build_job *job, uint8_t work_kind, int64_t now,
     uint64_t *peer_out, struct vcs_zcode_work_capability_v1 *capability_out)
 {
-    if (event->peer_id && strcmp(event->state, "REQUESTED") == 0 &&
+    bool retry = event->deadline_at > 0 && now >= event->deadline_at;
+    if (event->peer_id && !retry &&
         vcs_zcode_work_node_peer_capability(
-            work, event->peer_id, now, capability_out) &&
-        async_capability_allows(capability_out, job, work_kind)) {
-        *peer_out = event->peer_id;
-        return true;
+            work, event->peer_id, now, capability_out)) {
+        /* This request already consumed its peer slot. Zero advertised
+         * headroom prevents a new lease; it must not evict the live one. */
+        uint16_t headroom = capability_out->queue_headroom;
+        if (headroom == 0) capability_out->queue_headroom = 1;
+        bool still_eligible = async_capability_allows(
+            capability_out, job, work_kind);
+        capability_out->queue_headroom = headroom;
+        if (still_eligible) {
+            *peer_out = event->peer_id;
+            return true;
+        }
     }
     uint64_t peers[VCS_ZCODE_WORK_NODE_MAX_PEERS];
     struct vcs_zcode_work_capability_v1 capabilities[
@@ -211,7 +301,7 @@ static bool async_select_peer(
         work, now, peers, capabilities, VCS_ZCODE_WORK_NODE_MAX_PEERS);
     for (size_t pass = 0; pass < 2; pass++) {
         for (size_t i = 0; i < count; i++) {
-            if ((pass == 0 && peers[i] == event->peer_id) ||
+            if ((pass == 0 && retry && peers[i] == event->peer_id) ||
                 !async_capability_allows(&capabilities[i], job, work_kind))
                 continue;
             *peer_out = peers[i];
@@ -253,9 +343,11 @@ static void async_dispatch(
     if (requested_lease < 15u) requested_lease = 15u;
     if (requested_lease > capability.max_lease_seconds)
         requested_lease = capability.max_lease_seconds;
+    bool active_discovery = strcmp(event->state, "PEER_DISCOVERED") == 0 &&
+        event->peer_id == peer && event->deadline_at > now;
     int64_t lease_end = now + requested_lease;
-    int64_t deadline = lease_end < task.expires_unix
-        ? lease_end : task.expires_unix - 1;
+    int64_t deadline = active_discovery ? event->deadline_at :
+        (lease_end < task.expires_unix ? lease_end : task.expires_unix - 1);
     if (deadline <= now) return;
     struct vcs_zcode_work_request_v1 request = {
         .request_id = event->request_id,
@@ -293,7 +385,8 @@ static void async_dispatch(
     char context_hex[65];
     zcl_hex_encode(context_root, 32, context_hex);
     struct db_build_proof_event next;
-    if (strcmp(event->state, "PEER_DISCOVERED") != 0) {
+    bool changed_lease = !active_discovery;
+    if (changed_lease) {
         int64_t discovery_us = now > event->created_at
             ? (now - event->created_at) * INT64_C(1000000) : 0;
         struct zcl_result discovered = build_fabric_proof_transition(
@@ -302,20 +395,53 @@ static void async_dispatch(
             discovery_us, now, &next);
         if (!discovered.ok) return;
     }
-    struct zcl_result running = build_fabric_proof_transition(
-        ndb, action.action_id, "RUNNING", peer, request.request_id,
-        context_hex, NULL, deadline, submit_us < 0 ? 0 : submit_us,
-        now, &next);
-    if (!running.ok) return;
+    (void)submit_us;
+}
+
+static int64_t async_elapsed_us(int64_t later, int64_t earlier)
+{
+    if (later <= earlier) return 0;
+    uint64_t delta = (uint64_t)(later - earlier);
+    return delta > (uint64_t)INT64_MAX / UINT64_C(1000000)
+        ? INT64_MAX : (int64_t)(delta * UINT64_C(1000000));
+}
+
+bool boot_zcode_async_proof_observe_progress(
+    struct node_db *ndb, uint64_t peer,
+    const struct vcs_zcode_work_request_v1 *request,
+    const struct vcs_zcode_work_progress_v1 *progress, int64_t now)
+{
+    if (!ndb || !ndb->open || !request || !progress || peer == 0 || now <= 0)
+        return false;
+    char action_id[65];
+    zcl_hex_encode(request->action_root, 32, action_id);
+    struct db_build_proof_event current, next;
+    if (!db_build_proof_event_latest(ndb, action_id, &current) ||
+        current.request_id != request->request_id || current.peer_id != peer ||
+        (current.deadline_at > 0 && now >= current.deadline_at))
+        return false;
+    const char *state = NULL;
+    if (progress->stage == VCS_ZCODE_WORK_PROGRESS_CONTEXT_READY &&
+        strcmp(current.state, "PEER_DISCOVERED") == 0)
+        state = "CONTEXT_READY";
+    else if (progress->stage == VCS_ZCODE_WORK_PROGRESS_EXECUTION_STARTED &&
+             strcmp(current.state, "CONTEXT_READY") == 0)
+        state = "RUNNING";
+    else
+        return false;
+    return build_fabric_proof_transition(
+        ndb, action_id, state, peer, request->request_id, NULL, NULL,
+        current.deadline_at, async_elapsed_us(now, current.created_at), now,
+        &next).ok;
 }
 bool boot_zcode_async_proof_observe_result(
     struct node_db *ndb, uint64_t peer,
     const struct vcs_zcode_work_request_v1 *request,
     const struct vcs_zcode_work_result_v1 *result,
-    const char *receipt_root, int64_t now)
+    const char *receipt_root, int64_t verification_us, int64_t now)
 {
     if (!ndb || !ndb->open || !request || !result || !receipt_root ||
-        !receipt_root[0] || peer == 0 || now <= 0)
+        !receipt_root[0] || peer == 0 || verification_us < 0 || now <= 0)
         return false;
     char action_id[65];
     zcl_hex_encode(request->action_root, 32, action_id);
@@ -332,8 +458,8 @@ bool boot_zcode_async_proof_observe_result(
     if ((!running && !remote_recorded) ||
         (running && current.deadline_at > 0 && now >= current.deadline_at))
         return false;
-    int64_t remote_us = now > current.created_at
-        ? (now - current.created_at) * INT64_C(1000000) : 0;
+    int64_t remote_us = async_elapsed_us(
+        result->receipt.finished_unix, result->receipt.started_unix);
     const char *remote_state =
         result->receipt.status == VCS_ZCODE_WORK_PASS &&
         result->receipt.exit_status == 0 ? "REMOTE_GREEN" : "REMOTE_RED";
@@ -348,7 +474,8 @@ bool boot_zcode_async_proof_observe_result(
     }
     struct zcl_result marked = build_fabric_proof_transition(
         ndb, action_id, "RECEIPT_VERIFIED", peer, request->request_id,
-        NULL, receipt_root, current.deadline_at, 0, now, &verified);
+        NULL, receipt_root, current.deadline_at, verification_us, now,
+        &verified);
     return marked.ok;
 }
 
@@ -376,15 +503,19 @@ static void async_reproduce(
     struct zcl_result evaluated = build_fabric_proof_evaluate(
         ndb, event->workspace, event->action_id, now, &evaluation);
     if (!evaluated.ok || !evaluation.local_reproduced) return;
-    struct db_build_proof_event reproduced, ready;
+    struct db_build_proof_event requested, reproduced, ready;
     if (!build_fabric_proof_transition(
             ndb, event->action_id, "REPRODUCED", event->peer_id,
             event->request_id, NULL, NULL, event->deadline_at, 0, now,
             &reproduced).ok)
         return;
+    int64_t total_us = db_build_proof_event_requested(
+        ndb, event->action_id, event->request_id, &requested)
+        ? async_elapsed_us(now, requested.created_at) : 0;
     ZCL_IGNORE_RESULT(build_fabric_proof_transition(
         ndb, event->action_id, "READY_FOR_ACCEPTANCE", event->peer_id,
-        event->request_id, NULL, NULL, event->deadline_at, 0, now, &ready),
+        event->request_id, NULL, NULL, event->deadline_at, total_us, now,
+        &ready),
         "REPRODUCED stays durable and the next async tick retries readiness");
 }
 
@@ -399,7 +530,8 @@ void boot_zcode_async_proof_tick(
     for (int i = 0; i < count; i++) {
         bool dispatchable = strcmp(events[i].state, "REQUESTED") == 0 ||
             strcmp(events[i].state, "PEER_DISCOVERED") == 0 ||
-            (strcmp(events[i].state, "RUNNING") == 0 &&
+            ((strcmp(events[i].state, "CONTEXT_READY") == 0 ||
+              strcmp(events[i].state, "RUNNING") == 0) &&
              events[i].deadline_at > 0 && now >= events[i].deadline_at);
         if (dispatchable)
             async_dispatch(svc, work, ndb, &events[i], now);

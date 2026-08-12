@@ -23,6 +23,7 @@ struct work_track {
     bool finished;
     bool cancelled;
     uint64_t peer;
+    uint8_t progress_stage;
     struct vcs_zcode_work_request_v1 request;
 };
 
@@ -47,6 +48,11 @@ struct work_result_event {
     struct vcs_zcode_work_result_v1 result;
 };
 
+struct work_progress_event {
+    uint64_t peer;
+    struct vcs_zcode_work_progress_v1 progress;
+};
+
 struct vcs_zcode_work_node {
     pthread_mutex_t lock;
     struct work_peer peers[VCS_ZCODE_WORK_NODE_MAX_PEERS];
@@ -61,6 +67,8 @@ struct vcs_zcode_work_node {
     size_t cancel_pos, cancel_count;
     struct work_result_event results[VCS_ZCODE_WORK_NODE_MAX_RESULTS];
     size_t result_pos, result_count;
+    struct work_progress_event progresses[VCS_ZCODE_WORK_NODE_MAX_RESULTS];
+    size_t progress_pos, progress_count;
 };
 
 static struct vcs_zcode_work_node *g_work_node;
@@ -442,6 +450,42 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_result(
     return result;
 }
 
+enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_progress(
+    struct vcs_zcode_work_node *node, uint64_t peer,
+    const struct vcs_zcode_work_progress_v1 *progress)
+{
+    if (!node || !progress) return VCS_ZCODE_WORK_NODE_MALFORMED;
+    pthread_mutex_lock(&node->lock);
+    struct work_track *track = work_find_track(
+        node, peer, progress->request_id, true);
+    enum vcs_zcode_work_node_result result = VCS_ZCODE_WORK_NODE_OK;
+    if (!node->has_local_capability)
+        result = VCS_ZCODE_WORK_NODE_NOT_LOCAL_WORKER;
+    else if (!track) result = VCS_ZCODE_WORK_NODE_UNREQUESTED;
+    else if (track->finished || track->cancelled)
+        result = VCS_ZCODE_WORK_NODE_REPLAY;
+    else if (!vcs_zcode_work_progress_verify_for_request(
+                 &track->request, progress,
+                 node->local_capability.signer_pubkey))
+        result = VCS_ZCODE_WORK_NODE_BINDING;
+    else if (progress->stage <= track->progress_stage)
+        result = VCS_ZCODE_WORK_NODE_REPLAY;
+    else if (progress->stage != track->progress_stage + 1u)
+        result = VCS_ZCODE_WORK_NODE_BINDING;
+    if (result == VCS_ZCODE_WORK_NODE_OK) {
+        struct vcs_zcode_work_swarm_message message = {
+            .type = VCS_ZCODE_WORK_SWARM_PROGRESS,
+            .body.progress = *progress,
+        };
+        if (!work_queue_frame(node, peer, &message))
+            result = VCS_ZCODE_WORK_NODE_FULL;
+        else
+            track->progress_stage = progress->stage;
+    }
+    pthread_mutex_unlock(&node->lock);
+    return result;
+}
+
 static enum vcs_zcode_work_node_result work_handle_capability(
     struct vcs_zcode_work_node *node, int peer_at,
     const struct vcs_zcode_work_capability_v1 *capability, int64_t now)
@@ -541,6 +585,39 @@ static enum vcs_zcode_work_node_result work_handle_result(
     return VCS_ZCODE_WORK_NODE_OK;
 }
 
+static enum vcs_zcode_work_node_result work_handle_progress(
+    struct vcs_zcode_work_node *node, int peer_at, uint64_t peer,
+    const struct vcs_zcode_work_progress_v1 *progress, int64_t now)
+{
+    struct work_track *track = work_find_track(
+        node, peer, progress->request_id, false);
+    if (!track) return VCS_ZCODE_WORK_NODE_UNREQUESTED;
+    if (now >= track->request.deadline_unix)
+        return VCS_ZCODE_WORK_NODE_LEASE_EXPIRED;
+    if (track->finished || track->cancelled)
+        return VCS_ZCODE_WORK_NODE_REPLAY;
+    if (!node->peers[peer_at].has_capability ||
+        now >= node->peers[peer_at].capability.expires_unix)
+        return VCS_ZCODE_WORK_NODE_CAPABILITY_STALE;
+    if (!vcs_zcode_work_progress_verify_for_request(
+            &track->request, progress,
+            node->peers[peer_at].capability.signer_pubkey))
+        return VCS_ZCODE_WORK_NODE_BINDING;
+    if (progress->stage <= track->progress_stage)
+        return VCS_ZCODE_WORK_NODE_REPLAY;
+    if (progress->stage != track->progress_stage + 1u)
+        return VCS_ZCODE_WORK_NODE_BINDING;
+    if (node->progress_count >= VCS_ZCODE_WORK_NODE_MAX_RESULTS)
+        return VCS_ZCODE_WORK_NODE_FULL;
+    size_t slot = (node->progress_pos + node->progress_count) %
+                  VCS_ZCODE_WORK_NODE_MAX_RESULTS;
+    node->progresses[slot].peer = peer;
+    node->progresses[slot].progress = *progress;
+    node->progress_count++;
+    track->progress_stage = progress->stage;
+    return VCS_ZCODE_WORK_NODE_OK;
+}
+
 enum vcs_zcode_work_node_result vcs_zcode_work_node_handle_frame(
     struct vcs_zcode_work_node *node, uint64_t peer,
     const uint8_t *wire, size_t wire_len, int64_t now)
@@ -565,6 +642,9 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_handle_frame(
     } else if (message.type == VCS_ZCODE_WORK_SWARM_RESULT) {
         result = work_handle_result(node, peer_at, peer,
                                     &message.body.result, now);
+    } else if (message.type == VCS_ZCODE_WORK_SWARM_PROGRESS) {
+        result = work_handle_progress(node, peer_at, peer,
+                                      &message.body.progress, now);
     } else {
         result = VCS_ZCODE_WORK_NODE_MALFORMED;
     }
@@ -626,6 +706,24 @@ WORK_DRAIN(vcs_zcode_work_node_next_cancel, cancel,
            struct vcs_zcode_work_cancel_v1, VCS_ZCODE_WORK_NODE_MAX_REQUESTS)
 WORK_DRAIN(vcs_zcode_work_node_next_result, result,
            struct vcs_zcode_work_result_v1, VCS_ZCODE_WORK_NODE_MAX_RESULTS)
+bool vcs_zcode_work_node_next_progress(
+    struct vcs_zcode_work_node *node, uint64_t *peer_out,
+    struct vcs_zcode_work_progress_v1 *out)
+{
+    if (!node || !peer_out || !out) return false;
+    pthread_mutex_lock(&node->lock);
+    if (node->progress_count == 0) {
+        pthread_mutex_unlock(&node->lock);
+        return false;
+    }
+    *peer_out = node->progresses[node->progress_pos].peer;
+    *out = node->progresses[node->progress_pos].progress;
+    node->progress_pos = (node->progress_pos + 1u) %
+                         VCS_ZCODE_WORK_NODE_MAX_RESULTS;
+    node->progress_count--;
+    pthread_mutex_unlock(&node->lock);
+    return true;
+}
 
 bool vcs_zcode_work_node_peek_request(
     struct vcs_zcode_work_node *node, uint64_t *peer_out,
@@ -703,6 +801,21 @@ bool vcs_zcode_work_node_peek_result(
     if (present) {
         *peer_out = node->results[node->result_pos].peer;
         *out = node->results[node->result_pos].result;
+    }
+    pthread_mutex_unlock(&node->lock);
+    return present;
+}
+
+bool vcs_zcode_work_node_peek_progress(
+    struct vcs_zcode_work_node *node, uint64_t *peer_out,
+    struct vcs_zcode_work_progress_v1 *out)
+{
+    if (!node || !peer_out || !out) return false;
+    pthread_mutex_lock(&node->lock);
+    bool present = node->progress_count > 0;
+    if (present) {
+        *peer_out = node->progresses[node->progress_pos].peer;
+        *out = node->progresses[node->progress_pos].progress;
     }
     pthread_mutex_unlock(&node->lock);
     return present;

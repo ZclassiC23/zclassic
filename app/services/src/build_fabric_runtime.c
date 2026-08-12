@@ -10,6 +10,7 @@
 #include "config/runtime.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
+#include "models/build_proof_event.h"
 #include "platform/time_compat.h"
 #include "crypto/random_secret.h"
 #include "supervisors/domains.h"
@@ -53,6 +54,39 @@ static pthread_t g_worker_thread;
 static _Atomic bool g_worker_started;
 
 extern volatile sig_atomic_t g_shutdown_requested;
+
+/* A live node can execute both requester-owned and peer-admitted actions.
+ * Peer admission imports its immutable context into the node process
+ * workspace. Requester admission instead records the originating project as
+ * a local locator in the append-only proof projection. Resolve that locator
+ * before executing; the action/task roots remain the authority and are
+ * rechecked by build_fabric_worker_execute(). The short wait closes the
+ * submit-to-REQUESTED handoff without making foreground admission wait for a
+ * worker. */
+static bool bf_runtime_execution_workspace(
+    struct node_db *ndb, const struct db_build_action *action,
+    char out[4096])
+{
+    if (!ndb || !action || !out) return false;
+    if (action->task_root_sha3[0]) {
+        for (unsigned int attempt = 0; attempt < 100u; attempt++) {
+            struct db_build_proof_event event;
+            if (db_build_proof_event_latest(ndb, action->action_id, &event) &&
+                strcmp(event.task_root_sha3, action->task_root_sha3) == 0 &&
+                strcmp(event.candidate_root_sha3,
+                       action->candidate_root_sha3) == 0 &&
+                strcmp(event.proof_policy_root_sha3,
+                       action->proof_policy_root_sha3) == 0) {
+                int n = snprintf(out, 4096, "%s", event.workspace);
+                return n > 0 && n < 4096;
+            }
+            if (g_shutdown_requested) return false;
+            platform_sleep_ms(10);
+        }
+    }
+    int n = snprintf(out, 4096, "%s", g_worker_workspace);
+    return n > 0 && n < 4096;
+}
 
 static bool bf_runtime_state_active(const char *state)
 {
@@ -182,9 +216,24 @@ static void *bf_worker_loop(void *arg)
             continue;
         }
         atomic_fetch_add(&g_worker_dispatches, 1);
+        char execution_workspace[4096];
+        if (!bf_runtime_execution_workspace(
+                ndb, &action, execution_workspace)) {
+            struct zcl_result failed = build_fabric_finish_leased(
+                ndb, action.action_id, action.lease_id, "LOCAL_FALLBACK",
+                "zcode-workspace-locator-unavailable",
+                (int64_t)platform_time_wall_unix());
+            if (!failed.ok)
+                LOG_ERROR("build_fabric",
+                          "workspace locator failure could not finish %s: %s",
+                          action.action_id, failed.message);
+            atomic_fetch_add(&g_worker_failures, 1);
+            supervisor_tick(id);
+            continue;
+        }
         struct db_build_receipt receipt;
         struct zcl_result run = build_fabric_worker_execute(
-            ndb, g_worker_workspace, g_worker_datadir, action.action_id,
+            ndb, execution_workspace, g_worker_datadir, action.action_id,
             lease_id,
             g_local_secret, g_local_pubkey, &receipt);
         if (run.ok)

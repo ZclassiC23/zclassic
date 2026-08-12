@@ -126,6 +126,7 @@
 #include "net/peer_lifecycle.h"
 #include <limits.h>
 #include "config/boot_onion_discovery.h"
+#include "config/boot_zcode_async_proof.h"
 #include "net/peer_strategy.h"
 #include "net/tor_integration.h"
 #include "net/version.h"
@@ -1226,7 +1227,6 @@ bool app_init_services(struct app_context *ctx,
     sync_monitor_init();
     sync_monitor_set_context(svc->connman, msg_get_download_mgr(), svc->state);
     sync_monitor_set_msg_processor(svc->msg_processor);
-
     /* Service health and sync detail RPCs */
     rpc_health_set_state(svc->state, &svc->bg_validation, &svc->bg_hash_verify, svc->connman);
     register_health_rpc_commands(svc->rpc_table);
@@ -1235,7 +1235,7 @@ bool app_init_services(struct app_context *ctx,
     diagnostics_controller_set_state(svc->state, ctx->datadir);
     register_diagnostics_rpc_commands(svc->rpc_table);
     boot_zcode_dht_register_rpc(svc->rpc_table);
-
+    boot_zcode_async_proof_register_rpc(svc->rpc_table);
     /* File transfer service — SHA3-verified chunk serving */
     if (boot_profile_has_file_service(ctx)) {
         file_controller_init(ctx->datadir);

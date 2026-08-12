@@ -530,14 +530,17 @@ release-byte identity from a translation-unit object.
   stale-source receipts are named refusals.
 
 The zero-wait lifecycle is an append-only projection inside that same build
-ledger: `REQUESTED`, `PEER_DISCOVERED`, `RUNNING`, `REMOTE_GREEN` or
-`REMOTE_RED`, `RECEIPT_VERIFIED`, `REPRODUCED`, and
+ledger: `REQUESTED`, `PEER_DISCOVERED`, `CONTEXT_READY`, `RUNNING`,
+`REMOTE_GREEN` or `REMOTE_RED`, `RECEIPT_VERIFIED`, `REPRODUCED`, and
 `READY_FOR_ACCEPTANCE`. A newer candidate appends `SUPERSEDED` to older active
 candidates without deleting their receipts. Each row has a deterministic event
-root binding the task, candidate, policy, action, context, receipt, peer,
-request, deadline, prior event, and timing. The request ID is derived from the
-immutable action root, so an exact repeat attaches to the first request rather
-than consuming another peer slot. These rows are lifecycle projection only:
+root binding the authoritative source, task, candidate, policy, action,
+context, receipt, peer, request, deadline, prior event, and timing. Executors
+sign the `CONTEXT_READY` and `EXECUTION_STARTED` observations on the existing
+work swarm; requester state never claims `RUNNING` merely because a request
+was sent. The request ID is derived from the immutable action root, so an exact
+repeat attaches to the first request rather than consuming another peer slot.
+These rows are lifecycle projection only:
 signed `work_receipt.v1` remains evidence, local reproduction remains trust,
 and the signed lane transition remains human acceptance.
 
@@ -549,8 +552,12 @@ REFLEX -> ASYNC PROOF -> ACCEPTANCE -> PUBLICATION / REPLICATION
 
 Discovery, context packaging, package transfer, remote queueing, remote
 execution, and receipt verification run after the foreground response. The
-foreground result reports `local_submit_us`; background states record their
-own elapsed time so a remote slowdown cannot be hidden inside local feedback.
+foreground result reports `local_submit_us` and `local_first_feedback_us`.
+`zcode evidence` reports peer discovery, transfer, remote queue, remote
+execution, receipt verification, and total background proof latency separately
+from those two local measurements. A remote slowdown therefore cannot be
+hidden inside local feedback, and no discovery, DHT, transfer, publication,
+storage-ACK, or proof-completion path is a prerequisite of REFLEX.
 `zcode work run` accepts the local full node's `datadir` as an optional ledger
 location; without it, the existing isolated scratch ledger remains the local-
 only default. The path is only a local locator: every dispatched byte and

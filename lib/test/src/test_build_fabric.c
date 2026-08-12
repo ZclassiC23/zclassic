@@ -295,14 +295,15 @@ static int test_bf_async_proof_events(void)
         struct db_build_proof_event requested, duplicate, event;
         bool created = false;
         ASSERT(build_fabric_proof_request(
-            &ndb, action.action_id, "/tmp/project", 0, 1000,
+            &ndb, action.action_id, "/tmp/project", 0, 17, 1000,
             &requested, &created).ok);
         ASSERT(created);
         ASSERT_STR_EQ(requested.state, "REQUESTED");
+        ASSERT_STR_EQ(requested.source_root_sha3, job.source_cas_sha3);
         ASSERT(requested.request_id ==
                build_fabric_proof_request_id(action.action_id));
         ASSERT(build_fabric_proof_request(
-            &ndb, action.action_id, "/tmp/project", 99, 2000,
+            &ndb, action.action_id, "/tmp/project", 99, 18, 2000,
             &duplicate, &created).ok);
         ASSERT(!created);
         ASSERT_STR_EQ(duplicate.event_root, requested.event_root);
@@ -326,28 +327,42 @@ static int test_bf_async_proof_events(void)
         struct ar_errors event_errors;
         ASSERT(!db_build_proof_event_validate(&tampered, &event_errors));
         ASSERT(build_fabric_proof_transition(
+            &ndb, action.action_id, "CONTEXT_READY", 9,
+            requested.request_id, NULL, NULL, 0, 15, 1002, &event).ok);
+        ASSERT_STR_EQ(event.source_root_sha3, job.source_cas_sha3);
+        ASSERT(build_fabric_proof_transition(
             &ndb, action.action_id, "RUNNING", 9, requested.request_id,
-            NULL, NULL, 0, 20, 1002, &event).ok);
+            NULL, NULL, 0, 20, 1003, &event).ok);
         ASSERT(!build_fabric_proof_transition(
             &ndb, action.action_id, "REMOTE_GREEN", 9,
-            requested.request_id, NULL, NULL, 0, 30, 1003, &event).ok);
+            requested.request_id, NULL, NULL, 0, 30, 1004, &event).ok);
         ASSERT(build_fabric_proof_transition(
             &ndb, action.action_id, "REMOTE_GREEN", 9,
-            requested.request_id, NULL, id_a, 0, 30, 1003, &event).ok);
+            requested.request_id, NULL, id_a, 0, 30, 1004, &event).ok);
         ASSERT(build_fabric_proof_transition(
             &ndb, action.action_id, "RECEIPT_VERIFIED", 9,
-            requested.request_id, NULL, NULL, 0, 40, 1004, &event).ok);
+            requested.request_id, NULL, NULL, 0, 40, 1005, &event).ok);
         ASSERT(build_fabric_proof_transition(
             &ndb, action.action_id, "REPRODUCED", 0,
-            requested.request_id, NULL, NULL, 0, 50, 1005, &event).ok);
+            requested.request_id, NULL, NULL, 0, 50, 1006, &event).ok);
         ASSERT(build_fabric_proof_transition(
             &ndb, action.action_id, "READY_FOR_ACCEPTANCE", 0,
-            requested.request_id, NULL, NULL, 0, 60, 1006, &event).ok);
+            requested.request_id, NULL, NULL, 0, 60, 1007, &event).ok);
         struct db_build_proof_event latest;
         ASSERT(db_build_proof_event_latest(&ndb, action.action_id, &latest));
         ASSERT_STR_EQ(latest.state, "READY_FOR_ACCEPTANCE");
         struct db_build_proof_event pending[4];
         ASSERT_EQ(db_build_proof_events_pending(&ndb, pending, 4), 0);
+        struct build_fabric_proof_timings timings;
+        ASSERT(build_fabric_proof_timings(
+            &ndb, action.action_id, &timings).ok);
+        ASSERT_EQ(timings.local_submit_us, 17);
+        ASSERT_EQ(timings.peer_discovery_us, 10);
+        ASSERT_EQ(timings.transfer_us, 15);
+        ASSERT_EQ(timings.remote_queue_us, 20);
+        ASSERT_EQ(timings.remote_execution_us, 30);
+        ASSERT_EQ(timings.receipt_verification_us, 40);
+        ASSERT_EQ(timings.total_background_proof_us, 60);
 
         struct db_build_job newer_job;
         struct db_build_action newer_action;
@@ -366,7 +381,7 @@ static int test_bf_async_proof_events(void)
         ASSERT(bf_canonicalize(&newer_job, &newer_action));
         ASSERT(build_fabric_plan(&ndb, &newer_job, &newer_action).ok);
         ASSERT(build_fabric_proof_request(
-            &ndb, newer_action.action_id, "/tmp/project", 0, 1010,
+            &ndb, newer_action.action_id, "/tmp/project", 0, 19, 1010,
             &requested, &created).ok);
         ASSERT(created);
         ASSERT(db_build_proof_event_latest(&ndb, action.action_id, &latest));

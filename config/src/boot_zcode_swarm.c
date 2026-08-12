@@ -10,6 +10,7 @@
 #include "config/runtime.h"
 #include "config/boot_zcode_work_authority.h"
 #include "config/boot_zcode_async_proof.h"
+#include "config/boot_zcode_work_progress.h"
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "vcs/package_reward.h"
@@ -263,6 +264,9 @@ static void boot_zcode_work_drain_admissions(int64_t now)
             LOG_WARN("net.zcode_swarm", "request %llu refused: %s",
                      (unsigned long long)request.request_id,
                      admitted.message);
+        else
+            boot_zcode_work_progress_context_ready(
+                s_work, peer, &request, s_work_secret, s_work_pubkey, now);
     }
 }
 static void boot_zcode_work_drain_cancels(int64_t now)
@@ -307,10 +311,13 @@ static void boot_zcode_work_publish_results(int64_t now)
         char action_id[65];
         zcl_hex_encode(requests[i].action_root, 32, action_id);
         struct db_build_action action;
-        if (!db_build_action_find(ndb, action_id, &action) ||
-            (strcmp(action.state, "ACCEPTED") != 0 &&
+        if (!db_build_action_find(ndb, action_id, &action)) continue;
+        boot_zcode_work_progress_execution_started(
+            s_work, peers[i], &requests[i], &action,
+            s_work_secret, s_work_pubkey);
+        if (strcmp(action.state, "ACCEPTED") != 0 &&
              strcmp(action.state, "CACHE_HIT") != 0 &&
-             strcmp(action.state, "FAILED") != 0))
+             strcmp(action.state, "FAILED") != 0)
             continue;
         struct db_build_receipt receipts[8];
         int receipt_count = db_build_job_receipts(
@@ -354,6 +361,7 @@ static void boot_zcode_work_observe_results(int64_t now)
     struct node_db *ndb = app_runtime_node_db();
     if (!s_work || !ndb || !ndb->open || !boot_zcode_work_workspace())
         return;
+    boot_zcode_work_progress_observe(s_work, now);
     for (;;) {
         uint64_t peer = 0;
         struct vcs_zcode_work_result_v1 result;
@@ -364,22 +372,12 @@ static void boot_zcode_work_observe_results(int64_t now)
             LOG_ERROR("net.zcode_swarm", "verified result lost its request");
             break;
         }
-        char async_workspace[4096];
-        const char *receipt_workspace = boot_zcode_async_proof_workspace(
-            ndb, &request, async_workspace) ? async_workspace : s_work_workspace;
         char receipt_id[65];
-        struct zcl_result observed = build_fabric_receipt_observe_remote(
-            ndb, receipt_workspace, &request, &result, now, receipt_id);
-        if (!observed.ok) {
-            LOG_WARN("net.zcode_swarm", "result %llu not durable: %s",
-                     (unsigned long long)result.request_id,
-                     observed.message);
-            break;
-        }
-        if (!boot_zcode_async_proof_observe_result(
-                ndb, peer, &request, &result, receipt_id, now)) {
+        if (!boot_zcode_work_result_observe(
+                ndb, peer, &request, &result, s_work_workspace, now,
+                receipt_id)) {
             LOG_WARN("net.zcode_swarm",
-                     "result %llu lost async lifecycle binding",
+                     "result %llu was not durably lifecycle-bound",
                      (unsigned long long)result.request_id);
             break;
         }
@@ -441,7 +439,6 @@ static void boot_zcode_swarm_lock(void)
     }
     zcl_mutex_lock(&s_lock);
 }
-
 /* score_fn for the engine: earned score from the reward ledger. Pseudo-
  * keys never appear in the ledger (transport scope, not identity), so
  * this resolves to zero in practice today; it exists so a future slice
@@ -631,6 +628,9 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
                     engine, message.body.request.context_root, day, now);
         }
         zcl_mutex_unlock(&s_lock);
+        if (wr != VCS_ZCODE_WORK_NODE_OK)
+            LOG_WARN("net.zcode_swarm", "peer %llu work frame refused: %s",
+                     (unsigned long long)peer_id, vcs_zcode_work_node_result_string(wr));
         if (wr == VCS_ZCODE_WORK_NODE_MALFORMED ||
             wr == VCS_ZCODE_WORK_NODE_REPLAY ||
             wr == VCS_ZCODE_WORK_NODE_UNREQUESTED ||

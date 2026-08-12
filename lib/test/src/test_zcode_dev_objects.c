@@ -64,6 +64,15 @@ static void zd_root(uint8_t out[32], uint8_t value)
     memset(out, value, 32);
 }
 
+static unsigned zd_boot_probe_calls;
+
+static bool zd_count_boot_probe(const char *path)
+{
+    (void)path;
+    zd_boot_probe_calls++;
+    return false;
+}
+
 static bool zd_provider_chain_accept(
     void *context, const struct vcs_zcode_dht_delegation *delegation)
 {
@@ -1124,6 +1133,25 @@ static void zd_swarm_result(
     (void)vcs_zcode_work_receipt_seal(receipt, secret, public_key);
 }
 
+static void zd_swarm_progress(
+    struct vcs_zcode_work_progress_v1 *progress,
+    const struct vcs_zcode_work_request_v1 *request, uint8_t stage,
+    int64_t observed_unix, uint8_t signer_value)
+{
+    memset(progress, 0, sizeof(*progress));
+    progress->request_id = request->request_id;
+    memcpy(progress->task_root, request->task_root, 32);
+    memcpy(progress->candidate_root, request->candidate_root, 32);
+    memcpy(progress->action_root, request->action_root, 32);
+    progress->stage = stage;
+    progress->observed_unix = observed_unix;
+    uint8_t seed[32], secret[32], public_key[32];
+    zd_root(seed, signer_value);
+    ed25519_keypair(public_key, secret, seed);
+    (void)vcs_zcode_work_progress_seal(
+        progress, secret, public_key);
+}
+
 static bool zd_kind_action(
     struct node_db *ndb, const struct db_build_job *job,
     const struct db_build_action *base, const char *kind, int64_t sequence,
@@ -1316,6 +1344,23 @@ static int test_zd_work_swarm(void)
         struct vcs_zcode_work_request_v1 pinned_request = parsed.body.request;
         request = &pinned_request;
 
+        struct vcs_zcode_work_progress_v1 progress;
+        zd_swarm_progress(&progress, request,
+                          VCS_ZCODE_WORK_PROGRESS_CONTEXT_READY, 1000, 44);
+        ASSERT(vcs_zcode_work_progress_verify(&progress));
+        ASSERT(vcs_zcode_work_progress_verify_for_request(
+            request, &progress, progress.signer_pubkey));
+        memset(&message, 0, sizeof(message));
+        message.type = VCS_ZCODE_WORK_SWARM_PROGRESS;
+        message.body.progress = progress;
+        ASSERT_EQ(vcs_zcode_work_swarm_wire_size(&message), 224);
+        ASSERT(vcs_zcode_work_swarm_serialize(
+            &message, wire, sizeof(wire), &wire_len));
+        ASSERT_EQ(wire_len, 224);
+        ASSERT(vcs_zcode_work_swarm_parse(wire, wire_len, &parsed));
+        wire[wire_len - 1u] ^= 1u;
+        ASSERT(!vcs_zcode_work_swarm_parse(wire, wire_len, &parsed));
+
         struct vcs_zcode_work_result_v1 results[2], mismatched[2];
         zd_swarm_result(&results[0], request, 43, 44);
         zd_swarm_result(&results[1], request, 43, 45);
@@ -1345,6 +1390,19 @@ static int test_zd_work_swarm(void)
         ASSERT_EQ(vcs_zcode_work_result_quorum(request, mismatched, 2,
                   approved, 2, 2, agreed_root), 1);
         uint8_t zero[32] = {0};
+        ASSERT(memcmp(agreed_root, zero, 32) == 0);
+        zd_swarm_result(&results[1], request, 43, 45);
+        results[1].receipt.status = VCS_ZCODE_WORK_FAIL;
+        uint8_t failed_seed[32], failed_secret[32], failed_key[32];
+        zd_root(failed_seed, 45);
+        ed25519_keypair(failed_key, failed_secret, failed_seed);
+        ASSERT_EQ(vcs_zcode_work_receipt_seal(
+            &results[1].receipt, failed_secret, failed_key),
+            VCS_ZCODE_DEV_OK);
+        ASSERT(vcs_zcode_work_result_verify(request, &results[1],
+                                            approved[1]));
+        ASSERT_EQ(vcs_zcode_work_result_quorum(request, results, 2,
+                  approved, 2, 2, agreed_root), 1);
         ASSERT(memcmp(agreed_root, zero, 32) == 0);
         results[1] = results[0];
         ASSERT_EQ(vcs_zcode_work_result_quorum(request, results, 2, approved,
@@ -1434,6 +1492,55 @@ static int test_zd_work_node(void)
             worker, inbound_peers, inbound_requests, 2), 1);
         ASSERT(vcs_zcode_work_node_next_request(worker, &peer_out, &received));
         ASSERT_EQ(received.request_id, 700);
+        struct vcs_zcode_work_progress_v1 progress;
+        zd_swarm_progress(&progress, &received,
+                          VCS_ZCODE_WORK_PROGRESS_EXECUTION_STARTED,
+                          1000, 71);
+        ASSERT_EQ(vcs_zcode_work_node_publish_progress(
+            worker, 22, &progress), VCS_ZCODE_WORK_NODE_BINDING);
+        zd_swarm_progress(&progress, &received,
+                          VCS_ZCODE_WORK_PROGRESS_CONTEXT_READY, 1000, 71);
+        ASSERT_EQ(vcs_zcode_work_node_publish_progress(
+            worker, 22, &progress), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT_EQ(vcs_zcode_work_node_publish_progress(
+            worker, 22, &progress), VCS_ZCODE_WORK_NODE_REPLAY);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            worker, 22, &peer_out, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 11, frame, frame_len, 1000),
+            VCS_ZCODE_WORK_NODE_OK);
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 11, frame, frame_len, 1000),
+            VCS_ZCODE_WORK_NODE_REPLAY);
+        struct vcs_zcode_work_progress_v1 observed_progress;
+        ASSERT(vcs_zcode_work_node_next_progress(
+            requester, &peer_out, &observed_progress));
+        ASSERT_EQ(observed_progress.stage,
+                  VCS_ZCODE_WORK_PROGRESS_CONTEXT_READY);
+        zd_swarm_progress(&progress, &received,
+                          VCS_ZCODE_WORK_PROGRESS_EXECUTION_STARTED,
+                          1001, 71);
+        struct vcs_zcode_work_swarm_message corrupt_progress = {
+            .type = VCS_ZCODE_WORK_SWARM_PROGRESS,
+            .body.progress = progress,
+        };
+        ASSERT(vcs_zcode_work_swarm_serialize(
+            &corrupt_progress, frame, sizeof(frame), &frame_len));
+        frame[frame_len - 1u] ^= 1u;
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 11, frame, frame_len, 1001),
+            VCS_ZCODE_WORK_NODE_MALFORMED);
+        ASSERT_EQ(vcs_zcode_work_node_publish_progress(
+            worker, 22, &progress), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            worker, 22, &peer_out, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 11, frame, frame_len, 1001),
+            VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_progress(
+            requester, &peer_out, &observed_progress));
+        ASSERT_EQ(observed_progress.stage,
+                  VCS_ZCODE_WORK_PROGRESS_EXECUTION_STARTED);
         struct vcs_zcode_work_result_v1 result;
         zd_swarm_result(&result, &received, 80, 71);
         ASSERT_EQ(vcs_zcode_work_node_publish_result(worker, 22, &result),
@@ -1500,6 +1607,17 @@ static int test_zd_work_node(void)
         zd_swarm_result(&result, &received, 81, 71);
         ASSERT(vcs_zcode_work_node_next_outbound(
             worker, 22, &peer_out, frame, &frame_len) == false);
+        zd_swarm_progress(&progress, &received,
+                          VCS_ZCODE_WORK_PROGRESS_CONTEXT_READY, 1149, 71);
+        struct vcs_zcode_work_swarm_message late_progress = {
+            .type = VCS_ZCODE_WORK_SWARM_PROGRESS,
+            .body.progress = progress,
+        };
+        ASSERT(vcs_zcode_work_swarm_serialize(
+            &late_progress, frame, sizeof(frame), &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 11, frame, frame_len, 1150),
+            VCS_ZCODE_WORK_NODE_LEASE_EXPIRED);
         struct vcs_zcode_work_swarm_message late = {
             .type = VCS_ZCODE_WORK_SWARM_RESULT, .body.result = result,
         };
@@ -2038,7 +2156,11 @@ static int test_zd_improve_command(void)
         json_set_str((struct json_value *)json_get(&input, "mode"), "");
         struct zcl_command_reply legacy_reply;
         zcl_command_reply_init(&legacy_reply, "zcl.zcode_improve.v1");
+        zd_boot_probe_calls = 0;
+        node_db_set_quick_check_skip_probe(zd_count_boot_probe);
         zcl_native_handle_zcode_improve(&request, &legacy_reply);
+        node_db_set_quick_check_skip_probe(NULL);
+        ASSERT_EQ(zd_boot_probe_calls, 0);
         ASSERT_EQ(legacy_reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(&legacy_reply.data, "task_root")),
                       task_hex);
