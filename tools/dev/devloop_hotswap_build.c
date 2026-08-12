@@ -1888,6 +1888,7 @@ static int hs_hotfork_unity_source(
     if (strcmp(def->story_id, "zcode-work-input-core.v1") == 0) {
         return snprintf(out, out_size,
             "#define _GNU_SOURCE\n"
+            "#define ZCL_HOTFORK_ZWORK_INPUT_CORE 1\n"
             "#include \"hotswap/hotfork_capsule.h\"\n"
             "#include \"%s\"\n"
             "__attribute__((visibility(\"hidden\")))\n"
@@ -2632,9 +2633,7 @@ static bool hs_hotfork_build(
 
     char safe[256], key_owner[384];
     size_t source_len = strlen(def->source_tu);
-    if (source_len >= sizeof(safe) ||
-        snprintf(key_owner, sizeof(key_owner), "HOT_FORK:%s",
-                 def->source_tu) >= (int)sizeof(key_owner)) {
+    if (source_len >= sizeof(safe)) {
         hs_why(why, why_len, "HOT_FORK owner exceeds identity bound");
         return false;
     }
@@ -2651,10 +2650,7 @@ static bool hs_hotfork_build(
     char cache_root[PATH_MAX] = {0}, cache_obj[PATH_MAX] = {0};
     char cache_so[PATH_MAX] = {0}, cache_hash[PATH_MAX] = {0};
     int cache_fd = -1;
-    if (snprintf(cached_dep, sizeof(cached_dep),
-                 "%s/build/hotswap/fast/%s.hotfork.d", root, safe) >=
-            (int)sizeof(cached_dep) ||
-        !hs_temp(unity, sizeof(unity), root, ".c") ||
+    if (!hs_temp(unity, sizeof(unity), root, ".c") ||
         !hs_temp(descriptor, sizeof(descriptor), root, ".c") ||
         !hs_temp(candidate_obj, sizeof(candidate_obj), root, ".o") ||
         !hs_temp(descriptor_obj, sizeof(descriptor_obj), root, ".o") ||
@@ -2671,6 +2667,16 @@ static bool hs_hotfork_build(
     if (unity_n <= 0 || unity_n >= (int)sizeof(unity_text) ||
         !hs_write_generated(unity, unity_text, why, why_len))
         goto fail;
+    char adapter_root[65];
+    hs_sha3_root(unity_text, adapter_root);
+    if (snprintf(key_owner, sizeof(key_owner), "HOT_FORK:%s:%s",
+                 def->source_tu, adapter_root) >= (int)sizeof(key_owner) ||
+        snprintf(cached_dep, sizeof(cached_dep),
+                 "%s/build/hotswap/fast/%s-%s.hotfork.d", root, safe,
+                 adapter_root) >= (int)sizeof(cached_dep)) {
+        hs_why(why, why_len, "HOT_FORK adapter identity exceeds bound");
+        goto fail;
+    }
 
     struct hs_dep *before = zcl_malloc(sizeof(*before) * HS_DEP_MAX,
                                        "HOT_FORK dependency baseline");
