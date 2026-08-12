@@ -1,1 +1,229 @@
-CLAUDE.md
+# ZClassic23 agent entry point
+
+This is the model-neutral operating contract for coding agents. Read it before
+changing the repository. Detailed procedure belongs in
+[`docs/DEVELOPING.md`](./docs/DEVELOPING.md); current priorities belong in
+[`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md); current state of the
+maintainer's hosted node belongs only in
+[`docs/HANDOFF.md`](./docs/HANDOFF.md).
+
+## Product and North Star
+
+ZClassic23 is a public ZClassic blockchain full node first. One self-contained
+C23 binary validates the ZClassic chain, participates in its P2P network, holds
+transparent and shielded wallet state, and can expose its services through an
+embedded Tor onion service. It must remain bit-for-bit consensus-compatible
+with `zclassicd`.
+
+The node also provides an optional decentralized C23 software commons. Ordinary
+full nodes can publish, discover, fetch, verify, build, independently reproduce,
+and serve exact C23 packages without GitHub or a central package registry.
+
+**VERIFY, DON'T TRUST.** Any agent may propose code. Any node may perform
+computation. No result is accepted because of who produced it. Each receiving
+node independently verifies exact objects, signatures, roots, and evidence
+under its own local policy.
+
+Evidence establishes only its exact stated claim. A hash identifies bytes; a
+signature identifies the key that made a statement; a receipt records a bound
+observation. None of these alone proves that arbitrary code is safe, correct,
+secure, useful, or worthy of acceptance.
+
+Downloaded C is inert by default. Fetching and storing are separate from
+building and testing. Building and testing are separate from installing,
+linking, executing, or deploying. None grants wallet, consensus,
+canonical-datadir, or deployment authority.
+
+Codex, Claude, and future coding models are replaceable proposal engines.
+ZClassic23 owns exact source and package identity, confinement, execution
+evidence, independent reproduction, and local verification. The fast
+development reactor is factory equipment, not the public product; expand it
+only when that directly advances public-node or C23 Commons acceptance.
+
+## Durable priority order
+
+1. **P0 — consensus, wallet/custody, and public-node correctness.** Consensus
+   parity is inviolable. Private keys and production state remain
+   operator-controlled.
+2. **P1 — public-node V1 acceptance and reliability.** The acceptance contract
+   is [`docs/MVP.md`](./docs/MVP.md).
+3. **P2 — decentralized C23 Commons product acceptance.** Packages and
+   evidence remain content-addressed, independently verifiable, bounded, and
+   locally accepted.
+4. **P3 — developer and orchestration machinery**, only when it unblocks P1 or
+   P2.
+5. **P4 — simulation-only economics, marketplace expansion, and speculative
+   features.** There is no live ZC23 token economics today.
+
+The blockchain wins resource and authority contention. Package activity may
+never delay or acquire authority over consensus, block processing, transaction
+relay, synchronization, peer health, wallet custody, or deployment.
+
+## First session
+
+The following sequence was re-run from this checkout on 2026-08-12. Derive
+catalogs from the binary instead of copying counts into prose.
+
+1. Inspect the checkout and upstream before changing anything:
+
+   ```bash
+   pwd
+   git status --short --branch
+   git fetch origin main
+   git rev-parse HEAD origin/main
+   ```
+
+2. On a fresh clone, arm dependencies and local hooks:
+
+   ```bash
+   make setup
+   ```
+
+   It ends with `Next: make doctor`; that is an optional environment check.
+
+3. Build the public binary:
+
+   ```bash
+   make -j"$(nproc)"
+   ```
+
+4. Ask the built binary for the current command tree and source map:
+
+   ```bash
+   build/bin/zclassic23 discover help
+   build/bin/zclassic23 code map
+   ```
+
+   Descend with `discover help <path>`, search with the positional
+   `discover search <query>`, and inspect exact input keys with
+   `discover schema <leaf>`. The generated full catalog is
+   [`docs/API_REFERENCE.md`](./docs/API_REFERENCE.md).
+
+5. List or run registered test groups through the canonical runner:
+
+   ```bash
+   make t-list
+   make -j"$(nproc)" t-fast ONLY=<substring>
+   make -j"$(nproc)" test-parallel TEST_PARALLEL_ARGS=--no-cache
+   ```
+
+   `ONLY=` is mandatory for `t-fast`. Do not invoke `test_zcl` directly.
+
+<!-- claim: symbol-present t-fast Makefile # focused registered-test target -->
+<!-- claim: symbol-present test-parallel Makefile # full registered-test target -->
+<!-- claim: symbol-present discover.schema config/commands/root.def # live schema leaf -->
+<!-- claim: symbol-present code.map config/commands/code.def # live source-map leaf -->
+<!-- claim: file-present docs/API_REFERENCE.md # generated command catalog -->
+
+## Orient before editing
+
+Read, in order:
+
+- [`docs/work/FORWARD_PLAN.md`](./docs/work/FORWARD_PLAN.md) for the current
+  ordered mission.
+- [`docs/DEVELOPING.md`](./docs/DEVELOPING.md) for the normal development loop,
+  integration gates, and exact build profiles.
+- [`docs/CODEBASE_MAP.md`](./docs/CODEBASE_MAP.md) for source ownership and
+  navigation.
+- [`docs/AGENT_TRAPS.md`](./docs/AGENT_TRAPS.md) before repairing something
+  that may be intentional or already complete.
+- [`docs/SECURITY_AND_INTEGRITY.md`](./docs/SECURITY_AND_INTEGRITY.md) and
+  [`docs/CONSENSUS_PARITY_DOCTRINE.md`](./docs/CONSENSUS_PARITY_DOCTRINE.md)
+  when work approaches a security, custody, or consensus boundary.
+
+On the maintainer host only, read [`docs/HANDOFF.md`](./docs/HANDOFF.md), then
+verify it against the running node:
+
+```bash
+build/bin/zclassic23 status
+build/bin/zclassic23 dumpstate reducer_frontier
+```
+
+A document can be stale; the node cannot. Do not copy live height, soak, or
+deployment state into durable entry documents.
+
+Use the built-in code navigator before broad text search. When raw search is
+needed, scope it to the tracked tree with `git grep` or `git ls-files`; never
+recursively scan the repository root, which can contain scratch data and full
+untracked worktrees.
+
+## Authority and safety boundaries
+
+Agents may inspect, edit, build, and test source in the checkout and isolated
+fixtures. Agents do not implicitly have authority to:
+
+- change a consensus predicate or the byte-sealed consensus core;
+- spend funds, export private keys, or weaken wallet custody;
+- mutate a canonical datadir or perform live database surgery;
+- deploy, restart, or promote a production node;
+- weaken an assertion, acceptance threshold, or fail-closed refusal to obtain
+  a green result;
+- execute fetched package source outside the explicit bounded build/test
+  lifecycle;
+- publish, sign, or accept evidence on another operator's behalf.
+
+Consensus-core edits require the explicit unseal/reseal ritual documented in
+[`docs/CONSENSUS_PARITY_DOCTRINE.md`](./docs/CONSENSUS_PARITY_DOCTRINE.md).
+Recovery work is copy-first; see [`docs/TENACITY.md`](./docs/TENACITY.md).
+Deployment and custody actions remain owner-gated.
+
+Escalate only for a consensus or custody risk, a destructive production
+action, irreconcilable authority ambiguity, a missing human product decision,
+an assertion that would need weakening, or genuine completion of the current
+mission.
+
+## Development contract
+
+- Preserve unrelated dirty work. Never reset, overwrite, or fold it into your
+  commit.
+- Maintain one primary writer per component. Coordinate through committed
+  source identity; `origin/main` is the shared integration blackboard.
+- Fetch current `origin/main` before work and before each push. Integrate it
+  safely, then rerun affected gates.
+- Use typed native commands to inspect and operate a running node. Git,
+  compilers, `make`, and bounded shell scripts remain normal repository tools.
+- Add a native command only for a recurring operator or agent product need,
+  not for a one-off development convenience.
+- Keep tests scoped to local fixtures, isolated datadirs, and consenting peers.
+- Use existing CAS, task, candidate, action, receipt, queue, and signature
+  authorities. Do not create a parallel source of truth for convenience.
+- No consensus or custody claim is complete because a unit test passed. Run
+  the acceptance that observes the real invariant.
+
+Mandatory defensive rules are enforced by `make lint` and explained in
+[`docs/DEFENSIVE_CODING.md`](./docs/DEFENSIVE_CODING.md). In particular:
+
+- every application write uses the ActiveRecord save lifecycle;
+- every error return logs context;
+- every allocation is checked;
+- every native command failure sets an explanatory response body;
+- custody-bearing models retain their before/after-save hooks.
+
+## Completion and continuation
+
+A coherent slice is ready to push only when its focused acceptance is green,
+required generated files are current, lint passes at the required scope, and
+the commit contains no unrelated work. Push normally and verify the exact
+remote SHA.
+
+A push is a checkpoint, not completion. A status report does not suspend work.
+After each coherent push, fetch current `origin/main`, integrate it, and
+continue through the mission's ordered continuation queue. Stop only when the
+complete acceptance is green or one of the named escalation conditions is
+reached.
+
+For substantial assignments, managers should provide a compact mission
+capsule instead of repeating the repository doctrine:
+
+```text
+NORTH STAR
+USER OUTCOME
+CURRENT BASELINE
+OWNED SURFACE
+INVARIANTS
+ACCEPTANCE
+CONTINUATION QUEUE
+ESCALATE ONLY IF
+```
+
+The curated documentation map is [`docs/README.md`](./docs/README.md).

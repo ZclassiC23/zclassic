@@ -5,21 +5,25 @@
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
 [![CI](https://img.shields.io/badge/CI-local%20make%20lint-success.svg)](docs/DEFENSIVE_CODING.md)
 
-> **One binary, one onion, one stack.** A self-contained ZClassic full node —
-> wallet, Tor onion services, and a metaverse creation commons (ZC23/ZCODE)
-> where people and AI create real things together, and nobody owns the world
-> they build in.
+> **One binary, one onion, one stack.** ZClassic23 is first a public ZClassic
+> blockchain full node: consensus-compatible validation, wallet custody, peer
+> networking, synchronization, and optional in-process Tor in one C23 binary.
 
-That mission means a shared, permissionless world with verifiable public work:
-authorship and evidence remain attributable, permissively licensed code remains
-free to discover, fetch, inspect, build and use, and neither a token balance nor
-a website becomes technical truth or ownership authority. The implemented
-ZCODE package, task, evidence and Living Commons surfaces are the foundation;
-ZC23 issuance and custody remain pre-genesis and simulation-only.
+The same full-node network can optionally act as a decentralized C23 software
+commons. Ordinary nodes can publish, discover, fetch, verify, build,
+independently reproduce, and serve exact C23 packages without GitHub or a
+central package registry. Downloaded C is inert by default: fetching and
+storing do not authorize building, testing, installing, linking, executing, or
+deployment.
 
-A single self-contained C23 binary implementing a complete **ZClassic (ZCL)
-node**: Equihash 200,9 proof-of-work, transparent and Sapling shielded
-transactions, consensus-compatible with `zclassicd` bit for bit.
+**VERIFY, DON’T TRUST.** Any agent may propose code and any node may perform
+computation, but each receiving node verifies exact objects, signatures, roots,
+and evidence under its own local policy. No result is accepted because of who
+produced it.
+
+ZClassic23 implements the ZClassic (ZCL) consensus rules—Equihash 200,9
+proof-of-work plus transparent and Sapling shielded transactions—and must
+remain bit-for-bit consensus-compatible with `zclassicd`.
 
 The same process — no extra daemons, no sidecars, no reverse proxy — also runs:
 
@@ -29,7 +33,7 @@ The same process — no extra daemons, no sidecars, no reverse proxy — also ru
 | **Block explorer + REST API** | `/explorer` and `/api/v1`, served over the onion or over HTTPS |
 | **Wallet** | transparent and Sapling shielded keys — see the encryption caveat below before storing value |
 | **P2P marketplace** | yardsale: signed, expiring sale ads gossiped between nodes, settled bilaterally over Tor — buyer and seller IPs stay hidden |
-| **Metaverse creation commons** | publish/reproduce C23 packages (ZCODE), hold sovereign property, design signed spaces, browse the ZC23 Living Commons projection |
+| **Decentralized C23 Commons** | publish, discover, fetch, verify, build, independently reproduce, and serve content-addressed C23 packages; metaverse and creation tools are optional application layers |
 | **Name registry (ZNAM)** | on-chain names resolving to ZCL/BTC/LTC/DOGE addresses plus text records |
 | **Messaging** | Sapling-memo on-chain messages, and direct node-to-node messages |
 | **Command registry** | typed commands with declared input/output schemas, byte budgets and risk classes — the interface an AI agent uses to operate the node (`discover help` lists the live set) |
@@ -37,6 +41,33 @@ The same process — no extra daemons, no sidecars, no reverse proxy — also ru
 It links only stock `libc` plus static archives built from pinned,
 SHA-256-verified sources. There is no runtime dependency to install, no
 configuration server to reach, no account, and no API key.
+
+## Verify, don’t trust
+
+- Content roots identify exact bytes.
+- Signatures identify the key that made a statement.
+- Build, test, and reproduction receipts record exact observations under bound
+  inputs; independent reproduction checks an exact build claim.
+- Each node verifies evidence locally and decides acceptance under its own
+  policy.
+- Evidence proves only its declared claim. It does not by itself prove that
+  arbitrary code is safe, correct, secure, useful, or worthy of acceptance.
+
+No central service or project developer is an authority a node must rely on.
+Workers and coding agents are untrusted producers of independently verifiable
+proposals and evidence.
+
+## What ZClassic23 does not do
+
+- It has no central coordinator or central package registry.
+- It never executes downloaded C merely because it was fetched or stored.
+- It does not claim that tests, signatures, or reproduction prove general
+  safety.
+- The C23 Commons does not change ZClassic consensus.
+- It does not require one AI vendor; Codex, Claude, and future models are
+  replaceable proposal engines.
+- It has no live ZC23 token economics today; those surfaces remain
+  simulation-only.
 
 ```bash
 git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
@@ -148,10 +179,10 @@ rules as the rest of the network.
 
 ### Let an AI agent operate the node
 
-The binary contains a typed native command registry — over a hundred commands
-with declared input and output schemas, byte budgets, auth levels and risk
-classes — so an agent operates the node directly. No curl, no log scraping, no
-separate server process, no vendor SDK, no model lock-in.
+The binary contains a typed native command registry with declared input and
+output schemas, byte budgets, auth levels, and risk classes, so an agent can
+operate the node directly. The live catalog is discoverable; no vendor SDK or
+model lock-in is required.
 
 ```bash
 build/bin/zclassic23 status                 # height, peers, sync, health, one call
@@ -184,12 +215,12 @@ microseconds, and a working TicTacToe as the reference implementation.
 build/bin/zclassic23 core network peers latency
 ```
 
-### Create in the metaverse
+### Build on the C23 Commons
 
-The same binary hosts a permissionless creation commons: publish and verify
-C23 packages, hold sovereign property with evidence grades, design signed
-spaces, and browse the ZC23 Living Commons projection — a world where people
-and AI create real things together, and nobody owns the world they build in.
+The optional C23 Commons can publish and verify exact packages and support
+application layers such as signed spaces and the ZC23 Living Commons
+projection. These applications sit below the public full node and package
+reproduction network in the product priority order.
 
 ```bash
 build/bin/zclassic23 zcode guide                    # the creator's map: find, inspect, fetch, create, improve
@@ -239,8 +270,7 @@ isolated development instance.
 
 ### When something looks wrong
 
-The node is built to tell you, so ask it rather than reading logs. Four
-commands cover almost everything:
+The node is built to report its own state, so begin with its typed diagnostics:
 
 ```bash
 build/bin/zclassic23 status                    # height, peers, sync, blocker, health
@@ -340,7 +370,7 @@ with no manual repair.
 `zclassic23 core storage query` is SELECT-only, rejects semicolons, auto-LIMITs,
 carries a wall-clock budget, and denies wallet-secret tables by name.
 
-**The gates run on your machine**, not in a CI service you have to trust:
+**The gates run on your machine**, without reliance on a hosted CI service:
 `make lint`, `make ci`.
 
 Full boundary: [`docs/SECURITY_AND_INTEGRITY.md`](docs/SECURITY_AND_INTEGRITY.md).
@@ -367,7 +397,8 @@ gates chunks but payment settlement is not wired through; ZC23 issuance and
 custody are pre-genesis and simulation-only; the ~1-minute cold sync the
 fast-sync stack is designed for is a target, not today's proven path.
 
-Ask the running node rather than trusting this page: `zclassic23 status`.
+Ask the running node rather than treating this page as live state:
+`zclassic23 status`.
 
 ---
 
@@ -382,7 +413,7 @@ Ask the running node rather than trusting this page: `zclassic23 status`.
 - [`docs/BUILD.md`](docs/BUILD.md) — vendored sources, versions, build steps
 - [`docs/RUNBOOK.md`](docs/RUNBOOK.md) — operating and troubleshooting
 - [`docs/MVP.md`](docs/MVP.md) — v1 criteria and honest readiness
-- [`CLAUDE.md`](CLAUDE.md) — the agent's own daily-driver reference
+- [`AGENTS.md`](AGENTS.md) — model-neutral coding-agent entry point
 
 **Something wrong?** `zclassic23 status` first, then
 [`docs/RUNBOOK.md`](docs/RUNBOOK.md). File bugs through GitHub Issues — the
