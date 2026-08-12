@@ -2997,12 +2997,19 @@ static int test_resident_process_cancellation(void)
 struct process_poll_fixture {
     unsigned calls;
     unsigned cancel_after;
+    const char *ready_path;
 };
 
 static bool cancel_after_poll(void *opaque)
 {
     struct process_poll_fixture *fixture = opaque;
     fixture->calls++;
+    /* A poll count is not process readiness: under full-suite load the parent
+     * can poll repeatedly before the nested shell has executed its first
+     * instruction. When a readiness marker is supplied, cancellation begins
+     * only after the child has explicitly published it. */
+    if (fixture->ready_path && access(fixture->ready_path, F_OK) != 0)
+        return false;
     return fixture->calls >= fixture->cancel_after;
 }
 
@@ -3021,11 +3028,12 @@ static int test_resident_process_supersession(void)
         struct zcl_devloop_process_result result = {0};
         ASSERT(zcl_devloop_process_run(".", argv, 60000, &result));
         zcl_devloop_process_cancel_poll_clear();
+        /* Clear shared cancellation before assertions can leave this test. */
+        zcl_devloop_process_cancel_clear();
         ASSERT(fixture.calls >= 2);
         ASSERT(result.cancelled);
         ASSERT(!result.timed_out);
         ASSERT(result.elapsed_ms < 1000);
-        zcl_devloop_process_cancel_clear();
 
         char pid_path[PATH_MAX], script[PATH_MAX + 160];
         ASSERT(snprintf(pid_path, sizeof(pid_path),
@@ -3035,12 +3043,16 @@ static int test_resident_process_supersession(void)
                         pid_path) > 0);
         (void)unlink(pid_path);
         fixture.calls = 0;
-        fixture.cancel_after = 10;
+        fixture.cancel_after = 1;
+        fixture.ready_path = pid_path;
         zcl_devloop_process_cancel_poll_set(cancel_after_poll, &fixture);
         const char *nested_argv[] = { "sh", "-c", script, NULL };
         memset(&result, 0, sizeof(result));
         ASSERT(zcl_devloop_process_run(".", nested_argv, 60000, &result));
         zcl_devloop_process_cancel_poll_clear();
+        /* The result carries cancellation evidence; the shared flag need not
+         * remain armed while descendant/process assertions run. */
+        zcl_devloop_process_cancel_clear();
         ASSERT(result.cancelled);
         FILE *pid_file = fopen(pid_path, "r");
         ASSERT(pid_file != NULL);
@@ -3060,8 +3072,6 @@ static int test_resident_process_supersession(void)
         }
         ASSERT(gone);
         ASSERT(unlink(pid_path) == 0);
-        zcl_devloop_process_cancel_clear();
-
         if (saved_copy) {
             ASSERT(setenv("ZCL_DEVLOOP_TEST_PROCESS", saved_copy, 1) == 0);
             free(saved_copy);
