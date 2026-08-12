@@ -52,3 +52,7 @@ later lane flips it HARD.
 - 2026-07-25T02:04:04Z — REASON: C23 __VA_OPT__ conversion: replace the GNU comma-swallowing ', ##__VA_ARGS__' extension at the two core/consensus sites so the tree compiles under a second compiler. Preprocessor-only, line-count preserving; proven by byte-identical stripped binary + consensus parity group.
   old ROOT: 016af0ada9b91d737137332fc6f800d18d0f60ece5533a13ddc7fff347236f84
   by: owner unseal ritual (make core-unseal)
+
+- 2026-08-12T23:12:15Z — REASON: Bound reindex UTXO cache memory and account validation cache growth
+  old ROOT: 0b33151affcd213878211c48cffdc4d959b1bbb03cccc9ff4051c8bc0c7257ca
+  by: owner unseal ritual (make core-unseal)

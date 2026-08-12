@@ -175,6 +175,34 @@ void coins_view_cache_init(struct coins_view_cache *c, struct coins_view *backin
 void coins_view_cache_free(struct coins_view_cache *c)
 {
     coins_map_free(&c->cache_coins);
+    c->cached_coins_usage = 0;
+}
+
+void coins_view_cache_account_vout_resize(struct coins_view_cache *c,
+                                           size_t old_count,
+                                           size_t new_count)
+{
+    if (!c || new_count <= old_count)
+        return;
+    size_t count = new_count - old_count;
+    if (count > SIZE_MAX / sizeof(struct tx_out) ||
+        c->cached_coins_usage > SIZE_MAX - count * sizeof(struct tx_out))
+        c->cached_coins_usage = SIZE_MAX;
+    else
+        c->cached_coins_usage += count * sizeof(struct tx_out);
+}
+
+size_t coins_view_cache_memory_usage(const struct coins_view_cache *c)
+{
+    if (!c)
+        return 0;
+    if (c->cache_coins.num_buckets >
+            SIZE_MAX / sizeof(struct coins_map_entry))
+        return SIZE_MAX;
+    size_t buckets = c->cache_coins.num_buckets *
+                     sizeof(struct coins_map_entry);
+    return c->cached_coins_usage > SIZE_MAX - buckets
+        ? SIZE_MAX : c->cached_coins_usage + buckets;
 }
 
 bool coins_view_cache_get_coins(struct coins_view_cache *c,
@@ -196,6 +224,8 @@ bool coins_view_cache_get_coins(struct coins_view_cache *c,
             coins_map_insert(&c->cache_coins, txid);
         if (!new_entry) { coins_free(&fetched); return false; }
         new_entry->coins = fetched;
+        coins_view_cache_account_vout_resize(
+            c, 0, new_entry->coins.num_vout);
         if (coins_is_pruned(&new_entry->coins))
             return false;
         coins_copy(out, &new_entry->coins);
@@ -243,6 +273,7 @@ struct coins_cache_entry *coins_view_cache_modify(struct coins_view_cache *c,
     struct coins_cache_entry *new_entry = coins_map_insert(&c->cache_coins, txid);
     if (!new_entry) return NULL;
     coins_view_get_coins(&c->base, txid, &new_entry->coins);
+    coins_view_cache_account_vout_resize(c, 0, new_entry->coins.num_vout);
     new_entry->flags |= COINS_CACHE_DIRTY;
     return new_entry;
 }
@@ -298,9 +329,12 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
                     coins_map_insert(&parent->cache_coins, &e->txid);
                 if (!dest)
                     LOG_FAIL("coins_view", "cvc_batch_write: FATAL hash table full (pruned entry)");
+                size_t old_count = dest->coins.num_vout;
                 coins_free(&dest->coins);
                 dest->coins = e->entry.coins;
                 coins_init(&e->entry.coins);
+                coins_view_cache_account_vout_resize(
+                    parent, old_count, dest->coins.num_vout);
                 dest->flags |= COINS_CACHE_DIRTY;
                 pruned++;
             } else {
@@ -308,9 +342,12 @@ static bool cvc_batch_write(void *self, struct coins_map *map_coins,
                     coins_map_insert(&parent->cache_coins, &e->txid);
                 if (!dest)
                     LOG_FAIL("coins_view", "cvc_batch_write: FATAL hash table full (write entry)");
+                size_t old_count = dest->coins.num_vout;
                 coins_free(&dest->coins);
                 dest->coins = e->entry.coins;
                 coins_init(&e->entry.coins);
+                coins_view_cache_account_vout_resize(
+                    parent, old_count, dest->coins.num_vout);
                 dest->flags |= COINS_CACHE_DIRTY;
                 written++;
             }
@@ -376,6 +413,7 @@ bool coins_view_cache_flush_for_testing(struct coins_view_cache *c)
          * when later blocks try to spend those UTXOs. */
         coins_map_free(&c->cache_coins);
         coins_map_init(&c->cache_coins);
+        c->cached_coins_usage = 0;
         /* Reset child commitment after flush (deltas merged into parent) */
         utxo_commitment_init(&c->commitment);
     } else {
@@ -433,6 +471,8 @@ const struct tx_out *coins_view_cache_get_output_for(
             coins_map_insert(&c->cache_coins, &in->prevout.hash);
         if (!new_entry) { coins_free(&coins); return NULL; }
         new_entry->coins = coins;
+        coins_view_cache_account_vout_resize(
+            c, 0, new_entry->coins.num_vout);
         new_entry->flags = 0;
         entry = new_entry;
     }

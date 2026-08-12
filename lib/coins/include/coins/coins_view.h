@@ -195,6 +195,14 @@ void coins_view_cache_init(struct coins_view_cache *c, struct coins_view *backin
 /* Free the cached coin map. Does NOT free the backing view. */
 void coins_view_cache_free(struct coins_view_cache *c);
 
+/* Conservative O(1) heap footprint: map buckets plus tracked vout capacity.
+ * Shrinks are retained until the next cache reset, so the value can trigger an
+ * early flush but can never hide allocation growth. Saturates at SIZE_MAX. */
+size_t coins_view_cache_memory_usage(const struct coins_view_cache *c);
+void coins_view_cache_account_vout_resize(struct coins_view_cache *c,
+                                           size_t old_count,
+                                           size_t new_count);
+
 /* Wrap this cache as a coins_view (vtable + impl=cache) so it can itself be
  * the backing store of another coins_view_cache (cache stacking). Its
  * batch_write only applies DIRTY entries and transfers ownership upward. */

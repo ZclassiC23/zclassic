@@ -165,6 +165,7 @@ static void insert_repaired_utxo(const uint8_t txid_bytes[32], uint32_t vout,
             coins_view_cache_modify_new(ctx->coins_tip, &ptxid);
         if (entry) {
             if (entry->coins.num_vout <= vout) {
+                size_t old_size = entry->coins.num_vout;
                 size_t new_size = vout + 1;
                 struct tx_out *nv = zcl_realloc(entry->coins.vout,
                     new_size * sizeof(struct tx_out), "repair_coin_vout");
@@ -173,6 +174,8 @@ static void insert_repaired_utxo(const uint8_t txid_bytes[32], uint32_t vout,
                         tx_out_set_null(&nv[k]);
                     entry->coins.vout = nv;
                     entry->coins.num_vout = new_size;
+                    coins_view_cache_account_vout_resize(
+                        ctx->coins_tip, old_size, new_size);
                 }
             }
             if (vout < entry->coins.num_vout) {

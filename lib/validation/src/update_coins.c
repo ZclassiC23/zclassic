@@ -43,6 +43,7 @@ bool update_coins_with_undo(const struct transaction *tx,
 
             /* Grow vout array if needed */
             if (nPos >= entry->coins.num_vout) {
+                size_t old_size = entry->coins.num_vout;
                 size_t new_size = nPos + 1;
                 struct tx_out *nv = zcl_realloc(entry->coins.vout,
                     new_size * sizeof(struct tx_out), "coins_vout_grow");
@@ -53,6 +54,8 @@ bool update_coins_with_undo(const struct transaction *tx,
                     tx_out_set_null(&nv[k]);
                 entry->coins.vout = nv;
                 entry->coins.num_vout = new_size;
+                coins_view_cache_account_vout_resize(
+                    inputs, old_size, new_size);
             }
             if (tx_out_is_null(&entry->coins.vout[nPos])) {
                 char hex[65];
@@ -99,9 +102,12 @@ bool update_coins_with_undo(const struct transaction *tx,
      * record would otherwise drop this tx's outputs from the UTXO set and
      * the commitment while the block is accepted — a silent consensus
      * divergence. Fail the connect instead. */
+    size_t old_size = new_entry->coins.num_vout;
     if (!coins_from_transaction(&new_entry->coins, tx, nHeight))
         LOG_FAIL("update_coins",
                  "coins_from_transaction failed (OOM/over-cap) at h=%d", nHeight);
+    coins_view_cache_account_vout_resize(
+        inputs, old_size, new_entry->coins.num_vout);
 
     /* Validate new output values before adding to commitment */
     for (size_t vi = 0; vi < new_entry->coins.num_vout; vi++) {

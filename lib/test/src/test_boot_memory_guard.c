@@ -49,5 +49,18 @@ int test_boot_memory_guard(void)
               boot_block_index_memory_should_warn(51, 100) &&
               !boot_block_index_memory_should_warn(51, 0));
 
+    BMG_CHECK("reindex flushes at the byte cap even with few txids",
+              !boot_reindex_cache_should_flush(
+                  1, 1, BOOT_REINDEX_CACHE_MAX_BYTES - 1) &&
+              boot_reindex_cache_should_flush(
+                  1, 1, BOOT_REINDEX_CACHE_MAX_BYTES));
+
+    BMG_CHECK("reindex retains periodic and txid safety caps",
+              boot_reindex_cache_should_flush(10000, 0, 0) &&
+              boot_reindex_cache_should_flush(
+                  1, BOOT_REINDEX_CACHE_MAX_ENTRIES + 1, 0) &&
+              !boot_reindex_cache_should_flush(
+                  1, BOOT_REINDEX_CACHE_MAX_ENTRIES, 0));
+
     return failures;
 }

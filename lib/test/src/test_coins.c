@@ -8,6 +8,27 @@ int test_coins(void)
 {
     int failures = 0;
 
+    printf("coins cache memory counts vout amplification... ");
+    {
+        struct coins_view backing = {0};
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &backing);
+        struct uint256 txid;
+        uint256_set_null(&txid);
+        struct coins_cache_entry *entry =
+            coins_view_cache_modify_new(&cache, &txid);
+        bool ok = entry && coins_alloc(&entry->coins, 3);
+        if (ok)
+            coins_view_cache_account_vout_resize(&cache, 0, 3);
+        size_t expected = cache.cache_coins.num_buckets *
+                              sizeof(struct coins_map_entry) +
+                          3 * sizeof(struct tx_out);
+        if (ok && coins_view_cache_memory_usage(&cache) == expected)
+            printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+        coins_view_cache_free(&cache);
+    }
+
     printf("coins_init... ");
     {
         struct coins c;

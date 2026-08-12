@@ -14,6 +14,7 @@
 
 #include "platform/time_compat.h"
 #include "config/boot_internal.h"
+#include "config/boot_memory_guard.h"
 #include "chain/chain.h"
 #include "chain/chainparams.h"
 #include "chain/pow.h"
@@ -229,6 +230,7 @@ static bool boot_index_flush_reindex_coins(struct coins_view_sqlite *cvs,
 
     coins_map_free(&cvtip->cache_coins);
     coins_map_init(&cvtip->cache_coins);
+    cvtip->cached_coins_usage = 0;
     utxo_commitment_init(&cvtip->commitment);
     return true;
 }
@@ -475,8 +477,9 @@ bool reindex_chainstate(struct main_state *ms,
 
         block_free(&blk);
 
-        bool need_flush = (h % 10000 == 0) ||
-                          (cvtip->cache_coins.size > 200000);
+        size_t cache_bytes = coins_view_cache_memory_usage(cvtip);
+        bool need_flush = boot_reindex_cache_should_flush(h,
+            cvtip->cache_coins.size, cache_bytes);
         if (need_flush) {
             if (!boot_index_flush_reindex_coins(cvs, cvtip)) {
                 errors++;
@@ -487,18 +490,15 @@ bool reindex_chainstate(struct main_state *ms,
                 int64_t elapsed = (int64_t)platform_time_wall_time_t() - t_start;
                 double rate = elapsed > 0 ? (double)h / (double)elapsed : 0;
                 int eta = rate > 0 ? (int)((tip_height - h) / rate) : 0;
-                printf("  height %d/%d (%.0f blk/s, ETA %dm%ds, cache %zu)\n",
-                       h, tip_height, rate, eta / 60, eta % 60,
-                       cvtip->cache_coins.size);
+                printf("  height %d/%d (%.0f blk/s, ETA %dm%ds, cache %zuMiB)\n",
+                       h, tip_height, rate, eta / 60, eta % 60, cache_bytes / (1024 * 1024));
             }
         }
     }
-
     if (!boot_index_flush_reindex_coins(cvs, cvtip))
         errors++;
 
     atomic_store(&g_utxo_commitment_skip, false);
-
     /* Restore normal mode — flush every 500 blocks */
     set_flush_policy(3600, 500000, 500);
     if (ndb->open) {

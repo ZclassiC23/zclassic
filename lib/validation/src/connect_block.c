@@ -809,6 +809,7 @@ bool disconnect_block(const struct block *block,
                 }
 
                 if (tx->vin[j].prevout.n >= entry->coins.num_vout) {
+                    size_t old_size = entry->coins.num_vout;
                     /* Clamp prevout.n against MAX_BLOCK_SIZE before
                      * extending the vout array. A valid funding tx
                      * cannot encode more than MAX_BLOCK_SIZE / ~30
@@ -836,6 +837,8 @@ bool disconnect_block(const struct block *block,
                         tx_out_set_null(&new_vout[k]);
                     entry->coins.vout = new_vout;
                     entry->coins.num_vout = new_size;
+                    coins_view_cache_account_vout_resize(
+                        view, old_size, new_size);
                 }
 
                 if (undo->height > 0) {

@@ -77,3 +77,11 @@ void boot_block_index_memory_log_loaded(size_t entry_count,
            map_bytes / (1024 * 1024),
            total_bytes / (1024 * 1024));
 }
+
+bool boot_reindex_cache_should_flush(int height, size_t entry_count,
+                                     size_t memory_bytes)
+{
+    return (height >= 0 && height % 10000 == 0) ||
+           entry_count > BOOT_REINDEX_CACHE_MAX_ENTRIES ||
+           memory_bytes >= BOOT_REINDEX_CACHE_MAX_BYTES;
+}
