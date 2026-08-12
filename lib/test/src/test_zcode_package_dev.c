@@ -60,7 +60,8 @@ static void zpd_fixture_cleanup(const char *root)
 {
     static const char *const files[] = {
         "link", "special", "LICENSE", "zcode-package.json", "src/x.c",
-        "include/x.h", "tests/test.c", ".zvcs/control", ".codeindex/control",
+        "src/unused.c", "include/x.h", "tests/test.c", ".zvcs/control",
+        ".codeindex/control",
     };
     char path[512];
     for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
@@ -457,6 +458,62 @@ static int zpd_test_control_stores(const uint8_t pubkey[33])
         ASSERT(memcmp(before.package_root, after.package_root, 32) == 0);
         vcs_package_prepared_free(&after);
         vcs_package_prepared_free(&before);
+        zpd_fixture_cleanup(root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int zpd_test_exact_file_selection(const uint8_t pubkey[33])
+{
+    int failures = 0;
+    TEST("zcode package dev prepare: exact file selection is closed and root-bound") {
+        char root[256], path[320];
+        (void)snprintf(root, sizeof(root),
+                       "test-tmp/zcode-package-files-%ld", (long)getpid());
+        ASSERT(zpd_fixture(root, false));
+        (void)snprintf(path, sizeof(path), "%s/src/unused.c", root);
+        ASSERT(zpd_write(path, "int unused(void) { return 1; }\n"));
+        (void)snprintf(path, sizeof(path), "%s/zcode-package.json", root);
+        ASSERT(zpd_write(path,
+            "{\"schema\":1,\"name\":\"zclassic23/fixture\","
+            "\"semver\":\"0.1.0-dev.1\",\"language\":\"c23\","
+            "\"license\":\"MIT\",\"include_dir\":\"include\","
+            "\"source_dir\":\"src\",\"dependencies\":[],"
+            "\"files\":[\"LICENSE\",\"include/x.h\",\"src/x.c\","
+            "\"tests/test.c\",\"zcode-package.json\"]}\n"));
+        struct vcs_package_prepare_options options = {
+            .dir = root, .publisher_sequence = 1,
+            .reward_address = "", .chain_id = "zclassic-main",
+        };
+        memcpy(options.publisher_pubkey, pubkey, 33);
+        struct vcs_package_prepared before, after;
+        char detail[256];
+        ASSERT(vcs_package_prepare(&options, &before, detail,
+                                   sizeof(detail)) == VCS_PACKAGE_PREPARE_OK);
+        ASSERT(before.manifest.count == 5);
+        ASSERT(before.recipe.public_headers.count == 1);
+        ASSERT(before.recipe.sources.count == 1);
+        ASSERT(before.recipe.test_sources.count == 1);
+        (void)snprintf(path, sizeof(path), "%s/src/unused.c", root);
+        ASSERT(zpd_write(path, "int unused(void) { return 2; }\n"));
+        ASSERT(vcs_package_prepare(&options, &after, detail,
+                                   sizeof(detail)) == VCS_PACKAGE_PREPARE_OK);
+        ASSERT(memcmp(before.package_root, after.package_root, 32) == 0);
+        ASSERT(memcmp(before.recipe_root, after.recipe_root, 32) == 0);
+        vcs_package_prepared_free(&after);
+        vcs_package_prepared_free(&before);
+
+        (void)snprintf(path, sizeof(path), "%s/zcode-package.json", root);
+        ASSERT(zpd_write(path,
+            "{\"schema\":1,\"name\":\"zclassic23/fixture\","
+            "\"semver\":\"0.1.0-dev.1\",\"language\":\"c23\","
+            "\"license\":\"MIT\",\"include_dir\":\"include\","
+            "\"source_dir\":\"src\",\"dependencies\":[],"
+            "\"files\":[\"src/missing.c\",\"zcode-package.json\"]}\n"));
+        ASSERT(vcs_package_prepare(&options, &after, detail,
+                                   sizeof(detail)) ==
+               VCS_PACKAGE_PREPARE_ERR_META);
         zpd_fixture_cleanup(root);
         PASS();
     } _test_next:;
@@ -1349,6 +1406,7 @@ int test_zcode_package_dev(void)
     }
     int failures = zpd_test_base(ctx, secret, pubkey) +
                    zpd_test_control_stores(pubkey) +
+                   zpd_test_exact_file_selection(pubkey) +
                    zpd_test_fail_closed(pubkey) +
                    zpd_test_project_inspect() +
                    zpd_test_project_init() +

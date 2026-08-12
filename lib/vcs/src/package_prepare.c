@@ -333,7 +333,7 @@ static bool prepare_meta_closed(const struct json_value *meta,
 {
     static const char *const top_keys[] = {
         "schema", "name", "semver", "language", "license",
-        "include_dir", "source_dir", "dependencies",
+        "include_dir", "source_dir", "dependencies", "files",
     };
     static const char *const dep_keys[] = { "root", "name", "semver" };
     for (size_t i = 0; i < meta->num_children; i++) {
@@ -361,6 +361,96 @@ static bool prepare_meta_closed(const struct json_value *meta,
                                    dep->keys[j]);
                 return false;
             }
+        }
+    }
+    const struct json_value *files = json_get(meta, "files");
+    if (files && files->type != JSON_ARR)
+        return false;
+    if (files) {
+        for (size_t i = 0; i < files->num_children; i++)
+            if (files->children[i].type != JSON_STR)
+                return false;
+    }
+    return true;
+}
+
+static const struct vcs_package_file *prepare_manifest_find(
+    const struct vcs_package_manifest *manifest, const char *path)
+{
+    size_t lo = 0, hi = manifest->count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2u;
+        int cmp = strcmp(manifest->files[mid].path, path);
+        if (cmp < 0)
+            lo = mid + 1u;
+        else
+            hi = mid;
+    }
+    return lo < manifest->count &&
+                   strcmp(manifest->files[lo].path, path) == 0
+        ? &manifest->files[lo] : NULL;
+}
+
+/* An optional exact file list makes a real module subset declarative without
+ * copying its implementation into a package-shaped directory. The package
+ * manifest still commits the configuration itself, and only selected bytes
+ * enter the recipe and content root. Omission preserves the original
+ * whole-directory behavior. */
+static bool prepare_apply_file_selection(struct prepare_walk *walk,
+                                         const struct json_value *meta)
+{
+    const struct json_value *files = json_get(meta, "files");
+    if (!files)
+        return true;
+    if (files->num_children == 0 ||
+        files->num_children > VCS_PACKAGE_MAX_FILES) {
+        prepare_detail(walk, "files must contain 1..%u paths",
+                       VCS_PACKAGE_MAX_FILES);
+        return false;
+    }
+
+    struct vcs_package_manifest selected;
+    vcs_package_manifest_init(&selected);
+    bool has_config = false;
+    const char *previous = NULL;
+    for (size_t i = 0; i < files->num_children; i++) {
+        const char *path = json_get_str(&files->children[i]);
+        if (!path || !vcs_package_path_valid(path) ||
+            (previous && strcmp(previous, path) >= 0)) {
+            prepare_detail(walk, "files[%zu] is not strict canonical order",
+                           i);
+            vcs_package_manifest_free(&selected);
+            return false;
+        }
+        const struct vcs_package_file *source =
+            prepare_manifest_find(&walk->out->manifest, path);
+        if (!source || !vcs_package_manifest_add(
+                &selected, source->path, source->mode, source->size,
+                source->chunk_hashes, source->chunk_count)) {
+            prepare_detail(walk, "files[%zu] is absent: %s", i, path);
+            vcs_package_manifest_free(&selected);
+            return false;
+        }
+        if (strcmp(path, VCS_PACKAGE_DEPS_META_PATH) == 0)
+            has_config = true;
+        previous = path;
+    }
+    if (!has_config) {
+        prepare_detail(walk, "files must include %s",
+                       VCS_PACKAGE_DEPS_META_PATH);
+        vcs_package_manifest_free(&selected);
+        return false;
+    }
+
+    vcs_package_manifest_free(&walk->out->manifest);
+    walk->out->manifest = selected;
+    vcs_package_recipe_free(&walk->out->recipe);
+    vcs_package_recipe_init(&walk->out->recipe);
+    for (size_t i = 0; i < selected.count; i++) {
+        if (!prepare_recipe_file(walk, selected.files[i].path)) {
+            prepare_detail(walk, "files recipe admission: %s",
+                           selected.files[i].path);
+            return false;
         }
     }
     return true;
@@ -398,6 +488,10 @@ static enum vcs_package_prepare_error prepare_finish(
         json_free(&meta);
         if (!walk->detail || walk->detail[0] == '\0')
             prepare_detail(walk, "metadata schema is not the closed C23 v1 shape");
+        return VCS_PACKAGE_PREPARE_ERR_META;
+    }
+    if (!prepare_apply_file_selection(walk, &meta)) {
+        json_free(&meta);
         return VCS_PACKAGE_PREPARE_ERR_META;
     }
     struct vcs_package_deps deps;
