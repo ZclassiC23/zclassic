@@ -24,6 +24,13 @@
 # The gate FAILS when the predicate stops holding, and names the file, the
 # line, the claim text, and the reality that contradicts it.
 #
+# CLAIM-SCOPE LANGUAGE. The same gate scans the durable entry documents for a
+# narrow set of positive-reliance phrases (for example "trusted worker" or
+# "proven safe"). It deliberately does NOT ban "verify, don't trust",
+# "untrusted input", "trust boundary", or precise cryptographic terminology.
+# The rule is about claims that ask a reader to rely on a producer or that
+# overstate what exact evidence establishes.
+#
 # PREDICATES
 #   file-present <path>        path must still exist (a tracked or untracked
 #                              file/dir under the repo root)
@@ -94,6 +101,7 @@ CLAIM_FLOOR=1         # at least one live bound claim must exist
 declare -A GATE_RC=()
 violations=()
 claims_parsed=0
+reliance_docs_scanned=0
 
 # ── Predicate evaluation ─────────────────────────────────────────────────────
 
@@ -252,6 +260,35 @@ scan_file() {
     done < "$f"
 }
 
+# scan_positive_reliance_file <path> [<display-path>] — reject only the
+# positive reliance phrases prohibited in public/agent entry points. Code
+# fences are skipped so examples and quoted syntax can be documented.
+scan_positive_reliance_file() {
+    local f="$1" disp="${2:-$1}" hit lineno line
+    reliance_docs_scanned=$((reliance_docs_scanned + 1))
+    while IFS= read -r hit || [ -n "$hit" ]; do
+        [ -n "$hit" ] || continue
+        lineno="${hit%%$'\t'*}"
+        line="${hit#*$'\t'}"
+        violations+=("$disp:$lineno: POSITIVE RELIANCE claim — entry documents must describe independently verifiable evidence and local policy, not a producer or artifact readers should trust.
+      text: $line")
+    done < <(awk '
+        BEGIN { IGNORECASE = 1; fenced = 0 }
+        /^```/ || /^~~~/ { fenced = 1 - fenced; next }
+        fenced { next }
+        {
+          lower = tolower($0)
+          if (lower ~ /trustworthy[[:space:]-]+(package|build|worker|artifact|node|evidence)/ ||
+              lower ~ /trusted[[:space:]-]+(package|build|worker)/ ||
+              lower ~ /trust[[:space:]]+us/ ||
+              lower ~ /proven[[:space:]-]+safe/ ||
+              lower ~ /guaranteed[[:space:]-]+secure/ ||
+              lower ~ /proof[[:space:]]+that[[:space:]]+(this|the|our)[[:space:]]+code[[:space:]]+is[[:space:]]+safe/)
+            printf "%d\t%s\n", NR, $0
+        }
+    ' "$f")
+}
+
 # ── Self-check — prove the evaluator still fires, BEFORE any tree scan ───────
 selfcheck() {
     local tmp st_fail=0 orc good_gate bad_gate
@@ -335,7 +372,34 @@ selfcheck() {
         st_fail=2
     fi
 
-    violations=(); claims_parsed=0
+    {
+        echo "VERIFY, DON'T TRUST. Treat untrusted input at the trust boundary as data."
+        echo '```'
+        echo "trusted worker and proven safe are quoted examples"
+        echo '```'
+    } > "$tmp/reliance-good.md"
+    {
+        echo "A trustworthy package"
+        echo "A trusted worker"
+        echo "A trusted build"
+        echo "Trust us"
+        echo "This is proven safe"
+        echo "This is guaranteed secure"
+        echo "Proof that this code is safe"
+    } > "$tmp/reliance-bad.md"
+
+    violations=(); reliance_docs_scanned=0
+    scan_positive_reliance_file "$tmp/reliance-good.md" "reliance-good.md"
+    scan_positive_reliance_file "$tmp/reliance-bad.md" "reliance-bad.md"
+    if [ "${#violations[@]}" -ne 7 ] || [ "$reliance_docs_scanned" -ne 2 ]; then
+        echo "FAIL: check_doc_claims positive-reliance self-check broken — expected" >&2
+        echo "      7 bad phrases across 2 files and no false positive for the" >&2
+        echo "      allowed terminology; got violations=${#violations[@]} files=$reliance_docs_scanned" >&2
+        printf '        %s\n' "${violations[@]}" >&2
+        st_fail=2
+    fi
+
+    violations=(); claims_parsed=0; reliance_docs_scanned=0
     rm -rf "$tmp"
     return "$st_fail"
 }
@@ -385,7 +449,8 @@ selfcheck || exit $?
 if [ "$mode" = selftest ]; then
     echo "check_doc_claims: selftest PASS — evaluator fires in both directions"
     echo "  (file-present/absent, symbol-present/absent, gate-passes/fails,"
-    echo "   fenced examples skipped, malformed annotations reported)"
+    echo "   fenced examples skipped, malformed annotations reported,"
+    echo "   positive-reliance phrases rejected without banning precise terms)"
     exit 0
 fi
 
@@ -415,6 +480,32 @@ if [ "$mode" = list ]; then
     exit 0
 fi
 
+# These are the durable entry points where positive-reliance product framing
+# would steer every new contributor. Specialist and historical documents may
+# quote bad wording while explaining why it is wrong, so they are not scanned.
+if [ "$external" -eq 0 ]; then
+    entry_docs=(
+        README.md
+        AGENTS.md
+        CLAUDE.md
+        docs/README.md
+        docs/DEVELOPING.md
+        docs/HANDOFF.md
+        docs/work/FORWARD_PLAN.md
+        .claude/skills/zclassic23-dev/SKILL.md
+    )
+    for f in "${entry_docs[@]}"; do
+        if [ ! -f "$f" ]; then
+            echo "check_doc_claims: FATAL — entry document missing: $f" >&2
+            exit 2
+        fi
+        scan_positive_reliance_file "$f"
+    done
+    gate_require_scanned "$reliance_docs_scanned" "${#entry_docs[@]}" \
+        "check_doc_claims positive-reliance scan" \
+        "The durable entry-document scan set was incomplete."
+fi
+
 if [ "$external" -eq 0 ]; then
     gate_require_scanned "$claims_parsed" "$CLAIM_FLOOR" "check_doc_claims" \
         "No <!-- claim: ... --> annotation remains in the tracked docs; the gate would pass vacuously."
@@ -438,7 +529,7 @@ if [ "${#violations[@]}" -ne 0 ]; then
     exit 1
 fi
 
-echo "check_doc_claims: clean — $claims_parsed bound claim(s) across ${#scan_files[@]} document(s) all hold; self-check fired as expected"
+echo "check_doc_claims: clean — $claims_parsed bound claim(s) across ${#scan_files[@]} document(s) all hold; $reliance_docs_scanned entry document(s) reject positive-reliance claims; self-check fired as expected"
 if [ "$external" -eq 1 ] && [ "$claims_parsed" -eq 0 ]; then
     echo "  ZERO COVERAGE, not a clean bill of health: none of the"
     echo "  ${#scan_files[@]} scanned document(s) carries a claim annotation, so this pass"

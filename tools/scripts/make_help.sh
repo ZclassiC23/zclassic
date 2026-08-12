@@ -125,7 +125,8 @@ list them all with:
   grep -E '^[A-Za-z0-9_.-]+:' Makefile
 
 Deeper reading:
-  CLAUDE.md                          the mission and the inviolable rules
+  AGENTS.md                          model-neutral mission and authority rules
+  CLAUDE.md                          thin Claude compatibility adapter
   docs/HOW_THE_NODE_WORKS.md         the node as a state machine, in one page
   docs/DEFENSIVE_CODING.md           the coding laws and every lint gate
   .claude/skills/zclassic23-dev/     the developer operating manual

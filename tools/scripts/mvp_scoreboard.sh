@@ -2,7 +2,7 @@
 #
 # mvp_scoreboard.sh — the HONEST MVP 8/8 scoreboard.
 #
-# CLAUDE.md #1 priority: CI-enforce the MVP criteria. This is the reporter
+# AGENTS.md P1 priority: CI-enforce the MVP criteria. This is the reporter
 # behind `make mvp`. For each of the 8 operator acceptance criteria in
 # docs/MVP.md it runs the ONE mechanically-runnable check that proves it
 # (a hermetic test_zcl slice, a gate, or a live-node probe) and prints a

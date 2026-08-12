@@ -346,6 +346,9 @@ build/bin/zclassic23 dumpstate sandbox      # per-thread coverage
 
 **No subprocess execution.** Zero `system()` and `popen()` in shipped
 app/lib/config code, enforced by a lint gate rather than convention.
+This describes the full-node runtime boundary. An explicitly admitted C23
+Commons build or test action may invoke its bound toolchain only inside the
+separate bounded worker lifecycle; fetching source never invokes it.
 
 **Wallet key encryption at rest is single-writer.** The keystore file path
 wraps keys in AES-256-GCM (PBKDF2-HMAC-SHA512, 200k iterations), and the

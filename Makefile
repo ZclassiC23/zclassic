@@ -5135,7 +5135,7 @@ mvp-verify: zclassic23 zcl-rpc test_zcl
 
 # ── mvp: the HONEST MVP 8/8 scoreboard ────────────────────────
 #
-# CLAUDE.md #1 priority — CI-enforce the MVP criteria. `make mvp` is the
+# AGENTS.md P1 priority — CI-enforce the MVP criteria. `make mvp` is the
 # single per-criterion reporter: for each of the 8 docs/MVP.md acceptance
 # criteria it runs the ONE mechanically-runnable check that proves it (a
 # hermetic test_zcl slice, the symbol-floor gate, the soak-evidence judge,
@@ -8382,7 +8382,7 @@ ci: vendor-ready lint bench-regress zclassic23 $(TEST_PARALLEL_REL_CANDIDATE)
 		echo "══ CI: coverage (SKIPPED — SKIP_COV=1) ══"; \
 	fi
 	@echo ""
-	@# MVP scoreboard — VISIBLE per-criterion status report (CLAUDE.md #1).
+	@# MVP scoreboard — VISIBLE per-criterion status report (AGENTS.md P1).
 	@# Non-fatal: the synced-node-dependent criteria (C3 cold-start-to-tip,
 	@# C6 168h soak, C8 parity-over-soak) are legitimately BLOCKED while the
 	@# live node is stopped/wedged below tip, so this must NOT fail the build.

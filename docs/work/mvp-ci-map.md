@@ -1,6 +1,6 @@
 # MVP CI map — each MVP.md criterion → its mechanical check → status
 
-CLAUDE.md #1 priority: **CI-enforce the MVP criteria.** This document is the
+AGENTS.md P1 priority: **CI-enforce the MVP criteria.** This document is the
 mapping behind `make mvp` (the reporter, `tools/scripts/mvp_scoreboard.sh`).
 
 `make mvp` prints an HONEST 8/8 scoreboard. For each of the 8 operator

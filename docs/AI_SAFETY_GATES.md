@@ -3,6 +3,47 @@
 Most of this repository is developed by AI agents. That is not a footnote about
 tooling — it is the threat model.
 
+## Claim scope: evidence says exactly one thing
+
+ZClassic23 follows **VERIFY, DON'T TRUST**. Evidence must be described at the
+same scope as the observation it records:
+
+- A hash verifies byte identity.
+- A signature verifies that a key made a statement.
+- A build receipt verifies the declared build observation under its bound
+  inputs.
+- A test receipt verifies the declared test observation under its bound
+  inputs.
+- A reproduction receipt verifies that another signer reported the same
+  declared result under bound inputs.
+- None of these alone proves general correctness, security, safety, usefulness,
+  or suitability for acceptance.
+
+Workers and coding agents are untrusted producers of independently verifiable
+evidence. Each receiving node verifies the exact objects and applies its own
+local policy. Fetching source does not authorize building or testing, and those
+actions do not authorize installation, linking, execution, wallet access,
+consensus changes, canonical-datadir mutation, or deployment.
+
+`check-doc-claims` also scans the durable entry documents for narrow positive-
+reliance phrases such as the forbidden examples below. The examples are kept
+inside a fence so the gate can distinguish documentation of the rule from
+product language:
+
+```text
+trustworthy package
+trusted worker
+trusted build
+trust us
+proven safe
+guaranteed secure
+proof that this code is safe
+```
+
+The check intentionally permits phrases such as `untrusted input`, `trust
+boundary`, precise cryptographic terminology, and the North Star phrase
+`VERIFY, DON'T TRUST`.
+
 An AI agent is very good at producing a confident, well-written, plausible
 sentence about work it did not finish. It does not do this maliciously; it does
 it because "the wedge is cleared" is a natural continuation of a transcript in
