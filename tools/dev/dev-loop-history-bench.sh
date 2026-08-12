@@ -169,7 +169,7 @@ load_hotfork_manifest()
         rest=$0
         while (match(rest,/"[^"]+"/)) {
           value=substr(rest,RSTART+1,RLENGTH-2)
-          count++; if (count==2) { print value; active=0; break }
+          count++; if (count==3) { print value; active=0; break }
           rest=substr(rest,RSTART+RLENGTH)
         }
       }

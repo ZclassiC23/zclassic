@@ -73,13 +73,21 @@ static struct hs_action_plan g_plan;
 
 struct hs_hotfork_def {
     const char *owner_id;
+    const char *feedback_class;
     const char *source_tu;
     const char *story_id;
+    const char *fixture_id;
+    const char *adapter_id;
+    uint32_t max_time_ms;
+    const char *forbidden_effect_mask;
     const char *exercised_surface;
 };
 
-#define HOTFORK_CAPSULE(owner_id_, source_tu_, story_id_, surface_) \
-    { owner_id_, source_tu_, story_id_, surface_ },
+#define HOTFORK_CAPSULE(owner_id_, feedback_class_, source_tu_, story_id_, \
+                        fixture_id_, adapter_id_, max_time_ms_, \
+                        forbidden_effect_mask_, surface_) \
+    { owner_id_, feedback_class_, source_tu_, story_id_, fixture_id_, \
+      adapter_id_, max_time_ms_, forbidden_effect_mask_, surface_ },
 static const struct hs_hotfork_def k_hotfork_defs[] = {
 #include "../../config/hotfork_capsules.def"
 };
@@ -1361,13 +1369,48 @@ fail:
     return false;
 }
 
+static bool hs_hotfork_def_valid(const struct hs_hotfork_def *def)
+{
+    static const char required_forbidden_effects[] =
+        "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite";
+    return def && def->owner_id && def->owner_id[0] &&
+        def->feedback_class && def->source_tu && def->source_tu[0] &&
+        def->story_id && def->story_id[0] && def->fixture_id &&
+        def->fixture_id[0] && def->adapter_id && def->adapter_id[0] &&
+        def->forbidden_effect_mask && def->exercised_surface &&
+        def->exercised_surface[0] &&
+        strcmp(def->feedback_class, "HOT_FORK") == 0 &&
+        strcmp(def->adapter_id, def->story_id) == 0 &&
+        def->max_time_ms > 0 && def->max_time_ms <= 1000 &&
+        strcmp(def->forbidden_effect_mask, required_forbidden_effects) == 0;
+}
+
+bool zcl_devloop_hotfork_registry_validate(void)
+{
+    const size_t count = sizeof(k_hotfork_defs) / sizeof(k_hotfork_defs[0]);
+    for (size_t i = 0; i < count; i++) {
+        if (!hs_hotfork_def_valid(&k_hotfork_defs[i])) return false;
+        for (size_t j = i + 1; j < count; j++)
+            if (strcmp(k_hotfork_defs[i].owner_id,
+                       k_hotfork_defs[j].owner_id) == 0 ||
+                strcmp(k_hotfork_defs[i].source_tu,
+                       k_hotfork_defs[j].source_tu) == 0 ||
+                strcmp(k_hotfork_defs[i].story_id,
+                       k_hotfork_defs[j].story_id) == 0)
+                return false;
+    }
+    return count > 0;
+}
+
 static const struct hs_hotfork_def *hs_hotfork_for_path(const char *path)
 {
     if (!path) return NULL;
     for (size_t i = 0; i < sizeof(k_hotfork_defs) / sizeof(k_hotfork_defs[0]);
          i++)
-        if (strcmp(k_hotfork_defs[i].source_tu, path) == 0)
-            return &k_hotfork_defs[i];
+        if (strcmp(k_hotfork_defs[i].source_tu, path) == 0) {
+            const struct hs_hotfork_def *def = &k_hotfork_defs[i];
+            return hs_hotfork_def_valid(def) ? def : NULL;
+        }
     return NULL;
 }
 
@@ -1377,9 +1420,10 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
 {
     char story[768], fixture[1536];
     (void)snprintf(story, sizeof(story),
-        "zcl.dev.hotfork.story.v1\n%s\n%s\n%s\n%s\n",
-        def->owner_id, def->source_tu, def->story_id,
-        def->exercised_surface);
+        "zcl.dev.hotfork.story.v2\n%s\n%s\n%s\n%s\n%s\n%s\n%u\n%s\n%s\n",
+        def->owner_id, def->feedback_class, def->source_tu, def->story_id,
+        def->fixture_id, def->adapter_id, def->max_time_ms,
+        def->forbidden_effect_mask, def->exercised_surface);
     if (strcmp(def->story_id,
                "vcs-devloop-publication-envelope.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
@@ -2712,7 +2756,7 @@ static bool hs_hotfork_probe(
     uint8_t *dst = (uint8_t *)&wire;
     size_t have = 0;
     bool timed_out = false, cancelled = false;
-    const int64_t deadline = started + 1000000;
+    const int64_t deadline = started + (int64_t)def->max_time_ms * 1000;
     while (have < sizeof(wire)) {
         if (zcl_devloop_process_cancel_requested()) {
             cancelled = true; break;
@@ -2760,7 +2804,7 @@ static bool hs_hotfork_probe(
     json_init(response); json_set_object(response);
     (void)json_push_kv_str(response, "schema", "zcl.dev_hotfork_story.v1");
     (void)json_push_kv_str(response, "mode", "HOT_FORK");
-    (void)json_push_kv_str(response, "feedback_class", "HOT_FORK");
+    (void)json_push_kv_str(response, "feedback_class", def->feedback_class);
     (void)json_push_kv_str(response, "status", ok ? "green" : "red");
     (void)json_push_kv_bool(response, "forked", true);
     (void)json_push_kv_bool(response, "activated", false);
@@ -2775,6 +2819,11 @@ static bool hs_hotfork_probe(
     (void)json_push_kv_bool(response, "candidate_bytes_executed",
                             wire.candidate_executed);
     (void)json_push_kv_str(response, "story_id", def->story_id);
+    (void)json_push_kv_str(response, "story_fixture_id", def->fixture_id);
+    (void)json_push_kv_str(response, "story_adapter", def->adapter_id);
+    (void)json_push_kv_int(response, "story_timeout_ms", def->max_time_ms);
+    (void)json_push_kv_str(response, "forbidden_effect_mask",
+                           def->forbidden_effect_mask);
     (void)json_push_kv_str(response, "story_root", story_root);
     (void)json_push_kv_str(response, "story_fixture_root", fixture_root);
     (void)json_push_kv_str(response, "observation_root", observation_root);
@@ -2782,8 +2831,11 @@ static bool hs_hotfork_probe(
                            def->exercised_surface);
     (void)json_push_kv_int(response, "elapsed_us", *elapsed_us);
     if (!ok) {
+        char timeout_message[96];
+        (void)snprintf(timeout_message, sizeof(timeout_message),
+                       "HOT_FORK story exceeded %u ms", def->max_time_ms);
         const char *message = cancelled ? "HOT_FORK story superseded" :
-            timed_out ? "HOT_FORK story exceeded 1000 ms" :
+            timed_out ? timeout_message :
             !valid ? "HOT_FORK child returned no valid bounded receipt" :
             !wire.descriptor_valid ? "HOT_FORK descriptor binding mismatch" :
             !wire.sandboxed ? "HOT_FORK authority sandbox unavailable" :
@@ -2814,6 +2866,12 @@ static bool hs_story_receipt_valid(
                                                     "observation_root"));
     const char *surface = json_get_str(json_get(resident,
                                                 "exercised_owner_surface"));
+    const char *fixture_id =
+        json_get_str(json_get(resident, "story_fixture_id"));
+    const char *adapter = json_get_str(json_get(resident, "story_adapter"));
+    const char *forbidden =
+        json_get_str(json_get(resident, "forbidden_effect_mask"));
+    const struct hs_hotfork_def *hotfork = hs_hotfork_for_path(source);
     bool class_ok = feedback &&
         (strcmp(feedback, "HOT_SHADOW_CORE") == 0 ||
          strcmp(feedback, "HOT_FORK") == 0);
@@ -2822,7 +2880,14 @@ static bool hs_story_receipt_valid(
     bool schema_ok = schema &&
         (strcmp(schema, "zcl.dev_shadow_story.v2") == 0 ||
          strcmp(schema, "zcl.dev_hotfork_story.v1") == 0);
-    return schema_ok && class_ok &&
+    bool manifest_ok = !feedback || strcmp(feedback, "HOT_FORK") != 0 ||
+        (hotfork && fixture_id && adapter && forbidden &&
+         strcmp(fixture_id, hotfork->fixture_id) == 0 &&
+         strcmp(adapter, hotfork->adapter_id) == 0 &&
+         json_get_int(json_get(resident, "story_timeout_ms")) ==
+             hotfork->max_time_ms &&
+         strcmp(forbidden, hotfork->forbidden_effect_mask) == 0);
+    return schema_ok && class_ok && manifest_ok &&
         object && strcmp(object, build->candidate_object_sha256) == 0 &&
         module && strcmp(module, build->artifact_sha256) == 0 &&
         story_id && story_id[0] && story && strlen(story) == 64 &&
@@ -3041,6 +3106,7 @@ static bool hs_emit_event(const char *root, const char *source,
         const char *semantic_keys[] = {
             "candidate_object_root", "candidate_module_root", "story_id",
             "story_root", "story_fixture_root", "observation_root",
+            "story_fixture_id", "story_adapter", "forbidden_effect_mask",
             "exercised_owner_surface",
         };
         for (size_t i = 0; i < sizeof(semantic_keys) / sizeof(semantic_keys[0]);
@@ -3050,6 +3116,11 @@ static bool hs_emit_event(const char *root, const char *source,
             if (value)
                 (void)json_push_kv_str(&doc, semantic_keys[i], value);
         }
+        const struct json_value *story_timeout =
+            json_get(resident, "story_timeout_ms");
+        if (story_timeout && story_timeout->type == JSON_INT)
+            (void)json_push_kv_int(&doc, "story_timeout_ms",
+                                   json_get_int(story_timeout));
         (void)json_push_kv_bool(
             &doc, "candidate_bytes_executed",
             json_get_bool(json_get(resident, "candidate_bytes_executed")));

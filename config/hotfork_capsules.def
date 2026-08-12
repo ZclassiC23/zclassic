@@ -1,71 +1,128 @@
 /* Development-only HOT_FORK stories. Consumer defines:
- * HOTFORK_CAPSULE(owner_id, source_tu, story_id, exercised_surface)
+ * HOTFORK_CAPSULE(owner_id, feedback_class, source_tu, story_id,
+ *                 fixture_id, adapter_id, max_time_ms,
+ *                 forbidden_effect_mask, exercised_surface)
  *
  * The manifest names frozen story authority only. The candidate descriptor
  * is generated after compilation so it can bind the exact object root. */
 
 HOTFORK_CAPSULE(
     "vcs.source-package-checkout.v1",
+    "HOT_FORK",
     "lib/vcs/src/source_package_checkout.c",
     "source-package-checkout-result-and-shard-shape.v1",
+    "source-package-checkout-result-and-shard-shape.v1",
+    "source-package-checkout-result-and-shard-shape.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "vcs_source_package_checkout_result_string+source_checkout_shard_index")
 
 HOTFORK_CAPSULE(
     "dev.native-command-input-policy.v1",
+    "HOT_FORK",
     "tools/command/native_dev_command.c",
     "native-dev-input-and-interrupt-policy.v1",
+    "native-dev-input-and-interrupt-policy.v1",
+    "native-dev-input-and-interrupt-policy.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "dev_request_files+dev_drive_input_int+dev_event_interrupting+dev_group_valid+dev_generation_name_valid+dev_failure_id_valid")
 
 HOTFORK_CAPSULE(
     "dev.native-hotswap-receipt-policy.v1",
+    "HOT_FORK",
     "tools/command/native_dev_hotswap.c",
     "native-dev-hotswap-receipt-policy.v1",
+    "native-dev-hotswap-receipt-policy.v1",
+    "native-dev-hotswap-receipt-policy.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "zcl_native_hotswap_publish_hooks+report_to_reply+service_report_to_reply+registry_commit_batch_cb+registry_probe_cb")
 
 HOTFORK_CAPSULE(
     "vcs.devloop-proof-envelope.v1",
+    "HOT_FORK",
     "lib/vcs/src/vcs_devloop.c",
     "vcs-devloop-publication-envelope.v1",
+    "vcs-devloop-publication-envelope.v1",
+    "vcs-devloop-publication-envelope.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "publication_job_serialize+publication_job_parse+publication_receipt_serialize+publication_receipt_parse")
 
 HOTFORK_CAPSULE(
     "app.native-read-rpc-composition.v1",
+    "HOT_FORK",
     "app/controllers/src/app_native_handlers.c",
     "app-native-read-rpc-composition.v1",
+    "app-native-read-rpc-composition.v1",
+    "app-native-read-rpc-composition.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "app_read_rpc_method_and_param_composition+token_array_wrap")
 
 HOTFORK_CAPSULE(
     "zcode.moderation-input-policy.v1",
+    "HOT_FORK",
     "tools/command/native_zcode_moderation_command.c",
     "zcode-moderation-input-policy.v1",
+    "zcode-moderation-input-policy.v1",
+    "zcode-moderation-input-policy.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "moderation_no_keys+moderation_backlog_input")
 
 HOTFORK_CAPSULE(
     "zcode.dev-input-policy.v1",
+    "HOT_FORK",
     "tools/command/native_zcode_dev_command.c",
     "zcode-dev-input-policy.v1",
+    "zcode-dev-input-policy.v1",
+    "zcode-dev-input-policy.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "zdev_str+zdev_int+zdev_root+zdev_push_root+zdev_hex_wire+zdev_paths_overlap+zdev_candidate_input_path")
 
 HOTFORK_CAPSULE(
     "zcode.epoch-propose-input-policy.v1",
+    "HOT_FORK",
     "tools/command/native_zcode_epoch_propose_command.c",
     "zcode-epoch-propose-input-policy.v1",
+    "zcode-epoch-propose-input-policy.v1",
+    "zcode-epoch-propose-input-policy.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "zep_str+zep_keys+zep_root+zep_u64_positive+zep_parse_propose")
 
 HOTFORK_CAPSULE(
     "zcode.passport-input-policy.v1",
+    "HOT_FORK",
     "tools/command/native_zcode_passport_command.c",
     "zcode-passport-input-policy.v1",
+    "zcode-passport-input-policy.v1",
+    "zcode-passport-input-policy.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "passport_key_allowed+passport_parse_roots")
 
 HOTFORK_CAPSULE(
     "zcode.workspace-input-policy.v1",
+    "HOT_FORK",
     "tools/command/native_zcode_workspace_command.c",
     "zcode-workspace-input-policy.v1",
+    "zcode-workspace-input-policy.v1",
+    "zcode-workspace-input-policy.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "workspace_decode_root+workspace_manifest_key_allowed+workspace_root_is_zero")
 
 HOTFORK_CAPSULE(
     "vcs.source-package-transport-shape.v1",
+    "HOT_FORK",
     "lib/vcs/src/source_package_transport.c",
     "source-package-transport-shape.v1",
+    "source-package-transport-shape.v1",
+    "source-package-transport-shape.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "vcs_source_package_transport_marker+vcs_source_package_transport_file_count+vcs_source_package_transport_file_at+vcs_source_package_offline_input_path")

@@ -3271,6 +3271,7 @@ static int test_hotfork_descriptor_boundary(void)
 {
     int failures = 0;
     TEST("dev platform: HOT_FORK descriptor binds exact object and frozen owner story") {
+        ASSERT(zcl_devloop_hotfork_registry_validate());
         const char object_root[] =
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
         struct zcl_hotfork_capsule_v1 capsule = {
@@ -3281,7 +3282,7 @@ static int test_hotfork_descriptor_boundary(void)
             .candidate_object_root = object_root,
             .story_id = "source-package-checkout-result-and-shard-shape.v1",
             .story_root =
-                "59555a7415483033a047df3a3c087bd842329a6aaeb0e66404f791f9f4c23096",
+                "2b0966285304dc6742d5d3b4b5e416bd1a8766455b86d55632dbd5d36d5cd05d",
             .story_fixture_root =
                 "4f7e0b7ddef2a52441bab973fc33e76dd754bfff9cf2aade463544a931cc4c3c",
             .run_story = hotfork_test_story,
@@ -3302,7 +3303,7 @@ static int test_hotfork_descriptor_boundary(void)
         capsule.source_tu = "tools/command/native_dev_command.c";
         capsule.story_id = "native-dev-input-and-interrupt-policy.v1";
         capsule.story_root =
-            "b39a0043fc2c3a85f5cda3785e1b78732b08e2d8b90fce46018391b34ab14578";
+                "9029d31e65330bcb075692f03854a1eeae81b9e79a9a83b82cbc0cfbb3d639b7";
         capsule.story_fixture_root =
             "84a5a5c9cda8f565a1cc4ac6b8d7c24ad1cbf33e67a540cf929a271028a821a3";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
@@ -3312,7 +3313,7 @@ static int test_hotfork_descriptor_boundary(void)
         capsule.source_tu = "tools/command/native_dev_hotswap.c";
         capsule.story_id = "native-dev-hotswap-receipt-policy.v1";
         capsule.story_root =
-            "4dcb2c98f1f5da6ba8467ef7da19eff734f66717c1beb537e5e31532d4ccc0f6";
+                "f96b868b4c9bdbcf0f27dee4425783310ab17a67d79c18f03b672a4b0aacbb46";
         capsule.story_fixture_root =
             "0cde6a93be5a14e0a8b8c6087b30f57178d80baf832cd38f71a41d95d6579d5b";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
@@ -3322,7 +3323,7 @@ static int test_hotfork_descriptor_boundary(void)
         capsule.source_tu = "lib/vcs/src/vcs_devloop.c";
         capsule.story_id = "vcs-devloop-publication-envelope.v1";
         capsule.story_root =
-            "7d977355a125a0877d61efd888763399848adce366e684ee420cd44b611c3e08";
+                "44919a4d66ff076e797584cce598772fbf711151b22c975b979e7c2e7ec0f0f9";
         capsule.story_fixture_root =
             "83ecbf1fe6983cd9d56c53e329743547d431339106902a12885de59a1ef128c8";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
@@ -3332,7 +3333,7 @@ static int test_hotfork_descriptor_boundary(void)
         capsule.source_tu = "app/controllers/src/app_native_handlers.c";
         capsule.story_id = "app-native-read-rpc-composition.v1";
         capsule.story_root =
-            "284ec57498fe4539d249896e48c2db375c5c53bad73d29b2dff6c4351d6ecda3";
+                "4edc74613c7ac7916153b844c124221f91f10912b8f304a9b03dea4e5ac612c2";
         capsule.story_fixture_root =
             "b1bb052aee4622498ef45073f721013b6fa868d86c3864bc2cffd9d5b23cf647";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
@@ -3346,7 +3347,7 @@ static int test_hotfork_descriptor_boundary(void)
             "tools/command/native_zcode_moderation_command.c";
         capsule.story_id = "zcode-moderation-input-policy.v1";
         capsule.story_root =
-            "f31c0c6fbd749e0a99625ffb3cbdccb23ea0f2c73bdd4df1dfc57ea9623d801d";
+                "e635c666b7c34417ae7e3193758b5d41cf953f9fd689db85654005c4814da6f1";
         capsule.story_fixture_root =
             "d9185e80e37d0ca3ee3d728340d98b445c6971833a04569b9be0064699c37ef4";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
@@ -3356,7 +3357,7 @@ static int test_hotfork_descriptor_boundary(void)
         capsule.source_tu = "tools/command/native_zcode_dev_command.c";
         capsule.story_id = "zcode-dev-input-policy.v1";
         capsule.story_root =
-            "485794df0e8e6d98f1cc808668d700adbc1d9ce0d4edb2dd57c485b801f58cfb";
+                "922b2a12b7a3350f5321030339bfeaa4c828da7c8cf094732625f6b6e024d5c8";
         capsule.story_fixture_root =
             "9628ecb3dda66dc1e4cbb61c95c2a8d4a69b5aee132949a446710c7b3a264526";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
@@ -3367,7 +3368,7 @@ static int test_hotfork_descriptor_boundary(void)
             "tools/command/native_zcode_epoch_propose_command.c";
         capsule.story_id = "zcode-epoch-propose-input-policy.v1";
         capsule.story_root =
-            "77f10f21b24ddf88b3b29129ac21b700342b640c65ebf85aebfd61783cbcabb2";
+                "c60772a3814ac424f88351b35800d4a8834346f594de320fe862f89094d4837b";
         capsule.story_fixture_root =
             "0fa5413c5a1995a9218b25e09fb199df5097e6d74579aec86755423913c85e5e";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
@@ -3378,7 +3379,7 @@ static int test_hotfork_descriptor_boundary(void)
             "tools/command/native_zcode_passport_command.c";
         capsule.story_id = "zcode-passport-input-policy.v1";
         capsule.story_root =
-            "94d5cf684ac77020a5703c00c328aaa035dc9dc66cc91383f334b2c9f007dc05";
+                "582c424d4bc7711bfb62eaf30f4e48c4b13a2519f9448f5c244ac4d4f9e4fc47";
         capsule.story_fixture_root =
             "4694dba2830b31f0fc2f1a36076ccfb1fb622db329c2ac736a659a6da7fb7aae";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
@@ -3389,7 +3390,7 @@ static int test_hotfork_descriptor_boundary(void)
             "tools/command/native_zcode_workspace_command.c";
         capsule.story_id = "zcode-workspace-input-policy.v1";
         capsule.story_root =
-            "845e84178f579e4cecb9cb8146fba62295b4369bb5f26d760817e823b2df11b7";
+                "d9d6725572788a6a89dad53461974cd298e220f5886bbfcc6abfa3b8707dd1de";
         capsule.story_fixture_root =
             "1f2478bb32a61ceee86df7160130be132caf9bd808d37f155553cf8bcc306899";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
@@ -3399,7 +3400,7 @@ static int test_hotfork_descriptor_boundary(void)
         capsule.source_tu = "lib/vcs/src/source_package_transport.c";
         capsule.story_id = "source-package-transport-shape.v1";
         capsule.story_root =
-            "ab6f068c651e68164f8bef4c4d0694cc86712506bc1b560dead1fdfc287f3d00";
+                "b77e5e834b7480c64c5db2f81e7d392ee0514776ecaacc376f31f50a2d507d29";
         capsule.story_fixture_root =
             "7f0099af65b52a8bb07058b75a5f5df74480825a4ad0ee35149eeac5a996e060";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(

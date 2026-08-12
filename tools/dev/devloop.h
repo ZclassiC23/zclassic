@@ -430,6 +430,7 @@ struct zcl_hotfork_capsule_v1;
 bool zcl_devloop_hotfork_descriptor_validate(
     const char *source_tu, const char *candidate_object_root,
     const struct zcl_hotfork_capsule_v1 *capsule);
+bool zcl_devloop_hotfork_registry_validate(void);
 
 /* Complete current source identity: byte inventory plus the ABA mutation
  * token. Shared by the watcher/cycle and focused native execution so neither

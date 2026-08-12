@@ -42,6 +42,11 @@ drive_candidate()
     jq -e --arg expected "$expected" '
       .ok==true and .data.event==$expected and
       .data.feedback_class=="HOT_FORK" and
+      .data.story_fixture_id=="source-package-transport-shape.v1" and
+      .data.story_adapter=="source-package-transport-shape.v1" and
+      .data.story_timeout_ms==1000 and
+      .data.forbidden_effect_mask==
+        "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite" and
       .data.candidate_bytes_executed==true and
       .data.runtime_published==false and .data.feedback_us<1000000 and
       (.data.candidate_object_root|test("^[0-9a-f]{64}$")) and
