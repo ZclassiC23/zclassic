@@ -18,6 +18,8 @@
 #include "util/db_txn_trace.h"
 #include "util/hw_profile.h"
 #include "models/database.h"
+#include "models/database_lifetime.h"
+#include "models/database_owner_lease.h"
 #include "models/database_internal.h"
 #include "models/database_validators.h"
 #include <errno.h>
@@ -364,7 +366,13 @@ static void db_set_pragmas(sqlite3 *db)
         ? 16 * 1024 : ZCL_NODE_DB_CACHE_CEIL_KIB;
     int64_t cache_kib = hw_profile_sqlite_cache_kib(
         ram, 16 * 1024, cache_ceiling);
-    int64_t mmap_bytes = node_db_recommended_mmap_bytes();
+    /* The live WAL-backed node.db is concurrently read and checkpointed by
+     * multiple supervised services. A mapped database page can become
+     * invalid underneath sqlite3_step when the mutable file is truncated,
+     * which the kernel reports as SIGBUS rather than an SQLite error. Keep
+     * mmap for explicitly read-only copied/stopped handles, but never map the
+     * live mutable authority ledger. */
+    int64_t mmap_bytes = 0;
 
     /* One exec call to keep the PRAGMA batch atomic with respect to
      * other threads that might latch onto the connection immediately
@@ -429,7 +437,8 @@ static void db_quarantine_one(const char *path, const char *suffix)
     char dst[1400];
     if (access(path, F_OK) != 0) return;
     snprintf(dst, sizeof(dst), "%s.%s", path, suffix);
-    if (rename(path, dst) == 0) {
+    if (db_lifetime_rename(path, dst, "node_db.quarantine",
+                           DB_LIFETIME_BACKING_OWNER, 0) == 0) {
         LOG_INFO("db", "db: quarantined %s -> %s", path, dst);
     } else {
         LOG_WARN("db", "db: failed to quarantine %s: %s", path, strerror(errno));
@@ -509,9 +518,21 @@ static void finalize_statements(struct node_db *ndb)
  * failure, and a repeated close is then a guarded no-op. */
 static bool node_db_open_abort(struct node_db *ndb)
 {
-    if (ndb->db) { sqlite3_close(ndb->db); ndb->db = NULL; }
+    if (ndb->db) {
+        struct db_lifetime_scope scope;
+        db_lifetime_scope_enter(
+            &scope,
+            ndb->lifetime_owner[0] ? ndb->lifetime_owner : "node_db.abort",
+            ndb->lifetime_backing_owner ? DB_LIFETIME_BACKING_OWNER
+                                        : DB_LIFETIME_HANDLE_OWNER,
+            ndb->lifetime_generation);
+        sqlite3_close(ndb->db);
+        db_lifetime_scope_leave(&scope);
+        ndb->db = NULL;
+    }
     ndb->open = false;
     node_db_state_destroy(ndb);
+    node_db_owner_lease_release(ndb);
     return false;
 }
 
@@ -522,9 +543,17 @@ static bool node_db_open_impl(struct node_db *ndb, const char *path,
                               bool boot_ceremony, const char *reason)
 {
     memset(ndb, 0, sizeof(*ndb));
+    ndb->lifetime_owner_lease_slot = -1;
     if (path)
         snprintf(ndb->path, sizeof(ndb->path), "%s", path);
     node_db_state_init(ndb);
+    if (!db_lifetime_install())
+        return node_db_open_abort(ndb);
+    ndb->lifetime_backing_owner = boot_ceremony;
+    (void)snprintf(ndb->lifetime_owner, sizeof(ndb->lifetime_owner), "%s",
+                   boot_ceremony ? "node_db.canonical" : reason);
+    if (boot_ceremony && !node_db_owner_lease_acquire(ndb))
+        return node_db_open_abort(ndb);
 
     /* No anonymous DB open: a reopen names who/why so it cannot look like a
      * silent boot loop in a filtered log. */
@@ -547,7 +576,16 @@ static bool node_db_open_impl(struct node_db *ndb, const char *path,
         return node_db_open_abort(ndb);
     }
 
-    if (!db_open_raw(&ndb->db, path))
+    struct db_lifetime_scope open_scope;
+    db_lifetime_scope_enter(
+        &open_scope, ndb->lifetime_owner,
+        boot_ceremony ? DB_LIFETIME_BACKING_OWNER
+                      : DB_LIFETIME_HANDLE_OWNER,
+        0);
+    bool raw_opened = db_open_raw(&ndb->db, path);
+    ndb->lifetime_generation = db_lifetime_scope_generation();
+    db_lifetime_scope_leave(&open_scope);
+    if (!raw_opened)
         return node_db_open_abort(ndb);
 
     if (boot_ceremony) {
@@ -568,7 +606,17 @@ static bool node_db_open_impl(struct node_db *ndb, const char *path,
                 sqlite3_close(ndb->db);
                 ndb->db = NULL;
                 db_quarantine_files(path);
-                if (!db_open_raw(&ndb->db, path))
+                if (!node_db_owner_lease_rebind(ndb))
+                    return node_db_open_abort(ndb);
+                db_lifetime_scope_enter(
+                    &open_scope, ndb->lifetime_owner,
+                    boot_ceremony ? DB_LIFETIME_BACKING_OWNER
+                                  : DB_LIFETIME_HANDLE_OWNER,
+                    ndb->lifetime_generation);
+                raw_opened = db_open_raw(&ndb->db, path);
+                ndb->lifetime_generation = db_lifetime_scope_generation();
+                db_lifetime_scope_leave(&open_scope);
+                if (!raw_opened)
                     return node_db_open_abort(ndb);
             }
         }
@@ -627,31 +675,43 @@ bool node_db_open_existing_runtime(struct node_db *ndb, const char *path,
     if (!ndb)
         LOG_FAIL("db", "node_db_open_existing_runtime: output is required");
     memset(ndb, 0, sizeof(*ndb));
+    ndb->lifetime_owner_lease_slot = -1;
     if (!path || !path[0] || !reason || !reason[0])
         LOG_FAIL("db", "node_db_open_existing_runtime: path and reason are "
                  "mandatory");
 
     (void)snprintf(ndb->path, sizeof(ndb->path), "%s", path);
     node_db_state_init(ndb);
+    if (!db_lifetime_install())
+        return node_db_open_abort(ndb);
+    (void)snprintf(ndb->lifetime_owner, sizeof(ndb->lifetime_owner), "%s",
+                   reason);
+    ndb->lifetime_backing_owner = false;
     LOG_INFO("db", "db: lightweight runtime reopen (reason=%s) path=%s",
              reason, path);
 
+    struct db_lifetime_scope open_scope;
+    db_lifetime_scope_enter(&open_scope, ndb->lifetime_owner,
+                            DB_LIFETIME_HANDLE_OWNER, 0);
     int rc = sqlite3_open_v2(path, &ndb->db,
         SQLITE_OPEN_READWRITE | SQLITE_OPEN_FULLMUTEX, NULL);
+    ndb->lifetime_generation = db_lifetime_scope_generation();
     if (rc != SQLITE_OK || !ndb->db) {
         LOG_WARN("db", "lightweight runtime reopen failed: %s",
                  ndb->db ? sqlite3_errmsg(ndb->db) : "no sqlite handle");
+        db_lifetime_scope_leave(&open_scope);
         return node_db_open_abort(ndb);
     }
 
     /* The boot connection already selected WAL for the database. These are
-     * connection-local settings only: no journal-mode transition, mmap, schema
-     * DDL, migration, or full cached-statement preparation on a periodic open.
-     * A small cache prevents a short-lived poller from competing with the
-     * canonical connection for the lane's memory ceiling. */
+     * connection-local settings only: no journal-mode transition, mapped live
+     * pages, schema DDL, migration, or full cached-statement preparation on a
+     * periodic open. A small cache prevents a short-lived poller from competing
+     * with the canonical connection for the lane's memory ceiling. */
     (void)sqlite3_exec(ndb->db,
         "PRAGMA synchronous=NORMAL;"
         "PRAGMA cache_size=-2048;"
+        "PRAGMA mmap_size=0;"
         "PRAGMA temp_store=MEMORY;"
         "PRAGMA foreign_keys=ON",
         NULL, NULL, NULL);
@@ -663,12 +723,14 @@ bool node_db_open_existing_runtime(struct node_db *ndb, const char *path,
         LOG_WARN("db", "lightweight runtime reopen refused schema=%d "
                  "expected=%d reason=%s", schema, NODE_DB_MAX_SCHEMA, reason);
         ndb->open = false;
+        db_lifetime_scope_leave(&open_scope);
         return node_db_open_abort(ndb);
     }
 
     db_register_all_validators();
     zcl_db_txn_trace_register(ndb->db, reason);
     node_db_note_activity(ndb, "open_existing_runtime", SQLITE_OK);
+    db_lifetime_scope_leave(&open_scope);
     return true;
 }
 
@@ -687,6 +749,13 @@ void node_db_close(struct node_db *ndb)
      * this handle is un-finalized; a leaked handle keeps its txn + WAL lock
      * alive for the process (an "unreachable silent halt"). Finalize every
      * leftover stmt via sqlite3_next_stmt() and retry the close. */
+    struct db_lifetime_scope close_scope;
+    db_lifetime_scope_enter(
+        &close_scope,
+        ndb->lifetime_owner[0] ? ndb->lifetime_owner : "node_db.close",
+        ndb->lifetime_backing_owner ? DB_LIFETIME_BACKING_OWNER
+                                    : DB_LIFETIME_HANDLE_OWNER,
+        ndb->lifetime_generation);
     int close_rc = sqlite3_close(ndb->db);
     if (close_rc == SQLITE_BUSY) {
         int leaked = 0;
@@ -704,8 +773,10 @@ void node_db_close(struct node_db *ndb)
             "node_db_close: SQLITE_BUSY on close (%d leaked stmt(s) finalized); "
             "retry rc=%d", leaked, close_rc);
     }
+    db_lifetime_scope_leave(&close_scope);
     ndb->open = false;
     node_db_state_destroy(ndb);
+    node_db_owner_lease_release(ndb);
 }
 
 /* node_db_state_*, node_db_schema_version, and node_db_migrate live

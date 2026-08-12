@@ -1498,8 +1498,7 @@ static int t_swarm_provider_restricted(void)
              vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
              vcs_swarm_engine_peer_add(n.engine, honest, honest_key));
     sw_announce(n.engine, bad, &p);
-    sw_announce(n.engine, honest, &p);
-    SW_CHECK("provider: restricted fetch accepted",
+    SW_CHECK("provider: restricted fetch accepts an exact unannounced peer",
              vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 1,
                                          &honest, 1) ==
                  VCS_SWARM_FETCH_OK);
@@ -1507,7 +1506,7 @@ static int t_swarm_provider_restricted(void)
     struct vcs_package_swarm_object wants[2];
     SW_CHECK("provider: unlisted advertiser receives no WANT",
              sw_drain_wants(&n, bad, wants, 2) == 0);
-    SW_CHECK("provider: authenticated provider receives manifest WANT",
+    SW_CHECK("provider: exact authenticated provider needs no broadcast ad",
              sw_drain_wants(&n, honest, wants, 2) == 1);
 
     vcs_swarm_engine_free(n.engine);
@@ -1518,7 +1517,6 @@ static int t_swarm_provider_restricted(void)
              vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
              vcs_swarm_engine_peer_add(n.engine, honest, honest_key));
     sw_announce(n.engine, bad, &p);
-    sw_announce(n.engine, honest, &p);
     vcs_swarm_engine_tick(n.engine, SW_DAY, 3);
     SW_CHECK("provider: restart does not widen before fresh binding",
              sw_drain_wants(&n, bad, wants, 2) == 0 &&

@@ -92,6 +92,29 @@ zap_sql_value() {
     printf '%s' "$out" | zap_field 'str(d["data"]["rows"][0][0])' 2>/dev/null || true
 }
 
+zap_approve_action_receipt() {
+    local requester="$1" action="$2" identity worker pubkey response ok changed
+    identity="$(zap_sql_value "$requester" "SELECT r.worker_id||':'||w.signer_pubkey FROM build_receipts r JOIN build_workers w ON w.worker_id=r.worker_id WHERE r.action_id='$action' AND r.trust_state='REMOTE_OBSERVED' AND w.approved=0 AND w.revoked=0 LIMIT 1")"
+    [ -n "$identity" ] || return 1
+    worker="${identity%%:*}"; pubkey="${identity#*:}"
+    [ "${#worker}" -eq 64 ] && [ "${#pubkey}" -eq 64 ] ||
+        dht_die "action $action did not project its exact remote signer"
+    response="$(dht_native "${DDS[$requester]}" "${RPCS[$requester]}" \
+        metaverse build worker approve \
+        --input="{\"worker_id\":\"$worker\",\"signer_pubkey\":\"$pubkey\",\"capabilities\":\"p2p-approved,c23.package.recipe.v1\",\"datadir\":\"${DDS[$requester]}\"}" || true)"
+    ok="$(printf '%s' "$response" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
+    [ "$ok" = True ] || dht_die "requester $requester refused action $action signer approval: $response"
+    changed="$(printf '%s' "$response" | zap_field 'd["data"]["worker_id"]+":"+d["data"]["signer_pubkey"]+":"+str(d["data"]["approved"])' 2>/dev/null || true)"
+    [ "$changed" = "$worker:$pubkey:True" ] ||
+        dht_die "approval response did not name the exact worker owning action $action: $response"
+}
+
+zap_assert_requester_did_not_execute() {
+    local requester="$1" action="$2"
+    [ "$(zap_sql_count "$requester" "SELECT count(*) FROM build_actions WHERE action_id='$action' AND state='SNAPSHOTTED' AND attempt_count=0 AND started_at=0 AND length(worker_id)=0")" -eq 1 ] ||
+        dht_die "requester $requester raced peer execution for $action"
+}
+
 zap_assert_responsive() {
     local node="$1" phase="$2" started_ms response elapsed_ms
     started_ms="$(date +%s%3N)"
@@ -99,7 +122,38 @@ zap_assert_responsive() {
     elapsed_ms=$(( $(date +%s%3N) - started_ms ))
     [ -n "$response" ] && [ "$elapsed_ms" -lt 5000 ] ||
         dht_die "requester $node stopped responding during $phase (${elapsed_ms}ms): $response"
+    if [ -n "${ZAP_A_DB_IDENTITIES:-}" ] && [ "$node" = "${ZAP_A:-}" ]; then
+        zap_assert_db_identity "$node" "$phase"
+    fi
     printf '%s,%s\n' "$phase" "$elapsed_ms" >>"$DHT_WORK/async-requester-responsiveness.csv"
+}
+
+zap_db_identity() {
+    local node="$1" dd
+    dd="${DDS[$node]}"
+    stat -Lc '%d:%i' "$dd/node.db" "$dd/node.db-wal" "$dd/node.db-shm" \
+        2>/dev/null | paste -sd, -
+}
+
+zap_assert_db_identity() {
+    local node="$1" phase="$2" current
+    current="$(zap_db_identity "$node" || true)"
+    [ -n "$current" ] && [ "$current" = "$ZAP_A_DB_IDENTITIES" ] ||
+        dht_die "requester $node database/WAL identity changed during $phase: expected=$ZAP_A_DB_IDENTITIES actual=$current"
+    ! ls -l "/proc/${PIDS[$node]}/fd" 2>/dev/null |
+        grep -Eq 'node\.db(-wal|-shm)? \(deleted\)' ||
+        dht_die "requester $node retained a deleted live database descriptor during $phase"
+}
+
+zap_assert_db_lifetime_clean() {
+    local node="$1" phase="$2" log
+    log="${DDS[$node]}/node.log"
+    zap_assert_db_identity "$node" "$phase"
+    [ "$(zap_sql_count "$node" 'SELECT 1')" -eq 1 ] ||
+        dht_die "requester $node could not read its live database after $phase"
+    ! grep -Eq 'unauthorized=1|DATABASE_OWNERSHIP_CONFLICT|disk I/O error' \
+        "$log" ||
+        dht_die "requester $node recorded an unauthorized database lifecycle event during $phase"
 }
 
 zap_latest_state() {
@@ -111,10 +165,20 @@ zap_latest_state() {
 }
 
 zap_wait_ready() {
-    local node="$1" action="$2" deadline
+    local node="$1" action="$2" deadline state bound
     deadline=$(( $(date +%s) + 180 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        [ "$(zap_latest_state "$node" "$action")" = READY_FOR_ACCEPTANCE ] && return 0
+        state="$(zap_latest_state "$node" "$action")"
+        if [ "$state" = READY_FOR_ACCEPTANCE ]; then
+            bound="$(zap_sql_count "$node" "SELECT count(*) FROM build_receipts r JOIN build_workers w ON w.worker_id=r.worker_id WHERE r.action_id='$action' AND r.trust_state IN ('REMOTE_OBSERVED','QUORUM_MATCHED') AND w.approved=1 AND w.revoked=0 AND r.worker_id=w.worker_id")"
+            [ "$bound" -eq 1 ] ||
+                dht_die "readiness was not owned by the exact approved receipt worker for $action"
+            return 0
+        fi
+        # Approval is selected from the canonical action receipt on every
+        # observation. Once that exact worker is approved, the query returns
+        # no row and this is a no-op; there is no harness-side lifecycle bit.
+        zap_approve_action_receipt "$node" "$action" || true
         zap_assert_responsive "$node" "pending-$action"
         sleep 1
     done
@@ -130,6 +194,21 @@ zap_wait_executor_started() {
         accepted="$(zap_sql_count "$node" "SELECT count(*) FROM build_actions WHERE action_id='$action' AND state IN ('ACCEPTED','CACHE_HIT','FAILED')")"
         [ "$accepted" -eq 0 ] 2>/dev/null || return 2
         sleep 0.1
+    done
+    return 1
+}
+
+zap_stop_executor_mid_action() {
+    local node="$1" deadline child
+    deadline=$(( $(date +%s) + 90 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        child="$(pgrep -P "${PIDS[$node]}" | head -1 || true)"
+        if [ -n "$child" ]; then
+            kill -STOP "-${PIDS[$node]}" ||
+                dht_die "could not stop executor $node with live action child $child"
+            return 0
+        fi
+        sleep 0.01
     done
     return 1
 }
@@ -242,6 +321,9 @@ zap_start_node "$ZAP_A" "$ZAP_B"
 zap_connect "$ZAP_A" "$ZAP_B"
 DHT_EXTRA_PGIDS=("${PIDS[@]}")
 A_ORIGINAL_PID="${PIDS[$ZAP_A]}"
+ZAP_A_DB_IDENTITIES="$(zap_db_identity "$ZAP_A" || true)"
+[ -n "$ZAP_A_DB_IDENTITIES" ] ||
+    dht_die "A did not expose stable node.db/WAL/SHM identities after boot"
 zap_assert_responsive "$ZAP_A" "before-first-admission"
 
 dht_note "async proof: A stays live while B executes the first fixed action"
@@ -256,6 +338,7 @@ zap_wait_ready "$ZAP_A" "$FIRST_ACTION" ||
 [ "$(zap_sql_count "$ZAP_B" "SELECT count(*) FROM build_actions WHERE action_id='$FIRST_ACTION' AND attempt_count=1")" -eq 1 ] &&
 [ "$(zap_sql_count "$ZAP_A" "SELECT count(*) FROM build_proof_events WHERE action_id='$FIRST_ACTION' AND state='REQUESTED'")" -eq 1 ] ||
     dht_die "exact first request did not deduplicate to one execution/request"
+zap_assert_requester_did_not_execute "$ZAP_A" "$FIRST_ACTION"
 zap_assert_same_action_identity "$ZAP_A" "$ZAP_B" "$FIRST_ACTION"
 zap_assert_evidence "$ZAP_A" "$FIRST_ACTION"
 zap_assert_receipt_bindings "$ZAP_A" "$ZAP_B" "$FIRST_ACTION"
@@ -283,9 +366,11 @@ zap_wait_ready "$ZAP_A" "$SECOND_ACTION" ||
       dht_die "A did not reach READY_FOR_ACCEPTANCE from C evidence"; }
 [ "$(zap_sql_count "$ZAP_C" "SELECT count(*) FROM build_actions WHERE action_id='$SECOND_ACTION' AND state IN ('ACCEPTED','CACHE_HIT')")" -eq 1 ] ||
     dht_die "C did not independently execute A's second fixed action"
+zap_assert_requester_did_not_execute "$ZAP_A" "$SECOND_ACTION"
 zap_assert_same_action_identity "$ZAP_A" "$ZAP_C" "$SECOND_ACTION"
 zap_assert_evidence "$ZAP_A" "$SECOND_ACTION"
 zap_assert_receipt_bindings "$ZAP_A" "$ZAP_C" "$SECOND_ACTION"
+zap_assert_db_lifetime_clean "$ZAP_A" "B-to-C executor replacement"
 
 dht_note "async proof: B dies after started_at; lease retry moves exact work to C"
 dht_kill_group "${PIDS[$ZAP_C]}"; PIDS[$ZAP_C]=""
@@ -294,11 +379,10 @@ zap_start_node "$ZAP_B"
 zap_connect "$ZAP_A" "$ZAP_B"
 zap_submit "$ZAP_A" 4 "Change x to four with lease recovery" 10
 RETRY_ACTION="$ZAP_ACTION"; RETRY_MS="$ZAP_FOREGROUND_MS"
-zap_wait_executor_started "$ZAP_B" "$RETRY_ACTION" ||
-    dht_die "B's fixed action completed before the mid-action death probe"
-STALE_B_WORKER="$(zap_sql_value "$ZAP_B" "SELECT worker_id FROM build_actions WHERE action_id='$RETRY_ACTION'")"
+STALE_B_WORKER="$(zap_sql_value "$ZAP_B" "SELECT worker_id FROM build_workers WHERE approved=1 AND revoked=0 AND capabilities LIKE '%c23.package.recipe.v1%' ORDER BY last_seen_at DESC LIMIT 1")"
 [ "${#STALE_B_WORKER}" -eq 64 ] || dht_die "B's stale worker identity was not durable"
-kill -STOP "-${PIDS[$ZAP_B]}" || dht_die "could not stop B mid-action"
+zap_stop_executor_mid_action "$ZAP_B" ||
+    dht_die "B did not spawn the fixed package action before the death probe"
 zap_assert_responsive "$ZAP_A" "B-hard-stopped-mid-action"
 zap_start_node "$ZAP_C"
 zap_connect "$ZAP_A" "$ZAP_C"
@@ -309,6 +393,7 @@ zap_wait_ready "$ZAP_A" "$RETRY_ACTION" || {
 }
 [ "$(zap_sql_count "$ZAP_C" "SELECT count(*) FROM build_actions WHERE action_id='$RETRY_ACTION' AND state IN ('ACCEPTED','CACHE_HIT')")" -eq 1 ] ||
     dht_die "C did not execute the retried exact action"
+zap_assert_requester_did_not_execute "$ZAP_A" "$RETRY_ACTION"
 WINNING_C_WORKER="$(zap_sql_value "$ZAP_C" "SELECT worker_id FROM build_actions WHERE action_id='$RETRY_ACTION'")"
 [ "${#WINNING_C_WORKER}" -eq 64 ] && [ "$WINNING_C_WORKER" != "$STALE_B_WORKER" ] ||
     dht_die "retry did not move the exact action to C's distinct worker"
@@ -324,8 +409,8 @@ while [ "$(date +%s)" -lt "$STALE_DEADLINE" ]; do
     [ "$(zap_sql_count "$ZAP_A" "SELECT count(*) FROM build_receipts WHERE action_id='$RETRY_ACTION' AND worker_id='$STALE_B_WORKER'")" -eq 0 ] ||
         dht_die "stale B entered A's receipt set while its late result was pending"
     if [ "$(zap_sql_count "$ZAP_B" "SELECT count(*) FROM build_actions WHERE action_id='$RETRY_ACTION' AND state IN ('ACCEPTED','CACHE_HIT','FAILED','LOCAL_FALLBACK')")" -eq 1 ] &&
-       grep -Eq "result [0-9]+: (unrequested|replay|work-lease-expired)|zcode work: (unrequested-result|replayed-work-frame)|work frame refused: (work-lease-expired|capability-mismatch)" \
-           "${DDS[$ZAP_A]}/node.log" "${DDS[$ZAP_B]}/node.log"; then
+       grep -Eq "result [0-9]+: work-lease-expired" \
+           "${DDS[$ZAP_B]}/node.log"; then
         STALE_REFUSAL=1
         break
     fi
@@ -334,22 +419,26 @@ while [ "$(date +%s)" -lt "$STALE_DEADLINE" ]; do
 done
 [ "$STALE_REFUSAL" -eq 1 ] ||
     dht_die "stale B did not finish and produce a named late-result refusal"
+[ "$(zap_sql_count "$ZAP_B" "SELECT count(*) FROM build_actions WHERE action_id='$RETRY_ACTION' AND worker_id='$STALE_B_WORKER' AND started_at>0 AND attempt_count=1")" -eq 1 ] ||
+    dht_die "B was not durably stopped inside the exact leased action"
 [ "$(zap_latest_state "$ZAP_A" "$RETRY_ACTION")" = READY_FOR_ACCEPTANCE ] &&
 [ "$(zap_sql_count "$ZAP_A" "SELECT count(*) FROM build_proof_events WHERE action_id='$RETRY_ACTION'")" -eq "$STALE_EVENT_COUNT" ] ||
     dht_die "stale B advanced A's proof projection after losing its lease"
 [ "$(zap_sql_count "$ZAP_A" "SELECT count(*) FROM build_receipts WHERE action_id='$RETRY_ACTION' AND worker_id='$WINNING_C_WORKER'")" -eq 1 ] &&
 [ "$(zap_sql_count "$ZAP_A" "SELECT count(*) FROM build_receipts WHERE action_id='$RETRY_ACTION' AND worker_id='$STALE_B_WORKER'")" -eq 0 ] ||
     dht_die "stale B result entered A's receipt set or C's winning receipt was lost"
-if ! grep -Eq "result [0-9]+: (unrequested|replay|work-lease-expired)|zcode work: (unrequested-result|replayed-work-frame)|work frame refused: (work-lease-expired|capability-mismatch)" \
-        "${DDS[$ZAP_A]}/node.log" "${DDS[$ZAP_B]}/node.log"; then
-    dht_die "stale B did not produce a named late-result refusal"
+if ! grep -Eq "result [0-9]+: work-lease-expired" \
+        "${DDS[$ZAP_B]}/node.log"; then
+    dht_die "stale B did not produce the named work-lease-expired refusal"
 fi
 zap_assert_evidence "$ZAP_A" "$RETRY_ACTION"
 zap_assert_receipt_bindings "$ZAP_A" "$ZAP_C" "$RETRY_ACTION"
+zap_assert_db_lifetime_clean "$ZAP_A" "lease loss, C takeover, and stale-B refusal"
 
 # A is only a task role. Kill it, then use the unchanged full-node code on B
 # to originate and C to execute one final request.
 dht_note "async proof: kill A; B originates through the same full-node path"
+zap_assert_db_lifetime_clean "$ZAP_A" "complete A requester lifecycle"
 dht_kill_group "${PIDS[$ZAP_A]}"; PIDS[$ZAP_A]=""
 sleep 2
 zap_connect "$ZAP_B" "$ZAP_C"
@@ -360,6 +449,7 @@ zap_wait_ready "$ZAP_B" "$FINAL_ACTION" ||
       dht_die "B did not originate successfully after A disappeared"; }
 [ "$(zap_sql_count "$ZAP_C" "SELECT count(*) FROM build_actions WHERE action_id='$FINAL_ACTION' AND state IN ('ACCEPTED','CACHE_HIT')")" -eq 1 ] ||
     dht_die "C did not execute B's post-A action"
+zap_assert_requester_did_not_execute "$ZAP_B" "$FINAL_ACTION"
 zap_assert_same_action_identity "$ZAP_B" "$ZAP_C" "$FINAL_ACTION"
 zap_assert_evidence "$ZAP_B" "$FINAL_ACTION"
 zap_assert_receipt_bindings "$ZAP_B" "$ZAP_C" "$FINAL_ACTION"

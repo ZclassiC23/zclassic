@@ -39,6 +39,7 @@
 #include "vcs/blob_store.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_possession_scheduler.h"
+#include "vcs/zcode_work_output.h"
 
 #include "chain/chainparams.h"
 #include "core/uint256.h"
@@ -1625,6 +1626,62 @@ static int t_store_blob(void)
     return failures;
 }
 
+/* ── action-bound work output carrier ─────────────────────────────── */
+static int t_store_work_output(void)
+{
+    int failures = 0;
+    char dd[1024];
+    struct vcs_package_store *s = zs_open(
+        dd, sizeof(dd), "work_output", VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+    ZS_CHECK("work output: store opens", s != NULL);
+    if (!s) return failures + 1;
+    uint8_t action_a[32], action_b[32];
+    memset(action_a, 0x31, sizeof(action_a));
+    memset(action_b, 0x32, sizeof(action_b));
+    size_t bytes_len = VCS_PACKAGE_CHUNK_BYTES + 17u;
+    uint8_t *bytes = malloc(bytes_len);
+    ZS_CHECK("work output: fixture allocates", bytes != NULL);
+    if (!bytes) {
+        vcs_package_store_close(s); test_rm_rf_recursive(dd);
+        return failures + 1;
+    }
+    for (size_t i = 0; i < bytes_len; i++)
+        bytes[i] = (uint8_t)(i * 13u + 7u);
+    uint8_t root_a[32], root_again[32], root_b[32];
+    ZS_CHECK("work output: action plus multi-chunk bytes publish",
+             vcs_zcode_work_output_put(
+                 s, action_a, bytes, bytes_len, root_a) ==
+                 VCS_ZCODE_WORK_OUTPUT_OK);
+    uint8_t *out = NULL; size_t out_len = 0;
+    ZS_CHECK("work output: exact action reconstructs exact bytes",
+             vcs_zcode_work_output_get(
+                 s, root_a, action_a, &out, &out_len) ==
+                 VCS_ZCODE_WORK_OUTPUT_OK && out_len == bytes_len &&
+             memcmp(out, bytes, bytes_len) == 0);
+    free(out); out = NULL; out_len = 0;
+    ZS_CHECK("work output: wrong action fails closed",
+             vcs_zcode_work_output_get(
+                 s, root_a, action_b, &out, &out_len) ==
+                 VCS_ZCODE_WORK_OUTPUT_CORRUPT && out == NULL && out_len == 0);
+    ZS_CHECK("work output: exact re-put is idempotent",
+             vcs_zcode_work_output_put(
+                 s, action_a, bytes, bytes_len, root_again) ==
+                 VCS_ZCODE_WORK_OUTPUT_OK &&
+             memcmp(root_a, root_again, 32) == 0);
+    ZS_CHECK("work output: different action cannot alias",
+             vcs_zcode_work_output_put(
+                 s, action_b, bytes, bytes_len, root_b) ==
+                 VCS_ZCODE_WORK_OUTPUT_OK && memcmp(root_a, root_b, 32) != 0);
+    ZS_CHECK("work output: empty output refused by name",
+             vcs_zcode_work_output_put(
+                 s, action_a, bytes, 0, root_b) ==
+                 VCS_ZCODE_WORK_OUTPUT_EMPTY);
+    free(bytes);
+    vcs_package_store_close(s);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 /* ── 11: dump_state_json ──────────────────────────────────────────── */
 static int t_store_dump_state(void)
 {
@@ -1738,6 +1795,7 @@ int test_zcode_store(void)
     failures += t_store_possession_scheduler();
     failures += t_store_releases();
     failures += t_store_blob();
+    failures += t_store_work_output();
     failures += t_store_dump_state();
     printf("=== zcode_store complete: %d failure(s) ===\n", failures);
     return failures;

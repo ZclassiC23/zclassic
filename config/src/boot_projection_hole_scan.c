@@ -41,7 +41,7 @@ void boot_projection_hole_scan_init(struct boot_projection_hole_scan *state)
     state->next_scan_unix = 0;
 }
 
-static bool scan_first_missing_connected(const struct node_db *canonical,
+static bool scan_first_missing_connected(struct node_db *canonical,
                                          int max_height, int *height_out)
 {
     if (height_out)
@@ -53,23 +53,13 @@ static bool scan_first_missing_connected(const struct node_db *canonical,
         return false;
     }
 
-    struct node_db scan_db;
-    memset(&scan_db, 0, sizeof(scan_db));
-    if (!node_db_open_existing_runtime(&scan_db, canonical->path,
-                                       "projection.hole_scan")) {
-        LOG_ERROR("projection_backfill",
-                  "hole scan could not open an isolated read connection");
-        return false;
-    }
-    bool ok = db_block_first_missing_connected_height(&scan_db, max_height,
-                                                       height_out);
-    node_db_close(&scan_db);
-    return ok;
+    return db_block_first_missing_connected_height(canonical, max_height,
+                                                    height_out);
 }
 
 bool boot_projection_hole_scan_if_due(
     struct boot_projection_hole_scan *state,
-    const struct node_db *canonical,
+    struct node_db *canonical,
     int max_height,
     bool sparse_prefix,
     bool behind,

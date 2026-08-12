@@ -11,8 +11,10 @@
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/package_build.h"
+#include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
+#include "vcs/zcode_work_output.h"
 #include "vcs/zcode_work_swarm.h"
 
 #include <stdio.h>
@@ -224,6 +226,74 @@ static bool bf_receipt_trusted(const struct bf_verified_receipt *receipt)
     return receipt && (receipt->local || receipt->approved);
 }
 
+static bool bf_package_evidence_wire(
+    const char *workspace, const struct vcs_zcode_work_receipt_v1 *receipt,
+    uint8_t **out, size_t *out_len)
+{
+    *out = NULL;
+    *out_len = 0;
+    uint8_t *manifest_wire = NULL;
+    size_t manifest_len = 0;
+    if (vcs_object_load_raw_bounded(
+            workspace, receipt->output_root, VCS_BUILD_ARTIFACT_WIRE_MAX,
+            &manifest_wire, &manifest_len) == 0) {
+        struct vcs_build_artifact_manifest_v1 manifest;
+        uint8_t checked[32];
+        bool manifest_ok = vcs_build_artifact_manifest_v1_parse(
+                manifest_wire, manifest_len, &manifest) &&
+            vcs_build_artifact_manifest_v1_root(&manifest, checked) &&
+            memcmp(checked, receipt->output_root, 32) == 0 &&
+            memcmp(manifest.action_sha3, receipt->action_root, 32) == 0 &&
+            manifest.total_bytes > 0 &&
+            manifest.total_bytes <= VCS_PACKAGE_BUILD_MAX_WIRE_BYTES;
+        free(manifest_wire);
+        if (!manifest_ok)
+            LOG_FAIL("zcode.evidence", "artifact manifest does not bind receipt");
+        size_t wire_len = (size_t)manifest.total_bytes;
+        uint8_t *wire = zcl_malloc(wire_len, "build_fabric.package_evidence");
+        if (!wire)
+            LOG_FAIL("zcode.evidence", "artifact evidence allocation failed");
+        size_t offset = 0;
+        for (uint32_t i = 0; i < manifest.chunk_count; i++) {
+            uint8_t *chunk = NULL;
+            size_t chunk_len = 0;
+            if (vcs_object_load_raw_bounded(
+                    workspace, manifest.chunk_sha3[i],
+                    VCS_BUILD_ARTIFACT_CHUNK_BYTES, &chunk, &chunk_len) != 0 ||
+                !vcs_build_artifact_manifest_v1_verify_chunk(
+                    &manifest, i, chunk, chunk_len) ||
+                chunk_len > wire_len - offset) {
+                free(chunk);
+                free(wire);
+                LOG_FAIL("zcode.evidence", "artifact chunk verification failed");
+            }
+            memcpy(wire + offset, chunk, chunk_len);
+            offset += chunk_len;
+            free(chunk);
+        }
+        if (offset != wire_len) {
+            free(wire);
+            LOG_FAIL("zcode.evidence", "artifact evidence length mismatch");
+        }
+        *out = wire;
+        *out_len = wire_len;
+        return true;
+    }
+    struct vcs_package_store *store = vcs_package_store_global();
+    enum vcs_zcode_work_output_result loaded = store
+        ? vcs_zcode_work_output_get(
+              store, receipt->output_root, receipt->action_root, out, out_len)
+        : VCS_ZCODE_WORK_OUTPUT_ABSENT;
+    if (loaded != VCS_ZCODE_WORK_OUTPUT_OK ||
+        *out_len > VCS_PACKAGE_BUILD_MAX_WIRE_BYTES) {
+        free(*out);
+        *out = NULL;
+        *out_len = 0;
+        LOG_FAIL("zcode.evidence", "work output evidence is unavailable");
+    }
+    return true;
+}
+
 static bool bf_package_evidence_verify(
     const char *workspace, const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_candidate_v1 *candidate,
@@ -232,43 +302,10 @@ static bool bf_package_evidence_verify(
     bool *test_passed, uint8_t evidence_output[32])
 {
     *test_passed = false;
-    uint8_t *manifest_wire = NULL;
-    size_t manifest_len = 0;
-    if (vcs_object_load_raw_bounded(
-            workspace, receipt->output_root, VCS_BUILD_ARTIFACT_WIRE_MAX,
-            &manifest_wire, &manifest_len) != 0)
-        return false;
-    struct vcs_build_artifact_manifest_v1 manifest;
-    uint8_t checked[32];
-    bool manifest_ok = vcs_build_artifact_manifest_v1_parse(
-            manifest_wire, manifest_len, &manifest) &&
-        vcs_build_artifact_manifest_v1_root(&manifest, checked) &&
-        memcmp(checked, receipt->output_root, 32) == 0 &&
-        memcmp(manifest.action_sha3, receipt->action_root, 32) == 0 &&
-        manifest.total_bytes > 0 &&
-        manifest.total_bytes <= VCS_PACKAGE_BUILD_MAX_WIRE_BYTES;
-    free(manifest_wire);
-    if (!manifest_ok) return false;
-    size_t wire_len = (size_t)manifest.total_bytes;
-    uint8_t *wire = zcl_malloc(wire_len, "build_fabric.package_evidence");
-    if (!wire) return false;
-    size_t offset = 0;
-    for (uint32_t i = 0; i < manifest.chunk_count; i++) {
-        uint8_t *chunk = NULL;
-        size_t chunk_len = 0;
-        if (vcs_object_load_raw_bounded(
-                workspace, manifest.chunk_sha3[i],
-                VCS_BUILD_ARTIFACT_CHUNK_BYTES, &chunk, &chunk_len) != 0 ||
-            !vcs_build_artifact_manifest_v1_verify_chunk(
-                &manifest, i, chunk, chunk_len) ||
-            chunk_len > wire_len - offset) {
-            free(chunk); free(wire); return false;
-        }
-        memcpy(wire + offset, chunk, chunk_len);
-        offset += chunk_len;
-        free(chunk);
-    }
-    if (offset != wire_len) { free(wire); return false; }
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (!bf_package_evidence_wire(workspace, receipt, &wire, &wire_len))
+        LOG_FAIL("zcode.evidence", "receipt evidence could not be loaded");
     struct vcs_package_build_receipt package;
     bool standard = policy->minimum_compile_receipts >= 2u ||
                     policy->minimum_test_receipts >= 2u;

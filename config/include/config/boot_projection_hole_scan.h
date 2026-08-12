@@ -25,7 +25,7 @@ bool boot_projection_sparse_prefix_is_expected(int projection_tip,
  * its historical five-second repair loop. */
 bool boot_projection_hole_scan_if_due(
     struct boot_projection_hole_scan *state,
-    const struct node_db *canonical,
+    struct node_db *canonical,
     int max_height,
     bool sparse_prefix,
     bool behind,

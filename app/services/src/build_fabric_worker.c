@@ -11,6 +11,8 @@
 #include "platform/time_compat.h"
 #include "services/build_fabric_package_executor.h"
 #include "services/build_fabric_service.h"
+#include "services/build_fabric_worker_evidence.h"
+#include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/file_tree_ops.h"
 #include "util/spawn.h"
@@ -26,6 +28,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -45,6 +48,28 @@ struct bfw_paths {
     char input[BFW_PATH_MAX];
     char output[BFW_PATH_MAX];
 };
+
+static int64_t bfw_children_cpu_us(void)
+{
+    struct rusage usage;
+    if (getrusage(RUSAGE_CHILDREN, &usage) != 0) return 0;
+    return (int64_t)usage.ru_utime.tv_sec * INT64_C(1000000) +
+           usage.ru_utime.tv_usec +
+           (int64_t)usage.ru_stime.tv_sec * INT64_C(1000000) +
+           usage.ru_stime.tv_usec;
+}
+
+static uint64_t bfw_capture_metric(const char *capture, const char *key,
+                                   uint64_t fallback)
+{
+    const char *at = capture && key ? strstr(capture, key) : NULL;
+    if (!at) return fallback;
+    at += strlen(key);
+    if (*at != '=') return fallback;
+    char *end = NULL;
+    unsigned long long value = strtoull(at + 1, &end, 10);
+    return end != at + 1 ? (uint64_t)value : fallback;
+}
 
 static bool bfw_capability_has(const char *capabilities, const char *wanted)
 {
@@ -333,91 +358,6 @@ static struct zcl_result bfw_load_zcode_context(
     return ZCL_OK;
 }
 
-static struct zcl_result bfw_canonical_receipt(
-    const char *workspace, const struct db_build_action *action,
-    const struct vcs_zcode_task_v1 *task,
-    const struct vcs_zcode_candidate_v1 *candidate,
-    const uint8_t output_root[32], int64_t started, int64_t finished,
-    uint8_t work_kind, uint8_t status, int exit_status,
-    const char *confinement,
-    const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
-    char out_hex[65])
-{
-    uint8_t confinement_root[32];
-    sha3_256((const uint8_t *)confinement, strlen(confinement),
-             confinement_root);
-    if (!vcs_object_put_addressed(workspace, confinement_root,
-                                  (const uint8_t *)confinement,
-                                  strlen(confinement)))
-        return ZCL_ERR(-1, "confinement-evidence-cas-store-failed");
-    struct vcs_zcode_work_receipt_v1 receipt = {
-        .schema_version = VCS_ZCODE_DEV_VERSION,
-        .work_kind = work_kind,
-        .status = status,
-        .exit_status = (uint32_t)exit_status,
-        .started_unix = started,
-        .finished_unix = finished,
-    };
-    if (!zcl_hex_decode_lower(action->task_root_sha3, receipt.task_root, 32) ||
-        !zcl_hex_decode_lower(action->candidate_root_sha3,
-                              receipt.candidate_root, 32) ||
-        !zcl_hex_decode_lower(action->action_id, receipt.action_root, 32) ||
-        !zcl_hex_decode_lower(action->input_root_sha3, receipt.input_root, 32) ||
-        !zcl_hex_decode_lower(action->proof_policy_root_sha3,
-                              receipt.proof_policy_root, 32) ||
-        !zcl_hex_decode_lower(action->lease_id, receipt.lease_id, 32))
-        return ZCL_ERR(-1, "canonical-receipt-roots-invalid");
-    memcpy(receipt.output_root, output_root, 32);
-    memcpy(receipt.toolchain_capsule_root, task->toolchain_capsule_root, 32);
-    memcpy(receipt.evidence_root, output_root, 32);
-    memcpy(receipt.confinement_root, confinement_root, 32);
-    if (vcs_zcode_work_receipt_seal(&receipt, signer_secret, signer_pubkey) !=
-            VCS_ZCODE_DEV_OK ||
-        vcs_zcode_work_receipt_validate_for_candidate(
-            task, candidate, &receipt, finished) != VCS_ZCODE_DEV_OK ||
-        vcs_zcode_work_receipt_verify(&receipt, signer_pubkey) !=
-            VCS_ZCODE_DEV_OK)
-        return ZCL_ERR(-1, "canonical-work-receipt-refused");
-    uint8_t wire[VCS_ZCODE_WORK_RECEIPT_WIRE_BYTES], root[32];
-    if (vcs_zcode_work_receipt_serialize(&receipt, wire) != VCS_ZCODE_DEV_OK ||
-        vcs_zcode_work_receipt_id(&receipt, root) != VCS_ZCODE_DEV_OK ||
-        !vcs_object_put_addressed(workspace, root, wire, sizeof(wire)))
-        return ZCL_ERR(-1, "canonical-work-receipt-cas-store-failed");
-    zcl_hex_encode(root, 32, out_hex);
-    return ZCL_OK;
-}
-
-static struct zcl_result bfw_store_artifact(
-    const char *workspace, const char *action_id, const uint8_t *bytes,
-    size_t len, uint8_t manifest_root[32])
-{
-    struct vcs_build_artifact_manifest_v1 manifest = {0};
-    if (!zcl_hex_decode_lower(action_id, manifest.action_sha3, 32))
-        return ZCL_ERR(-1, "action id is not canonical lowercase hex");
-    manifest.total_bytes = len;
-    manifest.chunk_bytes = VCS_BUILD_ARTIFACT_CHUNK_BYTES;
-    manifest.chunk_count = (uint32_t)((len + VCS_BUILD_ARTIFACT_CHUNK_BYTES - 1u) /
-                                      VCS_BUILD_ARTIFACT_CHUNK_BYTES);
-    for (uint32_t i = 0; i < manifest.chunk_count; i++) {
-        size_t off = (size_t)i * VCS_BUILD_ARTIFACT_CHUNK_BYTES;
-        size_t take = len - off;
-        if (take > VCS_BUILD_ARTIFACT_CHUNK_BYTES)
-            take = VCS_BUILD_ARTIFACT_CHUNK_BYTES;
-        sha3_256(bytes + off, take, manifest.chunk_sha3[i]);
-        if (!vcs_object_put_addressed(workspace, manifest.chunk_sha3[i],
-                                      bytes + off, take))
-            return ZCL_ERR(-1, "cannot persist build artifact chunk %u", i);
-    }
-    uint8_t wire[VCS_BUILD_ARTIFACT_WIRE_MAX];
-    size_t wire_len = 0;
-    if (!vcs_build_artifact_manifest_v1_root(&manifest, manifest_root) ||
-        !vcs_build_artifact_manifest_v1_serialize(
-            &manifest, wire, sizeof(wire), &wire_len) ||
-        !vcs_object_put_addressed(workspace, manifest_root, wire, wire_len))
-        return ZCL_ERR(-1, "cannot persist build artifact manifest");
-    return ZCL_OK;
-}
-
 static struct zcl_result bfw_fail(struct node_db *ndb,
                                   const char *action_id,
                                   const char *lease_id, const char *detail)
@@ -444,6 +384,7 @@ struct zcl_result build_fabric_worker_execute(
         !lease_id ||
         !signer_secret || !signer_pubkey || !out_receipt)
         return ZCL_ERR(-1, "worker execution requires lease, workspace, and key");
+    int64_t worker_started_us = platform_time_monotonic_us();
     char workspace_resolved[BFW_PATH_MAX];
     if (!realpath(workspace, workspace_resolved))
         return ZCL_ERR(-1, "worker workspace cannot be resolved: %s",
@@ -457,6 +398,8 @@ struct zcl_result build_fabric_worker_execute(
         !db_build_worker_find(ndb, action.worker_id, &worker) ||
         strcmp(action.lease_id, lease_id) != 0)
         return ZCL_ERR(-1, "claimed worker action is missing or stale");
+    int64_t action_lookup_us =
+        platform_time_monotonic_us() - worker_started_us;
     char signer_hex[65];
     zcl_hex_encode(signer_pubkey, 32, signer_hex);
     if (strcmp(signer_hex, worker.signer_pubkey) != 0)
@@ -542,10 +485,15 @@ struct zcl_result build_fabric_worker_execute(
                 ndb, action_id, lease_id, "input-cas-corrupt");
         }
     }
+    uint64_t input_bytes = package_action
+        ? VCS_ZCODE_PACKAGE_ACTION_INPUT_WIRE_BYTES : input_len;
+    int64_t input_reconstruction_us =
+        platform_time_monotonic_us() - worker_started_us - action_lookup_us;
     int64_t work_started = (int64_t)platform_time_wall_unix();
     struct zcl_result start = build_fabric_start(
         ndb, action_id, lease_id, work_started);
     if (!start.ok) { free(input); return start; }
+    int64_t materialize_started_us = platform_time_monotonic_us();
     struct bfw_paths paths = {0};
     struct zcl_result paths_result = bfw_paths_init(
         workspace, lease_id, action.kind, &paths);
@@ -572,6 +520,8 @@ struct zcl_result build_fabric_worker_execute(
         bfw_paths_cleanup(&paths);
         return bfw_fail(ndb, action_id, lease_id, "input-materialize-failed");
     }
+    int64_t sandbox_prepare_us =
+        platform_time_monotonic_us() - materialize_started_us;
     char input_arg[BFW_PATH_MAX + 32], output_arg[BFW_PATH_MAX + 32];
     char seeds_arg[64], cpu_arg[64], memory_arg[96], output_limit_arg[96];
     (void)snprintf(input_arg, sizeof(input_arg),
@@ -640,9 +590,14 @@ struct zcl_result build_fabric_worker_execute(
         .action_id = action_id,
     };
     bool spawn_cancelled = false;
+    int64_t child_cpu_before_us = bfw_children_cpu_us();
+    int64_t execution_started_us = platform_time_monotonic_us();
     int rc = zcl_spawn_capture_cancelable(
         spawn_argv, capture, sizeof(capture), execute_timeout,
         bfw_cancel_requested, &cancel_context, &spawn_cancelled);
+    int64_t action_execution_us =
+        platform_time_monotonic_us() - execution_started_us;
+    int64_t child_cpu_us = bfw_children_cpu_us() - child_cpu_before_us;
     if (spawn_cancelled) {
         bfw_paths_cleanup(&paths);
         return ZCL_ERR(-1, "%s",
@@ -665,6 +620,7 @@ struct zcl_result build_fabric_worker_execute(
         bfw_paths_cleanup(&paths);
         return bfw_fail(ndb, action_id, lease_id, detail);
     }
+    int64_t output_verify_started_us = platform_time_monotonic_us();
     struct zcl_result verify = build_fabric_begin_verify(
         ndb, action_id, lease_id, (int64_t)platform_time_wall_unix());
     if (!verify.ok) { bfw_paths_cleanup(&paths); return verify; }
@@ -699,13 +655,18 @@ struct zcl_result build_fabric_worker_execute(
                         : test_action ? "test-evidence-invalid"
                                       : "output-elf-invalid");
     }
+    int64_t output_verify_us =
+        platform_time_monotonic_us() - output_verify_started_us;
     uint8_t output_root[32];
-    struct zcl_result stored = bfw_store_artifact(
-        workspace, action_id, output, output_len, output_root);
+    int64_t output_cas_started_us = platform_time_monotonic_us();
+    struct zcl_result stored = build_fabric_worker_store_transferable_output(
+        workspace, action_id, zcode_context, output, output_len, output_root);
     free(output);
     bfw_paths_cleanup(&paths);
     if (!stored.ok)
-        return bfw_fail(ndb, action_id, lease_id, "output-cas-store-failed");
+        return bfw_fail(ndb, action_id, lease_id, stored.message);
+    int64_t output_cas_us =
+        platform_time_monotonic_us() - output_cas_started_us;
     int64_t work_finished = (int64_t)platform_time_wall_unix();
     bool input_current = package_action
         ? vcs_zcode_package_action_input_load_cas(
@@ -738,6 +699,9 @@ struct zcl_result build_fabric_worker_execute(
         zcode_candidate = checked_candidate;
         zcode_policy = checked_policy;
     }
+    int64_t revalidation_us =
+        platform_time_monotonic_us() - output_cas_started_us - output_cas_us;
+    int64_t receipt_started_us = platform_time_monotonic_us();
     struct db_build_receipt receipt = {0};
     (void)snprintf(receipt.action_id, sizeof(receipt.action_id), "%s",
                    action.action_id);
@@ -771,7 +735,7 @@ struct zcl_result build_fabric_worker_execute(
     receipt.exit_status = work_exit_status;
     receipt.created_at = work_finished;
     if (zcode_context) {
-        struct zcl_result canonical = bfw_canonical_receipt(
+        struct zcl_result canonical = build_fabric_worker_canonical_receipt(
             workspace, &action, &zcode_task, &zcode_candidate, output_root,
             work_started, work_finished, work_kind, work_status,
             work_exit_status, confinement, signer_secret, signer_pubkey,
@@ -787,9 +751,40 @@ struct zcl_result build_fabric_worker_execute(
     ed25519_sign(signature, receipt_id, sizeof(receipt_id), signer_secret,
                  signer_pubkey);
     zcl_hex_encode(signature, sizeof(signature), receipt.signature);
+    int64_t receipt_sign_us =
+        platform_time_monotonic_us() - receipt_started_us;
+    int64_t projection_started_us = platform_time_monotonic_us();
     struct zcl_result accepted = build_fabric_receipt_accept(
         ndb, &receipt, receipt.created_at);
     if (!accepted.ok) return accepted;
+    int64_t projection_us =
+        platform_time_monotonic_us() - projection_started_us;
+    uint64_t child_processes = bfw_capture_metric(
+        capture, "processes", 1);
+    uint64_t compiler_processes = bfw_capture_metric(
+        capture, "compiler_processes", package_action ? 0 : 1);
+    uint64_t test_processes = bfw_capture_metric(
+        capture, "test_processes", test_action || fuzz_action ? 1 : 0);
+    LOG_INFO("zcode.proof_perf",
+             "schema=zcl.async_proof_perf.v1 action=%s stage=worker_execute "
+             "lookup_us=%lld input_reconstruction_us=%lld "
+             "sandbox_prepare_us=%lld execution_us=%lld child_cpu_us=%lld "
+             "output_verify_us=%lld output_cas_us=%lld revalidation_us=%lld "
+             "receipt_sign_us=%lld projection_us=%lld input_bytes=%llu "
+             "output_bytes=%zu processes=%llu compiler_processes=%llu "
+             "test_processes=%llu cache_hit=%d total_us=%lld",
+             action.action_id, (long long)action_lookup_us,
+             (long long)input_reconstruction_us,
+             (long long)sandbox_prepare_us, (long long)action_execution_us,
+             (long long)(child_cpu_us < 0 ? 0 : child_cpu_us),
+             (long long)output_verify_us, (long long)output_cas_us,
+             (long long)revalidation_us, (long long)receipt_sign_us,
+             (long long)projection_us, (unsigned long long)input_bytes,
+             output_len, (unsigned long long)child_processes,
+             (unsigned long long)compiler_processes,
+             (unsigned long long)test_processes,
+             strcmp(action.state, "CACHE_HIT") == 0 ? 1 : 0,
+             (long long)(platform_time_monotonic_us() - worker_started_us));
     *out_receipt = receipt;
     return ZCL_OK;
 }

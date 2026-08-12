@@ -83,6 +83,16 @@ struct node_db {
     int64_t last_activity_time;
     int last_sqlite_rc;
     char last_op[64];
+    /* Process-wide SQLite backing-file lease.  The canonical boot handle is
+     * the only backing owner; runtime helpers own only their connection. */
+    uint64_t lifetime_generation;
+    bool lifetime_backing_owner;
+    char lifetime_owner[80];
+    /* Held only by node_db_open() for the lifetime of the canonical boot
+     * handle.  It prevents a second process from mistaking the same live
+     * node.db for an offline database and running boot/close ceremony over
+     * its WAL.  Runtime helper connections never own this lease. */
+    int lifetime_owner_lease_slot;
     /* Transient: set for a runtime reopen so node_db_migrate() suppresses the
      * boot-only "current schema version" banner. Never mistake a background
      * reopen for a boot. See node_db_open_runtime(). */

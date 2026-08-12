@@ -22,6 +22,7 @@ struct work_track {
     bool inbound;
     bool finished;
     bool cancelled;
+    bool expired;
     uint64_t peer;
     uint8_t progress_stage;
     struct vcs_zcode_work_request_v1 request;
@@ -207,6 +208,7 @@ void vcs_zcode_work_node_tick(struct vcs_zcode_work_node *node, int64_t now)
     for (size_t i = 0; i < sizeof(node->tracks) / sizeof(node->tracks[0]); i++) {
         struct work_track *track = &node->tracks[i];
         if (!track->used || track->finished || track->cancelled ||
+            track->expired ||
             now < track->request.deadline_unix)
             continue;
         if (track->inbound) {
@@ -221,7 +223,11 @@ void vcs_zcode_work_node_tick(struct vcs_zcode_work_node *node, int64_t now)
                     node->peers[peer_at].capability.slots)
                 node->peers[peer_at].capability.queue_headroom++;
         }
-        memset(track, 0, sizeof(*track));
+        /* Keep the immutable request binding after its lease expires.  A
+         * worker may still finish an already-running child; retaining this
+         * bounded tombstone lets publish_result name WORK_LEASE_EXPIRED
+         * instead of silently losing the result as "unrequested". */
+        track->expired = true;
     }
     size_t kept = 0;
     for (size_t i = 0; i < node->request_count; i++) {
@@ -341,6 +347,24 @@ static struct work_track *work_add_track(struct vcs_zcode_work_node *node)
     return NULL;
 }
 
+static void work_remove_queued_request(struct vcs_zcode_work_node *node,
+                                       uint64_t peer, uint64_t request_id)
+{
+    size_t kept = 0;
+    for (size_t i = 0; i < node->request_count; i++) {
+        size_t src = (node->request_pos + i) %
+                     VCS_ZCODE_WORK_NODE_MAX_REQUESTS;
+        if (node->requests[src].peer == peer &&
+            node->requests[src].request.request_id == request_id)
+            continue;
+        size_t dst = (node->request_pos + kept) %
+                     VCS_ZCODE_WORK_NODE_MAX_REQUESTS;
+        if (dst != src) node->requests[dst] = node->requests[src];
+        kept++;
+    }
+    node->request_count = kept;
+}
+
 enum vcs_zcode_work_node_result vcs_zcode_work_node_submit(
     struct vcs_zcode_work_node *node, uint64_t peer,
     const struct vcs_zcode_work_request_v1 *request, int64_t now)
@@ -427,6 +451,8 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_result(
     if (!node->has_local_capability)
         result = VCS_ZCODE_WORK_NODE_NOT_LOCAL_WORKER;
     else if (!track) result = VCS_ZCODE_WORK_NODE_UNREQUESTED;
+    else if (track->expired)
+        result = VCS_ZCODE_WORK_NODE_LEASE_EXPIRED;
     else if (track->finished || track->cancelled)
         result = VCS_ZCODE_WORK_NODE_REPLAY;
     else if (!vcs_zcode_work_result_verify(
@@ -446,6 +472,8 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_result(
                 node->local_capability.queue_headroom++;
         }
     }
+    if (result == VCS_ZCODE_WORK_NODE_LEASE_EXPIRED && track)
+        memset(track, 0, sizeof(*track));
     pthread_mutex_unlock(&node->lock);
     return result;
 }
@@ -462,6 +490,8 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_progress(
     if (!node->has_local_capability)
         result = VCS_ZCODE_WORK_NODE_NOT_LOCAL_WORKER;
     else if (!track) result = VCS_ZCODE_WORK_NODE_UNREQUESTED;
+    else if (track->expired)
+        result = VCS_ZCODE_WORK_NODE_LEASE_EXPIRED;
     else if (track->finished || track->cancelled)
         result = VCS_ZCODE_WORK_NODE_REPLAY;
     else if (!vcs_zcode_work_progress_verify_for_request(
@@ -547,6 +577,10 @@ static enum vcs_zcode_work_node_result work_handle_cancel(
     node->cancels[slot].cancel = *cancel;
     node->cancel_count++;
     track->cancelled = true;
+    /* A cancellation owns both the immutable track transition and removal
+     * from the pending admission projection.  Leaving the FIFO entry behind
+     * could admit cancelled work or hide a later live request at its head. */
+    work_remove_queued_request(node, peer, cancel->request_id);
     if (node->local_capability.queue_headroom <
         node->local_capability.slots)
         node->local_capability.queue_headroom++;
@@ -560,7 +594,7 @@ static enum vcs_zcode_work_node_result work_handle_result(
     struct work_track *track = work_find_track(
         node, peer, result_row->request_id, false);
     if (!track) return VCS_ZCODE_WORK_NODE_UNREQUESTED;
-    if (now >= track->request.deadline_unix)
+    if (track->expired || now >= track->request.deadline_unix)
         return VCS_ZCODE_WORK_NODE_LEASE_EXPIRED;
     if (track->finished || track->cancelled)
         return VCS_ZCODE_WORK_NODE_REPLAY;

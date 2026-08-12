@@ -94,7 +94,7 @@ static bool zdev_runtime_owns_ledger(const char *datadir)
  * exact canonical input to the authenticated daemon, where the same handler
  * revalidates it and commits through app_runtime_node_db().  A closed scratch
  * fixture has no cookie and keeps the deterministic local test path. */
-static bool zdev_forward_live_command(
+bool zcl_native_forward_live_command(
     const struct zcl_command_request *request, const char *datadir,
     const char *rpc_method, const char *fallback_code,
     const char *fallback_phase, const char *evidence,
@@ -107,6 +107,7 @@ static bool zdev_forward_live_command(
     int cn = snprintf(cookie, sizeof(cookie), "%s/.cookie", datadir);
     if (cn <= 0 || (size_t)cn >= sizeof(cookie) || access(cookie, R_OK) != 0)
         return false;
+    int64_t encode_started_us = platform_time_monotonic_us();
     struct json_value params;
     json_init(&params); json_set_array(&params);
     bool built = json_push_back(&params, request->input);
@@ -115,22 +116,32 @@ static bool zdev_forward_live_command(
         ? zcl_malloc(needed + 1u, "zcode.live_rpc") : NULL;
     if (!wire || json_write(&params, wire, needed + 1u) != needed) {
         free(wire); json_free(&params);
-        zdev_fail(reply, "LIVE_ADMISSION_ENCODE_FAILED",
-                  "canonical live admission input could not be encoded");
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "LIVE_ADMISSION_ENCODE_FAILED", "encode", false, false,
+            "canonical live command input could not be encoded", evidence);
         return true;
     }
     json_free(&params);
+    int64_t encode_us = platform_time_monotonic_us() - encode_started_us;
     zcl_native_bridge_ensure_rpc();
+    int64_t rpc_started_us = platform_time_monotonic_us();
     char *raw = node_rpc_call(rpc_method, wire);
+    int64_t rpc_us = platform_time_monotonic_us() - rpc_started_us;
+    size_t response_bytes = raw ? strlen(raw) : 0;
     free(wire);
+    int64_t decode_started_us = platform_time_monotonic_us();
     struct json_value body;
     bool parsed = raw && json_read(&body, raw, strlen(raw)) &&
                   body.type == JSON_OBJ;
     free(raw);
     if (!parsed) {
         json_free(&body);
-        zdev_fail(reply, "LIVE_ADMISSION_UNAVAILABLE",
-                  "the selected full node did not answer canonical admission");
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "LIVE_ADMISSION_UNAVAILABLE", "transport", true, false,
+            "the selected full node did not answer the canonical command",
+            evidence);
         return true;
     }
     const struct json_value *ok = json_get(&body, "ok");
@@ -140,6 +151,16 @@ static bool zdev_forward_live_command(
         json_free(&reply->data);
         json_init(&reply->data);
         json_copy(&reply->data, data);
+        (void)json_push_kv_int(&reply->data, "live_rpc_encode_us",
+                               encode_us < 0 ? 0 : encode_us);
+        (void)json_push_kv_int(&reply->data, "live_rpc_admission_us",
+                               rpc_us < 0 ? 0 : rpc_us);
+        (void)json_push_kv_int(&reply->data, "live_rpc_decode_us",
+            platform_time_monotonic_us() - decode_started_us);
+        (void)json_push_kv_int(&reply->data, "live_rpc_request_bytes",
+                               (int64_t)needed);
+        (void)json_push_kv_int(&reply->data, "live_rpc_response_bytes",
+                               (int64_t)response_bytes);
     } else {
         const char *code = json_get_str(json_get(&body, "code"));
         const char *phase = json_get_str(json_get(&body, "phase"));
@@ -587,7 +608,7 @@ void zcl_native_handle_zcode_evidence(
     const char *action_id = zdev_str(request->input, "action_id");
     const char *datadir = zdev_str(request->input, "datadir");
     if (!datadir || !datadir[0]) datadir = zcl_native_command_datadir();
-    if (zdev_forward_live_command(
+    if (zcl_native_forward_live_command(
             request, datadir, "zcode_work_evidence",
             "LIVE_EVIDENCE_FAILED", "evaluate", "zcode.evidence", reply))
         return;
@@ -918,7 +939,7 @@ void zcl_native_handle_zcode_improve(
         zdev_fail(reply, "BAD_MODE", "mode must be plan or admit");
         return;
     }
-    if (!plan_only && zdev_forward_live_command(
+    if (!plan_only && zcl_native_forward_live_command(
             request, datadir, "zcode_work_admit",
             "LIVE_ADMISSION_FAILED", "admit", "zcode.improve", reply))
         return;
@@ -1390,7 +1411,10 @@ void zcl_native_handle_zcode_improve(
         zdev_fail(reply, "ACTION_ID_FAILED", "fixed build action identity refused");
         return;
     }
+    int64_t request_creation_us =
+        platform_time_monotonic_us() - submit_started_us;
     (void)snprintf(action.job_id, sizeof(action.job_id), "%s", job.job_id);
+    int64_t ledger_started_us = platform_time_monotonic_us();
     char db_path[ZDEV_PATH_MAX];
     int dbn = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
     struct node_db local_ndb = {0};
@@ -1417,8 +1441,14 @@ void zcl_native_handle_zcode_improve(
                 now, frontier_secret, frontier_pubkey, &frontier_status);
     }
     memset(frontier_secret, 0, sizeof(frontier_secret));
-    struct zcl_result submitted = admitted.ok
-        ? build_fabric_submit(ndb, job.job_id, now) : admitted;
+    /* The runtime-owned action is immutable input for peer proof, not local
+     * worker work. Keeping its canonical state SNAPSHOTTED prevents the
+     * requester daemon from racing the selected peer and masking missing
+     * remote evidence. Offline fixture ledgers retain explicit QUEUED
+     * behavior for the local build-fabric interface. */
+    struct zcl_result submitted = admitted.ok && owned
+        ? ZCL_OK : admitted.ok ? build_fabric_submit(ndb, job.job_id, now)
+                               : admitted;
     struct db_build_proof_event proof_request = {0};
     bool proof_request_created = false;
     int64_t request_elapsed_us =
@@ -1430,6 +1460,7 @@ void zcl_native_handle_zcode_improve(
               &proof_request, &proof_request_created)
         : submitted;
     int64_t local_submit_us = platform_time_monotonic_us() - submit_started_us;
+    int64_t ledger_us = platform_time_monotonic_us() - ledger_started_us;
     if (!owned) node_db_close(ndb);
     if (!planned.ok || !admitted.ok || !submitted.ok || !proof_requested.ok) {
         const char *code = !planned.ok ? "ZBUILD_PLAN_FAILED" :
@@ -1471,7 +1502,8 @@ void zcl_native_handle_zcode_improve(
         (void)json_push_kv_int(&reply->data, "patch_content_bytes",
                                (int64_t)patch_bytes);
     }
-    (void)json_push_kv_str(&reply->data, "state", "QUEUED");
+    (void)json_push_kv_str(&reply->data, "state",
+                           owned ? "SNAPSHOTTED" : "QUEUED");
     (void)json_push_kv_str(&reply->data, "lane", frontier_status.lane_name);
     (void)json_push_kv_str(&reply->data, "lane_receipt_root",
                            frontier_status.receipt_root_sha3);
@@ -1486,6 +1518,11 @@ void zcl_native_handle_zcode_improve(
                            (int64_t)proof_request.request_id);
     (void)json_push_kv_bool(&reply->data, "request_deduplicated",
                             !proof_request_created);
+    (void)json_push_kv_int(&reply->data, "foreground_request_creation_us",
+                           request_creation_us < 0 ? 0 : request_creation_us);
+    (void)json_push_kv_int(&reply->data,
+                           "durable_action_lookup_dedup_us",
+                           ledger_us < 0 ? 0 : ledger_us);
     (void)json_push_kv_int(&reply->data, "local_submit_us",
                            local_submit_us < 0 ? 0 : local_submit_us);
     (void)json_push_kv_int(&reply->data, "local_first_feedback_us",

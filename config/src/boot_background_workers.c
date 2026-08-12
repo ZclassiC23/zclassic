@@ -1,21 +1,16 @@
 #define _GNU_SOURCE  /* pthread_timedjoin_np */
-
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Boot background-workers unit — long-lived helper threads spawned by
  * app_init_services at scattered points during runtime startup and joined by
- * app_shutdown_svc. The start/join helpers are exposed via
- * boot_background_workers.h and called from their original sites in
- * boot_services.c, preserving boot order.
- *
+ * app_shutdown_svc. Start/join helpers remain exposed through
+ * boot_background_workers.h and preserve their boot_services.c order.
  * Workers: payment_processor_thread, address_backfill_service_thread,
  * hodl_history_worker_thread, projection_backfill_service_thread. (The
  * fast-sync snapshot-offer worker moved to boot_snapshot_offer.c and the
  * background UTXO-replay worker moved to boot_utxo_replay.c, both to keep
- * this file under the E1 ceiling; each shares the worker_on_stall /
- * boot_register_worker_supervisor helpers declared by
- * boot_background_workers.h and implemented in boot_worker_supervisor.c.)
- *
+ * this file under E1; both share the worker_on_stall and registration helpers
+ * implemented in boot_worker_supervisor.c.)
  * The worker bodies reach the boot context through the boot_services.c
  * accessors (boot_node_db / boot_db_service / boot_running /
  * boot_profile_has_file_service / boot_start_catchup_service /
@@ -32,6 +27,7 @@
 #include "services/hodl_history_service.h"
 #include "services/node_db_catchup_service.h"
 #include "services/chain_state_service.h"
+#include "controllers/store_controller.h"
 #include "jobs/reducer_frontier.h"
 #include "jobs/refold_progress.h"  /* refold_in_progress — suppress projection
                                     * backfill while a mint/refold discards the
@@ -56,7 +52,6 @@
 #include <pthread.h>
 #include <errno.h>
 
-extern void store_process_payments(const char *datadir);
 extern void *backfill_addresses_thread(void *arg);
 
 /* Worker bodies — forward-declared so the start/join pairs below can name them
@@ -64,6 +59,15 @@ extern void *backfill_addresses_thread(void *arg);
  * forward declarations). */
 static void *payment_processor_thread(void *arg);
 static void *address_backfill_service_thread(void *arg);
+
+static bool payment_processor_lane_write(struct node_db *ndb, void *arg)
+{
+    struct boot_svc_ctx *svc = arg;
+    if (!svc || !svc->datadir)
+        LOG_FAIL("store", "payment processor lost its runtime owner");
+    store_process_payments_with_db(ndb, svc->datadir);
+    return true;
+}
 
 /* ── Supervisor liveness (Model A — MONITOR; disk_monitor.c exemplar) ─
  *
@@ -749,7 +753,11 @@ static void *payment_processor_thread(void *arg)
             sleep(1);
         if (!boot_running(svc))
             break;
-        store_process_payments(svc->datadir);
+        struct db_service *dbsvc = boot_db_service(svc);
+        if (!dbsvc || !db_service_run_write(
+                dbsvc, payment_processor_lane_write, svc))
+            LOG_WARN("store",
+                     "payment scan could not enter the canonical DB lane");
         watchdog_check_stuck(svc);
     }
     boot_complete_worker_supervisor(&g_payment_sup_id);

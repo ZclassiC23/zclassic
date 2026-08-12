@@ -40,6 +40,10 @@ size_t store_handle_request(const char *method, const char *path,
 
 /* Background: check pending orders for payments, mint tokens. */
 void store_process_payments(const char *datadir);
+/* Live-node form: caller supplies the canonical DB-service-owned ledger.
+ * The path-only wrapper above remains for stopped test fixtures. */
+void store_process_payments_with_db(struct node_db *ndb,
+                                    const char *datadir);
 
 /* Check if customer has enough ZSLP tokens for a service.
  * Used as before_action hook on protected routes. */

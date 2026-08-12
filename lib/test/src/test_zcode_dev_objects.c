@@ -1605,6 +1605,13 @@ static int test_zd_work_node(void)
         ASSERT(vcs_zcode_work_node_next_request(
             worker, &peer_out, &received));
         zd_swarm_result(&result, &received, 81, 71);
+        vcs_zcode_work_node_tick(worker, 1150);
+        ASSERT(vcs_zcode_work_node_inbound_request(
+            worker, 22, 703, &received, NULL));
+        ASSERT_EQ(vcs_zcode_work_node_publish_result(worker, 22, &result),
+                  VCS_ZCODE_WORK_NODE_LEASE_EXPIRED);
+        ASSERT(!vcs_zcode_work_node_inbound_request(
+            worker, 22, 703, &received, NULL));
         ASSERT(vcs_zcode_work_node_next_outbound(
             worker, 22, &peer_out, frame, &frame_len) == false);
         zd_swarm_progress(&progress, &received,
@@ -1747,7 +1754,7 @@ static int test_zd_work_node_three(void)
             &stale, frame, sizeof(frame), &frame_len));
         ASSERT_EQ(vcs_zcode_work_node_handle_frame(
             a, 11, frame, frame_len, 1101),
-            VCS_ZCODE_WORK_NODE_UNREQUESTED);
+            VCS_ZCODE_WORK_NODE_LEASE_EXPIRED);
         vcs_zcode_work_node_free(a); /* A dies; B and C remain full peers. */
         request.request_id = 801; request.deadline_unix = 1300;
         ASSERT(vcs_zcode_work_request_seal(&request, b_secret, b_key));

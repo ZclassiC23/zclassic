@@ -3,6 +3,7 @@
 
 #include "config/boot_zcode_work_progress.h"
 
+#include "base/hex.h"
 #include "config/boot_zcode_async_proof.h"
 #include "config/runtime.h"
 #include "models/build_fabric.h"
@@ -107,7 +108,31 @@ bool boot_zcode_work_result_observe(
     struct zcl_result observed = build_fabric_receipt_observe_remote(
         ndb, owner, request, result, now, receipt_id);
     int64_t elapsed = platform_time_monotonic_us() - started;
-    return observed.ok && boot_zcode_async_proof_observe_result(
+    if (!observed.ok) return false;
+    int64_t projection_started_us = platform_time_monotonic_us();
+    bool projected = boot_zcode_async_proof_observe_result(
         ndb, peer, request, result, receipt_id,
         elapsed < 0 ? 0 : elapsed, now);
+    int64_t projection_us =
+        platform_time_monotonic_us() - projection_started_us;
+    if (projected) {
+        char action_id[65];
+        zcl_hex_encode(request->action_root, 32, action_id);
+        struct vcs_zcode_work_swarm_message message = {
+            .type = VCS_ZCODE_WORK_SWARM_RESULT,
+            .body.result = *result,
+        };
+        int64_t transport_us = result->receipt.finished_unix < now
+            ? (now - result->receipt.finished_unix) * INT64_C(1000000) : 0;
+        LOG_INFO("zcode.proof_perf",
+                 "schema=zcl.async_proof_perf.v1 action=%s "
+                 "stage=requester_result result_transport_us=%lld "
+                 "receipt_verification_us=%lld projection_us=%lld "
+                 "result_wire_bytes=%zu",
+                 action_id, (long long)transport_us,
+                 (long long)(elapsed < 0 ? 0 : elapsed),
+                 (long long)(projection_us < 0 ? 0 : projection_us),
+                 vcs_zcode_work_swarm_wire_size(&message));
+    }
+    return projected;
 }
