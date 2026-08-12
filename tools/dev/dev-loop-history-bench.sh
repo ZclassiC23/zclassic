@@ -84,6 +84,7 @@ declare -A LIVE=()
 declare -A SHADOW=()
 declare -A HOT_EXECUTE=()
 declare -A SERVICE_SOURCE=()
+declare -A HOT_FORK=()
 load_live_manifest()
 {
     local value path
@@ -157,10 +158,30 @@ load_service_manifest()
     ' "$ROOT/config/hotswap_services.def")
 }
 
+load_hotfork_manifest()
+{
+    local source
+    while IFS= read -r source; do
+        [[ -n "$source" ]] && HOT_FORK["$source"]=1
+    done < <(awk '
+      /^HOTFORK_CAPSULE\(/ { active=1; count=0 }
+      active {
+        rest=$0
+        while (match(rest,/"[^"]+"/)) {
+          value=substr(rest,RSTART+1,RLENGTH-2)
+          count++; if (count==2) { print value; active=0; break }
+          rest=substr(rest,RSTART+RLENGTH)
+        }
+      }
+    ' "$ROOT/config/hotfork_capsules.def")
+}
+
 classify()
 {
     local path="$1"
-    if [ -n "${HOT_EXECUTE[$path]:-}" ]; then
+    if [ -n "${HOT_FORK[$path]:-}" ]; then
+        printf 'HOT_FORK\texact candidate executes in a sandboxed disposable child story'
+    elif [ -n "${HOT_EXECUTE[$path]:-}" ]; then
         printf 'HOT_SHADOW_CORE\tpure candidate implementation executed by its frozen owner story'
     elif [ -n "${SHADOW[$path]:-}" ]; then
         printf 'COMPILE_ONLY\tstatic authority shell candidate is compiled but not executed'
@@ -191,6 +212,7 @@ classify()
 load_live_manifest
 load_shadow_manifest
 load_service_manifest
+load_hotfork_manifest
 
 if [ "$MODE" = "--self-test" ]; then
     [ "$(classify core/consensus/src/example.c | cut -f1)" = forbidden_authority_surface ] ||
@@ -205,6 +227,8 @@ if [ "$MODE" = "--self-test" ]; then
         fail 'shadow service classification regressed'
     [ "$(classify tools/command/native_dev_command.c | cut -f1)" = COMPILE_ONLY ] ||
         fail 'static-shell compile-only classification regressed'
+    [ "$(classify lib/vcs/src/source_package_checkout.c | cut -f1)" = HOT_FORK ] ||
+        fail 'HOT_FORK capsule classification regressed'
     printf 'dev-loop-history-bench: self-test PASS\n'
     exit 0
 fi

@@ -2745,7 +2745,7 @@ HOTSWAP_MODULE_LDFLAGS = -shared -Wl,--build-id=none -Wl,-z,relro -Wl,-z,now \
 # and remain available regardless.
 $(HOTSWAP_ACTION_PLAN): Makefile config/hotswap_swappable.def \
 		config/hotswap_islands.def config/hotswap_services.def \
-		config/hotswap_shadow_owners.def
+		config/hotswap_shadow_owners.def config/hotfork_capsules.def
 	@set -eu; \
 	mkdir -p "$(dir $@)"; \
 	tmp="$$(mktemp "$(dir $@).flags.XXXXXX")"; \

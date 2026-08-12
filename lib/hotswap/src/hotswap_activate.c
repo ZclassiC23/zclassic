@@ -24,6 +24,7 @@
 
 #define _GNU_SOURCE
 #include "hotswap/hotswap_module.h"
+#include "hotswap/hotfork_capsule.h"
 #include "hotswap/hotswap.h"
 #include "hotswap/hotswap_retire_blocker.h"
 
@@ -683,6 +684,40 @@ static bool artifact_sha256_fd(int fd, char hex_out[65])
     return true;
 }
 
+bool zcl_hotswap_hotfork_visit_so(
+    const char *so_path, const char *expected_sha256,
+    zcl_hotfork_capsule_visit_fn visit, void *ctx,
+    char actual_sha256[65])
+{
+    if (!so_path || !expected_sha256 || strlen(expected_sha256) != 64 ||
+        !visit || !actual_sha256)
+        return false;
+    actual_sha256[0] = '\0';
+    int fd = open(so_path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat st;
+    if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) ||
+        !artifact_sha256_fd(fd, actual_sha256) ||
+        strcmp(actual_sha256, expected_sha256) != 0) {
+        if (fd >= 0) (void)close(fd);
+        return false;
+    }
+    char pinned[64];
+    (void)snprintf(pinned, sizeof(pinned), "/proc/self/fd/%d", fd);
+    void *handle = dlopen(pinned, RTLD_LAZY | RTLD_LOCAL);
+    if (!handle) {
+        (void)close(fd);
+        return false;
+    }
+    dlerror();
+    const struct zcl_hotfork_capsule_v1 *capsule =
+        dlsym(handle, ZCL_HOTFORK_CAPSULE_SYMBOL);
+    const char *sym_error = dlerror();
+    bool ok = !sym_error && capsule && visit(capsule, ctx);
+    (void)dlclose(handle);
+    (void)close(fd);
+    return ok;
+}
+
 /* Find (or, if activating a not-yet-seen source, add) the per-source slot.
  * ASSUMES g_act_lock held. Returns NULL only when the fixed table is full. */
 static struct hotswap_act_slot *slot_for_source_locked(const char *source)
@@ -933,6 +968,20 @@ bool hotswap_activate_local(const char *so_path, const char *resolved_datadir,
 }
 
 #else /* !ZCL_DEV_BUILD — release: no dynamic activation surface */
+
+bool zcl_hotswap_hotfork_visit_so(
+    const char *so_path, const char *expected_sha256,
+    zcl_hotfork_capsule_visit_fn visit, void *ctx,
+    char actual_sha256[65])
+{
+    (void)so_path;
+    (void)expected_sha256;
+    (void)visit;
+    (void)ctx;
+    if (actual_sha256)
+        actual_sha256[0] = '\0';
+    return false;
+}
 
 bool hotswap_activate(const char *so_path, const char *resolved_datadir,
                       bool request_activate,

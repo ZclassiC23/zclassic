@@ -20,6 +20,8 @@
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "services/dev_reflex_policy_service.h"
+#include "hotswap/hotfork_capsule.h"
+#include "platform/os_sandbox.h"
 #include "platform/time_compat.h"
 #include "util/safe_alloc.h"
 #include "util/spawn.h"
@@ -35,6 +37,7 @@
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -68,6 +71,22 @@ struct hs_dep {
 static pthread_mutex_t g_plan_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct hs_action_plan g_plan;
 
+struct hs_hotfork_def {
+    const char *owner_id;
+    const char *source_tu;
+    const char *story_id;
+    const char *exercised_surface;
+};
+
+#define HOTFORK_CAPSULE(owner_id_, source_tu_, story_id_, surface_) \
+    { owner_id_, source_tu_, story_id_, surface_ },
+static const struct hs_hotfork_def k_hotfork_defs[] = {
+#include "../../config/hotfork_capsules.def"
+};
+#undef HOTFORK_CAPSULE
+
+static void hs_sha3_root(const char *text, char out[65]);
+
 static void hs_why(char *why, size_t why_len, const char *message)
 {
     if (why && why_len)
@@ -85,7 +104,9 @@ void zcl_devloop_hotswap_guidance(
     if (why_not_live && why_not_live_size) {
         const char *exact = passed ? "" : why;
         if (story_green || compile_green)
-            exact = "HOT_SHADOW is proposal-only and never publishes runtime authority";
+            exact = phase && strcmp(phase, "hotfork_owner_story") == 0
+                ? "HOT_FORK is child-only evidence and never publishes runtime authority"
+                : "reflex candidate evidence never publishes runtime authority";
         else if (!passed && (!exact || !exact[0])) {
             exact = phase && strcmp(phase, "compile") == 0
                 ? "candidate compilation did not produce a publishable artifact"
@@ -189,6 +210,7 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
     int64_t started = platform_time_monotonic_us();
     char flags_path[PATH_MAX], makefile[PATH_MAX], manifest[PATH_MAX];
     char islands[PATH_MAX], services[PATH_MAX], shadow_owners[PATH_MAX];
+    char hotfork_capsules[PATH_MAX];
     if (snprintf(flags_path, sizeof(flags_path),
                  "%s/build/hotswap/fast/flags.env", root) >=
             (int)sizeof(flags_path) ||
@@ -205,12 +227,16 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
             (int)sizeof(services) ||
         snprintf(shadow_owners, sizeof(shadow_owners),
                  "%s/config/hotswap_shadow_owners.def", root) >=
-            (int)sizeof(shadow_owners)) {
+            (int)sizeof(shadow_owners) ||
+        snprintf(hotfork_capsules, sizeof(hotfork_capsules),
+                 "%s/config/hotfork_capsules.def", root) >=
+            (int)sizeof(hotfork_capsules)) {
         hs_why(why, why_len, "action plan path overflow");
         return false;
     }
     struct stat stamp, make_st, manifest_st, islands_st, services_st;
     struct stat shadow_owners_st;
+    struct stat hotfork_capsules_st;
     if (!hs_regular(flags_path, &stamp)) {
         hs_why(why, why_len,
                "resident action plan absent; run make dev-bin once");
@@ -220,6 +246,7 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
         !hs_regular(islands, &islands_st) ||
         !hs_regular(services, &services_st) ||
         !hs_regular(shadow_owners, &shadow_owners_st) ||
+        !hs_regular(hotfork_capsules, &hotfork_capsules_st) ||
         make_st.st_mtim.tv_sec > stamp.st_mtim.tv_sec ||
         (make_st.st_mtim.tv_sec == stamp.st_mtim.tv_sec &&
          make_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec) ||
@@ -235,6 +262,13 @@ static bool hs_plan_load_locked(const char *root, bool *cache_hit,
         shadow_owners_st.st_mtim.tv_sec > stamp.st_mtim.tv_sec ||
         (shadow_owners_st.st_mtim.tv_sec == stamp.st_mtim.tv_sec &&
          shadow_owners_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec)) {
+        hs_why(why, why_len,
+               "resident action plan stale; refresh after build-system change");
+        return false;
+    }
+    if (hotfork_capsules_st.st_mtim.tv_sec > stamp.st_mtim.tv_sec ||
+        (hotfork_capsules_st.st_mtim.tv_sec == stamp.st_mtim.tv_sec &&
+         hotfork_capsules_st.st_mtim.tv_nsec > stamp.st_mtim.tv_nsec)) {
         hs_why(why, why_len,
                "resident action plan stale; refresh after build-system change");
         return false;
@@ -345,10 +379,12 @@ static bool hs_depfile_read(const char *root, const char *path,
             ? snprintf(full, sizeof(full), "%s", argv[i])
             : snprintf(full, sizeof(full), "%s/%s", root, argv[i]);
         struct stat st;
-        if (pn <= 0 || pn >= (int)sizeof(full) || !hs_regular(full, &st))
+        if (pn <= 0 || pn >= (int)sizeof(full))
             return false;
         if (strstr(full, "/build/hotswap/fast/.resident-") != NULL)
             continue; /* generated unity wrapper, never source authority */
+        if (!hs_regular(full, &st))
+            return false;
         struct hs_dep *d = &deps[(*count)++];
         (void)snprintf(d->path, sizeof(d->path), "%s", full);
         if (snapshot) {
@@ -434,7 +470,7 @@ static bool hs_mkdirs(const char *path)
     return chmod(tmp, 0700) == 0;
 }
 
-static bool hs_cache_root(char out[PATH_MAX])
+static bool hs_cache_root_for(const char *lane, char out[PATH_MAX])
 {
     const char *configured = getenv("ZCL_DEV_ARTIFACT_CACHE");
     const char *home = getenv("HOME");
@@ -442,14 +478,19 @@ static bool hs_cache_root(char out[PATH_MAX])
     if (configured && configured[0]) {
         if (configured[0] != '/' || strstr(configured, ".."))
             return false;
-        n = snprintf(out, PATH_MAX, "%s/hotswap-v1", configured);
+        n = snprintf(out, PATH_MAX, "%s/%s", configured, lane);
     } else {
         if (!home || home[0] != '/')
             return false;
         n = snprintf(out, PATH_MAX,
-                     "%s/.cache/zclassic23/dev-artifacts/hotswap-v1", home);
+                     "%s/.cache/zclassic23/dev-artifacts/%s", home, lane);
     }
     return n > 0 && n < PATH_MAX && hs_mkdirs(out);
+}
+
+static bool hs_cache_root(char out[PATH_MAX])
+{
+    return hs_cache_root_for("hotswap-v1", out);
 }
 
 static void hs_key_field(struct sha256_ctx *ctx, const char *label,
@@ -775,6 +816,105 @@ static bool hs_run_compile(const struct hs_action_plan *plan,
     if (!ran || result->timed_out || result->term_signal ||
         result->exit_code != 0) {
         hs_why(why, why_len, "resident module compile failed");
+        return false;
+    }
+    return true;
+}
+
+static bool hs_write_generated(const char *path, const char *text,
+                               char *why, size_t why_len)
+{
+    int fd = open(path, O_WRONLY | O_TRUNC | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) {
+        hs_why(why, why_len, "could not open confined generated capsule input");
+        return false;
+    }
+    size_t len = strlen(text), off = 0;
+    while (off < len) {
+        ssize_t wrote = write(fd, text + off, len - off);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) break;
+        off += (size_t)wrote;
+    }
+    bool ok = off == len && close(fd) == 0;
+    if (!ok) hs_why(why, why_len, "could not seal generated capsule input");
+    return ok;
+}
+
+static bool hs_run_hotfork_compile(
+    const struct hs_action_plan *plan, const char *root,
+    const char *input, const char *obj, const char *dep,
+    struct zcl_devloop_process_result *result, int64_t *elapsed_us,
+    char *why, size_t why_len)
+{
+    char cc[sizeof(plan->cc)], flags[sizeof(plan->cflags)];
+    (void)snprintf(cc, sizeof(cc), "%s", plan->cc);
+    (void)snprintf(flags, sizeof(flags), "%s", plan->cflags);
+    const char *argv[HS_ARG_MAX], *flagv[HS_ARG_MAX];
+    size_t argc = zcl_argv_split(cc, argv, HS_ARG_MAX);
+    size_t flagc = zcl_argv_split(flags, flagv, HS_ARG_MAX);
+    if (!argc || argc + flagc + 11 >= HS_ARG_MAX) {
+        hs_why(why, why_len, "HOT_FORK compile action exceeds argv bound");
+        return false;
+    }
+    for (size_t i = 0; i < flagc; i++) argv[argc++] = flagv[i];
+    argv[argc++] = "-fPIC";
+    argv[argc++] = "-fvisibility=hidden";
+    argv[argc++] = "-MD";
+    argv[argc++] = "-MF";
+    argv[argc++] = dep;
+    argv[argc++] = "-c";
+    argv[argc++] = "-o";
+    argv[argc++] = obj;
+    argv[argc++] = input;
+    argv[argc] = NULL;
+    int64_t started = platform_time_monotonic_us();
+    bool ran = zcl_devloop_process_run(root, argv, 30000, result);
+    *elapsed_us = platform_time_monotonic_us() - started;
+    if (!ran || result->timed_out || result->term_signal ||
+        result->exit_code != 0) {
+        hs_why(why, why_len, "HOT_FORK candidate compile failed");
+        return false;
+    }
+    return true;
+}
+
+static bool hs_run_hotfork_link(
+    const struct hs_action_plan *plan, const char *root,
+    const char *candidate_obj, const char *descriptor_obj,
+    const char *version_script, const char *so,
+    struct zcl_devloop_process_result *result, int64_t *elapsed_us,
+    char *why, size_t why_len)
+{
+    char cc[sizeof(plan->cc)];
+    (void)snprintf(cc, sizeof(cc), "%s", plan->cc);
+    const char *argv[HS_ARG_MAX];
+    size_t argc = zcl_argv_split(cc, argv, HS_ARG_MAX);
+    char version_arg[PATH_MAX + 32];
+    if (!argc || argc + 12 >= HS_ARG_MAX ||
+        snprintf(version_arg, sizeof(version_arg),
+                 "-Wl,--version-script=%s", version_script) >=
+            (int)sizeof(version_arg)) {
+        hs_why(why, why_len, "HOT_FORK link action exceeds argv bound");
+        return false;
+    }
+    argv[argc++] = "-shared";
+    argv[argc++] = "-Wl,--build-id=none";
+    argv[argc++] = "-Wl,-z,relro";
+    argv[argc++] = "-Wl,-z,noexecstack";
+    argv[argc++] = "-Wl,-Bsymbolic";
+    argv[argc++] = version_arg;
+    argv[argc++] = "-o";
+    argv[argc++] = so;
+    argv[argc++] = candidate_obj;
+    argv[argc++] = descriptor_obj;
+    argv[argc] = NULL;
+    int64_t started = platform_time_monotonic_us();
+    bool ran = zcl_devloop_process_run(root, argv, 30000, result);
+    *elapsed_us = platform_time_monotonic_us() - started;
+    if (!ran || result->timed_out || result->term_signal ||
+        result->exit_code != 0) {
+        hs_why(why, why_len, "HOT_FORK capsule link failed");
         return false;
     }
     return true;
@@ -1221,6 +1361,278 @@ fail:
     return false;
 }
 
+static const struct hs_hotfork_def *hs_hotfork_for_path(const char *path)
+{
+    if (!path) return NULL;
+    for (size_t i = 0; i < sizeof(k_hotfork_defs) / sizeof(k_hotfork_defs[0]);
+         i++)
+        if (strcmp(k_hotfork_defs[i].source_tu, path) == 0)
+            return &k_hotfork_defs[i];
+    return NULL;
+}
+
+static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
+                                   char story_root[65],
+                                   char fixture_root[65])
+{
+    char story[768], fixture[768];
+    (void)snprintf(story, sizeof(story),
+        "zcl.dev.hotfork.story.v1\n%s\n%s\n%s\n%s\n",
+        def->owner_id, def->source_tu, def->story_id,
+        def->exercised_surface);
+    (void)snprintf(fixture, sizeof(fixture),
+        "zcl.dev.hotfork.fixture.v1\n"
+        "result=ok,null-argument,package-incomplete,package-manifest,"
+        "source-carrier-shape,package-chunk,source-verification,destination\n"
+        "shard=0a,ff;reject=0A,100,missing-suffix\n%s\n",
+        def->story_id);
+    hs_sha3_root(story, story_root);
+    hs_sha3_root(fixture, fixture_root);
+}
+
+static bool hs_hotfork_build(
+    const char *repo_root, const struct hs_hotfork_def *def,
+    struct zcl_devloop_hotswap_build_receipt *receipt,
+    struct zcl_devloop_process_result *process, char *why, size_t why_len)
+{
+    int64_t started = platform_time_monotonic_us();
+    memset(receipt, 0, sizeof(*receipt));
+    memset(process, 0, sizeof(*process));
+    char root[PATH_MAX], source_path[PATH_MAX];
+    if (!repo_root || !def || !realpath(repo_root, root) ||
+        strpbrk(root, "\"\\") ||
+        snprintf(source_path, sizeof(source_path), "%s/%s", root,
+                 def->source_tu) >= (int)sizeof(source_path) ||
+        !hs_regular(source_path, NULL)) {
+        hs_why(why, why_len, "HOT_FORK source is not a confined regular file");
+        return false;
+    }
+    struct hs_action_plan plan = {0};
+    pthread_mutex_lock(&g_plan_mu);
+    bool plan_ok = hs_plan_load_locked(root, &receipt->plan_cache_hit,
+                                       &receipt->plan_load_us, why, why_len);
+    if (plan_ok) plan = g_plan;
+    pthread_mutex_unlock(&g_plan_mu);
+    if (!plan_ok) return false;
+
+    char safe[256], key_owner[384];
+    size_t source_len = strlen(def->source_tu);
+    if (source_len >= sizeof(safe) ||
+        snprintf(key_owner, sizeof(key_owner), "HOT_FORK:%s",
+                 def->source_tu) >= (int)sizeof(key_owner)) {
+        hs_why(why, why_len, "HOT_FORK owner exceeds identity bound");
+        return false;
+    }
+    for (size_t i = 0; i <= source_len; i++) {
+        unsigned char c = (unsigned char)def->source_tu[i];
+        safe[i] = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+                  (c >= '0' && c <= '9') || c == '.' || c == '-'
+            ? (char)c : c ? '_' : 0;
+    }
+    char cached_dep[PATH_MAX], unity[PATH_MAX] = {0}, descriptor[PATH_MAX] = {0};
+    char candidate_obj[PATH_MAX] = {0}, descriptor_obj[PATH_MAX] = {0};
+    char dep[PATH_MAX] = {0}, descriptor_dep[PATH_MAX] = {0};
+    char version_script[PATH_MAX] = {0}, so[PATH_MAX] = {0};
+    char cache_root[PATH_MAX] = {0}, cache_obj[PATH_MAX] = {0};
+    char cache_so[PATH_MAX] = {0}, cache_hash[PATH_MAX] = {0};
+    int cache_fd = -1;
+    if (snprintf(cached_dep, sizeof(cached_dep),
+                 "%s/build/hotswap/fast/%s.hotfork.d", root, safe) >=
+            (int)sizeof(cached_dep) ||
+        !hs_temp(unity, sizeof(unity), root, ".c") ||
+        !hs_temp(descriptor, sizeof(descriptor), root, ".c") ||
+        !hs_temp(candidate_obj, sizeof(candidate_obj), root, ".o") ||
+        !hs_temp(descriptor_obj, sizeof(descriptor_obj), root, ".o") ||
+        !hs_temp(dep, sizeof(dep), root, ".d") ||
+        !hs_temp(descriptor_dep, sizeof(descriptor_dep), root, ".d") ||
+        !hs_temp(version_script, sizeof(version_script), root, ".map") ||
+        !hs_temp(so, sizeof(so), root, ".so")) {
+        hs_why(why, why_len, "could not allocate HOT_FORK build inputs");
+        goto fail;
+    }
+    char unity_text[8192];
+    int unity_n = snprintf(unity_text, sizeof(unity_text),
+        "#include \"hotswap/hotfork_capsule.h\"\n"
+        "#include \"%s\"\n"
+        "__attribute__((visibility(\"hidden\")))\n"
+        "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+        " static const char *const expected[] = {\"ok\",\"null-argument\","
+        "\"package-incomplete\",\"package-manifest\",\"source-carrier-shape\","
+        "\"package-chunk\",\"source-verification\",\"destination\"};\n"
+        " if (!out) { return false; } memset(out,0,sizeof(*out));"
+        " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+        " for (unsigned i=0;i<8;i++) { out->checks_run++;"
+        " if (strcmp(vcs_source_package_checkout_result_string("
+        "(enum vcs_source_package_checkout_result)i),expected[i])==0)"
+        " out->checks_passed++; }\n"
+        " uint16_t shard=0; out->checks_run++;"
+        " if (source_checkout_shard_index(\"zclassic23-source/shard-0a.zvss\",&shard)"
+        " && shard==10) out->checks_passed++;\n"
+        " out->checks_run++; if (source_checkout_shard_index("
+        "\"zclassic23-source/shard-ff.zvss\",&shard) && shard==255)"
+        " out->checks_passed++;\n"
+        " static const char *const bad[]={\"zclassic23-source/shard-0A.zvss\","
+        "\"zclassic23-source/shard-100.zvss\",\"zclassic23-source/shard-0a\"};\n"
+        " for(unsigned i=0;i<3;i++){out->checks_run++;"
+        " if(!source_checkout_shard_index(bad[i],&shard))out->checks_passed++;}\n"
+        " snprintf(out->exercised_surface,sizeof(out->exercised_surface),"
+        "\"%s\"); snprintf(out->detail,sizeof(out->detail),"
+        "\"checks=%%u/%%u\",out->checks_passed,out->checks_run);"
+        " return out->checks_run==13 && out->checks_passed==13; }\n",
+        source_path, def->exercised_surface);
+    if (unity_n <= 0 || unity_n >= (int)sizeof(unity_text) ||
+        !hs_write_generated(unity, unity_text, why, why_len))
+        goto fail;
+
+    struct hs_dep *before = zcl_malloc(sizeof(*before) * HS_DEP_MAX,
+                                       "HOT_FORK dependency baseline");
+    struct hs_dep *after = zcl_malloc(sizeof(*after) * HS_DEP_MAX,
+                                      "HOT_FORK dependency result");
+    if (!before || !after) {
+        free(before); free(after);
+        hs_why(why, why_len, "HOT_FORK dependency allocation failed");
+        goto fail;
+    }
+    size_t before_n = 0, after_n = 0;
+    bool have_baseline = hs_depfile_read(root, cached_dep, before, &before_n,
+                                         true);
+    if (have_baseline &&
+        hs_cache_key(&plan, root, key_owner, before, before_n,
+                     receipt->artifact_cache_key) &&
+        hs_cache_root_for("hotfork-v1", cache_root)) {
+        cache_fd = hs_cache_lock(cache_root, receipt->artifact_cache_key,
+                                 cache_obj, cache_so, cache_hash);
+        if (cache_fd >= 0 &&
+            hs_cache_lookup(root, safe, cache_obj, cache_so, cache_hash,
+                            receipt)) {
+            receipt->artifact_cache_hit = true;
+            receipt->dependency_count = (uint32_t)before_n;
+            (void)snprintf(receipt->source_tu, sizeof(receipt->source_tu),
+                           "%s", def->source_tu);
+            receipt->total_us = platform_time_monotonic_us() - started;
+            free(before); free(after);
+            goto success;
+        }
+        if (cache_fd >= 0) {
+            (void)unlink(cache_obj); (void)unlink(cache_so);
+            (void)unlink(cache_hash);
+        }
+    }
+    receipt->compiler_processes = 1;
+    if (!hs_run_hotfork_compile(&plan, root, unity, candidate_obj, dep,
+                                process, &receipt->compile_us,
+                                why, why_len) ||
+        !hs_depfile_read(root, dep, after, &after_n, true)) {
+        free(before); free(after);
+        goto fail;
+    }
+    (void)unlink(cached_dep);
+    if (rename(dep, cached_dep) != 0) {
+        free(before); free(after);
+        hs_why(why, why_len, "could not publish HOT_FORK dependency baseline");
+        goto fail;
+    }
+    dep[0] = 0;
+    receipt->dependency_count = (uint32_t)after_n;
+    bool stable = have_baseline &&
+        hs_deps_unchanged(before, before_n, after, after_n, why, why_len);
+    char post_key[65] = {0};
+    if (stable && receipt->artifact_cache_key[0] &&
+        (!hs_cache_key(&plan, root, key_owner, after, after_n, post_key) ||
+         strcmp(post_key, receipt->artifact_cache_key) != 0))
+        stable = false;
+    free(before); free(after);
+    if (!stable) {
+        if (!have_baseline)
+            hs_why(why, why_len,
+                   "HOT_FORK dependency baseline initialized; save once more to activate");
+        goto fail;
+    }
+    if (!hs_sha256_file(candidate_obj, receipt->candidate_object_sha256)) {
+        hs_why(why, why_len, "could not hash HOT_FORK candidate object");
+        goto fail;
+    }
+    char story_root[65], fixture_root[65];
+    hs_hotfork_story_roots(def, story_root, fixture_root);
+    char descriptor_text[4096];
+    int descriptor_n = snprintf(descriptor_text, sizeof(descriptor_text),
+        "#include \"hotswap/hotfork_capsule.h\"\n"
+        "extern bool zcl_hotfork_candidate_story_v1("
+        "struct zcl_hotfork_observation_v1 *);\n"
+        "__attribute__((visibility(\"default\"))) const struct "
+        "zcl_hotfork_capsule_v1 zcl_hotfork_capsule_v1={"
+        ".abi_version=ZCL_HOTFORK_CAPSULE_ABI_V1,"
+        ".descriptor_size=sizeof(struct zcl_hotfork_capsule_v1),"
+        ".owner_id=\"%s\",.source_tu=\"%s\","
+        ".candidate_object_root=\"%s\",.story_id=\"%s\","
+        ".story_root=\"%s\",.story_fixture_root=\"%s\","
+        ".run_story=zcl_hotfork_candidate_story_v1};\n",
+        def->owner_id, def->source_tu, receipt->candidate_object_sha256,
+        def->story_id, story_root, fixture_root);
+    static const char map_text[] =
+        "ZCL_HOTFORK_1 { global: zcl_hotfork_capsule_v1; local: *; };\n";
+    int64_t descriptor_compile_us = 0;
+    if (descriptor_n <= 0 || descriptor_n >= (int)sizeof(descriptor_text) ||
+        !hs_write_generated(descriptor, descriptor_text, why, why_len) ||
+        !hs_write_generated(version_script, map_text, why, why_len) ||
+        !hs_run_hotfork_compile(&plan, root, descriptor, descriptor_obj,
+                                descriptor_dep, process,
+                                &descriptor_compile_us, why, why_len))
+        goto fail;
+    receipt->compile_us += descriptor_compile_us;
+    receipt->compiler_processes++;
+    receipt->linker_processes = 1;
+    if (!hs_run_hotfork_link(&plan, root, candidate_obj, descriptor_obj,
+                             version_script, so, process, &receipt->link_us,
+                             why, why_len) ||
+        !hs_sha256_file(so, receipt->artifact_sha256))
+        goto fail;
+    int64_t publish_started = platform_time_monotonic_us();
+    if (cache_fd >= 0 &&
+        !hs_cache_publish(cache_obj, cache_so, cache_hash, candidate_obj,
+                          receipt->candidate_object_sha256, so,
+                          receipt->artifact_sha256)) {
+        hs_why(why, why_len, "HOT_FORK cache publication failed");
+        goto fail;
+    }
+    const char *published = cache_fd >= 0 ? cache_so : so;
+    if (!hs_publish_artifact_path(root, safe, published,
+                                  receipt->artifact_sha256,
+                                  receipt->artifact_path)) {
+        hs_why(why, why_len, "HOT_FORK artifact publication failed");
+        goto fail;
+    }
+    receipt->publish_us = platform_time_monotonic_us() - publish_started;
+    (void)snprintf(receipt->source_tu, sizeof(receipt->source_tu), "%s",
+                   def->source_tu);
+    receipt->total_us = platform_time_monotonic_us() - started;
+
+success:
+    if (cache_fd >= 0) {
+        (void)flock(cache_fd, LOCK_UN); (void)close(cache_fd);
+    }
+    (void)unlink(unity); (void)unlink(descriptor);
+    (void)unlink(candidate_obj); (void)unlink(descriptor_obj);
+    if (dep[0]) (void)unlink(dep);
+    (void)unlink(descriptor_dep); (void)unlink(version_script); (void)unlink(so);
+    return true;
+
+fail:
+    if (cache_fd >= 0) {
+        (void)flock(cache_fd, LOCK_UN); (void)close(cache_fd);
+    }
+    if (unity[0]) (void)unlink(unity);
+    if (descriptor[0]) (void)unlink(descriptor);
+    if (candidate_obj[0]) (void)unlink(candidate_obj);
+    if (descriptor_obj[0]) (void)unlink(descriptor_obj);
+    if (dep[0]) (void)unlink(dep);
+    if (descriptor_dep[0]) (void)unlink(descriptor_dep);
+    if (version_script[0]) (void)unlink(version_script);
+    if (so[0]) (void)unlink(so);
+    receipt->total_us = platform_time_monotonic_us() - started;
+    return false;
+}
+
 static void hs_json_text_preview(const char *input, char out[1025])
 {
     size_t n = input ? strlen(input) : 0;
@@ -1471,6 +1883,219 @@ static bool hs_shadow_probe(
     return ok;
 }
 
+struct hs_hotfork_wire {
+    uint32_t magic;
+    bool descriptor_valid;
+    bool sandboxed;
+    bool candidate_executed;
+    bool story_ok;
+    char runtime_module_sha256[65];
+    struct zcl_hotfork_observation_v1 observation;
+};
+
+#define HS_HOTFORK_WIRE_MAGIC UINT32_C(0x48465731)
+
+static bool hs_hotfork_descriptor_matches(
+    const struct zcl_hotfork_capsule_v1 *capsule,
+    const struct hs_hotfork_def *def,
+    const struct zcl_devloop_hotswap_build_receipt *build)
+{
+    char story_root[65], fixture_root[65];
+    hs_hotfork_story_roots(def, story_root, fixture_root);
+    return capsule && capsule->abi_version == ZCL_HOTFORK_CAPSULE_ABI_V1 &&
+        capsule->descriptor_size == sizeof(*capsule) && capsule->owner_id &&
+        strcmp(capsule->owner_id, def->owner_id) == 0 && capsule->source_tu &&
+        strcmp(capsule->source_tu, def->source_tu) == 0 &&
+        capsule->candidate_object_root &&
+        strcmp(capsule->candidate_object_root,
+               build->candidate_object_sha256) == 0 && capsule->story_id &&
+        strcmp(capsule->story_id, def->story_id) == 0 &&
+        capsule->story_root && strcmp(capsule->story_root, story_root) == 0 &&
+        capsule->story_fixture_root &&
+        strcmp(capsule->story_fixture_root, fixture_root) == 0 &&
+        capsule->run_story;
+}
+
+bool zcl_devloop_hotfork_descriptor_validate(
+    const char *source_tu, const char *candidate_object_root,
+    const struct zcl_hotfork_capsule_v1 *capsule)
+{
+    const struct hs_hotfork_def *def = hs_hotfork_for_path(source_tu);
+    struct zcl_devloop_hotswap_build_receipt receipt = {0};
+    if (!def || !hs_lower_hex64(candidate_object_root)) return false;
+    (void)snprintf(receipt.candidate_object_sha256,
+                   sizeof(receipt.candidate_object_sha256), "%s",
+                   candidate_object_root);
+    return hs_hotfork_descriptor_matches(capsule, def, &receipt);
+}
+
+static bool hs_hotfork_child_confine(int report_fd)
+{
+    long max_fd = sysconf(_SC_OPEN_MAX);
+    if (max_fd < 0 || max_fd > 65536) max_fd = 4096;
+    for (int fd = 0; fd < (int)max_fd; fd++)
+        if (fd != report_fd) (void)close(fd);
+    if (!os_sandbox_no_new_privs()) return false;
+    struct zcl_result landlock = os_sandbox_landlock_restrict(NULL, 0);
+    if (!landlock.ok) return false;
+    size_t denied_count = 0;
+    const int *denied = os_sandbox_session_denied_syscalls(&denied_count);
+    struct zcl_result seccomp =
+        os_sandbox_seccomp_deny(denied, denied_count, true);
+    return seccomp.ok;
+}
+
+struct hs_hotfork_visit_ctx {
+    const struct hs_hotfork_def *def;
+    const struct zcl_devloop_hotswap_build_receipt *build;
+    struct hs_hotfork_wire *wire;
+    int report_fd;
+};
+
+static bool hs_hotfork_visit(
+    const struct zcl_hotfork_capsule_v1 *capsule, void *opaque)
+{
+    struct hs_hotfork_visit_ctx *ctx = opaque;
+    ctx->wire->descriptor_valid =
+        hs_hotfork_descriptor_matches(capsule, ctx->def, ctx->build);
+    if (!ctx->wire->descriptor_valid)
+        return false;
+    ctx->wire->sandboxed = hs_hotfork_child_confine(ctx->report_fd);
+    if (!ctx->wire->sandboxed)
+        return false;
+    ctx->wire->candidate_executed = true;
+    ctx->wire->story_ok = capsule->run_story(&ctx->wire->observation);
+    return ctx->wire->story_ok;
+}
+
+static bool hs_hotfork_probe(
+    const struct hs_hotfork_def *def,
+    const struct zcl_devloop_hotswap_build_receipt *build,
+    struct json_value *response, int64_t *elapsed_us,
+    char *why, size_t why_len)
+{
+    int pipefd[2] = {-1, -1};
+    int64_t started = platform_time_monotonic_us();
+    if (!def || !build || !response || !elapsed_us ||
+        pipe2(pipefd, O_CLOEXEC | O_NONBLOCK) != 0) {
+        hs_why(why, why_len, "HOT_FORK report pipe unavailable");
+        return false;
+    }
+    pid_t child = fork();
+    if (child < 0) {
+        close(pipefd[0]); close(pipefd[1]);
+        hs_why(why, why_len, "HOT_FORK child unavailable");
+        return false;
+    }
+    if (child == 0) {
+        close(pipefd[0]);
+        struct hs_hotfork_wire wire = {.magic = HS_HOTFORK_WIRE_MAGIC};
+        struct hs_hotfork_visit_ctx visit = {
+            .def = def, .build = build, .wire = &wire,
+            .report_fd = pipefd[1],
+        };
+        (void)zcl_hotswap_hotfork_visit_so(
+            build->artifact_path, build->artifact_sha256,
+            hs_hotfork_visit, &visit, wire.runtime_module_sha256);
+        const uint8_t *cursor = (const uint8_t *)&wire;
+        size_t left = sizeof(wire);
+        while (left > 0) {
+            ssize_t wrote = write(pipefd[1], cursor, left);
+            if (wrote > 0) {
+                cursor += (size_t)wrote; left -= (size_t)wrote;
+            } else if (wrote < 0 && errno == EINTR) {
+                continue;
+            } else break;
+        }
+        _exit(left == 0 ? 0 : 125);
+    }
+    close(pipefd[1]);
+    struct hs_hotfork_wire wire = {0};
+    uint8_t *dst = (uint8_t *)&wire;
+    size_t have = 0;
+    bool timed_out = false, cancelled = false;
+    const int64_t deadline = started + 1000000;
+    while (have < sizeof(wire)) {
+        if (zcl_devloop_process_cancel_requested()) {
+            cancelled = true; break;
+        }
+        int64_t remaining = deadline - platform_time_monotonic_us();
+        if (remaining <= 0) { timed_out = true; break; }
+        struct pollfd pfd = {.fd = pipefd[0], .events = POLLIN | POLLHUP};
+        int wait_ms = remaining > 10000 ? 10 : (int)((remaining + 999) / 1000);
+        int ready = poll(&pfd, 1, wait_ms);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) break;
+        if (ready == 0) continue;
+        ssize_t got = read(pipefd[0], dst + have, sizeof(wire) - have);
+        if (got > 0) have += (size_t)got;
+        else if (got == 0) break;
+        else if (errno != EAGAIN && errno != EINTR) break;
+    }
+    close(pipefd[0]);
+    if (timed_out || cancelled || have != sizeof(wire))
+        (void)kill(child, SIGKILL);
+    int status = 0;
+    pid_t waited;
+    do { waited = waitpid(child, &status, 0); }
+    while (waited < 0 && errno == EINTR);
+    *elapsed_us = platform_time_monotonic_us() - started;
+    bool valid = waited == child && WIFEXITED(status) &&
+        WEXITSTATUS(status) == 0 && !timed_out && !cancelled &&
+        have == sizeof(wire) && wire.magic == HS_HOTFORK_WIRE_MAGIC;
+    bool ok = valid && wire.descriptor_valid && wire.sandboxed &&
+        wire.candidate_executed && wire.story_ok &&
+        wire.observation.magic == ZCL_HOTFORK_OBSERVATION_MAGIC &&
+        wire.observation.checks_run > 0 &&
+        wire.observation.checks_run == wire.observation.checks_passed &&
+        strcmp(wire.observation.exercised_surface,
+               def->exercised_surface) == 0;
+    char story_root[65], fixture_root[65], observation_root[65];
+    hs_hotfork_story_roots(def, story_root, fixture_root);
+    char observation[768];
+    (void)snprintf(observation, sizeof(observation),
+        "zcl.dev.hotfork.observation.v1\n%s\n%u\n%u\n%s\n%s\n",
+        def->owner_id, wire.observation.checks_run,
+        wire.observation.checks_passed,
+        wire.observation.exercised_surface, wire.observation.detail);
+    hs_sha3_root(observation, observation_root);
+    json_init(response); json_set_object(response);
+    (void)json_push_kv_str(response, "schema", "zcl.dev_hotfork_story.v1");
+    (void)json_push_kv_str(response, "mode", "HOT_FORK");
+    (void)json_push_kv_str(response, "feedback_class", "HOT_FORK");
+    (void)json_push_kv_str(response, "status", ok ? "green" : "red");
+    (void)json_push_kv_bool(response, "forked", true);
+    (void)json_push_kv_bool(response, "activated", false);
+    (void)json_push_kv_bool(response, "sandboxed", wire.sandboxed);
+    (void)json_push_kv_bool(response, "network_blocked", wire.sandboxed);
+    (void)json_push_kv_bool(response, "datadir_blocked", wire.sandboxed);
+    (void)json_push_kv_bool(response, "forbidden_effects_absent", ok);
+    (void)json_push_kv_str(response, "candidate_object_root",
+                           build->candidate_object_sha256);
+    (void)json_push_kv_str(response, "candidate_module_root",
+                           build->artifact_sha256);
+    (void)json_push_kv_bool(response, "candidate_bytes_executed",
+                            wire.candidate_executed);
+    (void)json_push_kv_str(response, "story_id", def->story_id);
+    (void)json_push_kv_str(response, "story_root", story_root);
+    (void)json_push_kv_str(response, "story_fixture_root", fixture_root);
+    (void)json_push_kv_str(response, "observation_root", observation_root);
+    (void)json_push_kv_str(response, "exercised_owner_surface",
+                           def->exercised_surface);
+    (void)json_push_kv_int(response, "elapsed_us", *elapsed_us);
+    if (!ok) {
+        const char *message = cancelled ? "HOT_FORK story superseded" :
+            timed_out ? "HOT_FORK story exceeded 1000 ms" :
+            !valid ? "HOT_FORK child returned no valid bounded receipt" :
+            !wire.descriptor_valid ? "HOT_FORK descriptor binding mismatch" :
+            !wire.sandboxed ? "HOT_FORK authority sandbox unavailable" :
+            "HOT_FORK candidate story rejected its frozen fixture";
+        hs_why(why, why_len, message);
+        (void)json_push_kv_str(response, "error", message);
+    }
+    return ok;
+}
+
 static bool hs_story_receipt_valid(
     const char *source, const struct zcl_devloop_hotswap_build_receipt *build,
     const struct json_value *resident)
@@ -1491,13 +2116,20 @@ static bool hs_story_receipt_valid(
                                                     "observation_root"));
     const char *surface = json_get_str(json_get(resident,
                                                 "exercised_owner_surface"));
-    return schema && strcmp(schema, "zcl.dev_shadow_story.v2") == 0 &&
-        feedback && strcmp(feedback, "HOT_SHADOW_CORE") == 0 &&
+    bool class_ok = feedback &&
+        (strcmp(feedback, "HOT_SHADOW_CORE") == 0 ||
+         strcmp(feedback, "HOT_FORK") == 0);
+    bool surface_ok = surface && surface[0] && feedback &&
+        (strcmp(feedback, "HOT_FORK") == 0 || strcmp(surface, source) == 0);
+    bool schema_ok = schema &&
+        (strcmp(schema, "zcl.dev_shadow_story.v2") == 0 ||
+         strcmp(schema, "zcl.dev_hotfork_story.v1") == 0);
+    return schema_ok && class_ok &&
         object && strcmp(object, build->candidate_object_sha256) == 0 &&
         module && strcmp(module, build->artifact_sha256) == 0 &&
         story_id && story_id[0] && story && strlen(story) == 64 &&
         fixture && strlen(fixture) == 64 && observation &&
-        strlen(observation) == 64 && surface && strcmp(surface, source) == 0 &&
+        strlen(observation) == 64 && surface_ok &&
         json_get_bool(json_get(resident, "candidate_bytes_executed")) &&
         json_get_bool(json_get(resident, "forbidden_effects_absent"));
 }
@@ -1632,10 +2264,10 @@ static bool hs_emit_event(const char *root, const char *source,
     (void)json_push_kv_str(&doc, "phase",
                            zcl_devloop_progress_phase(status, phase));
     (void)json_push_kv_str(&doc, "stage_detail", phase);
-    const char *feedback_class = status &&
-        (strcmp(status, "story_green") == 0 ||
-         strcmp(status, "story_red") == 0)
-        ? "HOT_SHADOW_CORE" : "COMPILE_ONLY";
+    const char *resident_class = resident && resident->type == JSON_OBJ
+        ? json_get_str(json_get(resident, "feedback_class")) : NULL;
+    const char *feedback_class = resident_class && resident_class[0]
+        ? resident_class : "COMPILE_ONLY";
     (void)json_push_kv_str(&doc, "feedback_class", feedback_class);
     if (zcl_devloop_event_edit_epoch()[0])
         (void)json_push_kv_str(&doc, "edit_epoch",
@@ -1919,6 +2551,52 @@ int zcl_devloop_hotswap_batch_event(
     if (!emitted)
         return -1;
     return ZCL_DEVLOOP_RESTART_EVENT_FINAL;
+}
+
+int zcl_devloop_hotfork_batch_event(
+    const char *repo_root, const char *const *paths, size_t path_count,
+    enum zcl_devloop_publish_mode publish_mode)
+{
+    (void)publish_mode;
+    if (!repo_root || !paths || path_count != 1) return 0;
+    const struct hs_hotfork_def *def = hs_hotfork_for_path(paths[0]);
+    if (!def) return 0;
+    int64_t started = platform_time_monotonic_us();
+    struct zcl_devloop_hotswap_build_receipt build = {0};
+    struct zcl_devloop_process_result process = {0};
+    char why[512] = {0};
+    if (!hs_hotfork_build(repo_root, def, &build, &process,
+                          why, sizeof(why))) {
+        if (process.cancelled || zcl_devloop_process_cancel_requested())
+            return ZCL_DEVLOOP_RESTART_EVENT_CANCELLED;
+        return hs_emit_event(
+            repo_root, def->source_tu, 1, "rejected", "compile", false,
+            platform_time_monotonic_us() - started, &build, 0, NULL,
+            &process, why, true) ? ZCL_DEVLOOP_RESTART_EVENT_FINAL : -1;
+    }
+    if (!hs_emit_event(repo_root, def->source_tu, 1, "reflex_ready",
+                       "candidate_compile", false,
+                       platform_time_monotonic_us() - started, &build, 0,
+                       NULL, &process, "", false))
+        return -1;
+    struct json_value resident;
+    json_init(&resident);
+    int64_t story_us = 0;
+    bool story_ok = hs_hotfork_probe(def, &build, &resident, &story_us,
+                                     why, sizeof(why));
+    if (zcl_devloop_process_cancel_requested()) {
+        json_free(&resident);
+        return ZCL_DEVLOOP_RESTART_EVENT_CANCELLED;
+    }
+    bool emitted = hs_emit_event(
+        repo_root, def->source_tu, 1,
+        story_ok ? "story_green" : "story_red", "hotfork_owner_story",
+        false, platform_time_monotonic_us() - started, &build, story_us,
+        &resident, &process, why, true);
+    json_free(&resident);
+    if (!emitted) return -1;
+    return story_ok ? ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING
+                    : ZCL_DEVLOOP_RESTART_EVENT_FINAL;
 }
 
 int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,

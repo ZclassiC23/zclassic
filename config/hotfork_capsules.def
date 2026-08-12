@@ -1,0 +1,11 @@
+/* Development-only HOT_FORK stories. Consumer defines:
+ * HOTFORK_CAPSULE(owner_id, source_tu, story_id, exercised_surface)
+ *
+ * The manifest names frozen story authority only. The candidate descriptor
+ * is generated after compilation so it can bind the exact object root. */
+
+HOTFORK_CAPSULE(
+    "vcs.source-package-checkout.v1",
+    "lib/vcs/src/source_package_checkout.c",
+    "source-package-checkout-result-and-shard-shape.v1",
+    "vcs_source_package_checkout_result_string+source_checkout_shard_index")

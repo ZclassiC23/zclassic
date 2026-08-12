@@ -5,6 +5,7 @@
 #include "dev_activation.h"
 #include "dev_failure_store.h"
 #include "devloop.h"
+#include "hotswap/hotfork_capsule.h"
 #include "framework/app_definition.h"
 #include "framework/app_platform.h"
 #include "hotswap/hotswap_module.h"
@@ -2219,6 +2220,8 @@ static bool dp_hotswap_cache_fixture_init(const char *root,
         !dp_mk_write(root, "config/hotswap_services.def", "/* fixture */\n") ||
         !dp_mk_write(root, "config/hotswap_shadow_owners.def",
                      "/* fixture */\n") ||
+        !dp_mk_write(root, "config/hotfork_capsules.def",
+                     "/* fixture */\n") ||
         !dp_mk_write(root, "app/controllers/src/status_native_handlers.c",
                      owner_v1) ||
         !dp_mk_write(root, "app/controllers/src/status_native_helpers.c",
@@ -3255,6 +3258,50 @@ static int test_reflex_policy_boundary(void)
     return failures;
 }
 
+static bool hotfork_test_story(struct zcl_hotfork_observation_v1 *out)
+{
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->magic = ZCL_HOTFORK_OBSERVATION_MAGIC;
+    return true;
+}
+
+static int test_hotfork_descriptor_boundary(void)
+{
+    int failures = 0;
+    TEST("dev platform: HOT_FORK descriptor binds exact object and frozen owner story") {
+        const char object_root[] =
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        struct zcl_hotfork_capsule_v1 capsule = {
+            .abi_version = ZCL_HOTFORK_CAPSULE_ABI_V1,
+            .descriptor_size = sizeof(capsule),
+            .owner_id = "vcs.source-package-checkout.v1",
+            .source_tu = "lib/vcs/src/source_package_checkout.c",
+            .candidate_object_root = object_root,
+            .story_id = "source-package-checkout-result-and-shard-shape.v1",
+            .story_root =
+                "59555a7415483033a047df3a3c087bd842329a6aaeb0e66404f791f9f4c23096",
+            .story_fixture_root =
+                "4f7e0b7ddef2a52441bab973fc33e76dd754bfff9cf2aade463544a931cc4c3c",
+            .run_story = hotfork_test_story,
+        };
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
+        capsule.candidate_object_root =
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        ASSERT(!zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
+        capsule.candidate_object_root = object_root;
+        capsule.story_root =
+            "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+        ASSERT(!zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_platform(void)
 {
     int failures = 0;
@@ -3268,6 +3315,7 @@ int test_dev_platform(void)
     failures += test_cycle_proof_reuse_contract();
     failures += test_progressive_event_vocabulary();
     failures += test_reflex_policy_boundary();
+    failures += test_hotfork_descriptor_boundary();
     failures += test_menu_and_search();
     failures += test_change_classification();
     failures += test_change_plan_closure();

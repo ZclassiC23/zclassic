@@ -1220,6 +1220,9 @@ int zcl_devloop_watch_mode(const char *repo_root,
         int fast = zcl_devloop_hotswap_batch_event(
             ctx.root, files, epoch_count, publish_mode);
         if (fast == 0)
+            fast = zcl_devloop_hotfork_batch_event(
+                ctx.root, files, epoch_count, publish_mode);
+        if (fast == 0)
             fast = service_contract_restart_event(ctx.root, files,
                                                   epoch_count);
         if (fast == 0) {

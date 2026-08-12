@@ -419,6 +419,18 @@ int zcl_devloop_hotswap_batch_event(
     const char *repo_root, const char *const *paths, size_t path_count,
     enum zcl_devloop_publish_mode publish_mode);
 
+/* Development-only capsule lane for an exact module-ABI fallback. The
+ * resident parent never loads the candidate; a disposable sandboxed child
+ * loads it, executes its owner-bound story, reports one bounded observation,
+ * and exits. */
+int zcl_devloop_hotfork_batch_event(
+    const char *repo_root, const char *const *paths, size_t path_count,
+    enum zcl_devloop_publish_mode publish_mode);
+struct zcl_hotfork_capsule_v1;
+bool zcl_devloop_hotfork_descriptor_validate(
+    const char *source_tu, const char *candidate_object_root,
+    const struct zcl_hotfork_capsule_v1 *capsule);
+
 /* Complete current source identity: byte inventory plus the ABA mutation
  * token. Shared by the watcher/cycle and focused native execution so neither
  * can admit an artifact built from a superseded checkout. */
