@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "zclassic23/platform",
+  "semver": "0.1.0-alpha.1",
+  "language": "c23",
+  "license": "Apache-2.0",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "include/platform/os_proc.h",
+    "src/os_proc.c",
+    "tests/test_platform.c",
+    "zcode-package.json"
+  ]
+}

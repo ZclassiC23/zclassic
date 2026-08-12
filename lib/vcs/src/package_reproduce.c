@@ -9,8 +9,8 @@
 #include "vcs/package_reproduce.h"
 
 #include "base/hex.h"
-#include "util/log_macros.h"
-#include "util/safe_alloc.h"
+#include "base/log_macros.h"
+#include "base/safe_alloc.h"
 
 #include <dirent.h>
 #include <errno.h>
@@ -69,7 +69,7 @@ static void repro_hash_detail(char *out, size_t cap, const char *path,
     char got[17];
     zcl_hex_encode(expected, 8, want);
     zcl_hex_encode(actual, 8, got);
-    (void)snprintf(out, cap, "%.100s: expected sha3 %s..., got %s...", path,
+    (void)snprintf(out, cap, "%.80s: expected sha3 %s..., got %s...", path,
                    want, got);
 }
 

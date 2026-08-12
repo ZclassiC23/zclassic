@@ -58,7 +58,7 @@ struct score_package_fixture {
     const char *signature;
 };
 
-#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature) \
+#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature) \
     {name, dir, sequence, content, release, recipe, lock, capsule, signature},
 static const struct score_package_fixture score_packages[] = {
 #include "../../../config/zcode_package_registry.def"
@@ -610,7 +610,7 @@ static int test_score_package_verticals(void)
     TEST("zcode score: SHA3, base, then codec complete hermetic PROVEN verticals") {
         static const size_t evidence_order[] = {1, 0, 2};
         static const char *const scratch_labels[] = {"sha3", "base", "codec"};
-        ASSERT_EQ(sizeof(score_packages) / sizeof(score_packages[0]), 3);
+        ASSERT(sizeof(score_packages) / sizeof(score_packages[0]) >= 3);
         for (size_t order = 0;
              order < sizeof(evidence_order) / sizeof(evidence_order[0]);
              order++) {

@@ -6,7 +6,7 @@
 #include <stdio.h>
 #include <math.h>
 #include <inttypes.h>
-#include "util/safe_alloc.h"
+#include "base/safe_alloc.h"
 
 void json_init(struct json_value *v)
 {

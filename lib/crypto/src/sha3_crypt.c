@@ -4,7 +4,7 @@
  * Zero new primitives — built entirely from SHA3-256 and HMAC-SHA3-512. */
 
 #include "crypto/sha3_crypt.h"
-#include "crypto/sha3.h"
+#include "sha3/sha3.h"
 #include <string.h>
 
 void sha3_crypt_derive_key(const uint8_t utxo_root[32],

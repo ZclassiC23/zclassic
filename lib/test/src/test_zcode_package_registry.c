@@ -20,12 +20,12 @@ struct registry_expected {
     const char *recipe_root;
     const char *lock_root;
     const char *capsule_root;
-    const char *dependency_root;
+    const char *publisher_pubkey;
     const char *signature;
 };
 
-#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature) \
-    {name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature},
+#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature) \
+    {name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature},
 static const struct registry_expected registry_packages[] = {
 #include "../../../config/zcode_package_registry.def"
 };
@@ -71,17 +71,16 @@ static bool registry_publish_scratch(
 int test_zcode_package_registry(void)
 {
     int failures = 0;
-    TEST("zcode package registry: base, sha3 and codec roots rederive") {
-        static const char pubkey_hex[] =
-            "03448effe2ae40eb4053acfceb9839163c881b22affff9572283caddeee9207ce4";
-        uint8_t pubkey[33];
-        ASSERT(zcl_hex_decode_lower(pubkey_hex, pubkey, sizeof(pubkey)));
+    TEST("zcode package registry: C23 Commons Alpha roots and DAG rederive") {
         ASSERT_EQ(sizeof(registry_packages) / sizeof(registry_packages[0]),
-                  3);
+                  9);
         for (size_t i = 0;
              i < sizeof(registry_packages) / sizeof(registry_packages[0]);
              i++) {
             const struct registry_expected *expected = &registry_packages[i];
+            uint8_t pubkey[33];
+            ASSERT(zcl_hex_decode_lower(expected->publisher_pubkey, pubkey,
+                                        sizeof(pubkey)));
             struct vcs_package_prepare_options options = {
                 .dir = expected->dir,
                 .publisher_sequence = expected->sequence,
@@ -110,14 +109,22 @@ int test_zcode_package_registry(void)
             ASSERT_EQ(vcs_package_release_verify(&prepared.release),
                       VCS_PACKAGE_RELEASE_OK);
             ASSERT(registry_publish_scratch(&prepared, expected->dir));
-            if (i == 0) {
-                ASSERT_STR_EQ(expected->dependency_root, "");
-                ASSERT_EQ(prepared.lock.count, 1);
-            } else {
-                char dependency[65];
-                zcl_hex_encode(prepared.lock.nodes[0].root, 32, dependency);
-                ASSERT_STR_EQ(dependency, expected->dependency_root);
-                ASSERT_EQ(prepared.lock.count, 2);
+            ASSERT(prepared.lock.count >= 1);
+            ASSERT_EQ(prepared.lock.nodes[prepared.lock.count - 1u].depth, 0);
+            ASSERT_EQ(prepared.lock.nodes[prepared.lock.count - 1u].direct_deps,
+                      prepared.lock.count - 1u);
+            for (size_t d = 0; d + 1u < prepared.lock.count; d++) {
+                bool found = false;
+                for (size_t p = 0; p < i; p++) {
+                    uint8_t prior[32];
+                    ASSERT(zcl_hex_decode_lower(
+                        registry_packages[p].content_root, prior,
+                        sizeof(prior)));
+                    found = found || memcmp(prepared.lock.nodes[d].root,
+                                             prior, sizeof(prior)) == 0;
+                }
+                ASSERT(found);
+                ASSERT_EQ(prepared.lock.nodes[d].depth, 1);
             }
             vcs_package_prepared_free(&prepared);
         }

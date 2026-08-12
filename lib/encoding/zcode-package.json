@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "zclassic23/encoding",
+  "semver": "0.1.0-alpha.1",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "include/encoding/utilstrencodings.h",
+    "src/utilstrencodings.c",
+    "tests/test_encoding.c",
+    "zcode-package.json"
+  ]
+}

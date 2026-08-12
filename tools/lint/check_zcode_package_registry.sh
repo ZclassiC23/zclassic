@@ -11,9 +11,16 @@ fi
 
 "$checker"
 
+mapfile -t package_dirs < <(
+    sed -n 's/^ZCODE_PACKAGE("[^"]*", "\([^"]*\)".*/\1/p' \
+        config/zcode_package_registry.def | LC_ALL=C sort -u
+)
+package_patterns=()
+for package_dir in "${package_dirs[@]}"; do
+    package_patterns+=("$package_dir/src/*.c")
+done
 mapfile -t package_sources < <(
-    git ls-files 'lib/base/src/*.c' 'lib/sha3/src/*.c' 'lib/codec/src/*.c' |
-        LC_ALL=C sort
+    git ls-files -- "${package_patterns[@]}" | LC_ALL=C sort -u
 )
 mapfile -t monolith_sources < <(
     make -s --no-print-directory print-zcode-monolith-lib-sources |

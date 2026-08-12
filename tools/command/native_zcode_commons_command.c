@@ -21,7 +21,7 @@ struct zcc_shadow_package {
     const char *release_root_hex;
 };
 
-#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature) \
+#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature) \
     {name, content, release},
 static const struct zcc_shadow_package zcc_shadow_packages[] = {
 #include "../../config/zcode_package_registry.def"

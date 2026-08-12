@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "name": "zclassic23/presentation",
+  "semver": "0.1.0-alpha.1",
+  "language": "c23",
+  "license": "Apache-2.0",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "include/presentation/zclassic_brand.h",
+    "src/zclassic_brand.c",
+    "src/zclassic_icon_mask.inc",
+    "tests/test_presentation.c",
+    "zcode-package.json"
+  ]
+}

@@ -8,9 +8,9 @@
 
 #include "vcs/package_build.h"
 
-#include "crypto/sha3.h"
-#include "util/log_macros.h"
-#include "util/safe_alloc.h"
+#include "base/log_macros.h"
+#include "base/safe_alloc.h"
+#include "sha3/sha3.h"
 #include "vcs/package_manifest.h"
 
 #include "vcs_priv.h"

@@ -14,7 +14,7 @@
 #define ZCL_VCS_PRIV_H
 
 #include "base/hex.h"
-#include "crypto/sha3.h"
+#include "sha3/sha3.h"
 
 #include <stddef.h>
 #include <stdint.h>

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "name": "zclassic23/crypto-sha3",
+  "semver": "0.1.0-alpha.1",
+  "language": "c23",
+  "license": "Apache-2.0",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "root": "ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e",
+      "name": "zclassic23/sha3",
+      "semver": "0.1.0-dev.1"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "include/crypto/sha3.h",
+    "include/crypto/sha3_crypt.h",
+    "src/sha3_crypt.c",
+    "tests/test_sha3_crypt.c",
+    "zcode-package.json"
+  ]
+}

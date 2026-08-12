@@ -1,0 +1,40 @@
+{
+  "schema": 1,
+  "name": "zclassic23/package",
+  "semver": "0.1.0-alpha.1",
+  "language": "c23",
+  "license": "Apache-2.0",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "root": "7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe",
+      "name": "zclassic23/base",
+      "semver": "0.1.0-dev.1"
+    },
+    {
+      "root": "5b94d188d8f9c1ae367e1954870ec312e24d0d043fe808cc484da9a6114cd50b",
+      "name": "zclassic23/codec",
+      "semver": "0.1.0-dev.1"
+    },
+    {
+      "root": "ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e",
+      "name": "zclassic23/sha3",
+      "semver": "0.1.0-dev.1"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "include/vcs/package_build.h",
+    "include/vcs/package_manifest.h",
+    "include/vcs/package_recipe.h",
+    "include/vcs/package_reproduce.h",
+    "src/package_build.c",
+    "src/package_manifest.c",
+    "src/package_recipe.c",
+    "src/package_reproduce.c",
+    "src/vcs_priv.h",
+    "tests/test_package_primitives.c",
+    "zcode-package.json"
+  ]
+}

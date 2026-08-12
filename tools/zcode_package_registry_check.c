@@ -10,12 +10,12 @@
 struct registry_row {
     const char *name, *dir;
     uint64_t sequence;
-    const char *content, *release, *recipe, *lock, *capsule, *dependency;
+    const char *content, *release, *recipe, *lock, *capsule, *publisher;
     const char *signature;
 };
 
-#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature) \
-    {name, dir, sequence, content, release, recipe, lock, capsule, dependency, signature},
+#define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature) \
+    {name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature},
 static const struct registry_row rows[] = {
 #include "../config/zcode_package_registry.def"
 };
@@ -43,13 +43,13 @@ static void print_derived_roots(const struct vcs_package_prepared *prepared)
 
 int main(void)
 {
-    static const char pubkey_hex[] =
-        "03448effe2ae40eb4053acfceb9839163c881b22affff9572283caddeee9207ce4";
-    uint8_t pubkey[33];
-    if (sizeof(rows) / sizeof(rows[0]) != 3 ||
-        !zcl_hex_decode_lower(pubkey_hex, pubkey, sizeof(pubkey)))
+    if (sizeof(rows) / sizeof(rows[0]) < 8)
         return 1;
     for (size_t i = 0; i < sizeof(rows) / sizeof(rows[0]); i++) {
+        uint8_t pubkey[33];
+        if (!zcl_hex_decode_lower(rows[i].publisher, pubkey,
+                                  sizeof(pubkey)))
+            return 1;
         struct vcs_package_prepare_options options = {
             .dir = rows[i].dir, .publisher_sequence = rows[i].sequence,
             .reward_address = "", .chain_id = "zclassic-main",
@@ -70,11 +70,19 @@ int main(void)
                 sizeof(prepared.release.signature)) &&
             vcs_package_release_verify(&prepared.release) ==
                 VCS_PACKAGE_RELEASE_OK;
-        if (ok && i == 0)
-            ok = rows[i].dependency[0] == '\0' && prepared.lock.count == 1;
-        else if (ok)
-            ok = prepared.lock.count == 2 &&
-                 root_equal(prepared.lock.nodes[0].root, rows[i].dependency);
+        if (ok) {
+            ok = prepared.lock.count >= 1 &&
+                 prepared.lock.nodes[prepared.lock.count - 1u].depth == 0 &&
+                 prepared.lock.nodes[prepared.lock.count - 1u].direct_deps ==
+                     prepared.lock.count - 1u;
+            for (size_t d = 0; ok && d + 1u < prepared.lock.count; d++) {
+                bool found = false;
+                for (size_t p = 0; p < i; p++)
+                    found = found || root_equal(
+                        prepared.lock.nodes[d].root, rows[p].content);
+                ok = found && prepared.lock.nodes[d].depth == 1;
+            }
+        }
         if (!ok) {
             fprintf(stderr, "zcode registry mismatch: %s (%s: %s)\n",
                     rows[i].name, vcs_package_prepare_error_string(err),
@@ -86,6 +94,7 @@ int main(void)
         }
         vcs_package_prepared_free(&prepared);
     }
-    puts("zcode package registry: 3 roots and exact dependency DAG rederived");
+    printf("zcode package registry: %zu roots and exact dependency DAG rederived\n",
+           sizeof(rows) / sizeof(rows[0]));
     return 0;
 }
