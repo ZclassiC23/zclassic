@@ -1,0 +1,34 @@
+{
+  "schema": 1,
+  "name": "zclassic23/commons-demo",
+  "semver": "0.1.0-alpha.1",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "root": "7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe",
+      "name": "zclassic23/base",
+      "semver": "0.1.0-dev.1"
+    },
+    {
+      "root": "5b94d188d8f9c1ae367e1954870ec312e24d0d043fe808cc484da9a6114cd50b",
+      "name": "zclassic23/codec",
+      "semver": "0.1.0-dev.1"
+    },
+    {
+      "root": "907ea1f27084330910485be6afabee43c49794466ce75f86ded2916a01a7c8c4",
+      "name": "zclassic23/json",
+      "semver": "0.1.0-alpha.1"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "app/main.c",
+    "include/commons/demo.h",
+    "src/demo.c",
+    "tests/test_demo.c",
+    "zcode-package.json"
+  ]
+}

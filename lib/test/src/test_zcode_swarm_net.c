@@ -523,6 +523,7 @@ struct zwn_package_scenario {
     {name, "package.c23-commons", dir, sequence, content},
 static const struct zwn_package_scenario zwn_package_scenarios[] = {
 #include "../../../config/zcode_package_registry.def"
+#include "../../../config/zcode_c23_commons_app.def"
 };
 #undef ZCODE_PACKAGE
 

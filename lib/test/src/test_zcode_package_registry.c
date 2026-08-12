@@ -28,6 +28,7 @@ struct registry_expected {
     {name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature},
 static const struct registry_expected registry_packages[] = {
 #include "../../../config/zcode_package_registry.def"
+#include "../../../config/zcode_c23_commons_app.def"
 };
 #undef ZCODE_PACKAGE
 
@@ -73,7 +74,7 @@ int test_zcode_package_registry(void)
     int failures = 0;
     TEST("zcode package registry: C23 Commons Alpha roots and DAG rederive") {
         ASSERT_EQ(sizeof(registry_packages) / sizeof(registry_packages[0]),
-                  9);
+                  10);
         for (size_t i = 0;
              i < sizeof(registry_packages) / sizeof(registry_packages[0]);
              i++) {
