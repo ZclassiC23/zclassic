@@ -4,8 +4,8 @@
 #include "vcs/zcode_dev.h"
 
 #include "codec/cursor.h"
-#include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <string.h>
 
@@ -602,8 +602,9 @@ enum vcs_zcode_dev_error vcs_zcode_work_receipt_id(
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
     static const char domain[] = VCS_ZCODE_WORK_RECEIPT_DOMAIN;
-    object_root(domain, sizeof(domain), body, sizeof(body), out);
-    return VCS_ZCODE_DEV_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), body,
+                                    sizeof(body), out)
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_work_receipt_seal(
@@ -616,8 +617,8 @@ enum vcs_zcode_dev_error vcs_zcode_work_receipt_seal(
     uint8_t id[32];
     enum vcs_zcode_dev_error err = vcs_zcode_work_receipt_id(r, id);
     if (err != VCS_ZCODE_DEV_OK) return err;
-    ed25519_sign(r->signature, id, sizeof(id), secret, pubkey);
-    return VCS_ZCODE_DEV_OK;
+    return vcs_signed_evidence_seal_root(id, secret, pubkey, r->signature)
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_work_receipt_verify(
@@ -626,13 +627,12 @@ enum vcs_zcode_dev_error vcs_zcode_work_receipt_verify(
 {
     enum vcs_zcode_dev_error err = vcs_zcode_work_receipt_validate(r);
     if (err != VCS_ZCODE_DEV_OK) return err;
-    if (!expected_signer || memcmp(r->signer_pubkey, expected_signer, 32) != 0)
-        return VCS_ZCODE_DEV_ERR_SIGNATURE;
     uint8_t id[32];
     err = vcs_zcode_work_receipt_id(r, id);
     if (err != VCS_ZCODE_DEV_OK) return err;
-    return ed25519_verify(r->signature, id, sizeof(id), r->signer_pubkey)
-               ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_SIGNATURE;
+    return vcs_signed_evidence_verify_root(
+               id, r->signature, r->signer_pubkey, expected_signer)
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_SIGNATURE;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_candidate_validate_for_task(

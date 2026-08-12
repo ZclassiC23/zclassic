@@ -4,8 +4,7 @@
 #include "vcs/zcode_lane.h"
 
 #include "codec/cursor.h"
-#include "crypto/ed25519.h"
-#include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <string.h>
 
@@ -172,13 +171,10 @@ enum vcs_zcode_dev_error vcs_zcode_lane_receipt_id(
     uint8_t body[VCS_ZCODE_LANE_BODY_BYTES];
     enum vcs_zcode_dev_error err = lane_body(receipt, body);
     if (err != VCS_ZCODE_DEV_OK) return err;
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
     static const char domain[] = VCS_ZCODE_LANE_DOMAIN;
-    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
-    sha3_256_write(&sha, body, sizeof(body));
-    sha3_256_finalize(&sha, out);
-    return VCS_ZCODE_DEV_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), body,
+                                    sizeof(body), out)
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_lane_receipt_seal(
@@ -190,8 +186,9 @@ enum vcs_zcode_dev_error vcs_zcode_lane_receipt_seal(
     uint8_t id[32];
     enum vcs_zcode_dev_error err = vcs_zcode_lane_receipt_id(receipt, id);
     if (err != VCS_ZCODE_DEV_OK) return err;
-    ed25519_sign(receipt->signature, id, sizeof(id), secret, pubkey);
-    return VCS_ZCODE_DEV_OK;
+    return vcs_signed_evidence_seal_root(id, secret, pubkey,
+                                         receipt->signature)
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_lane_receipt_verify(
@@ -200,12 +197,11 @@ enum vcs_zcode_dev_error vcs_zcode_lane_receipt_verify(
 {
     enum vcs_zcode_dev_error err = vcs_zcode_lane_receipt_validate(receipt);
     if (err != VCS_ZCODE_DEV_OK) return err;
-    if (!expected_signer ||
-        memcmp(receipt->signer_pubkey, expected_signer, 32) != 0)
-        return VCS_ZCODE_DEV_ERR_SIGNATURE;
     uint8_t id[32];
     err = vcs_zcode_lane_receipt_id(receipt, id);
     if (err != VCS_ZCODE_DEV_OK) return err;
-    return ed25519_verify(receipt->signature, id, sizeof(id), expected_signer)
+    return vcs_signed_evidence_verify_root(
+               id, receipt->signature, receipt->signer_pubkey,
+               expected_signer)
         ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_SIGNATURE;
 }

@@ -4,8 +4,8 @@
 #include "vcs/zcode_score_receipt.h"
 
 #include "codec/cursor.h"
-#include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 #include "vcs/vcs_object.h"
 
 #include <stdlib.h>
@@ -158,13 +158,10 @@ enum vcs_zcode_score_error vcs_zcode_score_receipt_id(
     uint8_t body[VCS_ZCODE_SCORE_BODY_BYTES];
     enum vcs_zcode_score_error err = score_body(receipt, body);
     if (err != VCS_ZCODE_SCORE_OK) return err;
-    struct sha3_256_ctx sha;
     static const char domain[] = VCS_ZCODE_SCORE_DOMAIN;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
-    sha3_256_write(&sha, body, sizeof(body));
-    sha3_256_finalize(&sha, out);
-    return VCS_ZCODE_SCORE_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), body,
+                                    sizeof(body), out)
+        ? VCS_ZCODE_SCORE_OK : VCS_ZCODE_SCORE_NULL;
 }
 
 enum vcs_zcode_score_error vcs_zcode_score_receipt_serialize(
@@ -226,8 +223,9 @@ enum vcs_zcode_score_error vcs_zcode_score_receipt_seal(
     uint8_t id[32];
     enum vcs_zcode_score_error err = vcs_zcode_score_receipt_id(receipt, id);
     if (err != VCS_ZCODE_SCORE_OK) return err;
-    ed25519_sign(receipt->signature, id, sizeof(id), secret, pubkey);
-    return VCS_ZCODE_SCORE_OK;
+    return vcs_signed_evidence_seal_root(id, secret, pubkey,
+                                         receipt->signature)
+        ? VCS_ZCODE_SCORE_OK : VCS_ZCODE_SCORE_NULL;
 }
 
 enum vcs_zcode_score_error vcs_zcode_score_receipt_verify(
@@ -238,8 +236,9 @@ enum vcs_zcode_score_error vcs_zcode_score_receipt_verify(
     uint8_t id[32];
     err = vcs_zcode_score_receipt_id(receipt, id);
     if (err != VCS_ZCODE_SCORE_OK) return err;
-    return ed25519_verify(receipt->signature, id, sizeof(id),
-                          receipt->lane_signer)
+    return vcs_signed_evidence_verify_root(
+               id, receipt->signature, receipt->lane_signer,
+               receipt->lane_signer)
         ? VCS_ZCODE_SCORE_OK : VCS_ZCODE_SCORE_SIGNATURE;
 }
 
