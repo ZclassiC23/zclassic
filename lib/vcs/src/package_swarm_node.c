@@ -68,6 +68,12 @@ struct swarm_download {
     size_t tomb_pos;
     size_t tomb_count;
     uint64_t fetched_bytes;
+    uint64_t requested_bytes;
+    uint64_t transferred_bytes;
+    uint64_t reused_bytes;
+    uint32_t requested_objects;
+    uint32_t transferred_objects;
+    uint32_t reused_objects;
     uint64_t maximum_package_bytes; /* zero means unbounded */
     int64_t created_day;
     bool provider_restricted;
@@ -511,6 +517,8 @@ static struct swarm_req *req_alloc(struct swarm_download *dl)
     return NULL;
 }
 
+static uint64_t chunk_len_of(const struct swarm_download *dl, uint32_t g);
+
 /* Issue one WANT to `peer`. The request records the exact outstanding
  * object the eventual DATA must reproduce. */
 static bool issue_want(struct vcs_swarm_engine *engine,
@@ -542,6 +550,9 @@ static bool issue_want(struct vcs_swarm_engine *engine,
     }
     if (!queue_frame(engine, peer->id, &msg))
         return false;
+    dl->requested_objects++;
+    if (global_chunk != SWARM_MANIFEST_CHUNK)
+        dl->requested_bytes += chunk_len_of(dl, global_chunk);
     req->used = true;
     req->global_chunk = global_chunk;
     req->peer = peer->id;
@@ -1100,9 +1111,18 @@ static void handle_data_manifest(struct vcs_swarm_engine *engine,
         return;
     }
     dl_rebuild_have(engine, dl); /* dedup: chunks already in the CAS */
+    dl->reused_objects = dl->have_count;
+    for (uint32_t g = 0; g < dl->total_chunks; g++)
+        if (bitmap_get(dl->have, g))
+            dl->reused_bytes += chunk_len_of(dl, g);
     book_credit_download(engine, peer, req->want.request_id, dl->root,
                          data->bytes_len, day);
     peer->verified_from += data->bytes_len;
+    /* A manifest's exact byte length is learned only from the verified DATA;
+     * chunk lengths are committed by the manifest and counted at WANT time. */
+    dl->requested_bytes += data->bytes_len;
+    dl->transferred_bytes += data->bytes_len;
+    dl->transferred_objects++;
     dl->fetched_bytes += data->bytes_len;
     req_finish(engine, dl, req, true, true);
     if (dl->total_chunks == 0 || dl->have_count == dl->total_chunks) {
@@ -1153,6 +1173,8 @@ static void handle_data_chunk(struct vcs_swarm_engine *engine,
     book_credit_download(engine, peer, req->want.request_id, dl->root,
                          data->bytes_len, day);
     peer->verified_from += data->bytes_len;
+    dl->transferred_bytes += data->bytes_len;
+    dl->transferred_objects++;
     dl->fetched_bytes += data->bytes_len;
     req_finish(engine, dl, req, true, true);
     if (dl->have_count == dl->total_chunks)
@@ -1796,6 +1818,12 @@ bool vcs_swarm_engine_download_status(struct vcs_swarm_engine *engine,
         out->advertisers = advertisers_of(engine, dl);
         out->inflight = dl_inflight(dl);
         out->fetched_bytes = dl->fetched_bytes;
+        out->requested_bytes = dl->requested_bytes;
+        out->transferred_bytes = dl->transferred_bytes;
+        out->reused_bytes = dl->reused_bytes;
+        out->requested_objects = dl->requested_objects;
+        out->transferred_objects = dl->transferred_objects;
+        out->reused_objects = dl->reused_objects;
         out->maximum_package_bytes = dl->maximum_package_bytes;
         if (dl->manifest_loaded) {
             out->total_chunks = dl->total_chunks;
