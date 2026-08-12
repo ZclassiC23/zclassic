@@ -23,6 +23,7 @@
 #include <sys/file.h>
 #include <sys/inotify.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #ifdef ZCL_DEV_BUILD
@@ -106,6 +107,11 @@ struct watch_context {
     struct watch_edit_epoch prepared_epoch;
     bool prepared_epoch_ready;
     bool prepared_full_rescan;
+    pid_t proof_worker_pid;
+    char proof_pending[ZCL_DEVLOOP_RESTART_SOURCE_MAX]
+                      [ZCL_DEVLOOP_PATH_MAX];
+    size_t proof_pending_count;
+    enum zcl_devloop_publish_mode proof_pending_mode;
 };
 
 static volatile sig_atomic_t g_watch_stop;
@@ -189,6 +195,85 @@ static void watch_signal(int sig)
     (void)sig;
     g_watch_stop = 1;
     zcl_devloop_process_cancel_request();
+}
+
+/* Complete proof is deliberately downstream of the reflex verdict. Run it
+ * in a sibling worker so source event ingestion never depends on where that
+ * slower cycle happens to reach its next cooperative process poll. The child
+ * closes both watcher-owned descriptors: it can neither consume source
+ * events nor retain singleton ownership after the reactor exits. */
+static void proof_worker_signal(int sig)
+{
+    (void)sig;
+    zcl_devloop_process_cancel_request();
+}
+
+static void watch_proof_reap(struct watch_context *ctx)
+{
+    if (!ctx || ctx->proof_worker_pid <= 1)
+        return;
+    int status = 0;
+    pid_t got = waitpid(ctx->proof_worker_pid, &status, WNOHANG);
+    if (got == ctx->proof_worker_pid || (got < 0 && errno == ECHILD))
+        ctx->proof_worker_pid = 0;
+}
+
+static void watch_proof_cancel(struct watch_context *ctx)
+{
+    if (!ctx)
+        return;
+    ctx->proof_pending_count = 0;
+    watch_proof_reap(ctx);
+    if (ctx->proof_worker_pid > 1)
+        (void)kill(ctx->proof_worker_pid, SIGTERM);
+}
+
+static bool watch_proof_start(struct watch_context *ctx, int watcher_lock_fd)
+{
+    if (!ctx)
+        return false;
+    watch_proof_reap(ctx);
+    if (ctx->proof_worker_pid > 1 || ctx->proof_pending_count == 0)
+        return true;
+    pid_t child = fork();
+    if (child < 0)
+        return false;
+    if (child == 0) {
+        close(ctx->fd);
+        close(watcher_lock_fd);
+        zcl_devloop_process_cancel_clear();
+        zcl_devloop_process_cancel_poll_clear();
+        signal(SIGINT, proof_worker_signal);
+        signal(SIGTERM, proof_worker_signal);
+        const char *files[ZCL_DEVLOOP_RESTART_SOURCE_MAX];
+        for (size_t i = 0; i < ctx->proof_pending_count; i++)
+            files[i] = ctx->proof_pending[i];
+        int rc = zcl_devloop_run_cycle_mode(
+            ctx->root, files, ctx->proof_pending_count,
+            ctx->proof_pending_mode);
+        _exit(rc == 0 ? 0 : 1);
+    }
+    ctx->proof_worker_pid = child;
+    ctx->proof_pending_count = 0;
+    return true;
+}
+
+static bool watch_proof_schedule(
+    struct watch_context *ctx, const char *const *files, size_t count,
+    enum zcl_devloop_publish_mode publish_mode, int watcher_lock_fd)
+{
+    if (!ctx || !files || count == 0 ||
+        count > ZCL_DEVLOOP_RESTART_SOURCE_MAX)
+        return false;
+    for (size_t i = 0; i < count; i++) {
+        if (!files[i] || strlen(files[i]) >= ZCL_DEVLOOP_PATH_MAX)
+            return false;
+        (void)snprintf(ctx->proof_pending[i],
+                       sizeof(ctx->proof_pending[i]), "%s", files[i]);
+    }
+    ctx->proof_pending_count = count;
+    ctx->proof_pending_mode = publish_mode;
+    return watch_proof_start(ctx, watcher_lock_fd);
 }
 
 static void print_json_string(FILE *stream, const char *value)
@@ -767,8 +852,13 @@ static void add_changed(struct watch_context *ctx, const char *path)
         snprintf(ctx->changed[0], sizeof(ctx->changed[0]), "%s", "Makefile");
         return;
     }
-    if (ctx->changed_count == 0)
+    if (ctx->changed_count == 0) {
+        /* The first mutation after a reflex verdict invalidates any queued
+         * complete proof and cooperatively cancels its isolated worker. The
+         * watcher remains the sole producer of the replacement epoch. */
+        watch_proof_cancel(ctx);
         ctx->first_mutation_us = platform_time_monotonic_us();
+    }
     snprintf(ctx->changed[ctx->changed_count],
              sizeof(ctx->changed[ctx->changed_count]), "%s", path);
     ctx->changed_count++;
@@ -1109,6 +1199,10 @@ int zcl_devloop_watch_mode(const char *repo_root,
     fflush(stdout);
 
     while (!g_watch_stop) {
+        if (!watch_proof_start(&ctx, lock_fd)) {
+            fprintf(stderr, "[devloop] complete proof worker start failed\n");
+            break;
+        }
         if (ctx.changed_count == 0 && !ctx.prepared_epoch_ready) {
             struct pollfd pfd = { .fd = ctx.fd, .events = POLLIN };
             int prc = poll(&pfd, 1, 1000);
@@ -1264,9 +1358,13 @@ int zcl_devloop_watch_mode(const char *repo_root,
                         "[devloop] PROOF_PENDING event publication failed\n");
                 g_watch_stop = 1;
             } else {
-                (void)zcl_devloop_run_cycle_mode(
-                    ctx.root, proof_files, proof_count,
-                    ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
+                if (!watch_proof_schedule(
+                        &ctx, proof_files, proof_count,
+                        ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY, lock_fd)) {
+                    fprintf(stderr,
+                            "[devloop] complete proof worker schedule failed\n");
+                    g_watch_stop = 1;
+                }
             }
             fast = ZCL_DEVLOOP_RESTART_EVENT_FINAL;
         }
@@ -1300,6 +1398,7 @@ int zcl_devloop_watch_mode(const char *repo_root,
         }
     }
 
+    watch_proof_cancel(&ctx);
     zcl_devloop_process_cancel_poll_clear();
     printf("{\"schema\":\"zcl.dev_watch_heartbeat.v1\","
            "\"status\":\"stopped\",\"pid\":%ld}\n", (long)getpid());
