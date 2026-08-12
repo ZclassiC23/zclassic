@@ -9,6 +9,8 @@ set -euo pipefail
 
 SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TOOL="$SELF_DIR/checkout-lock.sh"
+ROOT="$(cd "$SELF_DIR/../.." && pwd)"
+MAKEFILE="$ROOT/Makefile"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/zcl-checkout-lock-selftest.XXXXXX")"
 LOCK="$WORK/checkout.lock"
 CHILD_PIDS=()
@@ -95,4 +97,13 @@ NESTED_OUT="$("$TOOL" foreground "$LOCK" -- bash -c \
 OUT2="$("$TOOL" foreground "$LOCK" -- echo released-after-failure)"
 [ "$OUT2" = released-after-failure ] || fail 'lock was not released after the wrapped command failed'
 
-printf 'checkout-lock-selftest: PASS uncontended=true watcher_defers=true foreground_blocks=true nested_no_deadlock=true releases_on_failure=true\n'
+# 6. The source-wide fast gate must enter this same checkout critical section.
+# `pre-push-ci` delegates to `make fast-ci`; without this wiring a concurrent
+# focused runner can overlap the supposedly-exclusive host-latency pre-pass.
+FAST_CI_RECIPE="$(sed -n '/^fast-ci agent-fast-ci dev-ci:/,/^agent-plan:/p' "$MAKEFILE")"
+case "$FAST_CI_RECIPE" in
+    *'$(CHECKOUT_LOCK_TOOL) $(CHECKOUT_LOCK_MODE) "$(CHECKOUT_LOCK)"'*) ;;
+    *) fail 'fast-ci source-wide proof is outside the checkout lock' ;;
+esac
+
+printf 'checkout-lock-selftest: PASS uncontended=true watcher_defers=true foreground_blocks=true nested_no_deadlock=true releases_on_failure=true fast_ci_serialized=true\n'

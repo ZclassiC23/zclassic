@@ -3006,7 +3006,9 @@ endif
 #   ZCL_FAST_COMPILE=dev make fast-ci  # force full dev-object fast-compile
 #   make pre-push-ci               # skips live probe; code gate only
 fast-ci agent-fast-ci dev-ci:
-	@ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) $(CHECKOUT_LOCK_MODE) "$(CHECKOUT_LOCK)" -- \
+	  env ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
 	  tools/agent_fast_ci.sh
 
 agent-plan:
