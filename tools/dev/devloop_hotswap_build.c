@@ -1392,6 +1392,17 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "wrong-length-reject\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "app-native-read-rpc-composition.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "tokens=array-wrap,legacy-pass-through\n"
+            "names=resolve-params,list-noargs\n"
+            "messaging=inbox-noargs\n"
+            "market=profile-params,list-noargs,status-noargs,content-noargs\n"
+            "swaps=chains-noargs,state-params,list-noargs\n"
+            "transport=frozen-child-stub,no-cookie,no-activation\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1428,6 +1439,71 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "app-native-read-rpc-composition.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#define node_rpc_call hotfork_node_rpc_call\n"
+            "#include \"%s\"\n"
+            "#undef node_rpc_call\n"
+            "static char hf_method[64],hf_params[256]; static const char *hf_reply;\n"
+            "char *hotfork_node_rpc_call(const char *method,const char *params){"
+            " snprintf(hf_method,sizeof(hf_method),\"%%s\",method?method:\"\");"
+            " snprintf(hf_params,sizeof(hf_params),\"%%s\",params?params:\"<null>\");"
+            " return hf_reply?strdup(hf_reply):NULL; }\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " struct zcl_native_body_err err={0}; char *body=NULL; struct json_value args,doc;"
+            " const struct json_value *value=NULL;\n"
+            " hf_reply=\"[\\\"ZCL\\\"]\"; body=zcl_native_zslp_listtokens_body(NULL,&err);"
+            " json_init(&doc); bool parsed=body && json_read(&doc,body,strlen(body));"
+            " value=parsed?json_get(&doc,\"tokens\"):NULL;"
+            " HF_CHECK(parsed && value && value->type==JSON_ARR && json_size(value)==1"
+            " && strcmp(json_get_str(json_at(value,0)),\"ZCL\")==0);"
+            " json_free(&doc); free(body);\n"
+            " hf_reply=\"legacy-error\"; body=zcl_native_zslp_listtokens_body(NULL,&err);"
+            " HF_CHECK(body && strcmp(body,\"legacy-error\")==0); free(body);\n"
+            " json_init(&args); json_set_object(&args); json_push_kv_str(&args,\"name\",\"alice\");"
+            " hf_reply=\"{}\"; body=zcl_native_name_resolve_body(&args,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"name_resolve\")==0"
+            " && strcmp(hf_params,\"[\\\"alice\\\"]\")==0); free(body); json_free(&args);\n"
+            " body=zcl_native_name_list_body(NULL,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"name_list\")==0"
+            " && strcmp(hf_params,\"<null>\")==0); free(body);\n"
+            " body=zcl_native_msg_inbox_body(NULL,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"msg_inbox\")==0"
+            " && strcmp(hf_params,\"<null>\")==0); free(body);\n"
+            " json_init(&args); json_set_object(&args); json_push_kv_str(&args,\"profile\",\"open\");"
+            " body=zcl_native_zmarket_list_body(&args,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"zmarket_list\")==0"
+            " && strcmp(hf_params,\"[\\\"open\\\"]\")==0); free(body); json_free(&args);\n"
+            " body=zcl_native_zmarket_list_body(NULL,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"zmarket_list\")==0"
+            " && strcmp(hf_params,\"<null>\")==0); free(body);\n"
+            " body=zcl_native_zmarket_status_body(NULL,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"zmarket_status\")==0); free(body);\n"
+            " body=zcl_native_zmarket_content_list_body(NULL,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"zmarket_content_list\")==0); free(body);\n"
+            " body=zcl_native_swap_chains_body(NULL,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"swap_chains\")==0); free(body);\n"
+            " json_init(&args); json_set_object(&args); json_push_kv_str(&args,\"state\",\"complete\");"
+            " body=zcl_native_swap_list_body(&args,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"swap_list\")==0"
+            " && strcmp(hf_params,\"[\\\"complete\\\"]\")==0); free(body); json_free(&args);\n"
+            " json_init(&args); json_set_object(&args); body=zcl_native_swap_list_body(&args,&err);"
+            " HF_CHECK(body && strcmp(hf_method,\"swap_list\")==0"
+            " && strcmp(hf_params,\"<null>\")==0); free(body); json_free(&args);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==12 && out->checks_passed==12; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "vcs-devloop-publication-envelope.v1") == 0) {
         return snprintf(out, out_size,
@@ -2793,10 +2869,15 @@ int zcl_devloop_hotfork_batch_event(
     const char *repo_root, const char *const *paths, size_t path_count,
     enum zcl_devloop_publish_mode publish_mode)
 {
-    (void)publish_mode;
     if (!repo_root || !paths || path_count != 1) return 0;
     const struct hs_hotfork_def *def = hs_hotfork_for_path(paths[0]);
     if (!def) return 0;
+    /* A source may own both a child-only reflex story and a real resident
+     * module. Verify-only takes the zero-authority HOT_FORK path; an explicit
+     * auto request keeps the existing authenticated activation path. */
+    if (publish_mode == ZCL_DEVLOOP_PUBLISH_APPLY &&
+        hotswap_source_is_swappable(paths[0]))
+        return 0;
     int64_t started = platform_time_monotonic_us();
     struct zcl_devloop_hotswap_build_receipt build = {0};
     struct zcl_devloop_process_result process = {0};

@@ -27,3 +27,9 @@ HOTFORK_CAPSULE(
     "lib/vcs/src/vcs_devloop.c",
     "vcs-devloop-publication-envelope.v1",
     "publication_job_serialize+publication_job_parse+publication_receipt_serialize+publication_receipt_parse")
+
+HOTFORK_CAPSULE(
+    "app.native-read-rpc-composition.v1",
+    "app/controllers/src/app_native_handlers.c",
+    "app-native-read-rpc-composition.v1",
+    "app_read_rpc_method_and_param_composition+token_array_wrap")

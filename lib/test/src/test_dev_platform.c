@@ -3327,6 +3327,19 @@ static int test_hotfork_descriptor_boundary(void)
             "83ecbf1fe6983cd9d56c53e329743547d431339106902a12885de59a1ef128c8";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
             capsule.source_tu, object_root, &capsule));
+
+        capsule.owner_id = "app.native-read-rpc-composition.v1";
+        capsule.source_tu = "app/controllers/src/app_native_handlers.c";
+        capsule.story_id = "app-native-read-rpc-composition.v1";
+        capsule.story_root =
+            "284ec57498fe4539d249896e48c2db375c5c53bad73d29b2dff6c4351d6ecda3";
+        capsule.story_fixture_root =
+            "b1bb052aee4622498ef45073f721013b6fa868d86c3864bc2cffd9d5b23cf647";
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
+        const char *resident_owner[] = { capsule.source_tu };
+        ASSERT(zcl_devloop_hotfork_batch_event(
+            ".", resident_owner, 1, ZCL_DEVLOOP_PUBLISH_APPLY) == 0);
         PASS();
     } _test_next:;
     return failures;
