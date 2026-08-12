@@ -1,4 +1,5 @@
-/* Copyright 2026 Rhett Creighton - MIT License */
+/* Copyright 2026 Rhett Creighton - MIT License
+ * purpose: Public API for the standalone C23 Commons demonstration app. */
 
 #ifndef ZCL_COMMONS_DEMO_H
 #define ZCL_COMMONS_DEMO_H

@@ -67,6 +67,8 @@ LIB_MODULE("codec")
 LIB_MODULE("primitives")
 LIB_MODULE("support")
 LIB_MODULE("json")
+/* Standalone Commons demo core depends on base, codec, and json. */
+LIB_MODULE("commons_demo")
 LIB_MODULE("encoding")
 /* Bounded native bitmap windows. The public API is platform-neutral; the
  * vendored RGFW implementation is private to lib/presentation. */

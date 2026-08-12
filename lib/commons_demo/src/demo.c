@@ -1,4 +1,5 @@
-/* Copyright 2026 Rhett Creighton - MIT License */
+/* Copyright 2026 Rhett Creighton - MIT License
+ * purpose: Compose base, codec, and JSON packages into a stable app result. */
 
 #include "commons/demo.h"
 

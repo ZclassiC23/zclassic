@@ -1,13 +1,13 @@
 /* The standalone stranger-facing application is package ten in the Commons
  * graph. It uses the same row shape as zcode_package_registry.def so every
  * generic graph consumer can append it without an application-specific
- * runner. The key is the public alpha fixture identity (private byte 0x47),
- * never an owner or stable-release key. */
-ZCODE_PACKAGE("zclassic23/commons-demo", "examples/c23-commons-demo", 10,
-    "9c9223484b5704ff22bb2594882e19a405049834f668a6dc479f1e7866ca081d",
-    "0941ae1ed42fc3c16badf667187f8cee55bb89aa30b1b8fbaff80e36fb82053e",
+ * runner. The key is an offline public alpha fixture identity whose private
+ * half is not retained, never an owner or stable-release key. */
+ZCODE_PACKAGE("zclassic23/commons-demo", "lib/commons_demo", 10,
+    "550d47705a87f60a4787c5e1907f7c014ea017ce01d0a35286293174fd0c5c24",
+    "99fe80147ffe3e53c6a2ab376390d46807315e69357311a9d8c897ed4f7af87b",
     "8c59ac8051fc8cc00756930ea2104079bd5fc3d15eb825d679892ebec8b275ac",
-    "623ed6eacf5b9daf495934c7f1e6530f2e81253697809ddf8002c2a014df78d5",
-    "0339f1e92d8c3b5682af0e47ffc670f79031bfff0846a058e7d166f0fac50e80",
-    "021492bc6a132ac91cb8b9f57d2b809dd2bdb8e1a294d3edbb6c6f7fc03bf11cac",
-    "1abf21adba0717b35fc27336db730fbe892699840ceee5ff4115f15e054b88d07188009beefacfd04f032590240216779f99ad9fc8f1b827deb383dc684e4a80")
+    "4bb676b8a256c7cfb1a12865dc1134e04a13a0918a5371e71714af2c46c600ba",
+    "772140125030b70046d385ad60301af90ab5acac86160d58b7612cf075c8f4ed",
+    "035e735fbc3f91e3355e6736ee9c18215e447b0509f582d179e0a151a06fc5d740",
+    "aa487f4ab7a2a39d880244ba2352b0a9e29f35f385e5bba16d22d0e1cb5140a534d1f274550548ae5a72f62228d01271209284e374825b7b7bf9f4adf5ff9d1d")
