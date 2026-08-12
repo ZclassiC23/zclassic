@@ -25,7 +25,9 @@ DHT_PACKAGEHOST="${DHT_PACKAGEHOST:-0}"
 DHT_BUILDWORKERS="${DHT_BUILDWORKERS:-0}"
 DHT_AFTER_SPARSE_HOOK="${DHT_AFTER_SPARSE_HOOK:-}"
 DHT_WORK=""; DHT_DD_A=""; DHT_DD_B=""; DHT_PGID_A=""; DHT_PGID_B=""
-DHT_EXTRA_PGIDS=()
+declare -A DHT_OWNED_PGIDS=()
+declare -A DHT_OWNED_START=()
+DHT_OWNED_PORTS=()
 DHT_CLEANED=0
 DHT_KEEP="${DHT_KEEP:-0}"
 # Throwaway passphrases for the wallet-custody recipe (never argv: they
@@ -43,45 +45,110 @@ dht_die() {
 dht_note() { echo "zcode-dht-acceptance: $*"; }
 
 dht_assert_port() {
-    local p="$1" live
+    local p="$1" live owned
     for live in $DHT_LIVE_PORTS; do
         [ "$p" = "$live" ] && dht_die "port $p is in the live refuse-set"
     done
     ss -tlnH "sport = :$p" 2>/dev/null | grep -q . &&
         dht_die "port $p is already listening"
+    for owned in "${DHT_OWNED_PORTS[@]:-}"; do
+        [ "$owned" = "$p" ] && return 0
+    done
+    DHT_OWNED_PORTS+=("$p")
     return 0
 }
 
 dht_kill_group() {
-    local pgid="$1" sig="${2:-TERM}" i
+    local pgid="$1" sig="${2:-TERM}" i state
     [ -n "$pgid" ] || return 0
+    [ "${DHT_OWNED_PGIDS[$pgid]:-0}" = 1 ] || return 0
     kill -"$sig" "-$pgid" 2>/dev/null || true
     for i in $(seq 1 50); do
-        kill -0 "-$pgid" 2>/dev/null || return 0
+        if ! kill -0 "-$pgid" 2>/dev/null; then
+            wait "$pgid" 2>/dev/null || true
+            unset "DHT_OWNED_PGIDS[$pgid]"
+            return 0
+        fi
+        state="$(awk '{print $3}' "/proc/$pgid/stat" 2>/dev/null || true)"
+        [ "$state" = Z ] && break
         sleep 0.2
     done
     kill -KILL "-$pgid" 2>/dev/null || true
+    wait "$pgid" 2>/dev/null || true
+    unset "DHT_OWNED_PGIDS[$pgid]"
+    ! kill -0 "-$pgid" 2>/dev/null
+}
+
+dht_register_owned_group() {
+    local pid="$1" start
+    start="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+    if [ -z "$start" ]; then
+        wait "$pid" 2>/dev/null || true
+        dht_die "spawned process group $pid exited before ownership registration"
+    fi
+    DHT_OWNED_PGIDS[$pid]=1
+    DHT_OWNED_START[$pid]="$start"
+}
+
+dht_assert_no_owned_processes() {
+    local pid expected current
+    for pid in "${!DHT_OWNED_START[@]}"; do
+        expected="${DHT_OWNED_START[$pid]}"
+        current="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+        [ -z "$current" ] || [ "$current" != "$expected" ] ||
+            dht_die "owned process $pid remained after cleanup"
+    done
+}
+
+dht_assert_ports_rebindable() {
+    [ "${#DHT_OWNED_PORTS[@]}" -gt 0 ] || return 0
+    if ! python3 - "${DHT_OWNED_PORTS[@]}" <<'PY'
+import socket,sys
+sockets=[]
+try:
+    for text in sys.argv[1:]:
+        sock=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+        sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+        sock.bind(("0.0.0.0",int(text)))
+        sockets.append(sock)
+finally:
+    for sock in sockets:
+        sock.close()
+PY
+    then
+        dht_die "owned ports could not be rebound immediately after cleanup"
+    fi
 }
 
 dht_cleanup() {
     [ "$DHT_CLEANED" = 1 ] && return 0
     DHT_CLEANED=1
-    dht_kill_group "$DHT_PGID_A"
-    dht_kill_group "$DHT_PGID_B"
-    local pgid
-    for pgid in "${DHT_EXTRA_PGIDS[@]:-}"; do
-        dht_kill_group "$pgid"
+    local pgid failed=0
+    for pgid in "${!DHT_OWNED_PGIDS[@]}"; do
+        dht_kill_group "$pgid" || failed=1
     done
     if [ "$DHT_KEEP" = 1 ] && [ -n "$DHT_WORK" ]; then
         dht_note "preserved acceptance artifacts: $DHT_WORK"
     elif [ -n "$DHT_WORK" ] && [ -d "$DHT_WORK" ]; then
         case "$DHT_WORK" in
-            "$REPO_ROOT"/test-tmp/zcl23-dhtacc-*) rm -rf "$DHT_WORK" ;;
+            "$REPO_ROOT"/test-tmp/zcl23-dhtacc-*|"$REPO_ROOT"/test-tmp/zcl23-dhtprobe-*)
+                rm -rf "$DHT_WORK"
+                ;;
             *) dht_note "WARN refusing to remove non-scratch $DHT_WORK" ;;
         esac
     fi
+    [ "$failed" -eq 0 ]
 }
-trap dht_cleanup EXIT INT TERM
+
+dht_exit() {
+    local rc="$?"
+    trap - EXIT INT TERM
+    if ! dht_cleanup && [ "$rc" -eq 0 ]; then rc=2; fi
+    exit "$rc"
+}
+trap dht_exit EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 dht_rpc() {
     local dd="$1" port="$2"; shift 2
@@ -107,8 +174,9 @@ dht_native() {
 dht_status() { dht_native "$1" "$2" zcode network status; }
 
 dht_spawn() {
-    local dd="$1" p2p="$2" rpc="$3" fs="$4" https="$5"; shift 5
-    local args=() connect
+    local out_name="$1" dd="$2" p2p="$3" rpc="$4" fs="$5" https="$6"
+    shift 6
+    local args=() connect pid
     for connect in "$@"; do args+=("-connect=$connect"); done
     [ "${#args[@]}" -gt 0 ] || args+=("-connect=127.0.0.1:$DEAD_SINK")
     # No -allow-plaintext-wallet: the ZID anchor's overlay-intent custody
@@ -126,8 +194,175 @@ dht_spawn() {
         -operator-lane=dev -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -showmetrics=0 \
         >>"$dd/node.log" 2>&1 &
-    echo "$!"
+    pid="$!"
+    dht_register_owned_group "$pid"
+    printf -v "$out_name" '%s' "$pid"
 }
+
+dht_spawn_owned_command() {
+    local out_name="$1" log="$2" pid
+    shift 2
+    setsid "$@" >>"$log" 2>&1 &
+    pid="$!"
+    dht_register_owned_group "$pid"
+    printf -v "$out_name" '%s' "$pid"
+}
+
+dht_wait_owned_exit() {
+    local pid="$1" expected="$2" label="$3" rc
+    if wait "$pid"; then rc=0; else rc="$?"; fi
+    unset "DHT_OWNED_PGIDS[$pid]"
+    [ "$rc" -eq "$expected" ] ||
+        dht_die "$label exited $rc (expected $expected)"
+}
+
+dht_wait_file() {
+    local path="$1" owner="$2" deadline
+    deadline=$(( $(date +%s) + DHT_WAIT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        [ -s "$path" ] && return 0
+        kill -0 "$owner" 2>/dev/null || return 1
+        sleep 0.1
+    done
+    return 1
+}
+
+dht_process_identity_alive() {
+    local pid="$1" expected="$2" current
+    current="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
+    [ -n "$current" ] && [ "$current" = "$expected" ]
+}
+
+dht_probe_read_report() {
+    local path="$1" pid_name="$2" port_name="$3" start_name="$4"
+    local probe_pid probe_port probe_start extra
+    read -r probe_pid probe_port probe_start extra <"$path"
+    [ -n "$probe_pid" ] && [ -n "$probe_port" ] &&
+        [ -n "$probe_start" ] && [ -z "${extra:-}" ] ||
+        dht_die "invalid lifecycle probe report $path"
+    printf -v "$pid_name" '%s' "$probe_pid"
+    printf -v "$port_name" '%s' "$probe_port"
+    printf -v "$start_name" '%s' "$probe_start"
+}
+
+dht_lifecycle_probe_child() {
+    local report="${DHT_PROBE_REPORT:?}" release="${DHT_PROBE_RELEASE:?}"
+    local outcome="${DHT_PROBE_OUTCOME:?}" listener="" listener_port
+    mkdir -p "$REPO_ROOT/test-tmp"
+    DHT_WORK="$(mktemp -d "$REPO_ROOT/test-tmp/zcl23-dhtprobe-XXXXXX")"
+    setsid python3 - "$report" >>"$DHT_WORK/listener.log" 2>&1 <<'PY' &
+import os,pathlib,signal,socket,sys
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
+s.bind(("127.0.0.1",0)); s.listen(1)
+start=pathlib.Path(f"/proc/{os.getpid()}/stat").read_text().split()[21]
+path=pathlib.Path(sys.argv[1])
+tmp=path.with_suffix(path.suffix+".tmp")
+tmp.write_text(f"{os.getpid()} {s.getsockname()[1]} {start}\n")
+tmp.replace(path)
+signal.pause()
+PY
+    listener="$!"
+    dht_register_owned_group "$listener"
+    dht_wait_file "$report" "$listener" ||
+        dht_die "lifecycle probe listener failed before readiness"
+    read -r _ listener_port _ <"$report"
+    DHT_OWNED_PORTS+=("$listener_port")
+    dht_wait_file "$release" "$$" ||
+        dht_die "lifecycle probe release was not observed"
+    [ "$outcome" = success ] || dht_die "forced middle-of-run failure"
+    if ! dht_cleanup; then
+        echo "zcode-dht-acceptance: FATAL: lifecycle probe cleanup failed" >&2
+        exit 2
+    fi
+    dht_assert_no_owned_processes
+    dht_assert_ports_rebindable
+    dht_note "PASS lifecycle probe; owned_processes_remaining=0 ports_rebindable=true"
+}
+
+dht_lifecycle_selftest() {
+    local one_shell two_shell three_shell signal_shell
+    local one_pid one_port one_start two_pid two_port two_start
+    local three_pid three_port three_start signal_pid signal_port signal_start
+    mkdir -p "$REPO_ROOT/test-tmp"
+    DHT_WORK="$(mktemp -d "$REPO_ROOT/test-tmp/zcl23-dhtprobe-XXXXXX")"
+
+    dht_spawn_owned_command one_shell "$DHT_WORK/one.log" env \
+        DHT_LIFECYCLE_MODE=probe DHT_PROBE_OUTCOME=success \
+        DHT_PROBE_REPORT="$DHT_WORK/one.report" \
+        DHT_PROBE_RELEASE="$DHT_WORK/one.release" \
+        bash "$SCRIPT_DIR/zcode_dht_acceptance.sh"
+    dht_spawn_owned_command two_shell "$DHT_WORK/two.log" env \
+        DHT_LIFECYCLE_MODE=probe DHT_PROBE_OUTCOME=failure \
+        DHT_PROBE_REPORT="$DHT_WORK/two.report" \
+        DHT_PROBE_RELEASE="$DHT_WORK/two.release" \
+        bash "$SCRIPT_DIR/zcode_dht_acceptance.sh"
+    dht_wait_file "$DHT_WORK/one.report" "$one_shell" ||
+        dht_die "first concurrent lifecycle probe did not become ready"
+    dht_wait_file "$DHT_WORK/two.report" "$two_shell" ||
+        dht_die "second concurrent lifecycle probe did not become ready"
+    dht_probe_read_report "$DHT_WORK/one.report" one_pid one_port one_start
+    dht_probe_read_report "$DHT_WORK/two.report" two_pid two_port two_start
+    [ "$one_port" != "$two_port" ] || dht_die "concurrent probes shared a port"
+    DHT_OWNED_PORTS+=("$one_port" "$two_port")
+
+    printf '%s\n' release >"$DHT_WORK/two.release"
+    dht_wait_owned_exit "$two_shell" 2 "forced-failure lifecycle probe"
+    ! dht_process_identity_alive "$two_pid" "$two_start" ||
+        dht_die "failed probe left its owned listener alive"
+    dht_process_identity_alive "$one_pid" "$one_start" ||
+        dht_die "failed probe cleaned the other probe's listener"
+
+    printf '%s\n' release >"$DHT_WORK/one.release"
+    dht_wait_owned_exit "$one_shell" 0 "successful lifecycle probe"
+    ! dht_process_identity_alive "$one_pid" "$one_start" ||
+        dht_die "successful probe left its owned listener alive"
+    dht_assert_ports_rebindable
+
+    dht_spawn_owned_command three_shell "$DHT_WORK/three.log" env \
+        DHT_LIFECYCLE_MODE=probe DHT_PROBE_OUTCOME=success \
+        DHT_PROBE_REPORT="$DHT_WORK/three.report" \
+        DHT_PROBE_RELEASE="$DHT_WORK/three.release" \
+        bash "$SCRIPT_DIR/zcode_dht_acceptance.sh"
+    dht_wait_file "$DHT_WORK/three.report" "$three_shell" ||
+        dht_die "immediate rerun lifecycle probe did not become ready"
+    dht_probe_read_report "$DHT_WORK/three.report" three_pid three_port three_start
+    DHT_OWNED_PORTS+=("$three_port")
+    printf '%s\n' release >"$DHT_WORK/three.release"
+    dht_wait_owned_exit "$three_shell" 0 "immediate-rerun lifecycle probe"
+    ! dht_process_identity_alive "$three_pid" "$three_start" ||
+        dht_die "immediate rerun left its owned listener alive"
+
+    dht_spawn_owned_command signal_shell "$DHT_WORK/signal.log" env \
+        DHT_LIFECYCLE_MODE=probe DHT_PROBE_OUTCOME=success \
+        DHT_PROBE_REPORT="$DHT_WORK/signal.report" \
+        DHT_PROBE_RELEASE="$DHT_WORK/signal.release" \
+        bash "$SCRIPT_DIR/zcode_dht_acceptance.sh"
+    dht_wait_file "$DHT_WORK/signal.report" "$signal_shell" ||
+        dht_die "signal lifecycle probe did not become ready"
+    dht_probe_read_report "$DHT_WORK/signal.report" \
+        signal_pid signal_port signal_start
+    DHT_OWNED_PORTS+=("$signal_port")
+    kill -TERM "-$signal_shell"
+    dht_wait_owned_exit "$signal_shell" 143 "interrupted lifecycle probe"
+    ! dht_process_identity_alive "$signal_pid" "$signal_start" ||
+        dht_die "interrupted probe left its owned listener alive"
+
+    if ! dht_cleanup; then
+        echo "zcode-dht-acceptance: FATAL: lifecycle selftest cleanup failed" >&2
+        exit 2
+    fi
+    dht_assert_no_owned_processes
+    dht_assert_ports_rebindable
+    dht_note "PASS lifecycle ownership: concurrent isolation, failure, interruption, immediate rerun"
+}
+
+case "${DHT_LIFECYCLE_MODE:-scenario}" in
+    probe) dht_lifecycle_probe_child; exit 0 ;;
+    selftest) dht_lifecycle_selftest; exit 0 ;;
+    scenario) ;;
+    *) dht_die "unknown DHT_LIFECYCLE_MODE=${DHT_LIFECYCLE_MODE:-}" ;;
+esac
 
 dht_height() {
     dht_rpc "$1" "$2" getblockcount | dht_result
@@ -482,9 +717,11 @@ printf '%s\n' "$DHT_WALLET_PASS" >"$DHT_CRED_DIR/wallet-passphrase"
 export CREDENTIALS_DIRECTORY="$DHT_CRED_DIR"
 
 dht_note "booting two clean packagehost=$DHT_PACKAGEHOST regtest nodes"
-DHT_PGID_A="$(dht_spawn "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
+dht_spawn DHT_PGID_A "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" \
+    "$A_HTTPS" "127.0.0.1:$DEAD_SINK"
 dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "node A RPC warmup failed"
-DHT_PGID_B="$(dht_spawn "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
+dht_spawn DHT_PGID_B "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" \
+    "$B_HTTPS" "127.0.0.1:$A_PORT"
 dht_wait_rpc "$DHT_DD_B" "$B_RPC" "$DHT_PGID_B" || dht_die "node B RPC warmup failed"
 ! rg -q "unrecognized flag '-v2transport'" "$DHT_DD_A/node.log" "$DHT_DD_B/node.log" ||
     dht_die "v2transport was not recognized"
@@ -507,11 +744,13 @@ dht_wait_fold "$DHT_DD_A" "$A_RPC" 101 || dht_die "A reducer fold did not reach 
 # authority (the coins_kv authority stamps land only at boot).
 dht_note "bouncing B onto the dead sink (A will own the custody-phase link)"
 dht_kill_group "$DHT_PGID_B"; DHT_PGID_B=""
-DHT_PGID_B="$(dht_spawn "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$DEAD_SINK")"
+dht_spawn DHT_PGID_B "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" \
+    "$B_HTTPS" "127.0.0.1:$DEAD_SINK"
 dht_wait_rpc "$DHT_DD_B" "$B_RPC" "$DHT_PGID_B" || dht_die "B dead-sink bounce failed"
 dht_note "restarting A so the forward-folded coins set stamps its authority"
 dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
-DHT_PGID_A="$(dht_spawn "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
+dht_spawn DHT_PGID_A "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" \
+    "$A_HTTPS" "127.0.0.1:$DEAD_SINK"
 dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "A custody restart failed"
 dht_wait_fold "$DHT_DD_A" "$A_RPC" 101 || dht_die "A reducer fold did not survive the restart"
 # Operator-directed onetry: bypasses the reachable-port policy and lands
@@ -590,9 +829,11 @@ PY
 dht_note "restarting to prove capability learning, Noise, and DHT bootstrap"
 dht_kill_group "$DHT_PGID_B"; DHT_PGID_B=""
 dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
-DHT_PGID_A="$(dht_spawn "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
+dht_spawn DHT_PGID_A "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" \
+    "$A_HTTPS" "127.0.0.1:$DEAD_SINK"
 dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "A restart failed"
-DHT_PGID_B="$(dht_spawn "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
+dht_spawn DHT_PGID_B "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" \
+    "$B_HTTPS" "127.0.0.1:$A_PORT"
 dht_wait_rpc "$DHT_DD_B" "$B_RPC" "$DHT_PGID_B" || dht_die "B restart failed"
 dht_wait_auth "$DHT_DD_A" "$A_RPC" || dht_die "A never authenticated B over DHT"
 dht_wait_auth "$DHT_DD_B" "$B_RPC" || dht_die "B never authenticated A over DHT"
@@ -624,11 +865,13 @@ dht_check_contacts_file "$DHT_DD_B/zcode/dht/contacts.v2" "$NODE_B"
 
 # Start each node without its peer: the loaded contact must be visible as
 # cold before any network refresh can authenticate it.
-DHT_PGID_A="$(dht_spawn "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
+dht_spawn DHT_PGID_A "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" \
+    "$A_HTTPS" "127.0.0.1:$DEAD_SINK"
 dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "A cold-load boot failed"
 dht_wait_cold_load "$DHT_DD_A" "$A_RPC" ||
     dht_die "A persisted contact did not publish cold"
-DHT_PGID_B="$(dht_spawn "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS" "127.0.0.1:$A_PORT")"
+dht_spawn DHT_PGID_B "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" \
+    "$B_HTTPS" "127.0.0.1:$A_PORT"
 dht_wait_rpc "$DHT_DD_B" "$B_RPC" "$DHT_PGID_B" || dht_die "B reload boot failed"
 dht_wait_auth "$DHT_DD_A" "$A_RPC" || dht_die "A reload did not refresh B"
 dht_wait_auth "$DHT_DD_B" "$B_RPC" || dht_die "B reload did not refresh A"
@@ -638,7 +881,8 @@ dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
 sleep 2
 PEERS="$(dht_native "$DHT_DD_B" "$B_RPC" zcode network peers --input='{"limit":64}')"
 [ "$(printf '%s' "$PEERS" | dht_jget 'd["data"]["count"]')" -eq 1 ] || dht_die "B evicted A during a short disconnect"
-DHT_PGID_A="$(dht_spawn "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS" "127.0.0.1:$DEAD_SINK")"
+dht_spawn DHT_PGID_A "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" \
+    "$A_HTTPS" "127.0.0.1:$DEAD_SINK"
 dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "A recovery boot failed"
 dht_wait_auth "$DHT_DD_B" "$B_RPC" || dht_die "B did not reauthenticate A"
 FINAL_FIND="$(dht_native "$DHT_DD_B" "$B_RPC" zcode network find --input="{\"node_id\":\"$TARGET_A\"}")"
@@ -661,16 +905,15 @@ rm -f "$DHT_DD_A/zcode/dht/contacts.v2" \
 
 dht_note "booting seven isolated identities on the common chain fixture"
 for i in 0 1 2 3 4 5 6; do
-    PIDS[$i]="$(dht_spawn "${DDS[$i]}" "${PORTS[$i]}" "${RPCS[$i]}" \
+    dht_spawn "PIDS[$i]" "${DDS[$i]}" "${PORTS[$i]}" "${RPCS[$i]}" \
         "${FSPORTS[$i]}" "${HTTPSPORTS[$i]}" \
-        "127.0.0.1:$DEAD_SINK")"
+        "127.0.0.1:$DEAD_SINK"
     dht_wait_rpc "${DDS[$i]}" "${RPCS[$i]}" "${PIDS[$i]}" ||
         dht_die "isolated node $i warmup failed"
     dht_wait_height "${DDS[$i]}" "${RPCS[$i]}" 129 ||
         dht_die "isolated node $i lost the common verified chain"
 done
 DHT_PGID_A="${PIDS[0]}"; DHT_PGID_B="${PIDS[1]}"
-DHT_EXTRA_PGIDS=("${PIDS[@]:2}")
 
 dht_note "publishing seven chain-bound ZENDP records without DHT contacts"
 for i in 0 1 2 3 4 5 6; do
@@ -710,7 +953,7 @@ for publisher in 0 1 2 3 4 5 6; do
         dht_die "origin refused endpoint $publisher: $accepted"
 done
 for i in 0 1 2 3 4 5 6; do dht_kill_group "${PIDS[$i]}"; PIDS[$i]=""; done
-DHT_PGID_A=""; DHT_PGID_B=""; DHT_EXTRA_PGIDS=()
+DHT_PGID_A=""; DHT_PGID_B=""
 
 for pos in 0 1 2 3 4 5 6; do
     idx="${ORDER[$pos]}"
@@ -725,12 +968,11 @@ for pos in 0 1 2 3 4 5 6; do
             connects+=("127.0.0.1:${PORTS[$alt]}")
         fi
     fi
-    PIDS[$idx]="$(dht_spawn "${DDS[$idx]}" "${PORTS[$idx]}" "${RPCS[$idx]}" \
-        "${FSPORTS[$idx]}" "${HTTPSPORTS[$idx]}" "${connects[@]}")"
+    dht_spawn "PIDS[$idx]" "${DDS[$idx]}" "${PORTS[$idx]}" "${RPCS[$idx]}" \
+        "${FSPORTS[$idx]}" "${HTTPSPORTS[$idx]}" "${connects[@]}"
     dht_wait_rpc "${DDS[$idx]}" "${RPCS[$idx]}" "${PIDS[$idx]}" ||
         dht_die "sparse restart failed for node $idx"
 done
-DHT_EXTRA_PGIDS=("${PIDS[@]}")
 # Do not infer topology readiness from one authenticated edge: that races the
 # alternate route's Noise upgrade and turns a real recovery proof into a
 # single dead-candidate wait. Wait for the exact sparse graph degree first.
@@ -863,9 +1105,9 @@ for pos in 6 5 4 3 2 1; do
         farther="${ORDER[$((pos + 1))]}"
         connects=("127.0.0.1:${PORTS[$farther]}")
     fi
-    PIDS[$idx]="$(dht_spawn "${DDS[$idx]}" "${PORTS[$idx]}" \
+    dht_spawn "PIDS[$idx]" "${DDS[$idx]}" "${PORTS[$idx]}" \
         "${RPCS[$idx]}" "${FSPORTS[$idx]}" "${HTTPSPORTS[$idx]}" \
-        "${connects[@]}")"
+        "${connects[@]}"
     dht_wait_rpc "${DDS[$idx]}" "${RPCS[$idx]}" "${PIDS[$idx]}" ||
         dht_die "cold-bootstrap remote node $idx failed"
 done
@@ -875,10 +1117,9 @@ for pos in 1 2 3 4 5 6; do
         dht_die "remote sparse chain node $idx did not authenticate"
 done
 
-PIDS[$ORIGIN]="$(dht_spawn "${DDS[$ORIGIN]}" "${PORTS[$ORIGIN]}" \
+dht_spawn "PIDS[$ORIGIN]" "${DDS[$ORIGIN]}" "${PORTS[$ORIGIN]}" \
     "${RPCS[$ORIGIN]}" "${FSPORTS[$ORIGIN]}" "${HTTPSPORTS[$ORIGIN]}" \
-    "127.0.0.1:$DEAD_SINK")"
-DHT_EXTRA_PGIDS=("${PIDS[@]}")
+    "127.0.0.1:$DEAD_SINK"
 dht_wait_rpc "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" "${PIDS[$ORIGIN]}" ||
     dht_die "origin zero-peer cold restart failed"
 dht_wait_cold_load "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" 1 ||
@@ -935,4 +1176,9 @@ if [ -n "$DHT_AFTER_SPARSE_HOOK" ]; then
     . "$hook_real"
 fi
 
-dht_note "PASS: seven-node sparse lookup, true async admission, persistence, autonomous cold bootstrap"
+if ! dht_cleanup; then
+    dht_die "owned process groups did not terminate during success cleanup"
+fi
+dht_assert_no_owned_processes
+dht_assert_ports_rebindable
+dht_note "PASS: seven-node sparse lookup, true async admission, persistence, autonomous cold bootstrap; owned_processes_remaining=0 ports_rebindable=true"

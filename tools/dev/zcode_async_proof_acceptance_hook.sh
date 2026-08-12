@@ -288,13 +288,13 @@ zap_dump_failure() {
 zap_start_node() {
     local node="$1" connect="${2:-}"
     if [ -n "$connect" ]; then
-        PIDS[$node]="$(dht_spawn "${DDS[$node]}" "${PORTS[$node]}" \
+        dht_spawn "PIDS[$node]" "${DDS[$node]}" "${PORTS[$node]}" \
             "${RPCS[$node]}" "${FSPORTS[$node]}" "${HTTPSPORTS[$node]}" \
-            "127.0.0.1:${PORTS[$connect]}")"
+            "127.0.0.1:${PORTS[$connect]}"
     else
-        PIDS[$node]="$(dht_spawn "${DDS[$node]}" "${PORTS[$node]}" \
+        dht_spawn "PIDS[$node]" "${DDS[$node]}" "${PORTS[$node]}" \
             "${RPCS[$node]}" "${FSPORTS[$node]}" "${HTTPSPORTS[$node]}" \
-            "127.0.0.1:$DEAD_SINK")"
+            "127.0.0.1:$DEAD_SINK"
     fi
     dht_wait_rpc "${DDS[$node]}" "${RPCS[$node]}" "${PIDS[$node]}" ||
         dht_die "async proof node $node failed to start"
@@ -323,11 +323,10 @@ ZAP_A="$ORIGIN"; ZAP_B="$NEXT"; ZAP_C="$TARGET"
 for i in 0 1 2 3 4 5 6; do
     dht_kill_group "${PIDS[$i]:-}"; PIDS[$i]=""
 done
-DHT_PGID_A=""; DHT_PGID_B=""; DHT_EXTRA_PGIDS=()
+DHT_PGID_A=""; DHT_PGID_B=""
 zap_start_node "$ZAP_B"
 zap_start_node "$ZAP_A" "$ZAP_B"
 zap_connect "$ZAP_A" "$ZAP_B"
-DHT_EXTRA_PGIDS=("${PIDS[@]}")
 A_ORIGINAL_PID="${PIDS[$ZAP_A]}"
 ZAP_A_DB_IDENTITIES="$(zap_db_identity "$ZAP_A" || true)"
 [ -n "$ZAP_A_DB_IDENTITIES" ] ||

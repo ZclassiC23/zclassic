@@ -2121,14 +2121,21 @@ t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
 
-.PHONY: zcode-development-acceptance zcode-async-proof-acceptance zcode-async-proof-scaling sovereign-source-roundtrip
+.PHONY: zcode-development-acceptance zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling sovereign-source-roundtrip
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
+
+# Runs the real DHT fixture's central lifecycle boundary without booting full
+# nodes: concurrent owners, a forced middle failure, signal cleanup, immediate
+# port reuse, and an uncontaminated rerun are all fail-closed assertions.
+zcode-dht-harness-selftest:
+	@DHT_LIFECYCLE_MODE=selftest bash tools/dev/zcode_dht_acceptance.sh
 
 # Zero-wait development protocol acceptance. The exact groups jointly prove
 # three interchangeable signed work nodes, dead-peer retry/stale-result
 # refusal, the append-only requester ledger, and the user-facing local path.
 zcode-async-proof-acceptance: zclassic23 zcl-rpc
+	@$(MAKE) --no-print-directory zcode-dht-harness-selftest
 	@$(MAKE) --no-print-directory t-fast-exact \
 	  ONLY='test_build_fabric,test_zcode_dev_objects,test_zcode_package_dev'
 	@$(MAKE) --no-print-directory check-vcs-no-git

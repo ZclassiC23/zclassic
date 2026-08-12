@@ -2993,13 +2993,16 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
                    c.engine, revert_transport.transport_root,
                    ZWN_DAY, ++c.now) == VCS_SWARM_FETCH_ALREADY_COMPLETE);
 
-        char package_hex[65], transport_hex[65], release_hex[65];
+        char package_hex[65], transport_hex[65], recipe_hex[65];
+        char release_hex[65];
         zcl_hex_encode(transport.package_root, 32, package_hex);
         zcl_hex_encode(transport.transport_root, 32, transport_hex);
+        zcl_hex_encode(transport.recipe_root, 32, recipe_hex);
         zcl_hex_encode(transport.release_id, 32, release_hex);
         printf("{\"schema\":\"zcl.package_graph_lifecycle.v1\","
                "\"scenario\":\"%s\",\"package_root\":\"%s\","
-               "\"transport_root\":\"%s\",\"release_id\":\"%s\","
+               "\"transport_root\":\"%s\",\"recipe_root\":\"%s\","
+               "\"release_id\":\"%s\","
                "\"package_count\":%zu,\"full_node_count\":4,"
                "\"cold_verified_bytes\":%" PRIu64 ","
                "\"repeat_verified_bytes\":0,"
@@ -3018,7 +3021,8 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
                "\"publisher_disappeared\":true,"
                "\"onward_path\":\"A-B-C-D-C\","
                "\"new_author\":\"D\",\"github_contacted\":false}\n",
-               scenario.name, package_hex, transport_hex, release_hex,
+               scenario.name, package_hex, transport_hex, recipe_hex,
+               release_hex,
                ZWN_PACKAGE_SCENARIO_COUNT,
                cold.fetched_bytes, cold.requested_objects,
                source_edit.requested_bytes,
