@@ -1403,6 +1403,15 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "transport=frozen-child-stub,no-cookie,no-activation\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "zcode-moderation-input-policy.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "no-keys=empty-object;reject=null,array,nonempty\n"
+            "backlog=exact-three,positive-cutoffs,explicit-scratch\n"
+            "reject=unknown-key,zero-height,string-height,nonscratch\n"
+            "authority=validation-only,no-projection,no-service-lease\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1502,6 +1511,56 @@ static int hs_hotfork_unity_source(
             " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
             " out->checks_passed,out->checks_run);"
             " return out->checks_run==12 && out->checks_passed==12; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "zcode-moderation-input-policy.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#define zcl_native_zcode_workspace_is_explicit_scratch hotfork_workspace_is_scratch\n"
+            "#include \"%s\"\n"
+            "#undef zcl_native_zcode_workspace_is_explicit_scratch\n"
+            "bool hotfork_workspace_is_scratch(const char *path) {"
+            " return path && strcmp(path,\"/tmp/zcl-hotfork-scratch\")==0; }\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " struct json_value doc; const char *workspace=NULL; uint64_t height=0; int64_t mtp=0;"
+            " json_init(&doc); json_set_object(&doc); HF_CHECK(moderation_no_keys(&doc));"
+            " json_push_kv_bool(&doc,\"extra\",true); HF_CHECK(!moderation_no_keys(&doc)); json_free(&doc);"
+            " HF_CHECK(!moderation_no_keys(NULL)); json_init(&doc); json_set_array(&doc);"
+            " HF_CHECK(!moderation_no_keys(&doc)); json_free(&doc);\n"
+            " const char valid[] = \"{\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\","
+            "\\\"cutoff_height\\\":7,\\\"cutoff_mtp\\\":11}\";"
+            " json_init(&doc); bool parsed=json_read(&doc,valid,strlen(valid));"
+            " HF_CHECK(parsed && moderation_backlog_input(&doc,&workspace,&height,&mtp)"
+            " && strcmp(workspace,\"/tmp/zcl-hotfork-scratch\")==0 && height==7 && mtp==11);"
+            " json_free(&doc);\n"
+            " const char unknown[] = \"{\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\","
+            "\\\"cutoff_height\\\":7,\\\"unknown\\\":11}\";"
+            " json_init(&doc); parsed=json_read(&doc,unknown,strlen(unknown));"
+            " HF_CHECK(parsed && !moderation_backlog_input(&doc,&workspace,&height,&mtp)); json_free(&doc);\n"
+            " const char zero[] = \"{\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\","
+            "\\\"cutoff_height\\\":0,\\\"cutoff_mtp\\\":11}\";"
+            " json_init(&doc); parsed=json_read(&doc,zero,strlen(zero));"
+            " HF_CHECK(parsed && !moderation_backlog_input(&doc,&workspace,&height,&mtp)); json_free(&doc);\n"
+            " const char wrong_type[] = \"{\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\","
+            "\\\"cutoff_height\\\":\\\"7\\\",\\\"cutoff_mtp\\\":11}\";"
+            " json_init(&doc); parsed=json_read(&doc,wrong_type,strlen(wrong_type));"
+            " HF_CHECK(parsed && !moderation_backlog_input(&doc,&workspace,&height,&mtp)); json_free(&doc);\n"
+            " const char nonscratch[] = \"{\\\"workspace\\\":\\\"/srv/zcode\\\","
+            "\\\"cutoff_height\\\":7,\\\"cutoff_mtp\\\":11}\";"
+            " json_init(&doc); parsed=json_read(&doc,nonscratch,strlen(nonscratch));"
+            " HF_CHECK(parsed && !moderation_backlog_input(&doc,&workspace,&height,&mtp)); json_free(&doc);\n"
+            " HF_CHECK(!moderation_backlog_input(NULL,&workspace,&height,&mtp));\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==10 && out->checks_passed==10; }\n",
             source_path, def->exercised_surface);
     }
     if (strcmp(def->story_id,

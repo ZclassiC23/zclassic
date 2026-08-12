@@ -33,3 +33,9 @@ HOTFORK_CAPSULE(
     "app/controllers/src/app_native_handlers.c",
     "app-native-read-rpc-composition.v1",
     "app_read_rpc_method_and_param_composition+token_array_wrap")
+
+HOTFORK_CAPSULE(
+    "zcode.moderation-input-policy.v1",
+    "tools/command/native_zcode_moderation_command.c",
+    "zcode-moderation-input-policy.v1",
+    "moderation_no_keys+moderation_backlog_input")

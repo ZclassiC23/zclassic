@@ -3340,6 +3340,17 @@ static int test_hotfork_descriptor_boundary(void)
         const char *resident_owner[] = { capsule.source_tu };
         ASSERT(zcl_devloop_hotfork_batch_event(
             ".", resident_owner, 1, ZCL_DEVLOOP_PUBLISH_APPLY) == 0);
+
+        capsule.owner_id = "zcode.moderation-input-policy.v1";
+        capsule.source_tu =
+            "tools/command/native_zcode_moderation_command.c";
+        capsule.story_id = "zcode-moderation-input-policy.v1";
+        capsule.story_root =
+            "f31c0c6fbd749e0a99625ffb3cbdccb23ea0f2c73bdd4df1dfc57ea9623d801d";
+        capsule.story_fixture_root =
+            "d9185e80e37d0ca3ee3d728340d98b445c6971833a04569b9be0064699c37ef4";
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
         PASS();
     } _test_next:;
     return failures;
