@@ -1432,6 +1432,16 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=validation-only,no-projection,no-cas-write\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "zcode-passport-input-policy.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "keys=evidence-allowed,signature-commit-only,unknown-reject\n"
+            "roots=exact-plan,optional-job-pair,uppercase-reject\n"
+            "shape=workspace-alone-reject,unknown-key-reject,empty-reject\n"
+            "commit=exact-shape\n"
+            "authority=validation-only,no-signature,no-storage,no-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1694,6 +1704,69 @@ static int hs_hotfork_unity_source(
             " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
             " out->checks_passed,out->checks_run);"
             " return out->checks_run==13 && out->checks_passed==13; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "zcode-passport-input-policy.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "static bool hf_passport_parse(const char *text,bool commit,"
+            " struct vcs_zcode_module_passport_v1 *passport) {"
+            " struct json_value doc; json_init(&doc);"
+            " bool decoded=text && json_read(&doc,text,strlen(text));"
+            " struct zcl_command_request request={.input=&doc};"
+            " struct zcl_command_reply reply;"
+            " zcl_command_reply_init(&reply,\"zcl.hotfork.passport.v1\");"
+            " bool ok=decoded && passport_parse_roots(&request,&reply,passport,commit,"
+            " commit?\"commit\":\"plan\");"
+            " zcl_command_reply_free(&reply); json_free(&doc); return ok; }\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " HF_CHECK(passport_key_allowed(\"stable_api_root\",false));"
+            " HF_CHECK(!passport_key_allowed(\"signature\",false));"
+            " HF_CHECK(passport_key_allowed(\"signature\",true));"
+            " HF_CHECK(!passport_key_allowed(\"unknown\",true));\n"
+            " char lower[65],upper[65]; memset(lower,'a',64); lower[64]=0;"
+            " memset(upper,'A',64); upper[64]=0; char plan[1400],candidate[1600];"
+            " snprintf(plan,sizeof(plan),"
+            " \"{\\\"stable_api_root\\\":\\\"%%s\\\",\\\"recipe_root\\\":\\\"%%s\\\","
+            "\\\"toolchain_root\\\":\\\"%%s\\\",\\\"tests_root\\\":\\\"%%s\\\","
+            "\\\"license_root\\\":\\\"%%s\\\",\\\"semantic_fingerprint_root\\\":\\\"%%s\\\","
+            "\\\"workspace_lineage_root\\\":\\\"%%s\\\",\\\"source_assignment_root\\\":\\\"%%s\\\","
+            "\\\"quality_profiles_root\\\":\\\"%%s\\\",\\\"signer_pubkey\\\":\\\"%%s\\\"}\","
+            " lower,lower,lower,lower,lower,lower,lower,lower,lower,lower);"
+            " struct vcs_zcode_module_passport_v1 passport;"
+            " HF_CHECK(hf_passport_parse(plan,false,&passport) && passport.schema_version==1"
+            " && passport.flags==VCS_ZCODE_COMMONS_V2_REQUIRED_FLAGS"
+            " && passport.stable_api_root[0]==0xaa && passport.signer_root[31]==0xaa);\n"
+            " size_t n=strlen(plan); snprintf(candidate,sizeof(candidate),"
+            " \"%%.*s,\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\","
+            "\\\"publication_job_root\\\":\\\"00\\\"}\",(int)(n-1),plan);"
+            " HF_CHECK(hf_passport_parse(candidate,false,&passport));"
+            " snprintf(candidate,sizeof(candidate),"
+            " \"%%.*s,\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\"}\","
+            " (int)(n-1),plan);"
+            " HF_CHECK(!hf_passport_parse(candidate,false,&passport));\n"
+            " snprintf(candidate,sizeof(candidate),\"%%s\",plan);"
+            " char *root=strstr(candidate,lower); if (root) memcpy(root,upper,64);"
+            " HF_CHECK(root && !hf_passport_parse(candidate,false,&passport));"
+            " snprintf(candidate,sizeof(candidate),"
+            " \"%%.*s,\\\"unknown\\\":true}\",(int)(n-1),plan);"
+            " HF_CHECK(!hf_passport_parse(candidate,false,&passport));"
+            " HF_CHECK(!hf_passport_parse(\"{}\",false,&passport));\n"
+            " snprintf(candidate,sizeof(candidate),"
+            " \"%%.*s,\\\"signature\\\":\\\"placeholder\\\"}\",(int)(n-1),plan);"
+            " HF_CHECK(hf_passport_parse(candidate,true,&passport));\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==11 && out->checks_passed==11; }\n",
             source_path, def->exercised_surface);
     }
     if (strcmp(def->story_id,

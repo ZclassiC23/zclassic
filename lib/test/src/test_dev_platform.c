@@ -3372,6 +3372,17 @@ static int test_hotfork_descriptor_boundary(void)
             "0fa5413c5a1995a9218b25e09fb199df5097e6d74579aec86755423913c85e5e";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
             capsule.source_tu, object_root, &capsule));
+
+        capsule.owner_id = "zcode.passport-input-policy.v1";
+        capsule.source_tu =
+            "tools/command/native_zcode_passport_command.c";
+        capsule.story_id = "zcode-passport-input-policy.v1";
+        capsule.story_root =
+            "94d5cf684ac77020a5703c00c328aaa035dc9dc66cc91383f334b2c9f007dc05";
+        capsule.story_fixture_root =
+            "4694dba2830b31f0fc2f1a36076ccfb1fb622db329c2ac736a659a6da7fb7aae";
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
         PASS();
     } _test_next:;
     return failures;

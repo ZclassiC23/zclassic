@@ -51,3 +51,9 @@ HOTFORK_CAPSULE(
     "tools/command/native_zcode_epoch_propose_command.c",
     "zcode-epoch-propose-input-policy.v1",
     "zep_str+zep_keys+zep_root+zep_u64_positive+zep_parse_propose")
+
+HOTFORK_CAPSULE(
+    "zcode.passport-input-policy.v1",
+    "tools/command/native_zcode_passport_command.c",
+    "zcode-passport-input-policy.v1",
+    "passport_key_allowed+passport_parse_roots")
