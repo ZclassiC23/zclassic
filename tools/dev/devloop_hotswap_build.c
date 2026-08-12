@@ -1442,6 +1442,15 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=validation-only,no-signature,no-storage,no-publication\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "zcode-workspace-input-policy.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "roots=lowercase-decode,uppercase-reject,missing-reject\n"
+            "keys=manifest-allowed,signature-commit-only,unknown-reject,null-reject\n"
+            "zero=all-zero-accept,nonzero-reject\n"
+            "authority=validation-only,no-service,no-storage,no-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1767,6 +1776,42 @@ static int hs_hotfork_unity_source(
             " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
             " out->checks_passed,out->checks_run);"
             " return out->checks_run==11 && out->checks_passed==11; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "zcode-workspace-input-policy.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " char lower[65],upper[65]; memset(lower,'a',64); lower[64]=0;"
+            " memset(upper,'A',64); upper[64]=0;"
+            " struct json_value doc; json_init(&doc); json_set_object(&doc);"
+            " json_push_kv_str(&doc,\"root\",lower);"
+            " json_push_kv_str(&doc,\"upper\",upper); uint8_t root[32];"
+            " HF_CHECK(workspace_decode_root(&doc,\"root\",root)"
+            " && root[0]==0xaa && root[31]==0xaa);"
+            " HF_CHECK(!workspace_decode_root(&doc,\"upper\",root));"
+            " HF_CHECK(!workspace_decode_root(&doc,\"missing\",root));"
+            " json_free(&doc);\n"
+            " HF_CHECK(workspace_manifest_key_allowed(\"passport\",false));"
+            " HF_CHECK(!workspace_manifest_key_allowed(\"signature\",false));"
+            " HF_CHECK(workspace_manifest_key_allowed(\"signature\",true));"
+            " HF_CHECK(!workspace_manifest_key_allowed(\"unknown\",true));"
+            " HF_CHECK(!workspace_manifest_key_allowed(NULL,true));\n"
+            " uint8_t zero[32]={0},nonzero[32]={0}; nonzero[17]=1;"
+            " HF_CHECK(workspace_root_is_zero(zero));"
+            " HF_CHECK(!workspace_root_is_zero(nonzero));\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==10 && out->checks_passed==10; }\n",
             source_path, def->exercised_surface);
     }
     if (strcmp(def->story_id,

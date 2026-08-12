@@ -57,3 +57,9 @@ HOTFORK_CAPSULE(
     "tools/command/native_zcode_passport_command.c",
     "zcode-passport-input-policy.v1",
     "passport_key_allowed+passport_parse_roots")
+
+HOTFORK_CAPSULE(
+    "zcode.workspace-input-policy.v1",
+    "tools/command/native_zcode_workspace_command.c",
+    "zcode-workspace-input-policy.v1",
+    "workspace_decode_root+workspace_manifest_key_allowed+workspace_root_is_zero")
