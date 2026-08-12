@@ -431,6 +431,7 @@ cache_manifest() {
         tools/dev/deploy-dev-lane.sh tools/dev/agent-dev-status.sh \
         tools/dev/agent-doctor.sh \
         tools/dev/reflex-hotfork-transport-acceptance.sh \
+        tools/dev/reflex-hotfork-source-bundle-acceptance.sh \
         tools/scripts/remote_node_update.sh \
         tools/scripts/lane_recover.sh \
         tools/scripts/check_stable_publish_containment.sh \

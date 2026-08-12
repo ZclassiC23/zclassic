@@ -99,6 +99,11 @@ static bool project_cycle(const struct json_value *cycle,
         copy_value(cycle, compact, "story_root", "story_root") &&
         copy_value(cycle, compact, "story_fixture_root",
                    "story_fixture_root") &&
+        copy_value(cycle, compact, "story_fixture_id", "story_fixture_id") &&
+        copy_value(cycle, compact, "story_adapter", "story_adapter") &&
+        copy_value(cycle, compact, "story_timeout_ms", "story_timeout_ms") &&
+        copy_value(cycle, compact, "forbidden_effect_mask",
+                   "forbidden_effect_mask") &&
         copy_value(cycle, compact, "observation_root", "observation_root") &&
         copy_value(cycle, compact, "exercised_owner_surface",
                    "exercised_owner_surface") &&

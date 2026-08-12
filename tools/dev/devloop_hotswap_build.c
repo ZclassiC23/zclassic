@@ -1505,6 +1505,16 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=shape-only,no-filesystem,no-cas,no-signing,no-publication\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "zcode-source-bundle-input-policy.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "json=string-present,string-missing,type-reject\n"
+            "roots=source,named,uppercase-reject\n"
+            "paths=equal,parent,child,sibling\n"
+            "render=roots,metrics,authority-flags\n"
+            "authority=policy-only,no-filesystem,no-cas,no-package-import,no-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1541,6 +1551,57 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "zcode-source-bundle-input-policy.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " struct json_value doc,upper,rendered; json_init(&doc); json_set_object(&doc);"
+            " char lower[65],capital[65]; memset(lower,'a',64); lower[64]=0;"
+            " memset(capital,'A',64); capital[64]=0;"
+            " json_push_kv_str(&doc,\"source_root\",lower);"
+            " json_push_kv_str(&doc,\"named_root\",lower);"
+            " json_push_kv_int(&doc,\"count\",7);"
+            " HF_CHECK(strcmp(zsb_str(&doc,\"source_root\"),lower)==0);"
+            " HF_CHECK(zsb_str(&doc,\"missing\")==NULL);"
+            " HF_CHECK(zsb_str(&doc,\"count\")==NULL);"
+            " uint8_t root[32],named[32];"
+            " HF_CHECK(zsb_root(&doc,root) && root[0]==0xaa && root[31]==0xaa);"
+            " HF_CHECK(zsb_named_root(&doc,\"named_root\",named) && memcmp(root,named,32)==0);"
+            " json_init(&upper); json_set_object(&upper);"
+            " json_push_kv_str(&upper,\"source_root\",capital);"
+            " HF_CHECK(!zsb_root(&upper,root)); json_free(&upper);"
+            " HF_CHECK(!zsb_paths_disjoint(\"src\",\"src\"));"
+            " HF_CHECK(!zsb_paths_disjoint(\"src\",\"src/lib/x.c\"));"
+            " HF_CHECK(!zsb_paths_disjoint(\"src/lib/x.c\",\"src\"));"
+            " HF_CHECK(zsb_paths_disjoint(\"src/a\",\"src/b\"));\n"
+            " struct vcs_source_bundle_metrics metrics={.source_bytes=11,.compressed_bytes=7,"
+            " .new_bytes=5,.reused_bytes=6,.file_count=2,.new_blobs=1,.reused_blobs=1,"
+            " .manifest_reused=true,.repaired=false};"
+            " memset(root,0x5a,sizeof(root)); json_init(&rendered); json_set_object(&rendered);"
+            " zsb_render(&rendered,root,&metrics);"
+            " HF_CHECK(strlen(json_get_str(json_get(&rendered,\"source_root\")))==64"
+            " && json_get_int(json_get(&rendered,\"source_bytes\"))==11"
+            " && json_get_int(json_get(&rendered,\"compressed_bytes\"))==7"
+            " && json_get_int(json_get(&rendered,\"file_count\"))==2);"
+            " HF_CHECK(json_get_bool(json_get(&rendered,\"manifest_reused\"))"
+            " && !json_get_bool(json_get(&rendered,\"repaired\"))"
+            " && !json_get_bool(json_get(&rendered,\"git_required\"))"
+            " && !json_get_bool(json_get(&rendered,\"source_executed\")));"
+            " json_free(&rendered); json_free(&doc);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==12 && out->checks_passed==12; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "app-native-read-rpc-composition.v1") == 0) {
         return snprintf(out, out_size,

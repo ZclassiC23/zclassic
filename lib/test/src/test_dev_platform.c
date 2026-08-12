@@ -3209,11 +3209,24 @@ static int test_reflex_policy_boundary(void)
         ASSERT(json_push_kv_int(&cycle, "edit_epoch", 7));
         ASSERT(json_push_kv_str(&cycle, "action", "hot_shadow"));
         ASSERT(json_push_kv_int(&cycle, "elapsed_us", 90000));
+        ASSERT(json_push_kv_str(&cycle, "story_fixture_id", "fixture.v1"));
+        ASSERT(json_push_kv_str(&cycle, "story_adapter", "adapter.v1"));
+        ASSERT(json_push_kv_int(&cycle, "story_timeout_ms", 1000));
+        ASSERT(json_push_kv_str(&cycle, "forbidden_effect_mask",
+                               "git|make|network"));
         ASSERT(policy->project_cycle(&cycle, 7, &compact));
         ASSERT_STR_EQ(json_get_str(json_get(&compact, "lane")), "REFLEX");
         ASSERT_STR_EQ(json_get_str(json_get(&compact, "event")),
                       "STORY_GREEN");
         ASSERT_EQ(json_get_int(json_get(&compact, "feedback_us")), 90000);
+        ASSERT_STR_EQ(json_get_str(json_get(&compact, "story_fixture_id")),
+                      "fixture.v1");
+        ASSERT_STR_EQ(json_get_str(json_get(&compact, "story_adapter")),
+                      "adapter.v1");
+        ASSERT_EQ(json_get_int(json_get(&compact, "story_timeout_ms")), 1000);
+        ASSERT_STR_EQ(json_get_str(json_get(&compact,
+                                            "forbidden_effect_mask")),
+                      "git|make|network");
         json_free(&compact);
         json_free(&cycle);
 
@@ -3403,6 +3416,17 @@ static int test_hotfork_descriptor_boundary(void)
                 "b77e5e834b7480c64c5db2f81e7d392ee0514776ecaacc376f31f50a2d507d29";
         capsule.story_fixture_root =
             "7f0099af65b52a8bb07058b75a5f5df74480825a4ad0ee35149eeac5a996e060";
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
+
+        capsule.owner_id = "zcode.source-bundle-input-policy.v1";
+        capsule.source_tu =
+            "tools/command/native_zcode_source_bundle_command.c";
+        capsule.story_id = "zcode-source-bundle-input-policy.v1";
+        capsule.story_root =
+            "5bc89f38ee26e61acb4ba8ed09e35220c0d018c3113da27cf9ad966758e0146d";
+        capsule.story_fixture_root =
+            "4f2383f01fb601897bcfc2f375060129b319e293cb907cf577532efa6000854d";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
             capsule.source_tu, object_root, &capsule));
         PASS();
