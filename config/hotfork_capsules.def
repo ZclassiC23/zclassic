@@ -62,6 +62,17 @@ HOTFORK_CAPSULE(
     "distill_first_error+compiler_error_shape+cycle_text_preview+proof_complete+publish_mode+watcher_guidance")
 
 HOTFORK_CAPSULE(
+    "dev.impact-plan-classification.v1",
+    "HOT_FORK",
+    "tools/dev/devloop_plan.c",
+    "devloop-plan-classification.v1",
+    "devloop-plan-classification.v1",
+    "devloop-plan-classification.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "path_is_safe+path_classification+watch_event_classification+dimension_names")
+
+HOTFORK_CAPSULE(
     "vcs.devloop-proof-envelope.v1",
     "HOT_FORK",
     "lib/vcs/src/vcs_devloop.c",

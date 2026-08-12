@@ -1607,6 +1607,15 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=copied-text-and-enums,pure-policy,no-filesystem,no-process,no-publication\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "devloop-plan-classification.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "paths=safe,traversal,absolute,control,docs,sealed,relevant,temp\n"
+            "watch=mutation,attribute,ignored,source-dir\n"
+            "dimensions=names,status-names\n"
+            "authority=copied-paths-and-masks,pure-classification,no-index,no-filesystem,no-process\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1643,6 +1652,48 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "devloop-plan-classification.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " HF_CHECK(path_is_safe(\"tools/dev/a.c\")"
+            " && !path_is_safe(\"../a.c\") && !path_is_safe(\"/a.c\")"
+            " && !path_is_safe(\"a\\\\b.c\") && !path_is_safe(NULL));"
+            " HF_CHECK(path_is_docs(\"docs/a.md\") && path_is_docs(\"README.md\")"
+            " && !path_is_docs(\"lib/a.c\")"
+            " && zcl_devloop_path_is_sealed_core(\"core/math/a.c\")"
+            " && !zcl_devloop_path_is_sealed_core(\"lib/a.c\"));"
+            " HF_CHECK(zcl_devloop_path_is_relevant(\"lib/a.c\")"
+            " && zcl_devloop_path_is_relevant(\"Makefile\")"
+            " && !zcl_devloop_path_is_relevant(\"build/a.c\")"
+            " && !zcl_devloop_path_is_relevant(\"lib/a.c~\")"
+            " && !zcl_devloop_path_is_relevant(\"lib/_x_fixture.c\"));"
+            " HF_CHECK(zcl_devloop_watch_event_is_mutation(IN_CLOSE_WRITE)"
+            " && zcl_devloop_watch_event_is_mutation(IN_DELETE)"
+            " && !zcl_devloop_watch_event_is_mutation(IN_ATTRIB));"
+            " HF_CHECK(zcl_devloop_watch_dir_is_ignored(\"build\")"
+            " && zcl_devloop_watch_dir_is_ignored(\".cache\")"
+            " && !zcl_devloop_watch_dir_is_ignored(\"lib\"));"
+            " HF_CHECK(strcmp(zcl_devloop_dim_name(ZCL_DEVLOOP_DIM_OPAQUE),\"opaque\")==0"
+            " && strcmp(zcl_devloop_dim_name(ZCL_DEVLOOP_DIM_SEMANTIC),\"semantic\")==0"
+            " && strcmp(zcl_devloop_dim_status_name(ZCL_DEVLOOP_DIM_COMPLETE),\"complete\")==0"
+            " && strcmp(zcl_devloop_dim_status_name(ZCL_DEVLOOP_DIM_UNAVAILABLE),\"unavailable\")==0);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==6 && out->checks_passed==6; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "zcode-corpus-command-core.v1") == 0) {
         return snprintf(out, out_size,

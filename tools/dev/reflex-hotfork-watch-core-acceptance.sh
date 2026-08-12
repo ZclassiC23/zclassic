@@ -26,6 +26,12 @@ elif [[ "$OWNER_KIND" == corpus ]]; then
     STORY='zcode-corpus-command-core.v1'
     MUTANT_OLD="root[i] >= 'a'"
     MUTANT_NEW="root[i] > 'a'"
+elif [[ "$OWNER_KIND" == plan ]]; then
+    SOURCE="$ROOT/tools/dev/devloop_plan.c"
+    OUTPUT="${ZCL_REFLEX_PLAN_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-plan-core-acceptance.json}"
+    STORY='devloop-plan-classification.v1'
+    MUTANT_OLD='strcmp(name, "build") == 0'
+    MUTANT_NEW='strcmp(name, "build") != 0'
 fi
 
 fail() { printf 'reflex-hotfork-watch-core-acceptance: %s\n' "$*" >&2; exit 2; }
