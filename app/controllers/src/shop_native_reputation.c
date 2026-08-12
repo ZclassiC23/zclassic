@@ -37,7 +37,8 @@
  * key: releases are signed by it and the reward ledger settles to it, so
  * one 33-byte pubkey is the join key across every row.
  *
- * Bound in config/commands/store.def. Tests: lib/test/src/test_shop_reputation.c. */
+ * Bound in config/commands/store.def. Tests: lib/test/src/test_shop_reputation.c.
+ * HOT_FORK executes only copied evidence facts and pure set/render helpers. */
 
 #include "controllers/shop_native_handler.h"
 
