@@ -356,6 +356,27 @@ int test_supervisor(void)
         supervisor_stop();
     }
 
+    /* Explicit event wake bypasses the periodic cadence. */
+    supervisor_reset_for_testing();
+    supervisor_set_tick_ms_for_testing(1000);
+    {
+        static struct liveness_contract c;
+        static struct cb_counts cc;
+        memset(&cc, 0, sizeof(cc));
+        liveness_contract_init(&c, "loop.event_wake");
+        c.ctx = &cc;
+        c.on_tick = inc_tick;
+        supervisor_child_id id = supervisor_register(&c);
+        SUP_CHECK("event-wake register ok", id >= 0);
+        SUP_CHECK("supervisor_start succeeds (event wake)",
+                  supervisor_start());
+        supervisor_request_tick(id);
+        sleep_ms(80);
+        SUP_CHECK("event wake fires before one-second period",
+                  atomic_load(&cc.tick_calls) == 1);
+        supervisor_stop();
+    }
+
     /* ── deadline triggers on_stall once (edge-triggered) ───────── */
     supervisor_reset_for_testing();
     supervisor_set_tick_ms_for_testing(5);

@@ -367,6 +367,14 @@ void supervisor_report_stall(supervisor_child_id id,
 void supervisor_set_period(supervisor_child_id id,   int64_t secs);
 void supervisor_set_deadline(supervisor_child_id id, int64_t secs);
 
+/* Mark one registered period-driven child due immediately and wake the
+ * dedicated tick runner.  This is an edge-triggered scheduling hint only:
+ * the child's canonical state remains its authority, duplicate requests
+ * coalesce in tick_pending, and the ordinary period remains the recovery
+ * backstop if the runner is unavailable.  Safe from I/O and network threads;
+ * the callback never runs on the caller. */
+void supervisor_request_tick(supervisor_child_id id);
+
 /* Arm NO_PROGRESS detection: a marker frozen for `microseconds` with no idle
  * report raises the stall. Sets the policy to ARMED. Passing 0 or less
  * disarms and returns the policy to UNDECLARED — which is honest (nobody has

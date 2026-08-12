@@ -7,6 +7,7 @@
 #include "command/native_command.h"
 #include "config/boot_internal.h"
 #include "config/runtime.h"
+#include "config/boot_zcode_swarm.h"
 #include "controllers/strong_params.h"
 #include "kernel/command_registry.h"
 #include "models/build_fabric.h"
@@ -86,9 +87,11 @@ static bool async_proof_rpc_admit(
         "zcode_work_admit {input}\n"
         "Admit one canonical immutable action through the live node's owned "
         "proof ledger. Internal authenticated loopback surface.");
-    return async_proof_rpc_run(
+    bool handled = async_proof_rpc_run(
         params, result, "zcl.zcode_improve.v1",
         zcl_native_handle_zcode_improve, "ADMISSION_FAILED", "admit");
+    boot_zcode_swarm_request_tick();
+    return handled;
 }
 
 static bool async_proof_rpc_evidence(

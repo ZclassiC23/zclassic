@@ -107,6 +107,9 @@ static _Atomic bool   g_runner_enabled    = false;
 static pthread_t      g_runner_thread_id;
 static _Atomic bool   g_runner_handle_set = false;
 static struct liveness_contract g_runner_contract;
+static pthread_mutex_t g_runner_wake_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_runner_wake_cond = PTHREAD_COND_INITIALIZER;
+static _Atomic uint64_t g_runner_wake_seq = 0;
 
 const char *supervisor_stall_reason_name(enum supervisor_stall_reason r)
 {
@@ -372,6 +375,17 @@ void supervisor_set_deadline(supervisor_child_id id, int64_t secs)
         return;
     }
     atomic_store(&c->deadline_secs, secs);
+}
+
+void supervisor_request_tick(supervisor_child_id id)
+{
+    struct liveness_contract *c = contract_for(id);
+    if (!c || atomic_load(&c->completed)) return;
+    atomic_store(&c->tick_pending, true);
+    atomic_fetch_add(&g_runner_wake_seq, UINT64_C(1));
+    pthread_mutex_lock(&g_runner_wake_lock);
+    pthread_cond_signal(&g_runner_wake_cond);
+    pthread_mutex_unlock(&g_runner_wake_lock);
 }
 
 void supervisor_set_progress_max_quiet(supervisor_child_id id,
@@ -736,20 +750,33 @@ static void sweep_once(void)
 static void *supervisor_tick_runner_main(void *arg)
 {
     (void)arg;
-    atomic_store(&g_runner_running, true);
     atomic_store(&g_runner_contract.last_tick_us,
                  platform_time_monotonic_us());
     while (atomic_load(&g_runner_running) &&
            !thread_registry_shutdown_requested())
     {
+        uint64_t wake_seq = atomic_load(&g_runner_wake_seq);
         atomic_store(&g_runner_contract.last_tick_us,
                      platform_time_monotonic_us());
         run_due_ticks();
         int ms = atomic_load(&g_tick_ms);
         if (ms < 1) ms = 1;
         if (ms > 60000) ms = 60000;
-        struct timespec req = { ms / 1000, (long)(ms % 1000) * 1000000L };
-        nanosleep(&req, NULL);
+        struct timespec deadline;
+        platform_time_realtime_timespec(&deadline);
+        deadline.tv_sec += ms / 1000;
+        deadline.tv_nsec += (long)(ms % 1000) * 1000000L;
+        if (deadline.tv_nsec >= 1000000000L) {
+            deadline.tv_sec++;
+            deadline.tv_nsec -= 1000000000L;
+        }
+        pthread_mutex_lock(&g_runner_wake_lock);
+        if (wake_seq == atomic_load(&g_runner_wake_seq) &&
+            atomic_load(&g_runner_running) &&
+            !thread_registry_shutdown_requested())
+            (void)pthread_cond_timedwait(&g_runner_wake_cond,
+                                         &g_runner_wake_lock, &deadline);
+        pthread_mutex_unlock(&g_runner_wake_lock);
     }
     atomic_store(&g_runner_running, false);
     thread_registry_unregister_self();
@@ -846,6 +873,10 @@ void supervisor_stop(void)
      * so a slow drain during teardown doesn't spuriously name the blocker. */
     atomic_store(&g_runner_enabled, false);
     atomic_store(&g_runner_running, false);
+    atomic_fetch_add(&g_runner_wake_seq, UINT64_C(1));
+    pthread_mutex_lock(&g_runner_wake_lock);
+    pthread_cond_signal(&g_runner_wake_cond);
+    pthread_mutex_unlock(&g_runner_wake_lock);
     if (atomic_load(&g_runner_handle_set)) {
         for (;;) {
             struct timespec rdeadline;
