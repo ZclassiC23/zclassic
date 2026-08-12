@@ -1,5 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Static host contract and no-state guide for pure package views. */
+ * Static host contract and no-state guide for pure package views.
+ * Candidate execution is bound by the closed HOT_FORK story registry. */
 
 #include "command/native_command.h"
 

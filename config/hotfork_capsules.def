@@ -159,3 +159,14 @@ HOTFORK_CAPSULE(
     1000,
     "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "want_view_render+want_view_json+want_view_frozen_kat")
+
+HOTFORK_CAPSULE(
+    "zcode.package-view-contract.v1",
+    "HOT_FORK",
+    "tools/command/native_zcode_package_view_command.c",
+    "zcode-package-view-contract.v1",
+    "zcode-package-view-contract.v1",
+    "zcode-package-view-contract.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "package_view_contract+package_view_frozen_kat")
