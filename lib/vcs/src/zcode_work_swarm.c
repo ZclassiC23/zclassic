@@ -4,9 +4,8 @@
 #include "vcs/zcode_work_swarm.h"
 
 #include "codec/cursor.h"
-#include "crypto/ed25519.h"
-#include "crypto/sha3.h"
 #include "util/log_macros.h"
+#include "vcs/signed_evidence.h"
 
 #include <string.h>
 
@@ -258,12 +257,7 @@ static bool zcws_signed_id(uint8_t type, const void *object, uint8_t out[32])
     if (!vcs_zcode_work_swarm_serialize(&message, wire, sizeof(wire),
                                         &wire_len) || wire_len < body_len)
         return false;
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, domain_len);
-    sha3_256_write(&sha, wire, body_len);
-    sha3_256_finalize(&sha, out);
-    return true;
+    return vcs_signed_evidence_root(domain, domain_len, wire, body_len, out);
 }
 
 bool vcs_zcode_work_capability_seal(
@@ -274,8 +268,7 @@ bool vcs_zcode_work_capability_seal(
     memcpy(c->signer_pubkey, pubkey, 32);
     uint8_t id[32];
     if (!zcws_signed_id(VCS_ZCODE_WORK_SWARM_CAPABILITY, c, id)) return false;
-    ed25519_sign(c->signature, id, sizeof(id), secret, pubkey);
-    return true;
+    return vcs_signed_evidence_seal_root(id, secret, pubkey, c->signature);
 }
 
 bool vcs_zcode_work_capability_verify(
@@ -284,7 +277,8 @@ bool vcs_zcode_work_capability_verify(
     uint8_t id[32];
     return zcws_capability_valid(c) &&
            zcws_signed_id(VCS_ZCODE_WORK_SWARM_CAPABILITY, c, id) &&
-           ed25519_verify(c->signature, id, sizeof(id), c->signer_pubkey);
+           vcs_signed_evidence_verify_root(
+               id, c->signature, c->signer_pubkey, c->signer_pubkey);
 }
 
 bool vcs_zcode_work_request_seal(
@@ -295,8 +289,7 @@ bool vcs_zcode_work_request_seal(
     memcpy(r->requester_pubkey, pubkey, 32);
     uint8_t id[32];
     if (!zcws_signed_id(VCS_ZCODE_WORK_SWARM_REQUEST, r, id)) return false;
-    ed25519_sign(r->signature, id, sizeof(id), secret, pubkey);
-    return true;
+    return vcs_signed_evidence_seal_root(id, secret, pubkey, r->signature);
 }
 
 bool vcs_zcode_work_request_verify(const struct vcs_zcode_work_request_v1 *r)
@@ -304,7 +297,8 @@ bool vcs_zcode_work_request_verify(const struct vcs_zcode_work_request_v1 *r)
     uint8_t id[32];
     return zcws_request_valid(r) &&
            zcws_signed_id(VCS_ZCODE_WORK_SWARM_REQUEST, r, id) &&
-           ed25519_verify(r->signature, id, sizeof(id), r->requester_pubkey);
+           vcs_signed_evidence_verify_root(
+               id, r->signature, r->requester_pubkey, r->requester_pubkey);
 }
 
 bool vcs_zcode_work_cancel_seal(
@@ -315,8 +309,7 @@ bool vcs_zcode_work_cancel_seal(
     memcpy(c->requester_pubkey, pubkey, 32);
     uint8_t id[32];
     if (!zcws_signed_id(VCS_ZCODE_WORK_SWARM_CANCEL, c, id)) return false;
-    ed25519_sign(c->signature, id, sizeof(id), secret, pubkey);
-    return true;
+    return vcs_signed_evidence_seal_root(id, secret, pubkey, c->signature);
 }
 
 bool vcs_zcode_work_cancel_verify(const struct vcs_zcode_work_cancel_v1 *c)
@@ -324,7 +317,9 @@ bool vcs_zcode_work_cancel_verify(const struct vcs_zcode_work_cancel_v1 *c)
     uint8_t id[32];
     return zcws_cancel_valid(c) &&
            zcws_signed_id(VCS_ZCODE_WORK_SWARM_CANCEL, c, id) &&
-           ed25519_verify(c->signature, id, sizeof(id), c->requester_pubkey);
+           vcs_signed_evidence_verify_root(
+               id, c->signature, c->requester_pubkey,
+               c->requester_pubkey);
 }
 
 bool vcs_zcode_work_progress_seal(
@@ -335,8 +330,7 @@ bool vcs_zcode_work_progress_seal(
     memcpy(p->signer_pubkey, pubkey, 32);
     uint8_t id[32];
     if (!zcws_signed_id(VCS_ZCODE_WORK_SWARM_PROGRESS, p, id)) return false;
-    ed25519_sign(p->signature, id, sizeof(id), secret, pubkey);
-    return true;
+    return vcs_signed_evidence_seal_root(id, secret, pubkey, p->signature);
 }
 
 bool vcs_zcode_work_progress_verify(
@@ -345,7 +339,8 @@ bool vcs_zcode_work_progress_verify(
     uint8_t id[32];
     return zcws_progress_valid(p) &&
            zcws_signed_id(VCS_ZCODE_WORK_SWARM_PROGRESS, p, id) &&
-           ed25519_verify(p->signature, id, sizeof(id), p->signer_pubkey);
+           vcs_signed_evidence_verify_root(
+               id, p->signature, p->signer_pubkey, p->signer_pubkey);
 }
 
 bool vcs_zcode_work_progress_verify_for_request(
