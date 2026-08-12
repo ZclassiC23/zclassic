@@ -1381,7 +1381,18 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
         def->owner_id, def->source_tu, def->story_id,
         def->exercised_surface);
     if (strcmp(def->story_id,
-               "native-dev-hotswap-receipt-policy.v1") == 0) {
+               "vcs-devloop-publication-envelope.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "root=zero-reject,nonzero-accept\n"
+            "job=canonical-roundtrip,field-preservation,bad-magic-reject,"
+            "zero-required-root-reject,bad-version-reject\n"
+            "receipt=waiting-zero-artifact-roundtrip,field-preservation,"
+            "accepted-zero-artifact-reject,accepted-artifact-roundtrip,"
+            "wrong-length-reject\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
+                      "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
             "hooks=commit,probe,quiesce-off,quiesce-on\n"
@@ -1417,6 +1428,60 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "vcs-devloop-publication-envelope.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) { return false; } memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " uint8_t zero[32]={0},one[32]={1};"
+            " HF_CHECK(!publication_root_nonzero(zero));"
+            " HF_CHECK(publication_root_nonzero(one));\n"
+            " struct vcs_devloop_publication_job job={.version=VCS_DEVLOOP_PUBLICATION_JOB_VERSION};"
+            " memset(job.vcs_commit_root,1,32); memset(job.source_tree_root,2,32);"
+            " memset(job.proof_receipt_root,3,32); memset(job.source_identity_sha256,4,32);"
+            " memset(job.source_cas_sha3,5,32); job.generation_sha256[0]=6;"
+            " job.parent_workspace_root[0]=7;"
+            " uint8_t job_wire[VCS_DEV_PUBLICATION_JOB_WIRE_BYTES];"
+            " HF_CHECK(publication_job_serialize(&job,job_wire));"
+            " struct vcs_devloop_publication_job parsed_job={0};"
+            " HF_CHECK(publication_job_parse(job_wire,sizeof(job_wire),&parsed_job));"
+            " HF_CHECK(memcmp(&job,&parsed_job,sizeof(job))==0);"
+            " uint8_t saved=job_wire[0]; job_wire[0]^=1;"
+            " HF_CHECK(!publication_job_parse(job_wire,sizeof(job_wire),&parsed_job)); job_wire[0]=saved;"
+            " memset(job.source_tree_root,0,32);"
+            " HF_CHECK(!publication_job_serialize(&job,job_wire));"
+            " memset(job.source_tree_root,2,32); job.version=2;"
+            " HF_CHECK(!publication_job_serialize(&job,job_wire));\n"
+            " struct vcs_devloop_publication_receipt receipt={"
+            " .version=VCS_DEVLOOP_PUBLICATION_RECEIPT_VERSION,"
+            " .phase=VCS_DEVLOOP_PUBLICATION_PHASE_WAITING_ACCEPTANCE,"
+            " .bytes_scanned=123,.new_chunks=4,.reused_chunks=5,.providers=6,.storage_acks=7};"
+            " memset(receipt.job_root,8,32);"
+            " uint8_t receipt_wire[VCS_DEV_PUBLICATION_RECEIPT_WIRE_BYTES];"
+            " HF_CHECK(publication_receipt_serialize(&receipt,receipt_wire));"
+            " struct vcs_devloop_publication_receipt parsed_receipt={0};"
+            " HF_CHECK(publication_receipt_parse(receipt_wire,sizeof(receipt_wire),&parsed_receipt));"
+            " HF_CHECK(memcmp(&receipt,&parsed_receipt,sizeof(receipt))==0);"
+            " receipt.phase=VCS_DEVLOOP_PUBLICATION_PHASE_ACCEPTED_LANE_BOUND;"
+            " HF_CHECK(!publication_receipt_serialize(&receipt,receipt_wire));"
+            " memset(receipt.artifact_root,9,32);"
+            " HF_CHECK(publication_receipt_serialize(&receipt,receipt_wire)"
+            " && publication_receipt_parse(receipt_wire,sizeof(receipt_wire),&parsed_receipt)"
+            " && memcmp(&receipt,&parsed_receipt,sizeof(receipt))==0);"
+            " HF_CHECK(!publication_receipt_parse(receipt_wire,sizeof(receipt_wire)-1,&parsed_receipt));\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==14 && out->checks_passed==14; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "native-dev-hotswap-receipt-policy.v1") == 0) {
         return snprintf(out, out_size,

@@ -21,3 +21,9 @@ HOTFORK_CAPSULE(
     "tools/command/native_dev_hotswap.c",
     "native-dev-hotswap-receipt-policy.v1",
     "zcl_native_hotswap_publish_hooks+report_to_reply+service_report_to_reply+registry_commit_batch_cb+registry_probe_cb")
+
+HOTFORK_CAPSULE(
+    "vcs.devloop-proof-envelope.v1",
+    "lib/vcs/src/vcs_devloop.c",
+    "vcs-devloop-publication-envelope.v1",
+    "publication_job_serialize+publication_job_parse+publication_receipt_serialize+publication_receipt_parse")

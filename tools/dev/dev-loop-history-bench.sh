@@ -225,7 +225,7 @@ if [ "$MODE" = "--self-test" ]; then
         fail 'service island classification regressed'
     [ "$(classify app/services/src/vault_intent_decision_service.c | cut -f1)" = HOT_SHADOW_CORE ] ||
         fail 'shadow service classification regressed'
-    [ "$(classify lib/vcs/src/vcs_devloop.c | cut -f1)" = COMPILE_ONLY ] ||
+    [ "$(classify tools/dev/devloop_cycle.c | cut -f1)" = COMPILE_ONLY ] ||
         fail 'static-shell compile-only classification regressed'
     [ "$(classify lib/vcs/src/source_package_checkout.c | cut -f1)" = HOT_FORK ] ||
         fail 'HOT_FORK capsule classification regressed'
@@ -233,6 +233,8 @@ if [ "$MODE" = "--self-test" ]; then
         fail 'highest-churn HOT_FORK owner classification regressed'
     [ "$(classify tools/command/native_dev_hotswap.c | cut -f1)" = HOT_FORK ] ||
         fail 'hot-swap receipt HOT_FORK owner classification regressed'
+    [ "$(classify lib/vcs/src/vcs_devloop.c | cut -f1)" = HOT_FORK ] ||
+        fail 'ZVCS envelope HOT_FORK owner classification regressed'
     printf 'dev-loop-history-bench: self-test PASS\n'
     exit 0
 fi

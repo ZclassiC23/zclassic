@@ -3317,6 +3317,16 @@ static int test_hotfork_descriptor_boundary(void)
             "0cde6a93be5a14e0a8b8c6087b30f57178d80baf832cd38f71a41d95d6579d5b";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
             capsule.source_tu, object_root, &capsule));
+
+        capsule.owner_id = "vcs.devloop-proof-envelope.v1";
+        capsule.source_tu = "lib/vcs/src/vcs_devloop.c";
+        capsule.story_id = "vcs-devloop-publication-envelope.v1";
+        capsule.story_root =
+            "7d977355a125a0877d61efd888763399848adce366e684ee420cd44b611c3e08";
+        capsule.story_fixture_root =
+            "83ecbf1fe6983cd9d56c53e329743547d431339106902a12885de59a1ef128c8";
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
         PASS();
     } _test_next:;
     return failures;
