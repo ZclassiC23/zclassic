@@ -83,6 +83,7 @@ is_pure_candidate_root()
 declare -A LIVE=()
 declare -A SHADOW=()
 declare -A HOT_EXECUTE=()
+declare -A SERVICE_SOURCE=()
 load_live_manifest()
 {
     local value path
@@ -138,15 +139,35 @@ load_shadow_manifest()
     ' "$ROOT/config/hotswap_shadow_owners.def")
 }
 
+load_service_manifest()
+{
+    local source
+    while IFS= read -r source; do
+        [[ -n "$source" ]] && SERVICE_SOURCE["$source"]=1
+    done < <(awk '
+      /^HOTSWAP_SERVICE\(/ { active=1; count=0 }
+      active {
+        rest=$0
+        while (match(rest,/"[^"]+"/)) {
+          value=substr(rest,RSTART+1,RLENGTH-2)
+          count++; if (count==2) { print value; active=0; break }
+          rest=substr(rest,RSTART+RLENGTH)
+        }
+      }
+    ' "$ROOT/config/hotswap_services.def")
+}
+
 classify()
 {
     local path="$1"
     if [ -n "${HOT_EXECUTE[$path]:-}" ]; then
-        printf 'currently_hot_execute\tpure candidate implementation exercised by frozen service story'
+        printf 'HOT_SHADOW_CORE\tpure candidate implementation executed by its frozen owner story'
     elif [ -n "${SHADOW[$path]:-}" ]; then
-        printf 'currently_hot_shadow\tstatic authority shell + pure candidate decision core'
+        printf 'COMPILE_ONLY\tstatic authority shell candidate is compiled but not executed'
+    elif [ -n "${SERVICE_SOURCE[$path]:-}" ]; then
+        printf 'HOT_SHADOW_CORE\texact service candidate executed by its frozen owner story'
     elif [ -n "${LIVE[$path]:-}" ]; then
-        printf 'currently_live_reloaded\tcompiled allowlist island'
+        printf 'COMPILE_ONLY\tcompiled allowlist candidate has no owner-bound local story'
     elif is_forbidden_authority "$path"; then
         printf 'forbidden_authority_surface\tconsensus or durable-state owner'
     elif has_mutable_file_static "$path"; then
@@ -169,20 +190,21 @@ classify()
 
 load_live_manifest
 load_shadow_manifest
+load_service_manifest
 
 if [ "$MODE" = "--self-test" ]; then
     [ "$(classify core/consensus/src/example.c | cut -f1)" = forbidden_authority_surface ] ||
         fail 'forbidden authority classification regressed'
     [ "$(classify lib/codec/src/cursor.c | cut -f1)" = eligible_but_unregistered ] ||
         fail 'pure codec classification regressed'
-    [ "$(classify app/controllers/src/status_native_handlers.c | cut -f1)" = currently_live_reloaded ] ||
+    [ "$(classify app/controllers/src/status_native_handlers.c | cut -f1)" = COMPILE_ONLY ] ||
         fail 'compiled island classification regressed'
-    [ "$(classify app/services/src/zcode_c23_corpus_service.c | cut -f1)" = currently_live_reloaded ] ||
+    [ "$(classify app/services/src/zcode_c23_corpus_service.c | cut -f1)" = HOT_SHADOW_CORE ] ||
         fail 'service island classification regressed'
-    [ "$(classify app/services/src/vault_intent_decision_service.c | cut -f1)" = currently_live_reloaded ] ||
+    [ "$(classify app/services/src/vault_intent_decision_service.c | cut -f1)" = HOT_SHADOW_CORE ] ||
         fail 'shadow service classification regressed'
-    [ "$(classify tools/command/native_dev_command.c | cut -f1)" = currently_hot_shadow ] ||
-        fail 'static-shell shadow classification regressed'
+    [ "$(classify tools/command/native_dev_command.c | cut -f1)" = COMPILE_ONLY ] ||
+        fail 'static-shell compile-only classification regressed'
     printf 'dev-loop-history-bench: self-test PASS\n'
     exit 0
 fi
@@ -228,16 +250,17 @@ newest="$(head -1 "$commits_file")"
 history_digest="$(sha256sum "$rows_file" | awk '{print $1}')"
 
 jq -n \
-  --arg schema 'zcl.dev_loop_history_benchmark.v1' \
+  --arg schema 'zcl.dev_loop_history_benchmark.v2' \
   --arg head "$head_sha" --arg history_base "$history_base_sha" \
   --arg newest "$newest" --arg oldest "$oldest" \
   --arg digest "$history_digest" --argjson commit_count "$selected" \
   --slurpfile entries "$entries_file" '
   ($entries[0]) as $e |
   ($e | length) as $edits |
-  ($e | map(select(.class == "currently_live_reloaded" or
-                   .class == "currently_hot_shadow" or
-                   .class == "currently_hot_execute")) | length) as $live |
+  ($e | map(select(.class == "HOT_EXECUTE" or
+                   .class == "HOT_SHADOW_CORE" or
+                   .class == "HOT_FORK" or
+                   .class == "FOCUSED_PROOF")) | length) as $behavior |
   ($e | map(select(.class == "eligible_but_unregistered")) | length) as $eligible |
   ($e | map(select(.class != "forbidden_authority_surface")) | length) as $nonforbidden |
   {schema:$schema, source_head:$head,
@@ -248,11 +271,11 @@ jq -n \
       map({class:.[0].class, edit_occurrences:length,
            unique_translation_units:(map(.path)|unique|length)})),
    coverage:{
-      eligible_live_reload_percent:
-        (if ($live+$eligible)>0 then (10000*$live/($live+$eligible)|round/100) else 0 end),
-      nonforbidden_live_feedback_percent:
-        (if $nonforbidden>0 then (10000*$live/$nonforbidden|round/100) else 0 end),
-      live_reload_edit_occurrences:$live,
+      eligible_behavior_feedback_percent:
+        (if ($behavior+$eligible)>0 then (10000*$behavior/($behavior+$eligible)|round/100) else 0 end),
+      nonforbidden_behavior_feedback_percent:
+        (if $nonforbidden>0 then (10000*$behavior/$nonforbidden|round/100) else 0 end),
+      behavior_feedback_edit_occurrences:$behavior,
       eligible_unregistered_edit_occurrences:$eligible,
       nonforbidden_edit_occurrences:$nonforbidden},
    representative_benchmark:($e |
@@ -265,5 +288,5 @@ jq -n \
    entries:$e}' >"$OUTPUT"
 
 jq -r --arg receipt "$OUTPUT" \
-  '"dev-loop-history-bench: commits=\(.history.production_c_commits) edits=\(.history.edit_occurrences) eligible_live=\(.coverage.eligible_live_reload_percent)% nonforbidden_live=\(.coverage.nonforbidden_live_feedback_percent)% receipt=\($receipt)"' \
+  '"dev-loop-history-bench: commits=\(.history.production_c_commits) edits=\(.history.edit_occurrences) eligible_behavior=\(.coverage.eligible_behavior_feedback_percent)% nonforbidden_behavior=\(.coverage.nonforbidden_behavior_feedback_percent)% receipt=\($receipt)"' \
   "$OUTPUT"

@@ -32,8 +32,12 @@ aggregate()
            end)}] as $rows |
       ($rows|length) as $total |
       def covered($limit): [$rows[]|select(.useful and .feedback_us<$limit)]|length;
-      {schema:"zcl.reflex_coverage_audit.v1",status:
-         (if all($s[];.result_bound) then "complete" else "partial" end),
+      {schema:"zcl.reflex_coverage_audit.v2",status:
+         (if all($rows[] | select(.class=="COMPILE_ONLY" or
+                                  .class=="HOT_EXECUTE" or
+                                  .class=="HOT_SHADOW_CORE" or
+                                  .class=="HOT_FORK"); .sample!=null)
+          then "complete" else "partial" end),
        source_head:$h.source_head,
        history_rows_sha256:$h.history.frozen_rows_sha256,
        production_c_commits:$h.history.production_c_commits,
@@ -62,8 +66,8 @@ self_test()
     trap "rm -rf -- '$scratch'" EXIT INT TERM
     history="$scratch/history.json"; samples="$scratch/samples.jsonl"
     output="$scratch/output.json"
-    printf '%s\n' '{"source_head":"abc","history":{"frozen_rows_sha256":"def","production_c_commits":2},"entries":[{"path":"a.c","class":"currently_live_reloaded","reason":"registered"},{"path":"a.c","class":"currently_live_reloaded","reason":"registered"},{"path":"b.c","class":"requires_fast_restart","reason":"restart"},{"path":"c.c","class":"forbidden_authority_surface","reason":"forbidden"}]}' >"$history"
-    printf '%s\n' '{"path":"a.c","frequency":2,"result_bound":true,"feedback_us":90000,"event":"STORY_GREEN","failure":""}' >"$samples"
+    printf '%s\n' '{"source_head":"abc","history":{"frozen_rows_sha256":"def","production_c_commits":2},"entries":[{"path":"a.c","class":"HOT_SHADOW_CORE","reason":"registered"},{"path":"a.c","class":"HOT_SHADOW_CORE","reason":"registered"},{"path":"b.c","class":"requires_fast_restart","reason":"restart"},{"path":"c.c","class":"forbidden_authority_surface","reason":"forbidden"}]}' >"$history"
+    printf '%s\n' '{"path":"a.c","frequency":2,"result_bound":true,"feedback_class":"HOT_SHADOW_CORE","feedback_us":90000,"event":"STORY_GREEN","failure":""}' >"$samples"
     aggregate "$history" "$samples" "$output"
     jq -e '.status=="complete" and .nonforbidden_edit_occurrences==3 and
       .coverage.under_100ms_occurrences==2 and
@@ -77,7 +81,7 @@ self_test()
 if [[ "$MODE" == --self-test ]]; then self_test; exit 0; fi
 [[ "$MODE" == run ]] || fail 'usage: reflex-coverage-audit.sh [run|--self-test]'
 [[ -x "$BIN" ]] || fail "missing dev binary: $BIN"
-jq -e '.schema=="zcl.dev_loop_history_benchmark.v1" and
+jq -e '.schema=="zcl.dev_loop_history_benchmark.v2" and
        (.entries|type)=="array"' "$HISTORY" >/dev/null ||
     fail 'current production history receipt is missing or invalid'
 
@@ -124,7 +128,7 @@ drive_to_terminal()
             break
         fi
         case "$event" in
-            STORY_GREEN|STORY_RED|FOCUSED_GREEN|FOCUSED_RED|COMPILE_RED)
+            STORY_GREEN|STORY_RED|FOCUSED_GREEN|FOCUSED_RED|COMPILE_GREEN|COMPILE_RED)
                 break;;
             PROOF_PENDING|"") break;;
         esac
@@ -135,9 +139,10 @@ drive_to_terminal()
 
     jq -c --arg only "$ONLY_PATH" '.entries|map(select(
                                ($only=="" or .path==$only) and
-                               (.class=="currently_live_reloaded" or
-                               .class=="currently_hot_shadow" or
-                               .class=="currently_hot_execute")))|
+                               (.class=="COMPILE_ONLY" or
+                               .class=="HOT_EXECUTE" or
+                               .class=="HOT_SHADOW_CORE" or
+                               .class=="HOT_FORK")))|
   group_by(.path)|map({path:.[0].path,frequency:length})|
   sort_by([-.frequency,.path])[]' "$HISTORY" >"$rows"
 [[ -s "$rows" ]] || fail 'history window has no registered fast owners'
@@ -182,13 +187,30 @@ while IFS= read -r row; do
     drive_to_terminal true
     end_ns="$(date +%s%N)"
     result_bound=false
-    case "$event" in STORY_GREEN|FOCUSED_GREEN) result_bound=true;; esac
+    feedback_class="$(jq -r '.data.feedback_class//""' <<<"$result" 2>/dev/null || true)"
+    candidate_executed="$(jq -r '.data.candidate_bytes_executed//false' <<<"$result" 2>/dev/null || true)"
+    object_root="$(jq -r '.data.candidate_object_root//""' <<<"$result" 2>/dev/null || true)"
+    module_root="$(jq -r '.data.candidate_module_root//""' <<<"$result" 2>/dev/null || true)"
+    story_root="$(jq -r '.data.story_root//""' <<<"$result" 2>/dev/null || true)"
+    fixture_root="$(jq -r '.data.story_fixture_root//""' <<<"$result" 2>/dev/null || true)"
+    observation_root="$(jq -r '.data.observation_root//""' <<<"$result" 2>/dev/null || true)"
+    case "$event:$feedback_class:$candidate_executed" in
+      STORY_GREEN:HOT_EXECUTE:true|STORY_GREEN:HOT_SHADOW_CORE:true|STORY_GREEN:HOT_FORK:true|FOCUSED_GREEN:FOCUSED_PROOF:true)
+        if [[ "$object_root" =~ ^[0-9a-f]{64}$ &&
+              "$module_root" =~ ^[0-9a-f]{64}$ &&
+              "$story_root" =~ ^[0-9a-f]{64}$ &&
+              "$fixture_root" =~ ^[0-9a-f]{64}$ &&
+              "$observation_root" =~ ^[0-9a-f]{64}$ ]]; then
+          result_bound=true
+        fi;;
+    esac
     feedback_us="$(jq -r '.data.feedback_us//0' <<<"$result" 2>/dev/null || printf 0)"
     failure="$(jq -r 'if (.error.code//"")!="" then
       (.error.code+": "+(.error.message//""))
       else (.data.why_not_live//.data.blocker//"") end' <<<"$result" 2>/dev/null || true)"
     jq -cn --arg path "$path" --argjson frequency "$frequency" \
       --arg event "$event" --argjson result_bound "$result_bound" \
+      --arg feedback_class "$feedback_class" \
       --argjson feedback_us "$feedback_us" \
       --argjson wall_us "$(((end_ns-start_ns)/1000))" \
       --argjson exit_code "$rc" --arg failure "$failure" \
@@ -197,6 +219,7 @@ while IFS= read -r row; do
       --argjson measured_start_cursor "$measured_start_cursor" \
       --argjson end_cursor "$after" \
       '{path:$path,frequency:$frequency,event:$event,
+        feedback_class:$feedback_class,
         result_bound:$result_bound,feedback_us:$feedback_us,wall_us:$wall_us,
         exit_code:$exit_code,failure:$failure,begin_cursor:$begin_cursor,
         warm_event:$warm_event,warm_cursor:$warm_cursor,

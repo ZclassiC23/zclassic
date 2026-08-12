@@ -1770,6 +1770,7 @@ void zcl_native_handle_dev_drive(
         bool edit_seen = status && strcmp(status, "edit_seen") == 0;
         bool impact_ready = status && strcmp(status, "impact_ready") == 0;
         bool reflex_ready = status && strcmp(status, "reflex_ready") == 0;
+        bool compile_only = status && strcmp(status, "compile_only") == 0;
         bool story_green = status && strcmp(status, "story_green") == 0;
         bool story_red = status && strcmp(status, "story_red") == 0;
         bool explicit_proof_pending =
@@ -1789,12 +1790,14 @@ void zcl_native_handle_dev_drive(
             &compact, "publication_stage",
             reactor_pending ? "REFLEX" :
             (reflex_ready || story_green) ? "ASYNC_PROOF" :
+            compile_only ? "PROOF_PENDING" :
             proof_pending ? "PROOF_PENDING" : "NOT_QUEUED");
         (void)json_push_kv_str(
             &compact, "blocker",
             edit_seen ? "impact_analysis_running" :
             impact_ready ? "candidate_diagnostics_running" :
             (reflex_ready || story_green) ? "affected_proof_running" :
+            compile_only ? "candidate_story_not_available" :
             story_red ? "behavior_story_failed" :
             proof_pending ? "integration_proof_pending" :
             proof_complete ? "publication_job_missing" :
@@ -1860,7 +1863,7 @@ static bool dev_reflex_policy_frozen_kat(const void *vtable,
         !json_get_bool(json_get(&projected, "runtime_published"));
     if (projected_ok) json_free(&projected);
     json_free(&cycle);
-    struct dev_reflex_proof_handoff_v1 handoff = {
+    struct dev_reflex_proof_handoff_v2 handoff = {
         .candidate_epoch =
             "1111111111111111111111111111111111111111111111111111111111111111",
         .source_epoch =
@@ -1871,6 +1874,17 @@ static bool dev_reflex_policy_frozen_kat(const void *vtable,
             "3333333333333333333333333333333333333333333333333333333333333333",
         .focused_evidence_sha3 =
             "4444444444444444444444444444444444444444444444444444444444444444",
+        .feedback_class = "HOT_SHADOW_CORE",
+        .candidate_object_root =
+            "5555555555555555555555555555555555555555555555555555555555555555",
+        .candidate_module_root =
+            "6666666666666666666666666666666666666666666666666666666666666666",
+        .story_root =
+            "7777777777777777777777777777777777777777777777777777777777777777",
+        .story_fixture_root =
+            "8888888888888888888888888888888888888888888888888888888888888888",
+        .observation_root =
+            "9999999999999999999999999999999999999999999999999999999999999999",
         .affected_file_count = 1,
         .compile_green = true,
         .story_obtained = true,

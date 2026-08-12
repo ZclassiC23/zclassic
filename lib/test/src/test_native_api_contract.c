@@ -2475,6 +2475,49 @@ static void *partial_reply_serve(void *arg)
     if (fd < 0)
         return NULL;
     s->accepted_fd = fd;
+
+    /* The fixture is the response producer; it must not close while the
+     * client is still producing its POST.  Closing a TCP socket with unread
+     * request bytes permits the kernel to send RST, so the victim sometimes
+     * failed its second send() before it could observe the intended partial
+     * response.  Consume exactly the bounded request framing first.  This is
+     * a causal handshake, not a sleep or retry. */
+    char request[4096];
+    size_t have = 0, required = 0;
+    bool request_complete = false;
+    while (have + 1 < sizeof(request)) {
+        ssize_t got = recv(fd, request + have, sizeof(request) - have - 1, 0);
+        if (got < 0 && errno == EINTR)
+            continue;
+        if (got <= 0)
+            break;
+        have += (size_t)got;
+        request[have] = 0;
+        char *headers_end = strstr(request, "\r\n\r\n");
+        if (!headers_end)
+            continue;
+        char *content_length = strstr(request, "Content-Length:");
+        if (!content_length || content_length >= headers_end)
+            break;
+        errno = 0;
+        char *end = NULL;
+        unsigned long body_len = strtoul(
+            content_length + strlen("Content-Length:"), &end, 10);
+        size_t header_len = (size_t)(headers_end + 4 - request);
+        if (errno != 0 || !end || end <= content_length ||
+            body_len > sizeof(request) - header_len - 1)
+            break;
+        required = header_len + (size_t)body_len;
+        if (have >= required) {
+            request_complete = true;
+            break;
+        }
+    }
+    if (!request_complete) {
+        close(fd);
+        s->accepted_fd = -1;
+        return NULL;
+    }
     static const char hdr[] =
         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\n"
         "Content-Length: 64\r\nConnection: close\r\n\r\n";

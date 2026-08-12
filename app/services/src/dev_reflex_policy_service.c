@@ -16,7 +16,8 @@ static const char *progress_phase(const char *status, const char *detail)
     if (strcmp(status, "edit_seen") == 0) return "EDIT_SEEN";
     if (strcmp(status, "impact_ready") == 0) return "IMPACT_READY";
     if (strcmp(status, "compile_green") == 0 ||
-        strcmp(status, "reflex_ready") == 0) return "COMPILE_GREEN";
+        strcmp(status, "reflex_ready") == 0 ||
+        strcmp(status, "compile_only") == 0) return "COMPILE_GREEN";
     if (strcmp(status, "compile_red") == 0) return "COMPILE_RED";
     if (strcmp(status, "story_green") == 0) return "STORY_GREEN";
     if (strcmp(status, "story_red") == 0) return "STORY_RED";
@@ -43,6 +44,8 @@ static bool action_changing(const char *status, const char *source_tu)
      * now emits an owner-bound story immediately after it. */
     if (strcmp(status, "reflex_ready") == 0)
         return false;
+    if (strcmp(status, "compile_only") == 0)
+        return true;
     (void)source_tu;
     return true;
 }
@@ -69,6 +72,7 @@ static bool project_cycle(const struct json_value *cycle,
         (strcmp(status, "edit_seen") == 0 ||
          strcmp(status, "impact_ready") == 0 ||
          strcmp(status, "reflex_ready") == 0 ||
+         strcmp(status, "compile_only") == 0 ||
          strcmp(status, "story_green") == 0 ||
          strcmp(status, "story_red") == 0);
     bool ok = json_push_kv_str(compact, "schema", "zcl.dev_drive.v1") &&
@@ -84,6 +88,20 @@ static bool project_cycle(const struct json_value *cycle,
         copy_value(cycle, compact, "action", "action") &&
         copy_value(cycle, compact, "elapsed_us", "feedback_us") &&
         copy_value(cycle, compact, "elapsed_ms", "feedback_ms") &&
+        copy_value(cycle, compact, "feedback_class", "feedback_class") &&
+        copy_value(cycle, compact, "candidate_object_root",
+                   "candidate_object_root") &&
+        copy_value(cycle, compact, "candidate_module_root",
+                   "candidate_module_root") &&
+        copy_value(cycle, compact, "candidate_bytes_executed",
+                   "candidate_bytes_executed") &&
+        copy_value(cycle, compact, "story_id", "story_id") &&
+        copy_value(cycle, compact, "story_root", "story_root") &&
+        copy_value(cycle, compact, "story_fixture_root",
+                   "story_fixture_root") &&
+        copy_value(cycle, compact, "observation_root", "observation_root") &&
+        copy_value(cycle, compact, "exercised_owner_surface",
+                   "exercised_owner_surface") &&
         copy_value(cycle, compact, "impact_us", "impact_us") &&
         copy_value(cycle, compact, "closure_us", "closure_us") &&
         json_push_kv_bool(compact, "runtime_published", live) &&
@@ -127,7 +145,7 @@ static bool lower_hex_64(const char *value)
     return true;
 }
 
-static bool handoff_validate(const struct dev_reflex_proof_handoff_v1 *input,
+static bool handoff_validate(const struct dev_reflex_proof_handoff_v2 *input,
                              char *why, size_t why_size)
 {
     const char *failure = NULL;
@@ -140,6 +158,16 @@ static bool handoff_validate(const struct dev_reflex_proof_handoff_v1 *input,
         failure = "affected component, action, and file count are required";
     else if (!lower_hex_64(input->proof_inputs_sha3))
         failure = "proof inputs must be one immutable SHA3 root";
+    else if (strcmp(input->feedback_class, "HOT_EXECUTE") != 0 &&
+             strcmp(input->feedback_class, "HOT_SHADOW_CORE") != 0 &&
+             strcmp(input->feedback_class, "HOT_FORK") != 0)
+        failure = "proof handoff requires an exact behavior feedback class";
+    else if (!lower_hex_64(input->candidate_object_root) ||
+             !lower_hex_64(input->candidate_module_root) ||
+             !lower_hex_64(input->story_root) ||
+             !lower_hex_64(input->story_fixture_root) ||
+             !lower_hex_64(input->observation_root))
+        failure = "candidate, story, fixture, and observation roots are required";
     else if (!input->compile_green)
         failure = "compile-green evidence is required before proof handoff";
     else if (input->story_obtained &&

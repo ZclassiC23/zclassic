@@ -2346,7 +2346,8 @@ static bool run_hotswap_artifact_cache_fixture(void)
     if (!zcl_devloop_hotswap_build(root_a, owner, &built, &process,
                                    why, sizeof(why)) ||
         built.artifact_cache_hit || built.compiler_processes != 1 ||
-        built.linker_processes != 1 || strlen(built.artifact_cache_key) != 64)
+        built.linker_processes != 1 || strlen(built.artifact_cache_key) != 64 ||
+        strlen(built.candidate_object_sha256) != 64)
         goto out;
     stage = "cross-device-inode-proof";
     char cache_artifact[PATH_MAX];
@@ -2379,7 +2380,9 @@ static bool run_hotswap_artifact_cache_fixture(void)
         !hit.artifact_cache_hit || hit.compiler_processes != 0 ||
         hit.linker_processes != 0 ||
         strcmp(hit.artifact_cache_key, built.artifact_cache_key) != 0 ||
-        strcmp(hit.artifact_sha256, built.artifact_sha256) != 0)
+        strcmp(hit.artifact_sha256, built.artifact_sha256) != 0 ||
+        strcmp(hit.candidate_object_sha256,
+               built.candidate_object_sha256) != 0)
         goto out;
 
     if (!dp_mk_write(root_a,
@@ -2411,7 +2414,9 @@ static bool run_hotswap_artifact_cache_fixture(void)
         !cross.artifact_cache_hit || cross.compiler_processes != 0 ||
         cross.linker_processes != 0 ||
         strcmp(cross.artifact_cache_key, built.artifact_cache_key) != 0 ||
-        strcmp(cross.artifact_sha256, built.artifact_sha256) != 0)
+        strcmp(cross.artifact_sha256, built.artifact_sha256) != 0 ||
+        strcmp(cross.candidate_object_sha256,
+               built.candidate_object_sha256) != 0)
         goto out;
 
     /* A pure service island compiles its owner directly; it has no command
@@ -3189,6 +3194,7 @@ static int test_reflex_policy_boundary(void)
             dev_reflex_policy_service_builtin();
         ASSERT(policy != NULL);
         ASSERT(!policy->action_changing("impact_ready", NULL));
+        ASSERT(policy->action_changing("compile_only", NULL));
         ASSERT(policy->action_changing("story_red", NULL));
 
         struct json_value cycle;
@@ -3208,7 +3214,7 @@ static int test_reflex_policy_boundary(void)
         json_free(&compact);
         json_free(&cycle);
 
-        struct dev_reflex_proof_handoff_v1 handoff = {
+        struct dev_reflex_proof_handoff_v2 handoff = {
             .candidate_epoch =
                 "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
             .source_epoch =
@@ -3219,6 +3225,17 @@ static int test_reflex_policy_boundary(void)
                 "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
             .focused_evidence_sha3 =
                 "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+            .feedback_class = "HOT_SHADOW_CORE",
+            .candidate_object_root =
+                "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+            .candidate_module_root =
+                "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+            .story_root =
+                "1111111111111111111111111111111111111111111111111111111111111111",
+            .story_fixture_root =
+                "2222222222222222222222222222222222222222222222222222222222222222",
+            .observation_root =
+                "3333333333333333333333333333333333333333333333333333333333333333",
             .affected_file_count = 1,
             .compile_green = true,
             .story_obtained = true,
@@ -3228,6 +3245,11 @@ static int test_reflex_policy_boundary(void)
         handoff.compile_green = false;
         ASSERT(!policy->handoff_validate(&handoff, why, sizeof(why)));
         ASSERT(strstr(why, "compile-green") != NULL);
+        handoff.compile_green = true;
+        (void)snprintf(handoff.feedback_class,
+                       sizeof(handoff.feedback_class), "%s", "COMPILE_ONLY");
+        ASSERT(!policy->handoff_validate(&handoff, why, sizeof(why)));
+        ASSERT(strstr(why, "behavior feedback class") != NULL);
         PASS();
     } _test_next:;
     return failures;

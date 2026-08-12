@@ -523,11 +523,13 @@ static bool hs_cache_key(const struct hs_action_plan *plan,
 }
 
 static int hs_cache_lock(const char *cache_root, const char key[65],
-                         char so_path[PATH_MAX], char hash_path[PATH_MAX])
+                         char obj_path[PATH_MAX], char so_path[PATH_MAX],
+                         char hash_path[PATH_MAX])
 {
     char lock_path[PATH_MAX];
     if (snprintf(lock_path, sizeof(lock_path), "%s/%s.lock", cache_root,
                  key) >= (int)sizeof(lock_path) ||
+        snprintf(obj_path, PATH_MAX, "%s/%s.o", cache_root, key) >= PATH_MAX ||
         snprintf(so_path, PATH_MAX, "%s/%s.so", cache_root, key) >= PATH_MAX ||
         snprintf(hash_path, PATH_MAX, "%s/%s.sha256", cache_root, key) >=
             PATH_MAX)
@@ -658,24 +660,33 @@ static bool hs_publish_artifact_path(const char *root, const char *safe,
 }
 
 static bool hs_cache_lookup(const char *root, const char *safe,
-                            const char *cache_so, const char *cache_hash,
+                            const char *cache_obj, const char *cache_so,
+                            const char *cache_hash,
                             struct zcl_devloop_hotswap_build_receipt *receipt)
 {
-    char expected[65], actual[65];
+    char expected[65], actual[65], object_sha256[65];
     if (!hs_regular(cache_hash, NULL) || !hs_regular(cache_so, NULL) ||
+        !hs_regular(cache_obj, NULL) ||
         !hs_read_hash(cache_hash, expected) ||
-        !hs_sha256_file(cache_so, actual) || strcmp(expected, actual) != 0)
+        !hs_sha256_file(cache_so, actual) || strcmp(expected, actual) != 0 ||
+        !hs_sha256_file(cache_obj, object_sha256))
         return false;
+    (void)snprintf(receipt->candidate_object_sha256,
+                   sizeof(receipt->candidate_object_sha256), "%s",
+                   object_sha256);
     (void)snprintf(receipt->artifact_sha256,
                    sizeof(receipt->artifact_sha256), "%s", actual);
     return hs_publish_artifact_path(root, safe, cache_so, actual,
                                     receipt->artifact_path);
 }
 
-static bool hs_cache_publish(const char *cache_so, const char *cache_hash,
-                             const char *built_so, const char hash[65])
+static bool hs_cache_publish(const char *cache_obj, const char *cache_so,
+                             const char *cache_hash, const char *built_obj,
+                             const char object_hash[65], const char *built_so,
+                             const char hash[65])
 {
-    if (!hs_link_or_copy_publish(built_so, cache_so, hash))
+    if (!hs_link_or_copy_publish(built_obj, cache_obj, object_hash) ||
+        !hs_link_or_copy_publish(built_so, cache_so, hash))
         return false;
     char temp[PATH_MAX];
     int n = snprintf(temp, sizeof(temp), "%s.tmp.%ld", cache_hash,
@@ -769,9 +780,9 @@ static bool hs_run_compile(const struct hs_action_plan *plan,
     return true;
 }
 
-static bool hs_run_syntax_compile(
+static bool hs_run_owner_compile(
     const struct hs_action_plan *plan, const char *root,
-    const char *source_tu, const char *dep,
+    const char *source_tu, const char *obj, const char *dep,
     struct zcl_devloop_process_result *result, int64_t *elapsed_us,
     char *why, size_t why_len)
 {
@@ -782,14 +793,16 @@ static bool hs_run_syntax_compile(
     size_t argc = zcl_argv_split(cc, argv, HS_ARG_MAX);
     size_t flagc = zcl_argv_split(flags, flagv, HS_ARG_MAX);
     if (!argc || argc + flagc + 7 >= HS_ARG_MAX) {
-        hs_why(why, why_len, "shadow syntax compile exceeds argv bound");
+        hs_why(why, why_len, "authority-shell compile exceeds argv bound");
         return false;
     }
     for (size_t i = 0; i < flagc; i++) argv[argc++] = flagv[i];
-    argv[argc++] = "-fsyntax-only";
     argv[argc++] = "-MD";
     argv[argc++] = "-MF";
     argv[argc++] = dep;
+    argv[argc++] = "-c";
+    argv[argc++] = "-o";
+    argv[argc++] = obj;
     argv[argc++] = source_tu;
     argv[argc] = NULL;
     int64_t started = platform_time_monotonic_us();
@@ -808,6 +821,7 @@ static bool hs_run_syntax_compile(
  * forked story invokes. */
 static bool hs_shadow_owner_compile(
     const char *root, const char *source_tu,
+    struct zcl_devloop_hotswap_build_receipt *receipt,
     struct zcl_devloop_process_result *result, int64_t *elapsed_us,
     char *why, size_t why_len)
 {
@@ -822,17 +836,19 @@ static bool hs_shadow_owner_compile(
     (void)cache_hit;
     (void)plan_us;
     if (!loaded) return false;
-    char full[PATH_MAX], dep[PATH_MAX] = {0};
+    char full[PATH_MAX], obj[PATH_MAX] = {0}, dep[PATH_MAX] = {0};
     if (!source_tu || source_tu[0] == '/' || strstr(source_tu, "..") ||
         snprintf(full, sizeof(full), "%s/%s", root, source_tu) >=
             (int)sizeof(full) || !hs_regular(full, NULL) ||
+        !hs_temp(obj, sizeof(obj), root, ".o") ||
         !hs_temp(dep, sizeof(dep), root, ".d")) {
         hs_why(why, why_len, "shadow authority shell is not a confined source");
+        if (obj[0]) (void)unlink(obj);
         if (dep[0]) (void)unlink(dep);
         return false;
     }
-    bool ok = hs_run_syntax_compile(&plan, root, source_tu, dep, result,
-                                    elapsed_us, why, why_len);
+    bool ok = hs_run_owner_compile(&plan, root, source_tu, obj, dep, result,
+                                   elapsed_us, why, why_len);
     if (ok) {
         struct hs_dep *deps = zcl_malloc(sizeof(*deps) * HS_DEP_MAX,
                                          "shadow shell dependencies");
@@ -844,6 +860,19 @@ static bool hs_shadow_owner_compile(
             hs_why(why, why_len,
                    "shadow shell dependency capture was incomplete or superseded");
     }
+    if (ok && (!receipt ||
+               !hs_sha256_file(obj, receipt->candidate_object_sha256))) {
+        hs_why(why, why_len, "could not bind authority-shell candidate object");
+        ok = false;
+    }
+    if (ok) {
+        (void)snprintf(receipt->source_tu, sizeof(receipt->source_tu), "%s",
+                       source_tu);
+        receipt->compiler_processes++;
+        receipt->compile_us += *elapsed_us;
+        receipt->total_us += *elapsed_us;
+    }
+    (void)unlink(obj);
     (void)unlink(dep);
     return ok;
 }
@@ -1021,7 +1050,8 @@ bool zcl_devloop_hotswap_build(
     }
     char cached_dep[PATH_MAX], tmp_o[PATH_MAX] = {0}, tmp_d[PATH_MAX] = {0};
     char tmp_so[PATH_MAX] = {0}, unity[PATH_MAX] = {0};
-    char cache_root[PATH_MAX] = {0}, cache_so[PATH_MAX] = {0};
+    char cache_root[PATH_MAX] = {0}, cache_obj[PATH_MAX] = {0};
+    char cache_so[PATH_MAX] = {0};
     char cache_hash[PATH_MAX] = {0};
     int cache_fd = -1;
     if (snprintf(cached_dep, sizeof(cached_dep),
@@ -1065,9 +1095,10 @@ bool zcl_devloop_hotswap_build(
                      receipt->artifact_cache_key) &&
         hs_cache_root(cache_root)) {
         cache_fd = hs_cache_lock(cache_root, receipt->artifact_cache_key,
-                                 cache_so, cache_hash);
+                                 cache_obj, cache_so, cache_hash);
         if (cache_fd >= 0 &&
-            hs_cache_lookup(root, safe, cache_so, cache_hash, receipt)) {
+            hs_cache_lookup(root, safe, cache_obj, cache_so, cache_hash,
+                            receipt)) {
             receipt->artifact_cache_hit = true;
             receipt->dependency_count = (uint32_t)before_n;
             (void)snprintf(receipt->source_tu, sizeof(receipt->source_tu),
@@ -1089,6 +1120,7 @@ bool zcl_devloop_hotswap_build(
              * does not verify, is a partial/corrupt entry. Under the per-key
              * lock it cannot be a publisher still in flight. */
             (void)unlink(cache_so);
+            (void)unlink(cache_obj);
             (void)unlink(cache_hash);
         }
     }
@@ -1136,6 +1168,10 @@ bool zcl_devloop_hotswap_build(
         goto fail;
     }
     receipt->linker_processes = 1;
+    if (!hs_sha256_file(tmp_o, receipt->candidate_object_sha256)) {
+        hs_why(why, why_len, "could not hash exact candidate object");
+        goto fail;
+    }
     if (!hs_run_link(&plan, root, tmp_o, tmp_so, process, &receipt->link_us,
                      why, why_len))
         goto fail;
@@ -1146,7 +1182,8 @@ bool zcl_devloop_hotswap_build(
         goto fail;
     }
     if (cache_fd >= 0 &&
-        !hs_cache_publish(cache_so, cache_hash, tmp_so,
+        !hs_cache_publish(cache_obj, cache_so, cache_hash, tmp_o,
+                          receipt->candidate_object_sha256, tmp_so,
                           receipt->artifact_sha256)) {
         hs_why(why, why_len,
                "shared artifact cache publication or verification failed");
@@ -1261,6 +1298,7 @@ static bool hs_resident_call(const char *artifact, bool activate,
 
 struct hs_shadow_wire {
     uint32_t magic;
+    char runtime_module_sha256[65];
     struct zcl_hotswap_service_report report;
 };
 
@@ -1272,14 +1310,29 @@ struct hs_shadow_wire {
  * resident-frozen KAT, reports one fixed-size result, and exits. No exec, RPC,
  * node, wallet, SQLite, network, publication, or full-program link exists on
  * this path. */
-static bool hs_shadow_probe(const char *artifact,
+static void hs_sha3_root(const char *text, char out[65])
+{
+    uint8_t digest[32];
+    sha3_256((const uint8_t *)text, strlen(text), digest);
+    zcl_hex_encode(digest, sizeof(digest), out);
+}
+
+static bool hs_shadow_probe(
+                            const char *source,
+                            const struct zcl_devloop_hotswap_build_receipt *build,
                             struct json_value *response,
                             int64_t *elapsed_us,
                             char *why, size_t why_len)
 {
     int pipefd[2] = {-1, -1};
     int64_t started = platform_time_monotonic_us();
-    if (!artifact || !response || !elapsed_us ||
+    const char *artifact = build ? build->artifact_path : NULL;
+    const char *story_id = source
+        ? zcl_hotswap_service_probe_for_source(source) : NULL;
+    if (!source || !story_id || !story_id[0] || !build ||
+        strlen(build->candidate_object_sha256) != 64 ||
+        strlen(build->artifact_sha256) != 64 || !artifact || !response ||
+        !elapsed_us ||
         pipe2(pipefd, O_CLOEXEC | O_NONBLOCK) != 0) {
         hs_why(why, why_len, "shadow runner pipe unavailable");
         return false;
@@ -1293,8 +1346,9 @@ static bool hs_shadow_probe(const char *artifact,
     if (child == 0) {
         close(pipefd[0]);
         struct hs_shadow_wire wire = {.magic = HS_SHADOW_WIRE_MAGIC};
-        (void)zcl_native_hotswap_service_probe_local(
-            artifact, &wire.report);
+        if (hs_sha256_file(artifact, wire.runtime_module_sha256))
+            (void)zcl_native_hotswap_service_probe_local(
+                artifact, &wire.report);
         const uint8_t *p = (const uint8_t *)&wire;
         size_t left = sizeof(wire);
         while (left > 0) {
@@ -1351,18 +1405,55 @@ static bool hs_shadow_probe(const char *artifact,
     bool valid = waited == child && !timed_out && !cancelled &&
         have == sizeof(wire) &&
         wire.magic == HS_SHADOW_WIRE_MAGIC && WIFEXITED(status) &&
-        WEXITSTATUS(status) == 0;
+        WEXITSTATUS(status) == 0 &&
+        strcmp(wire.runtime_module_sha256, build->artifact_sha256) == 0;
     bool ok = valid && wire.report.recognized && wire.report.ok &&
         wire.report.verify_only && wire.report.probed &&
         !wire.report.activated;
     json_init(response); json_set_object(response);
-    (void)json_push_kv_str(response, "schema", "zcl.dev_shadow_story.v1");
-    (void)json_push_kv_str(response, "mode", "HOT_SHADOW");
+    char story_preimage[768], fixture_preimage[512], observation[768];
+    char story_root[65] = {0}, fixture_root[65] = {0};
+    char observation_root[65] = {0};
+    int story_n = snprintf(story_preimage, sizeof(story_preimage),
+        "zcl.dev.story.v1\n%s\n%s\n%s\n", source, story_id,
+        valid ? wire.report.service_id : "invalid");
+    int fixture_n = snprintf(fixture_preimage, sizeof(fixture_preimage),
+        "zcl.dev.story.fixture.v1\n%s\n%s\n", story_id,
+        valid ? wire.report.service_id : "invalid");
+    int observation_n = snprintf(observation, sizeof(observation),
+        "zcl.dev.story.observation.v1\n%s\n%s\n%d\n%d\n%d\n%d\n%s\n",
+        valid ? wire.report.service_id : "invalid",
+        valid ? wire.report.stage : "invalid", wire.report.recognized,
+        wire.report.ok, wire.report.verify_only, wire.report.probed,
+        wire.runtime_module_sha256);
+    if (story_n <= 0 || story_n >= (int)sizeof(story_preimage) ||
+        fixture_n <= 0 || fixture_n >= (int)sizeof(fixture_preimage) ||
+        observation_n <= 0 || observation_n >= (int)sizeof(observation))
+        ok = false;
+    else {
+        hs_sha3_root(story_preimage, story_root);
+        hs_sha3_root(fixture_preimage, fixture_root);
+        hs_sha3_root(observation, observation_root);
+    }
+    (void)json_push_kv_str(response, "schema", "zcl.dev_shadow_story.v2");
+    (void)json_push_kv_str(response, "mode", "HOT_SHADOW_CORE");
+    (void)json_push_kv_str(response, "feedback_class", "HOT_SHADOW_CORE");
     (void)json_push_kv_str(response, "status", ok ? "green" : "red");
     (void)json_push_kv_bool(response, "forked", true);
     (void)json_push_kv_bool(response, "exec_process", false);
     (void)json_push_kv_bool(response, "activated", false);
     (void)json_push_kv_bool(response, "forbidden_effects_absent", true);
+    (void)json_push_kv_str(response, "candidate_object_root",
+                           build->candidate_object_sha256);
+    (void)json_push_kv_str(response, "candidate_module_root",
+                           build->artifact_sha256);
+    (void)json_push_kv_bool(response, "candidate_bytes_executed",
+                            valid && wire.report.recognized);
+    (void)json_push_kv_str(response, "story_id", story_id);
+    (void)json_push_kv_str(response, "story_root", story_root);
+    (void)json_push_kv_str(response, "story_fixture_root", fixture_root);
+    (void)json_push_kv_str(response, "observation_root", observation_root);
+    (void)json_push_kv_str(response, "exercised_owner_surface", source);
     (void)json_push_kv_int(response, "elapsed_us", *elapsed_us);
     if (valid) {
         (void)json_push_kv_str(response, "service_id",
@@ -1380,6 +1471,37 @@ static bool hs_shadow_probe(const char *artifact,
     return ok;
 }
 
+static bool hs_story_receipt_valid(
+    const char *source, const struct zcl_devloop_hotswap_build_receipt *build,
+    const struct json_value *resident)
+{
+    if (!source || !build || !resident || resident->type != JSON_OBJ)
+        return false;
+    const char *schema = json_get_str(json_get(resident, "schema"));
+    const char *feedback = json_get_str(json_get(resident, "feedback_class"));
+    const char *object = json_get_str(json_get(resident,
+                                               "candidate_object_root"));
+    const char *module = json_get_str(json_get(resident,
+                                               "candidate_module_root"));
+    const char *story_id = json_get_str(json_get(resident, "story_id"));
+    const char *story = json_get_str(json_get(resident, "story_root"));
+    const char *fixture = json_get_str(json_get(resident,
+                                                "story_fixture_root"));
+    const char *observation = json_get_str(json_get(resident,
+                                                    "observation_root"));
+    const char *surface = json_get_str(json_get(resident,
+                                                "exercised_owner_surface"));
+    return schema && strcmp(schema, "zcl.dev_shadow_story.v2") == 0 &&
+        feedback && strcmp(feedback, "HOT_SHADOW_CORE") == 0 &&
+        object && strcmp(object, build->candidate_object_sha256) == 0 &&
+        module && strcmp(module, build->artifact_sha256) == 0 &&
+        story_id && story_id[0] && story && strlen(story) == 64 &&
+        fixture && strlen(fixture) == 64 && observation &&
+        strlen(observation) == 64 && surface && strcmp(surface, source) == 0 &&
+        json_get_bool(json_get(resident, "candidate_bytes_executed")) &&
+        json_get_bool(json_get(resident, "forbidden_effects_absent"));
+}
+
 static bool hs_proof_handoff(
     const char *source, size_t changed_path_count,
     const struct zcl_devloop_hotswap_build_receipt *build,
@@ -1388,8 +1510,16 @@ static bool hs_proof_handoff(
     const char *source_epoch = zcl_devloop_event_edit_epoch();
     if (!source || !source_epoch || strlen(source_epoch) != 64 || !build ||
         !build->artifact_sha256[0] || !resident || resident->type != JSON_OBJ ||
-        !out || changed_path_count == 0 || changed_path_count > UINT32_MAX)
+        !out || changed_path_count == 0 || changed_path_count > UINT32_MAX ||
+        !hs_story_receipt_valid(source, build, resident))
         return false;
+    const char *feedback_class =
+        json_get_str(json_get(resident, "feedback_class"));
+    const char *story_root = json_get_str(json_get(resident, "story_root"));
+    const char *fixture_root =
+        json_get_str(json_get(resident, "story_fixture_root"));
+    const char *observation_root =
+        json_get_str(json_get(resident, "observation_root"));
     char candidate_preimage[160];
     int candidate_n = snprintf(candidate_preimage, sizeof(candidate_preimage),
         "zcl.dev.candidate.v1\n%s\n", build->artifact_sha256);
@@ -1411,7 +1541,7 @@ static bool hs_proof_handoff(
     if (inputs_n <= 0 || (size_t)inputs_n >= sizeof(inputs)) return false;
     sha3_256((const uint8_t *)inputs, (size_t)inputs_n, digest);
     zcl_hex_encode(digest, sizeof(digest), inputs_sha3);
-    struct dev_reflex_proof_handoff_v1 handoff = {0};
+    struct dev_reflex_proof_handoff_v2 handoff = {0};
     (void)snprintf(handoff.candidate_epoch,
                    sizeof(handoff.candidate_epoch), "%s", candidate_epoch);
     (void)snprintf(handoff.source_epoch, sizeof(handoff.source_epoch), "%s",
@@ -1425,6 +1555,20 @@ static bool hs_proof_handoff(
     (void)snprintf(handoff.focused_evidence_sha3,
                    sizeof(handoff.focused_evidence_sha3), "%s",
                    evidence_sha3);
+    (void)snprintf(handoff.feedback_class,
+                   sizeof(handoff.feedback_class), "%s", feedback_class);
+    (void)snprintf(handoff.candidate_object_root,
+                   sizeof(handoff.candidate_object_root), "%s",
+                   build->candidate_object_sha256);
+    (void)snprintf(handoff.candidate_module_root,
+                   sizeof(handoff.candidate_module_root), "%s",
+                   build->artifact_sha256);
+    (void)snprintf(handoff.story_root, sizeof(handoff.story_root), "%s",
+                   story_root);
+    (void)snprintf(handoff.story_fixture_root,
+                   sizeof(handoff.story_fixture_root), "%s", fixture_root);
+    (void)snprintf(handoff.observation_root,
+                   sizeof(handoff.observation_root), "%s", observation_root);
     handoff.affected_file_count = (uint32_t)changed_path_count;
     handoff.compile_green = true;
     handoff.story_obtained = true;
@@ -1433,7 +1577,7 @@ static bool hs_proof_handoff(
         dev_reflex_policy_service_builtin();
     if (!policy->handoff_validate(&handoff, why, sizeof(why))) return false;
     json_init(out); json_set_object(out);
-    return json_push_kv_str(out, "schema", "zcl.dev_proof_handoff.v1") &&
+    return json_push_kv_str(out, "schema", "zcl.dev_proof_handoff.v2") &&
         json_push_kv_str(out, "candidate_epoch", handoff.candidate_epoch) &&
         json_push_kv_str(out, "source_epoch", handoff.source_epoch) &&
         json_push_kv_str(out, "affected_component",
@@ -1443,6 +1587,16 @@ static bool hs_proof_handoff(
                          handoff.proof_inputs_sha3) &&
         json_push_kv_str(out, "focused_evidence_sha3",
                          handoff.focused_evidence_sha3) &&
+        json_push_kv_str(out, "feedback_class", handoff.feedback_class) &&
+        json_push_kv_str(out, "candidate_object_root",
+                         handoff.candidate_object_root) &&
+        json_push_kv_str(out, "candidate_module_root",
+                         handoff.candidate_module_root) &&
+        json_push_kv_str(out, "story_root", handoff.story_root) &&
+        json_push_kv_str(out, "story_fixture_root",
+                         handoff.story_fixture_root) &&
+        json_push_kv_str(out, "observation_root",
+                         handoff.observation_root) &&
         json_push_kv_int(out, "affected_file_count",
                          handoff.affected_file_count) &&
         json_push_kv_bool(out, "compile_green", true) &&
@@ -1478,6 +1632,11 @@ static bool hs_emit_event(const char *root, const char *source,
     (void)json_push_kv_str(&doc, "phase",
                            zcl_devloop_progress_phase(status, phase));
     (void)json_push_kv_str(&doc, "stage_detail", phase);
+    const char *feedback_class = status &&
+        (strcmp(status, "story_green") == 0 ||
+         strcmp(status, "story_red") == 0)
+        ? "HOT_SHADOW_CORE" : "COMPILE_ONLY";
+    (void)json_push_kv_str(&doc, "feedback_class", feedback_class);
     if (zcl_devloop_event_edit_epoch()[0])
         (void)json_push_kv_str(&doc, "edit_epoch",
                                zcl_devloop_event_edit_epoch());
@@ -1519,6 +1678,10 @@ static bool hs_emit_event(const char *root, const char *source,
                                build->artifact_path);
         (void)json_push_kv_str(&receipt, "artifact_sha256",
                                build->artifact_sha256);
+        (void)json_push_kv_str(&receipt, "candidate_object_root",
+                               build->candidate_object_sha256);
+        (void)json_push_kv_str(&receipt, "candidate_module_root",
+                               build->artifact_sha256);
         (void)json_push_kv_bool(&receipt, "plan_cache_hit",
                                 build->plan_cache_hit);
         (void)json_push_kv_bool(&receipt, "artifact_cache_hit",
@@ -1543,9 +1706,29 @@ static bool hs_emit_event(const char *root, const char *source,
         (void)json_push_kv(&doc, "build_receipt", &receipt);
         json_free(&receipt);
     }
-    if (resident && resident->type == JSON_OBJ)
+    if (resident && resident->type == JSON_OBJ) {
         (void)json_push_kv(&doc, "resident", resident);
+        const char *semantic_keys[] = {
+            "candidate_object_root", "candidate_module_root", "story_id",
+            "story_root", "story_fixture_root", "observation_root",
+            "exercised_owner_surface",
+        };
+        for (size_t i = 0; i < sizeof(semantic_keys) / sizeof(semantic_keys[0]);
+             i++) {
+            const char *value =
+                json_get_str(json_get(resident, semantic_keys[i]));
+            if (value)
+                (void)json_push_kv_str(&doc, semantic_keys[i], value);
+        }
+        (void)json_push_kv_bool(
+            &doc, "candidate_bytes_executed",
+            json_get_bool(json_get(resident, "candidate_bytes_executed")));
+    }
     if (status && strcmp(status, "story_green") == 0 && build && resident) {
+        if (!hs_story_receipt_valid(source, build, resident)) {
+            json_free(&doc);
+            return false;
+        }
         struct json_value handoff;
         if (!hs_proof_handoff(source, changed_path_count, build, resident,
                               &handoff)) {
@@ -1618,15 +1801,16 @@ int zcl_devloop_hotswap_batch_event(
     struct zcl_devloop_process_result process = {0};
     char why[512] = {0};
     int64_t shell_compile_us = 0;
-    uint32_t shell_compilers = 0;
+    bool static_authority_shell = false;
     for (size_t i = 0; i < path_count; i++) {
         const char *mapped = zcl_hotswap_shadow_service_for_owner(paths[i]);
         if (!mapped ||
             !zcl_hotswap_shadow_path_is_static_owner(paths[i])) continue;
+        static_authority_shell = true;
         int64_t one_us = 0;
         if (strcmp(mapped, owner) != 0 ||
-            !hs_shadow_owner_compile(repo_root, paths[i], &process, &one_us,
-                                     why, sizeof(why))) {
+            !hs_shadow_owner_compile(repo_root, paths[i], &build, &process,
+                                     &one_us, why, sizeof(why))) {
             if (process.cancelled || zcl_devloop_process_cancel_requested())
                 return 2;
             return hs_emit_event(
@@ -1635,7 +1819,17 @@ int zcl_devloop_hotswap_batch_event(
                 &build, 0, NULL, &process, why, true) ? 1 : -1;
         }
         shell_compile_us += one_us;
-        shell_compilers++;
+    }
+    if (static_authority_shell) {
+        /* Compiling an authority shell and executing its mapped service are
+         * different facts.  Until a capsule executes this exact object, the
+         * strongest honest result is COMPILE_ONLY. */
+        return hs_emit_event(
+            repo_root, paths[0], path_count, "compile_only",
+            "candidate_compile", false,
+            platform_time_monotonic_us() - started, &build, 0, NULL,
+            &process, "exact shell object compiled; candidate bytes were not executed",
+            true) ? ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING : -1;
     }
     if (!zcl_devloop_hotswap_build(repo_root, owner, &build, &process,
                                    why, sizeof(why))) {
@@ -1647,7 +1841,6 @@ int zcl_devloop_hotswap_batch_event(
                              &build, 0, NULL, &process, why, true) ? 1 : -1;
     }
     build.compile_us += shell_compile_us;
-    build.compiler_processes += shell_compilers;
     build.total_us += shell_compile_us;
     if (!hs_emit_event(repo_root, owner, path_count,
                        "reflex_ready", "candidate_compile", false,
@@ -1666,7 +1859,7 @@ int zcl_devloop_hotswap_batch_event(
          * story therefore has no RPC/cookie/network prerequisite; optional
          * isolated-dev activation remains a later authority action. */
         bool story_ok = hs_shadow_probe(
-            build.artifact_path, &resident, &activation_us,
+            owner, &build, &resident, &activation_us,
             why, sizeof(why));
         if (zcl_devloop_process_cancel_requested()) {
             json_free(&resident);

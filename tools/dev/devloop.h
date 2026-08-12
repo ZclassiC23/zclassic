@@ -236,6 +236,10 @@ struct zcl_devloop_process_result {
 struct zcl_devloop_hotswap_build_receipt {
     char source_tu[256];
     char artifact_path[4096];
+    /* SHA-256 of the exact compiler-produced relocatable object.  This is
+     * distinct from the linked candidate module root below and survives an
+     * exact-input cache hit. */
+    char candidate_object_sha256[65];
     char artifact_sha256[65];
     char artifact_cache_key[65];
     int64_t plan_load_us;
