@@ -24,13 +24,12 @@
  *     scheduler tick, and drain the engine's bounded outbound queue onto
  *     the node's send queue.
  *
- * The swarm is CLOCK-DRIVEN: wire() registers a supervisor child
- * (net.zcode_swarm, 1 s period) whose on_tick runs the throttled
- * periodic sync/tick and drains every eligible peer. The per-peer
- * message-cycle hook below only fires while a peer has queued inbound
- * messages — it survives as a send-latency optimization, not as the
- * swarm's clock (an idle healthy connection would otherwise never
- * announce or fetch).
+ * The swarm is EVENT-WOKEN with a clock backstop: wire() registers a
+ * supervisor child (net.zcode.swarm, 1 s period), while foreground proof
+ * admission and authenticated swarm frames request an immediate supervised
+ * tick. Callers only set an atomic hint; all SQLite work remains on the
+ * supervisor runner. The period preserves reconciliation and lease expiry
+ * when a wake is lost or no traffic arrives.
  *
  * The engine itself (lib/vcs/src/package_swarm_node.c) carries the whole
  * contract; this file is transport + offence-mapping only. */
@@ -58,6 +57,10 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
  * drain immediately rather than wait for the next 1 s timer. */
 void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
                            void *ctx);
+
+/* O(1) scheduling hint for newly durable proof work or authenticated swarm
+ * input. Never performs DB/network work on the caller. */
+void boot_zcode_swarm_request_tick(void);
 
 /* Wire the hooks onto svc->msg_processor and arm the supervisor child
  * that clock-drives the swarm. Cheap; safe before the store opens (the

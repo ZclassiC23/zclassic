@@ -58,6 +58,7 @@ static char s_work_workspace[4096];
 static struct boot_svc_ctx *s_svc;          /* borrowed; set by wire() */
 static struct liveness_contract s_timer_contract;
 static supervisor_child_id s_timer_child = SUPERVISOR_INVALID_ID;
+static _Atomic bool s_work_wake_pending;
 static uint64_t s_frames_sent;              /* supervisor progress marker */
 static size_t boot_zcode_swarm_drain_node(
     struct msg_processor *mp, struct vcs_swarm_engine *engine,
@@ -615,6 +616,8 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
             }
         }
         zcl_mutex_unlock(&s_lock);
+        if (wr == VCS_ZCODE_WORK_NODE_OK)
+            boot_zcode_swarm_request_tick();
         if (wr != VCS_ZCODE_WORK_NODE_OK)
             LOG_WARN("net.zcode_swarm", "peer %llu work frame refused: %s",
                      (unsigned long long)peer_id, vcs_zcode_work_node_result_string(wr));
@@ -637,6 +640,7 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
     vcs_swarm_engine_schedule_ready(engine, day, now);
     (void)boot_zcode_swarm_drain_node(mp, engine, node);
     zcl_mutex_unlock(&s_lock);
+    boot_zcode_swarm_request_tick();
 
     if (ev.penalty != VCS_SWARM_PENALTY_NONE && mp->net_mgr) {
         char context[96];
@@ -668,8 +672,10 @@ static void boot_zcode_swarm_periodic(struct msg_processor *mp,
         s_last_sync = wall;
         boot_zcode_swarm_sync_membership(mp, engine, s_work);
     }
-    if (wall - s_last_tick >= ZCODE_SWARM_TICK_PERIOD_SEC) {
-        s_last_tick = wall;
+    bool due = wall - s_last_tick >= ZCODE_SWARM_TICK_PERIOD_SEC;
+    bool woken = atomic_exchange(&s_work_wake_pending, false);
+    if (due || woken) {
+        if (due) s_last_tick = wall;
         vcs_swarm_engine_tick(engine, wall / 86400, (uint64_t)wall);
         vcs_zcode_work_node_tick(s_work, wall);
         boot_zcode_async_proof_tick(svc, s_work, wall);
@@ -677,9 +683,20 @@ static void boot_zcode_swarm_periodic(struct msg_processor *mp,
         boot_zcode_work_drain_cancels(wall);
         boot_zcode_work_publish_results(wall);
         boot_zcode_work_observe_results(wall);
+        /* A result observed above derives RECEIPT_VERIFIED. Project readiness
+         * in the same supervised turn instead of imposing another timer
+         * boundary; canonical rows still gate every transition. */
+        boot_zcode_async_proof_tick(svc, s_work, wall);
         if (GetBoolArg("-buildworker", false) && wall % 300 == 0)
             (void)boot_zcode_work_refresh(svc, wall);
     }
+}
+
+void boot_zcode_swarm_request_tick(void)
+{
+    atomic_store(&s_work_wake_pending, true);
+    if (s_timer_child != SUPERVISOR_INVALID_ID)
+        supervisor_request_tick(s_timer_child);
 }
 
 /* Drain queued frames for ONE node (bounded by the engine's outbound
