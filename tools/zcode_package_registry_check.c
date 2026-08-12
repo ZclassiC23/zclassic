@@ -18,6 +18,7 @@ struct registry_row {
     {name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature},
 static const struct registry_row rows[] = {
 #include "../config/zcode_package_registry.def"
+#include "../config/zcode_c23_commons_app.def"
 };
 #undef ZCODE_PACKAGE
 

@@ -2041,6 +2041,7 @@ print-zcode-monolith-lib-sources:
 	@printf '%s\n' $(LIB_SRCS)
 $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
         config/zcode_package_registry.def \
+		config/zcode_c23_commons_app.def \
 		lib/vcs/src/package_prepare.c lib/vcs/src/package_manifest.c \
 		lib/vcs/src/package_recipe.c lib/vcs/src/package_deps.c \
 		lib/vcs/src/package_capsule.c lib/vcs/src/package_release.c \

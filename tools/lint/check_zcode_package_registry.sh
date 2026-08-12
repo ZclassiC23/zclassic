@@ -13,7 +13,8 @@ fi
 
 mapfile -t package_dirs < <(
     sed -n 's/^ZCODE_PACKAGE("[^"]*", "\([^"]*\)".*/\1/p' \
-        config/zcode_package_registry.def | LC_ALL=C sort -u
+        config/zcode_package_registry.def \
+        config/zcode_c23_commons_app.def | LC_ALL=C sort -u
 )
 package_patterns=()
 for package_dir in "${package_dirs[@]}"; do
