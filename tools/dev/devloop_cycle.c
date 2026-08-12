@@ -154,6 +154,7 @@ static bool compiler_error_shape(const char *line, size_t len)
  * output always execute again. The exact marker must be a line emitted by the
  * fail-fast driver and its body must retain a compiler path/line/column
  * diagnostic after explicit infrastructure exclusions. */
+#ifndef ZCL_HOTFORK_DEVLOOP_CYCLE_CORE
 bool zcl_devloop_deterministic_compile_failure(
     const struct zcl_devloop_process_result *result,
     char out[ZCL_DEVLOOP_FIRST_ERROR_MAX])
@@ -192,6 +193,7 @@ bool zcl_devloop_deterministic_compile_failure(
     raw[len] = 0;
     return zcl_dev_failure_normalize_error(raw, out);
 }
+#endif
 #endif
 
 bool zcl_devloop_watch_lock_path(const char *repo_root,
