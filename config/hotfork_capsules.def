@@ -40,6 +40,17 @@ HOTFORK_CAPSULE(
     "zcl_native_hotswap_publish_hooks+report_to_reply+service_report_to_reply+registry_commit_batch_cb+registry_probe_cb")
 
 HOTFORK_CAPSULE(
+    "dev.watcher-classification-core.v1",
+    "HOT_FORK",
+    "tools/dev/devloop_watch.c",
+    "devloop-watch-classification-core.v1",
+    "devloop-watch-classification-core.v1",
+    "devloop-watch-classification-core.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "watch_c_source+watch_epoch_all_c+watch_component_for_files")
+
+HOTFORK_CAPSULE(
     "vcs.devloop-proof-envelope.v1",
     "HOT_FORK",
     "lib/vcs/src/vcs_devloop.c",
