@@ -1963,10 +1963,12 @@ ZCODE_PACKAGE_REGISTRY_CHECK_BIN := $(BIN_DIR)/zcode-package-registry-check
 zcode-package-base-test: $(ZCODE_PACKAGE_BASE_TEST_BIN)
 	@$(ZCODE_PACKAGE_BASE_TEST_BIN)
 $(ZCODE_PACKAGE_BASE_TEST_BIN): lib/base/tests/test_base.c \
-		lib/base/tests/cleanse_probe.c lib/base/src/cleanse.c
+		lib/base/tests/cleanse_probe.c lib/base/src/cleanse.c \
+		lib/base/src/log_level.c lib/base/src/result.c \
+		lib/base/src/safe_alloc.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O3 -flto -Wall -Wextra -Werror -pedantic \
-	    -Ilib/base/include -o $@ $^
+	    -D_POSIX_C_SOURCE=200809L -Ilib/base/include -o $@ $^
 
 zcode-package-sha3-test: $(ZCODE_PACKAGE_SHA3_TEST_BIN)
 	@$(ZCODE_PACKAGE_SHA3_TEST_BIN)

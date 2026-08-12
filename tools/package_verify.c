@@ -945,6 +945,11 @@ static size_t pv_compile_argv(struct pv_compile_args *store,
     store->argv[n++] = "-std=c23";
     store->argv[n++] = "-O1";
     store->argv[n++] = "-fno-omit-frame-pointer";
+    /* The frozen package target is Linux x86-64-v3, and the monolith's C23
+     * profile already exposes POSIX.1-2008. Keep standalone package builds
+     * on that same declared API surface rather than accidentally compiling
+     * only packages that avoid gmtime_r/flockfile and similar interfaces. */
+    store->argv[n++] = "-D_POSIX_C_SOURCE=200809L";
     if (warning_fatal) {
         store->argv[n++] = "-Wall";
         store->argv[n++] = "-Wextra";

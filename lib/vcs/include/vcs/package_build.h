@@ -53,9 +53,9 @@
 #define VCS_PACKAGE_BUILD_VERSION_MAX 127u
 #define VCS_PACKAGE_BUILD_FLAGS_MAX 255u
 #define VCS_PACKAGE_BUILD_FLAGS_QUICK_V1 \
-    "-std=c23 -O1 -fno-omit-frame-pointer -c"
+    "-std=c23 -O1 -fno-omit-frame-pointer -D_POSIX_C_SOURCE=200809L -c"
 #define VCS_PACKAGE_BUILD_FLAGS_STANDARD_V1 \
-    "-std=c23 -O1 -fno-omit-frame-pointer -Wall -Wextra -Werror;asan,ubsan=clean;sanitizer_pie=off;sanitizer_aslr=off"
+    "-std=c23 -O1 -fno-omit-frame-pointer -D_POSIX_C_SOURCE=200809L -Wall -Wextra -Werror;asan,ubsan=clean;sanitizer_pie=off;sanitizer_aslr=off"
 #define VCS_PACKAGE_BUILD_PATH_MAX 255u
 #define VCS_PACKAGE_BUILD_MAX_WIRE_BYTES (64u * 1024u)
 
