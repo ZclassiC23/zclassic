@@ -194,6 +194,17 @@ HOTFORK_CAPSULE(
     "want_view_render+want_view_json+want_view_frozen_kat")
 
 HOTFORK_CAPSULE(
+    "shop.want-command-input-core.v1",
+    "HOT_FORK",
+    "app/controllers/src/shop_native_want.c",
+    "shop-want-command-input-core.v1",
+    "shop-want-command-input-core.v1",
+    "shop-want-command-input-core.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "shw_hex32+shw_build_want")
+
+HOTFORK_CAPSULE(
     "zcode.package-view-contract.v1",
     "HOT_FORK",
     "tools/command/native_zcode_package_view_command.c",

@@ -32,6 +32,12 @@ elif [[ "$OWNER_KIND" == plan ]]; then
     STORY='devloop-plan-classification.v1'
     MUTANT_OLD='strcmp(name, "build") == 0'
     MUTANT_NEW='strcmp(name, "build") != 0'
+elif [[ "$OWNER_KIND" == shop-want ]]; then
+    SOURCE="$ROOT/app/controllers/src/shop_native_want.c"
+    OUTPUT="${ZCL_REFLEX_SHOP_WANT_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-shop-want-core-acceptance.json}"
+    STORY='shop-want-command-input-core.v1'
+    MUTANT_OLD='w->expires_unix <= now_unix'
+    MUTANT_NEW='w->expires_unix < now_unix'
 fi
 
 fail() { printf 'reflex-hotfork-watch-core-acceptance: %s\n' "$*" >&2; exit 2; }

@@ -1539,6 +1539,15 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=caller-owned-row,pure-service,no-store,no-clock,no-wallet\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "shop-want-command-input-core.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "hex=lowercase-32,uppercase-reject,length-reject\n"
+            "want=amount,criteria,expiry,nonce,deterministic-signature\n"
+            "reject=expiry-equal-now\n"
+            "authority=caller-owned-json,pure-build-and-sign,no-db,no-filesystem,no-clock,no-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "zcode-package-view-contract.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1652,6 +1661,59 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "shop-want-command-input-core.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"hotswap/hotswap_service.h\"\n"
+            "#define zcl_hotswap_service_acquire(...) NULL\n"
+            "#define zcl_hotswap_service_release(...) ((void)0)\n"
+            "#include \"%s\"\n"
+            "#undef zcl_hotswap_service_release\n"
+            "#undef zcl_hotswap_service_acquire\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " uint8_t decoded[32];"
+            " const char *secret=\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\";"
+            " HF_CHECK(shw_hex32(secret,decoded) && decoded[0]==0xa1"
+            " && !shw_hex32(\"A1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",decoded)"
+            " && !shw_hex32(\"a1\",decoded));"
+            " struct json_value input; json_init(&input); json_set_object(&input);"
+            " json_push_kv_str(&input,\"buyer_secret\",secret);"
+            " json_push_kv_int(&input,\"amount_zatoshi\",500000);"
+            " json_push_kv_str(&input,\"criteria\",\"sha3-verified result\");"
+            " json_push_kv_int(&input,\"expires_unix\",1780086400);"
+            " json_push_kv_int(&input,\"nonce\",42);"
+            " struct zcl_command_request request={.input=&input};"
+            " struct zcl_command_reply reply; zcl_command_reply_init(&reply,\"zcl.test.v1\");"
+            " struct shop_want row; bool built=shw_build_want(&request,1780000000,&row,&reply);"
+            " HF_CHECK(built && row.want.amount_zatoshi==500000"
+            " && row.want.criteria_len==20 && row.want.nonce==42"
+            " && row.want.issued_unix==1780000000 && row.want.expires_unix==1780086400"
+            " && shop_want_verify(&row.want)==SHOP_WANT_OK);"
+            " zcl_command_reply_free(&reply); json_free(&input);"
+            " json_init(&input); json_set_object(&input);"
+            " json_push_kv_str(&input,\"buyer_secret\",secret);"
+            " json_push_kv_int(&input,\"amount_zatoshi\",1);"
+            " json_push_kv_str(&input,\"criteria\",\"x\");"
+            " json_push_kv_int(&input,\"expires_unix\",1780000000);"
+            " request.input=&input; zcl_command_reply_init(&reply,\"zcl.test.v1\");"
+            " HF_CHECK(!shw_build_want(&request,1780000000,&row,&reply)"
+            " && strcmp(reply.error.code,\"WANT_ALREADY_EXPIRED\")==0);"
+            " zcl_command_reply_free(&reply); json_free(&input);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==3 && out->checks_passed==3; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "devloop-plan-classification.v1") == 0) {
         return snprintf(out, out_size,
