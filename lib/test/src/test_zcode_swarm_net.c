@@ -57,10 +57,12 @@
 #include "validation/txmempool.h"
 #include "vcs/package_service.h"
 #include "vcs/package_mapping.h"
+#include "vcs/package_prepare.h"
 #include "vcs/package_release.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm.h"
 #include "vcs/package_swarm_node.h"
+#include "vcs/package_transport.h"
 #include "vcs/source_package_checkout.h"
 #include "vcs/source_package_transport.h"
 #include "vcs/vcs.h"
@@ -507,6 +509,84 @@ static bool zwn_release_make(
     memcpy(release->signature, compact + 1,
            VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
     return vcs_package_release_verify(release) == VCS_PACKAGE_RELEASE_OK;
+}
+
+struct zwn_package_scenario {
+    const char *name;
+    const char *dht_namespace;
+    const char *source_dir;
+    const char *expected_package_root_hex;
+};
+
+struct zwn_package_scenario_result {
+    uint8_t package_root[32];
+    uint8_t recipe_root[32];
+    uint8_t release_id[32];
+    uint8_t transport_root[32];
+    uint64_t cold_bytes;
+    uint64_t repeat_bytes;
+    uint64_t source_bytes;
+    uint32_t source_chunks;
+    uint32_t reused_objects;
+    bool survived_publisher;
+};
+
+static bool zwn_prepare_package_transport(
+    const struct zwn_package_scenario *scenario,
+    struct vcs_package_prepared *prepared,
+    struct vcs_package_transport *transport)
+{
+    struct privkey key;
+    memset(&key, 0, sizeof(key));
+    memset(key.vch, 0x47, sizeof(key.vch));
+    key.fValid = true;
+    key.fCompressed = true;
+    struct pubkey pubkey;
+    if (!scenario || !prepared || !transport ||
+        !privkey_get_pubkey(&key, &pubkey) ||
+        pubkey.size != COMPRESSED_PUBLIC_KEY_SIZE)
+        return false;
+    struct vcs_package_prepare_options options = {
+        .dir = scenario->source_dir,
+        .publisher_sequence = 1,
+        .reward_address = "",
+        .chain_id = "zclassic-main",
+    };
+    memcpy(options.publisher_pubkey, pubkey.vch,
+           COMPRESSED_PUBLIC_KEY_SIZE);
+    char detail[160] = {0};
+    vcs_package_prepared_init(prepared);
+    if (vcs_package_prepare(&options, prepared, detail, sizeof(detail)) !=
+        VCS_PACKAGE_PREPARE_OK) {
+        fprintf(stderr, "zwn package prepare: %s\n", detail);
+        return false;
+    }
+    uint8_t expected[32];
+    if (!zcl_hex_decode(scenario->expected_package_root_hex,
+                        expected, sizeof(expected)) ||
+        memcmp(expected, prepared->package_root, 32) != 0)
+        return false;
+    struct uint256 digest;
+    memcpy(digest.data, prepared->signing_digest, 32);
+    uint8_t compact[COMPACT_SIGNATURE_SIZE];
+    if (!privkey_sign_compact(&key, &digest, compact))
+        return false;
+    memcpy(prepared->release.signature, compact + 1,
+           VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
+    uint8_t *release_wire = NULL;
+    size_t release_wire_len = 0;
+    bool ok = vcs_package_release_verify(&prepared->release) ==
+                  VCS_PACKAGE_RELEASE_OK &&
+        vcs_package_release_serialize(&prepared->release, &release_wire,
+                                      &release_wire_len) ==
+            VCS_PACKAGE_RELEASE_OK &&
+        vcs_package_transport_build(
+            release_wire, release_wire_len,
+            prepared->recipe_wire, prepared->recipe_wire_len,
+            prepared->manifest_wire, prepared->manifest_wire_len,
+            transport) == VCS_PACKAGE_TRANSPORT_OK;
+    free(release_wire);
+    return ok;
 }
 
 /* ── the loopback node: msg_processor + engine + store + book ───────── */
@@ -2399,6 +2479,150 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
     return failures;
 }
 
+/* One data-driven product acceptance. The runner knows only the generic
+ * package lifecycle; lib/base is scenario data and a later library can use
+ * the same path without another publish/fetch/reproduce harness. */
+static int zwn_t_package_lifecycle(const struct chain_params *params)
+{
+    int failures = 0;
+    static const struct zwn_package_scenario scenario = {
+        .name = "zclassic23/base",
+        .dht_namespace = "package.zclassic23-base",
+        .source_dir = "lib/base",
+        .expected_package_root_hex =
+            "7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe",
+    };
+    TEST("parameterized signed C23 package: A publishes, B discovers and "
+         "imports, then C fetches from B after A disappears") {
+        struct vcs_package_prepared prepared;
+        struct vcs_package_transport transport;
+        vcs_package_transport_init(&transport);
+        ASSERT(zwn_prepare_package_transport(&scenario, &prepared,
+                                             &transport));
+
+        struct zwn_node a, b, c;
+        ASSERT(zwn_node_init(&a, "pkg-a", params));
+        ASSERT(zwn_node_init(&b, "pkg-b", params));
+        ASSERT(zwn_node_init(&c, "pkg-c", params));
+        ASSERT(vcs_package_transport_store(
+                   a.store, &transport, scenario.source_dir) ==
+               VCS_PACKAGE_TRANSPORT_OK);
+        ASSERT(vcs_package_store_pin(a.store, transport.transport_root,
+                                     true) == VCS_PACKAGE_STORE_OK);
+
+        struct vcs_package_store_status status;
+        ASSERT(!vcs_package_store_package_status(
+            b.store, transport.transport_root, &status));
+        ASSERT(!vcs_package_store_package_status(
+            b.store, transport.package_root, &status));
+
+        struct zwn_link a_b, b_a;
+        ASSERT(zwn_link(&a, &a_b, 10, 0, 0, 1, "package-b"));
+        ASSERT(zwn_link(&b, &b_a, 10, 0, 0, 2, "package-a"));
+        ASSERT(zwn_meet_side(&a, &a_b));
+        ASSERT(zwn_meet_side(&b, &b_a));
+
+        uint8_t discovered[32];
+        struct vcs_zcode_dht_record provider;
+        ASSERT(zwn_discover_transport(
+            &a, &a, &b, scenario.dht_namespace, transport.release_id,
+            transport.transport_root, discovered, &provider, 1100));
+        ASSERT(memcmp(discovered, transport.transport_root, 32) == 0);
+        ASSERT(zwn_fetch_package_from_peers(
+            &b, discovered, &a_b, &b_a, NULL, NULL,
+            params->pchMessageStart));
+        struct vcs_swarm_download_status cold;
+        memset(&cold, 0, sizeof(cold));
+        ASSERT(vcs_swarm_engine_download_status(
+            b.engine, transport.transport_root, &cold));
+        ASSERT(cold.state == VCS_SWARM_DL_COMPLETE);
+        ASSERT(cold.fetched_bytes > 0);
+
+        /* Fetch/verify is inert. The semantic package does not exist in B's
+         * store until the separately explicit import reconstructs it. */
+        ASSERT(!vcs_package_store_package_status(
+            b.store, transport.package_root, &status));
+        struct vcs_package_transport_import imported_b;
+        ASSERT(vcs_package_transport_import(
+                   b.store, transport.transport_root, &imported_b) ==
+               VCS_PACKAGE_TRANSPORT_OK);
+        ASSERT(memcmp(imported_b.package_root,
+                      transport.package_root, 32) == 0);
+        ASSERT(memcmp(imported_b.recipe_root,
+                      transport.recipe_root, 32) == 0);
+        ASSERT(memcmp(imported_b.release_id,
+                      transport.release_id, 32) == 0);
+        ASSERT(imported_b.source_chunks > 0);
+        ASSERT(imported_b.cas_objects_reused == imported_b.source_chunks);
+        ASSERT(vcs_package_store_package_status(
+            b.store, transport.package_root, &status));
+        ASSERT(status.complete);
+        ASSERT(vcs_package_store_pin(b.store, transport.transport_root,
+                                     true) == VCS_PACKAGE_STORE_OK);
+
+        /* Publisher A is genuinely removed before C begins. B is now an
+         * ordinary onward provider of the exact same transport root. */
+        zwn_link_free(&a_b);
+        zwn_link_free(&b_a);
+        zwn_node_free(&a);
+
+        struct zwn_link b_c, c_b;
+        ASSERT(zwn_link(&b, &b_c, 10, 0, 0, 3, "package-c"));
+        ASSERT(zwn_link(&c, &c_b, 10, 0, 0, 4, "package-b"));
+        ASSERT(zwn_meet_side(&b, &b_c));
+        ASSERT(zwn_meet_side(&c, &c_b));
+        memset(discovered, 0, sizeof(discovered));
+        ASSERT(zwn_discover_transport(
+            &b, &b, &c, scenario.dht_namespace, transport.release_id,
+            transport.transport_root, discovered, &provider, 1200));
+        ASSERT(zwn_fetch_package_from_peers(
+            &c, discovered, &b_c, &c_b, NULL, NULL,
+            params->pchMessageStart));
+        struct vcs_package_transport_import imported_c;
+        ASSERT(vcs_package_transport_import(
+                   c.store, transport.transport_root, &imported_c) ==
+               VCS_PACKAGE_TRANSPORT_OK);
+        ASSERT(memcmp(imported_c.package_root,
+                      transport.package_root, 32) == 0);
+        ASSERT(vcs_package_store_verify_possession(
+            c.store, transport.transport_root, false));
+        ASSERT(vcs_package_store_verify_possession(
+            c.store, transport.package_root, false));
+
+        /* Exact repeat is a pure local-complete result: no WANT and no
+         * payload bytes. */
+        ASSERT(vcs_swarm_engine_fetch(
+                   c.engine, transport.transport_root, ZWN_DAY, ++c.now) ==
+               VCS_SWARM_FETCH_ALREADY_COMPLETE);
+
+        char package_hex[65], transport_hex[65], release_hex[65];
+        zcl_hex_encode(transport.package_root, 32, package_hex);
+        zcl_hex_encode(transport.transport_root, 32, transport_hex);
+        zcl_hex_encode(transport.release_id, 32, release_hex);
+        printf("{\"schema\":\"zcl.package_lifecycle.v1\","
+               "\"scenario\":\"%s\",\"package_root\":\"%s\","
+               "\"transport_root\":\"%s\",\"release_id\":\"%s\","
+               "\"cold_verified_bytes\":%" PRIu64 ","
+               "\"repeat_verified_bytes\":0,"
+               "\"source_bytes\":%" PRIu64 ","
+               "\"source_chunks\":%u,\"cas_objects_reused\":%u,"
+               "\"publisher_disappeared\":true,"
+               "\"onward_provider\":\"B\",\"github_contacted\":false}\n",
+               scenario.name, package_hex, transport_hex, release_hex,
+               cold.fetched_bytes, imported_c.source_bytes,
+               imported_c.source_chunks, imported_c.cas_objects_reused);
+
+        zwn_link_free(&b_c);
+        zwn_link_free(&c_b);
+        zwn_node_free(&b);
+        zwn_node_free(&c);
+        vcs_package_transport_free(&transport);
+        vcs_package_prepared_free(&prepared);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── 2: the malicious server ────────────────────────────────────────── */
 
 static int zwn_t_malicious(const struct chain_params *params)
@@ -2638,6 +2862,7 @@ int test_zcode_swarm_net(void)
     failures += zwn_test_golden(ZWN_GOLDEN_PLAIN, params);
     failures += zwn_test_golden(ZWN_GOLDEN_RESTART, params);
     failures += zwn_test_golden(ZWN_GOLDEN_DISCONNECT, params);
+    failures += zwn_t_package_lifecycle(params);
     failures += zwn_t_sovereign_source_build(params);
     failures += zwn_t_malicious(params);
     failures += zwn_t_corrupt_local_repair(params);
