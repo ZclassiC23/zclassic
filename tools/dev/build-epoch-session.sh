@@ -151,7 +151,12 @@ publish_current_epoch()
 {
     local root="$1" tmp
     [ -n "$root" ] && [ "$root" != - ] || return 0
-    mkdir -p "$root"
+    # The pointer and the generation directory are one atomic claim from a
+    # reader's perspective: never publish a name that codeindex (or another
+    # concurrent observer) can resolve only to ENOENT. The candidate may not
+    # contain its linked executable yet, but its immutable generation exists
+    # before it is named and the later link publishes within that directory.
+    mkdir -p "$root/epochs/$EPOCH"
     tmp="$(mktemp "$root/.current-epoch.XXXXXX")" ||
         fail "could not stage the current-epoch pointer under $root"
     printf '%s\n' "$EPOCH" > "$tmp"

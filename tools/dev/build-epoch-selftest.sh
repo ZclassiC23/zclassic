@@ -182,6 +182,10 @@ start_session()
         "$COMPILER_ID" "$EPOCH_MAIN" "$PROFILE" "$COMPILE_FLAGS" \
         "$LINK_FLAGS" "$CC_COMMAND" "$CC_COMMAND" "$$" "$VERIFY" \
         >/dev/null
+    [ -d "$WORK/candidates/epochs/$EPOCH_MAIN" ] ||
+        fail 'session published a dangling candidate epoch pointer'
+    [ "$(cat "$WORK/candidates/.current-epoch")" = "$EPOCH_MAIN" ] ||
+        fail 'session candidate pointer does not name its generation'
     printf '%s\n' "$SESSION_MAIN"
 }
 
