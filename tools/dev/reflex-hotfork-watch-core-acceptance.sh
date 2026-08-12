@@ -44,6 +44,12 @@ elif [[ "$OWNER_KIND" == command-input ]]; then
     STORY='command-registry-input-validation-core.v1'
     MUTANT_OLD='json_get_int(value) <= 600;'
     MUTANT_NEW='json_get_int(value) < 600;'
+elif [[ "$OWNER_KIND" == native-dev ]]; then
+    SOURCE="$ROOT/tools/command/native_dev_command.c"
+    OUTPUT="${ZCL_REFLEX_NATIVE_DEV_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-native-dev-core-acceptance.json}"
+    STORY='native-dev-input-and-interrupt-policy.v1'
+    MUTANT_OLD='strstr(path, "..")'
+    MUTANT_NEW='strstr(path, "__never__")'
 fi
 
 fail() { printf 'reflex-hotfork-watch-core-acceptance: %s\n' "$*" >&2; exit 2; }

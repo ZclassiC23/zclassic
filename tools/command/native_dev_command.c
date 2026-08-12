@@ -14,6 +14,15 @@
  * anything in the development lane. */
 
 #define _GNU_SOURCE
+#ifdef ZCL_HOTFORK_NATIVE_DEV_INPUT_CORE
+#include "dev_failure_store.h"
+#include "devloop.h"
+#include "json/json.h"
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#else
 #include "command/native_command.h"
 
 #include "base/hex.h"
@@ -56,6 +65,114 @@
 #include <sys/types.h>
 #include <time.h>
 #endif
+#endif
+
+/* Pure, caller-owned input policy shared by the static command shell and the
+ * development-only HOT_FORK capsule.  Keeping these definitions in the owner
+ * TU makes the capsule execute the exact candidate bytes while the compile
+ * guard below excludes every process, filesystem, RPC, service, and
+ * generation-authority path. */
+static bool dev_request_files(const struct json_value *input, bool allow_empty,
+                              const char **files, size_t *count,
+                              char *why, size_t why_size)
+{
+    const struct json_value *array = json_get(input, "files");
+    *count = 0;
+    if (!array || array->type == JSON_NULL)
+        return allow_empty;
+    if (array->type != JSON_ARR ||
+        (!allow_empty && array->num_children == 0) ||
+        array->num_children > ZCL_DEVLOOP_MAX_FILES) {
+        (void)snprintf(why, why_size,
+                       "files must be a bounded string array%s",
+                       allow_empty ? "" : " with at least one item");
+        return false;
+    }
+    for (size_t i = 0; i < array->num_children; i++) {
+        const struct json_value *item = &array->children[i];
+        const char *path = json_get_str(item);
+        if (item->type != JSON_STR || !path || !path[0] ||
+            strlen(path) >= ZCL_DEVLOOP_PATH_MAX || path[0] == '/' ||
+            strstr(path, "..")) {
+            (void)snprintf(why, why_size,
+                           "files[%zu] must be a confined relative path", i);
+            return false;
+        }
+        files[i] = path;
+    }
+    *count = array->num_children;
+    return true;
+}
+
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING) || \
+    defined(ZCL_HOTFORK_NATIVE_DEV_INPUT_CORE)
+static bool dev_drive_input_int(const struct json_value *input,
+                                const char *key, int64_t fallback,
+                                int64_t *out)
+{
+    const struct json_value *v = input ? json_get(input, key) : NULL;
+    if (!v || v->type == JSON_NULL) {
+        *out = fallback;
+        return true;
+    }
+    if (v->type != JSON_INT)
+        return false;
+    *out = json_get_int(v);
+    return true;
+}
+#endif
+
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_HOTFORK_NATIVE_DEV_INPUT_CORE)
+static bool dev_event_interrupting(const struct json_value *cycle)
+{
+    const char *phase = cycle && cycle->type == JSON_OBJ
+        ? json_get_str(json_get(cycle, "phase")) : NULL;
+    const char *status = cycle && cycle->type == JSON_OBJ
+        ? json_get_str(json_get(cycle, "status")) : NULL;
+    return (phase && (strcmp(phase, "STORY_RED") == 0 ||
+                      strcmp(phase, "COMPILE_RED") == 0 ||
+                      strcmp(phase, "FOCUSED_RED") == 0)) ||
+           (status && (strcmp(status, "story_red") == 0 ||
+                       strcmp(status, "compile_red") == 0 ||
+                       strcmp(status, "focused_red") == 0 ||
+                       strcmp(status, "rejected") == 0));
+}
+
+static bool dev_group_valid(const char *group)
+{
+    return group && group[0] && strlen(group) < 128 &&
+        strspn(group,
+               "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") ==
+            strlen(group);
+}
+
+static bool dev_generation_name_valid(const char *name)
+{
+    if (!name || strchr(name, '/') || strlen(name) >= 96)
+        return false;
+    const char *hex = NULL;
+    if (strncmp(name, "gen-", 4) == 0)
+        hex = name + 4;
+    else if (strncmp(name, "legacy-", 7) == 0)
+        hex = name + 7;
+    if (!hex || strlen(hex) != 64)
+        return false;
+    return strspn(hex, "0123456789abcdef") == 64;
+}
+#endif
+
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING) || \
+    defined(ZCL_HOTFORK_NATIVE_DEV_INPUT_CORE)
+static bool dev_failure_id_valid(const char *failure_id)
+{
+    if (!failure_id || strlen(failure_id) != ZCL_DEV_FAILURE_HEX_LEN)
+        return false;
+    return strspn(failure_id, "0123456789abcdef") ==
+           ZCL_DEV_FAILURE_HEX_LEN;
+}
+#endif
+
+#ifndef ZCL_HOTFORK_NATIVE_DEV_INPUT_CORE
 
 /* Copy a produced JSON document (buffer producer output) into reply->data.
  * On any failure, fail the reply with an INTERNAL contract error. */
@@ -1478,37 +1595,6 @@ void zcl_native_handle_dev_app_simulate(
 }
 
 /* ── dev.change.plan ───────────────────────────────────────────────────── */
-static bool dev_request_files(const struct json_value *input, bool allow_empty,
-                              const char **files, size_t *count,
-                              char *why, size_t why_size)
-{
-    const struct json_value *array = json_get(input, "files");
-    *count = 0;
-    if (!array || array->type == JSON_NULL)
-        return allow_empty;
-    if (array->type != JSON_ARR ||
-        (!allow_empty && array->num_children == 0) ||
-        array->num_children > ZCL_DEVLOOP_MAX_FILES) {
-        (void)snprintf(why, why_size,
-                       "files must be a bounded string array%s",
-                       allow_empty ? "" : " with at least one item");
-        return false;
-    }
-    for (size_t i = 0; i < array->num_children; i++) {
-        const struct json_value *item = &array->children[i];
-        const char *path = json_get_str(item);
-        if (item->type != JSON_STR || !path || !path[0] ||
-            strlen(path) >= ZCL_DEVLOOP_PATH_MAX || path[0] == '/' ||
-            strstr(path, "..")) {
-            (void)snprintf(why, why_size,
-                           "files[%zu] must be a confined relative path", i);
-            return false;
-        }
-        files[i] = path;
-    }
-    *count = array->num_children;
-    return true;
-}
 
 void zcl_native_handle_dev_change_plan(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
@@ -1540,21 +1626,6 @@ void zcl_native_handle_dev_change_plan(
 }
 
 #if defined(ZCL_DEV_BUILD) || defined(ZCL_TESTING)
-
-static bool dev_drive_input_int(const struct json_value *input,
-                                const char *key, int64_t fallback,
-                                int64_t *out)
-{
-    const struct json_value *v = input ? json_get(input, key) : NULL;
-    if (!v || v->type == JSON_NULL) {
-        *out = fallback;
-        return true;
-    }
-    if (v->type != JSON_INT)
-        return false;
-    *out = json_get_int(v);
-    return true;
-}
 
 static bool dev_drive_copy(const struct json_value *from,
                            struct json_value *to, const char *from_key,
@@ -2646,21 +2717,6 @@ void zcl_native_handle_dev_loop_wait(
         "inspect the latest epoch before deciding whether to wait again");
 }
 
-static bool dev_event_interrupting(const struct json_value *cycle)
-{
-    const char *phase = cycle && cycle->type == JSON_OBJ
-        ? json_get_str(json_get(cycle, "phase")) : NULL;
-    const char *status = cycle && cycle->type == JSON_OBJ
-        ? json_get_str(json_get(cycle, "status")) : NULL;
-    return (phase && (strcmp(phase, "STORY_RED") == 0 ||
-                      strcmp(phase, "COMPILE_RED") == 0 ||
-                      strcmp(phase, "FOCUSED_RED") == 0)) ||
-           (status && (strcmp(status, "story_red") == 0 ||
-                       strcmp(status, "compile_red") == 0 ||
-                       strcmp(status, "focused_red") == 0 ||
-                       strcmp(status, "rejected") == 0));
-}
-
 void zcl_native_handle_dev_loop_events(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -2784,14 +2840,6 @@ void zcl_native_handle_dev_loop_stop(
                                "watcher retained its lock after SIGTERM", "");
     else
         (void)json_push_kv_bool(&reply->data, "stopped", true);
-}
-
-static bool dev_group_valid(const char *group)
-{
-    return group && group[0] && strlen(group) < 128 &&
-        strspn(group,
-               "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_") ==
-            strlen(group);
 }
 
 static bool dev_test_phase_receipt_parse(
@@ -3247,20 +3295,6 @@ static bool dev_generation_root(char out[PATH_MAX])
     return n > 0 && n < PATH_MAX && out[0] == '/' && !strstr(out, "..");
 }
 
-static bool dev_generation_name_valid(const char *name)
-{
-    if (!name || strchr(name, '/') || strlen(name) >= 96)
-        return false;
-    const char *hex = NULL;
-    if (strncmp(name, "gen-", 4) == 0)
-        hex = name + 4;
-    else if (strncmp(name, "legacy-", 7) == 0)
-        hex = name + 7;
-    if (!hex || strlen(hex) != 64)
-        return false;
-    return strspn(hex, "0123456789abcdef") == 64;
-}
-
 static bool dev_read_generation_link(const char *root, const char *link_name,
                                      char out[96])
 {
@@ -3446,14 +3480,6 @@ void zcl_native_handle_dev_diagnose_latest(
     (void)zcl_command_reply_add_next(
         reply, "dev.diagnose.show", input,
         "inspect the most recently recorded deterministic compiler failure");
-}
-
-static bool dev_failure_id_valid(const char *failure_id)
-{
-    if (!failure_id || strlen(failure_id) != ZCL_DEV_FAILURE_HEX_LEN)
-        return false;
-    return strspn(failure_id, "0123456789abcdef") ==
-           ZCL_DEV_FAILURE_HEX_LEN;
 }
 
 void zcl_native_handle_dev_diagnose_show(
@@ -4040,3 +4066,5 @@ void zcl_native_handle_dev_vcs_seal_grant(
     }
 #endif
 }
+
+#endif /* !ZCL_HOTFORK_NATIVE_DEV_INPUT_CORE */
