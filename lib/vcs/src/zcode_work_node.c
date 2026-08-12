@@ -24,6 +24,7 @@ struct work_track {
     bool cancelled;
     bool expired;
     uint64_t peer;
+    uint8_t worker_signer[32];
     uint8_t progress_stage;
     struct vcs_zcode_work_request_v1 request;
 };
@@ -131,6 +132,35 @@ static int work_peer_slot(const struct vcs_zcode_work_node *node,
     return -1;
 }
 
+/* Transport sessions are not worker identities.  A full node can have more
+ * than one authenticated connection to the same worker signer, and each
+ * session may carry the same signed slot advertisement.  Count requester-
+ * owned outstanding leases by signer so duplicate sessions cannot multiply
+ * one physical worker's capacity.  The signed queue_headroom remains an
+ * upper bound; this local projection only subtracts leases this requester
+ * already owns.  Caller holds node->lock. */
+static struct vcs_zcode_work_capability_v1 work_effective_capability(
+    const struct vcs_zcode_work_node *node, int peer_at)
+{
+    struct vcs_zcode_work_capability_v1 effective =
+        node->peers[peer_at].capability;
+    uint16_t active = 0;
+    for (size_t i = 0; i < sizeof(node->tracks) / sizeof(node->tracks[0]); i++) {
+        const struct work_track *track = &node->tracks[i];
+        if (!track->used || track->inbound || track->finished ||
+            track->cancelled || track->expired)
+            continue;
+        if (memcmp(track->worker_signer, effective.signer_pubkey, 32) == 0 &&
+            active < UINT16_MAX)
+            active++;
+    }
+    uint16_t local_headroom = active < effective.slots
+        ? (uint16_t)(effective.slots - active) : 0;
+    if (effective.queue_headroom > local_headroom)
+        effective.queue_headroom = local_headroom;
+    return effective;
+}
+
 static bool work_queue_frame(struct vcs_zcode_work_node *node, uint64_t peer,
                              const struct vcs_zcode_work_swarm_message *message)
 {
@@ -185,7 +215,8 @@ void vcs_zcode_work_node_peer_drop(struct vcs_zcode_work_node *node,
     int slot = work_peer_slot(node, peer);
     if (slot >= 0) memset(&node->peers[slot], 0, sizeof(node->peers[slot]));
     for (size_t i = 0; i < sizeof(node->tracks) / sizeof(node->tracks[0]); i++)
-        if (node->tracks[i].used && node->tracks[i].peer == peer)
+        if (node->tracks[i].used && node->tracks[i].peer == peer &&
+            node->tracks[i].inbound)
             memset(&node->tracks[i], 0, sizeof(node->tracks[i]));
     size_t kept = 0;
     for (size_t i = 0; i < node->outbound_count; i++) {
@@ -286,7 +317,7 @@ bool vcs_zcode_work_node_peer_capability(
     int slot = work_peer_slot(node, peer);
     bool ok = slot >= 0 && node->peers[slot].has_capability &&
               now < node->peers[slot].capability.expires_unix;
-    if (ok) *out = node->peers[slot].capability;
+    if (ok) *out = work_effective_capability(node, slot);
     pthread_mutex_unlock(&node->lock);
     return ok;
 }
@@ -303,7 +334,7 @@ size_t vcs_zcode_work_node_capable_peers(
             now >= node->peers[i].capability.expires_unix)
             continue;
         peers[count] = node->peers[i].id;
-        capabilities[count] = node->peers[i].capability;
+        capabilities[count] = work_effective_capability(node, (int)i);
         count++;
     }
     pthread_mutex_unlock(&node->lock);
@@ -378,10 +409,13 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_submit(
     else if (!node->peers[peer_at].has_capability ||
              now >= node->peers[peer_at].capability.expires_unix)
         result = VCS_ZCODE_WORK_NODE_CAPABILITY_STALE;
-    else if (!work_capability_allows(&node->peers[peer_at].capability,
-                                     request, now))
-        result = VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH;
-    else if (work_find_track(node, peer, request->request_id, false))
+    else if (!work_find_track(node, peer, request->request_id, false)) {
+        struct vcs_zcode_work_capability_v1 effective =
+            work_effective_capability(node, peer_at);
+        if (!work_capability_allows(&effective, request, now))
+            result = VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH;
+    }
+    else
         result = VCS_ZCODE_WORK_NODE_REPLAY;
     struct work_track *track = result == VCS_ZCODE_WORK_NODE_OK
                                    ? work_add_track(node) : NULL;
@@ -396,6 +430,8 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_submit(
         else {
             memset(track, 0, sizeof(*track));
             track->used = true; track->peer = peer; track->request = *request;
+            memcpy(track->worker_signer,
+                   node->peers[peer_at].capability.signer_pubkey, 32);
             node->peers[peer_at].capability.queue_headroom--;
         }
     }
