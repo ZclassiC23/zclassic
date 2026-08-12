@@ -5,7 +5,7 @@
 #include "base/cleanse.h"
 #include "base/serialize_le.h"
 #include "crypto/ed25519.h"
-#include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <stdbool.h>
 #include <string.h>
@@ -80,13 +80,10 @@ static enum vcs_zcode_creation_claim_error claim_signing_root(
     uint8_t wire[VCS_ZCODE_CREATION_CLAIM_UNSIGNED_BYTES];
     size_t wire_len = claim_write_unsigned(claim, wire);
     if (wire_len != sizeof(wire)) return VCS_ZCODE_CREATION_CLAIM_WIRE_SIZE;
-    struct sha3_256_ctx sha;
     static const char domain[] = VCS_ZCODE_CREATION_CLAIM_SIGNING_DOMAIN;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
-    return VCS_ZCODE_CREATION_CLAIM_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, wire_len, out)
+        ? VCS_ZCODE_CREATION_CLAIM_OK : VCS_ZCODE_CREATION_CLAIM_NULL;
 }
 
 enum vcs_zcode_creation_claim_error
@@ -98,8 +95,9 @@ vcs_zcode_creation_claim_wire_v2_validate(
     uint8_t root[32];
     error = claim_signing_root(claim, root);
     if (error != VCS_ZCODE_CREATION_CLAIM_OK) return error;
-    bool valid = ed25519_verify(claim->signature, root, sizeof(root),
-                                claim->signer_pubkey);
+    bool valid = vcs_signed_evidence_verify_root(
+        root, claim->signature, claim->signer_pubkey,
+        claim->signer_pubkey);
     memory_cleanse(root, sizeof(root));
     return valid ? VCS_ZCODE_CREATION_CLAIM_OK
                  : VCS_ZCODE_CREATION_CLAIM_SIGNATURE;
@@ -116,9 +114,10 @@ vcs_zcode_creation_claim_wire_v2_sign(
     memset(claim->signature, 0, sizeof(claim->signature));
     enum vcs_zcode_creation_claim_error error =
         claim_signing_root(claim, root);
-    if (error == VCS_ZCODE_CREATION_CLAIM_OK)
-        ed25519_sign(claim->signature, root, sizeof(root), secret,
-                     claim->signer_pubkey);
+    if (error == VCS_ZCODE_CREATION_CLAIM_OK &&
+        !vcs_signed_evidence_seal_root(
+            root, secret, claim->signer_pubkey, claim->signature))
+        error = VCS_ZCODE_CREATION_CLAIM_NULL;
     memory_cleanse(secret, sizeof(secret));
     memory_cleanse(root, sizeof(root));
     return error == VCS_ZCODE_CREATION_CLAIM_OK
@@ -191,13 +190,11 @@ vcs_zcode_creation_claim_wire_v2_root(
         vcs_zcode_creation_claim_wire_v2_encode(
             claim, wire, sizeof(wire), &wire_len);
     if (error != VCS_ZCODE_CREATION_CLAIM_OK) return error;
-    struct sha3_256_ctx sha;
     static const char domain[] = VCS_ZCODE_CREATION_CLAIM_V2_DOMAIN;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
-    return VCS_ZCODE_CREATION_CLAIM_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire, wire_len,
+                                    out)
+               ? VCS_ZCODE_CREATION_CLAIM_OK
+               : VCS_ZCODE_CREATION_CLAIM_NULL;
 }
 
 void vcs_zcode_creation_claim_wire_v2_selection(

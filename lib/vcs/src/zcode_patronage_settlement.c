@@ -3,8 +3,7 @@
 #include "vcs/zcode_patronage_settlement.h"
 
 #include "codec/cursor.h"
-#include "crypto/ed25519.h"
-#include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <string.h>
 
@@ -16,17 +15,6 @@ static bool settlement_nonzero(const uint8_t *value, size_t value_len)
     uint8_t any = 0;
     for (size_t i = 0; i < value_len; i++) any |= value[i];
     return any != 0;
-}
-
-static void settlement_hash(const char *domain, size_t domain_len,
-                            const uint8_t *wire, size_t wire_len,
-                            uint8_t out[32])
-{
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, domain_len);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
 }
 
 const char *vcs_zcode_patronage_settlement_error_string(
@@ -165,8 +153,10 @@ static enum vcs_zcode_patronage_settlement_error settlement_signing_root(
     if (error != VCS_ZCODE_PATRONAGE_SETTLEMENT_OK || !out)
         return out ? error : VCS_ZCODE_PATRONAGE_SETTLEMENT_NULL;
     static const char domain[] = VCS_ZCODE_PATRONAGE_SETTLEMENT_DOMAIN;
-    settlement_hash(domain, sizeof(domain), body, sizeof(body), out);
-    return VCS_ZCODE_PATRONAGE_SETTLEMENT_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), body, sizeof(body), out)
+        ? VCS_ZCODE_PATRONAGE_SETTLEMENT_OK
+        : VCS_ZCODE_PATRONAGE_SETTLEMENT_NULL;
 }
 
 enum vcs_zcode_patronage_settlement_error
@@ -244,8 +234,10 @@ vcs_zcode_patronage_settlement_root(
         vcs_zcode_patronage_settlement_serialize(settlement, wire);
     if (error != VCS_ZCODE_PATRONAGE_SETTLEMENT_OK) return error;
     static const char domain[] = VCS_ZCODE_PATRONAGE_SETTLEMENT_ROOT_DOMAIN;
-    settlement_hash(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_PATRONAGE_SETTLEMENT_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_PATRONAGE_SETTLEMENT_OK
+        : VCS_ZCODE_PATRONAGE_SETTLEMENT_NULL;
 }
 
 enum vcs_zcode_patronage_settlement_error
@@ -261,8 +253,10 @@ vcs_zcode_patronage_settlement_seal(
     enum vcs_zcode_patronage_settlement_error error =
         settlement_signing_root(settlement, root);
     if (error != VCS_ZCODE_PATRONAGE_SETTLEMENT_OK) return error;
-    ed25519_sign(settlement->signature, root, sizeof(root), secret, pubkey);
-    return VCS_ZCODE_PATRONAGE_SETTLEMENT_OK;
+    return vcs_signed_evidence_seal_root(
+               root, secret, pubkey, settlement->signature)
+        ? VCS_ZCODE_PATRONAGE_SETTLEMENT_OK
+        : VCS_ZCODE_PATRONAGE_SETTLEMENT_NULL;
 }
 
 enum vcs_zcode_patronage_settlement_error
@@ -275,8 +269,9 @@ vcs_zcode_patronage_settlement_verify(
     uint8_t root[32];
     error = settlement_signing_root(settlement, root);
     if (error != VCS_ZCODE_PATRONAGE_SETTLEMENT_OK) return error;
-    return ed25519_verify(settlement->signature, root, sizeof(root),
-                          settlement->settler_zid_pubkey)
+    return vcs_signed_evidence_verify_root(
+               root, settlement->signature, settlement->settler_zid_pubkey,
+               settlement->settler_zid_pubkey)
         ? VCS_ZCODE_PATRONAGE_SETTLEMENT_OK
         : VCS_ZCODE_PATRONAGE_SETTLEMENT_SIGNATURE;
 }

@@ -7,6 +7,7 @@
 #include "base/serialize_le.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <string.h>
 
@@ -21,16 +22,6 @@ static bool bytes_nonzero(const uint8_t *bytes, size_t count)
     if (!bytes) return false;
     for (size_t i = 0; i < count; i++) any |= bytes[i];
     return any != 0;
-}
-
-static void domain_root(const char *domain, const uint8_t *wire,
-                        size_t wire_len, uint8_t out[32])
-{
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, strlen(domain) + 1u);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
 }
 
 const char *vcs_zcode_c23_error_string(enum vcs_zcode_c23_error error)
@@ -233,8 +224,10 @@ enum vcs_zcode_c23_error vcs_zcode_source_assignment_v1_root(
     enum vcs_zcode_c23_error error = vcs_zcode_source_assignment_v1_encode(
         assignment, wire, sizeof(wire), &wire_len);
     if (error != VCS_ZCODE_C23_OK) return error;
-    domain_root(VCS_ZCODE_SOURCE_ASSIGNMENT_V1_DOMAIN, wire, wire_len, out);
-    return VCS_ZCODE_C23_OK;
+    return vcs_signed_evidence_root(VCS_ZCODE_SOURCE_ASSIGNMENT_V1_DOMAIN,
+                                    strlen(VCS_ZCODE_SOURCE_ASSIGNMENT_V1_DOMAIN) + 1u,
+                                    wire, wire_len, out)
+               ? VCS_ZCODE_C23_OK : VCS_ZCODE_C23_NULL;
 }
 
 static void literal_root(const char *literal, uint8_t out[32])
@@ -394,6 +387,8 @@ enum vcs_zcode_c23_error vcs_zcode_c23_corpus_rules_v1_root(
     enum vcs_zcode_c23_error error = vcs_zcode_c23_corpus_rules_v1_encode(
         rules, wire, sizeof(wire), &wire_len);
     if (error != VCS_ZCODE_C23_OK) return error;
-    domain_root(VCS_ZCODE_C23_CORPUS_RULES_V1_DOMAIN, wire, wire_len, out);
-    return VCS_ZCODE_C23_OK;
+    return vcs_signed_evidence_root(VCS_ZCODE_C23_CORPUS_RULES_V1_DOMAIN,
+                                    strlen(VCS_ZCODE_C23_CORPUS_RULES_V1_DOMAIN) + 1u,
+                                    wire, wire_len, out)
+               ? VCS_ZCODE_C23_OK : VCS_ZCODE_C23_NULL;
 }

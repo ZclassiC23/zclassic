@@ -5,7 +5,7 @@
 #include "base/checked.h"
 #include "codec/cursor.h"
 #include "crypto/ed25519.h"
-#include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <secp256k1.h>
 #include <string.h>
@@ -175,16 +175,6 @@ static enum vcs_c23_seed_error seed_body(
         ? VCS_C23_SEED_OK : VCS_C23_SEED_ERR_WIRE_SIZE;
 }
 
-static void seed_hash(const char *domain, size_t domain_len,
-                      const uint8_t *wire, size_t wire_len, uint8_t out[32])
-{
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, domain_len);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
-}
-
 enum vcs_c23_seed_error vcs_c23_seed_body_root(
     const struct vcs_c23_seed_v1 *seed, uint8_t out[32])
 {
@@ -194,8 +184,9 @@ enum vcs_c23_seed_error vcs_c23_seed_body_root(
     enum vcs_c23_seed_error error = seed_body(seed, body);
     if (error != VCS_C23_SEED_OK) return error;
     static const char domain[] = VCS_C23_SEED_BODY_DOMAIN;
-    seed_hash(domain, sizeof(domain), body, sizeof(body), out);
-    return VCS_C23_SEED_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), body, sizeof(body), out)
+        ? VCS_C23_SEED_OK : VCS_C23_SEED_ERR_NULL;
 }
 
 enum vcs_c23_seed_error vcs_c23_seed_serialize(
@@ -271,8 +262,9 @@ enum vcs_c23_seed_error vcs_c23_seed_root(
     enum vcs_c23_seed_error error = vcs_c23_seed_serialize(seed, wire);
     if (error != VCS_C23_SEED_OK) return error;
     static const char domain[] = VCS_C23_SEED_DOMAIN;
-    seed_hash(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_C23_SEED_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_C23_SEED_OK : VCS_C23_SEED_ERR_NULL;
 }
 
 enum vcs_c23_seed_error vcs_c23_seed_seal(
@@ -302,8 +294,9 @@ enum vcs_c23_seed_error vcs_c23_seed_seal(
     uint8_t root[32];
     error = vcs_c23_seed_body_root(seed, root);
     if (error != VCS_C23_SEED_OK) return error;
-    ed25519_sign(seed->zid_signature, root, sizeof(root), zid_secret,
-                 zid_pubkey);
+    if (!vcs_signed_evidence_seal_root(
+            root, zid_secret, zid_pubkey, seed->zid_signature))
+        return VCS_C23_SEED_ERR_NULL;
     secp256k1_ecdsa_signature signature;
     if (!secp256k1_ecdsa_sign(seed_ctx, &signature, root, zcl_secret,
                               NULL, NULL))
@@ -323,8 +316,9 @@ enum vcs_c23_seed_error vcs_c23_seed_verify(
     uint8_t root[32];
     error = vcs_c23_seed_body_root(seed, root);
     if (error != VCS_C23_SEED_OK) return error;
-    if (!ed25519_verify(seed->zid_signature, root, sizeof(root),
-                        seed->zid_pubkey))
+    if (!vcs_signed_evidence_verify_root(
+            root, seed->zid_signature, seed->zid_pubkey,
+            seed->zid_pubkey))
         return VCS_C23_SEED_ERR_SIGNATURE;
     secp256k1_pubkey pubkey;
     secp256k1_ecdsa_signature signature;

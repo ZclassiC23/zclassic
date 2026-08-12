@@ -5,8 +5,8 @@
 
 #include "base/serialize_le.h"
 #include "crypto/ed25519.h"
-#include "crypto/sha3.h"
 #include "support/cleanse.h"
+#include "vcs/signed_evidence.h"
 
 #include <limits.h>
 #include <string.h>
@@ -207,16 +207,6 @@ enum vcs_space_result vcs_service_descriptor_decode(
   return checked;
 }
 
-static void domain_root(const char *domain, const uint8_t *wire,
-                        size_t wire_len, uint8_t out[32])
-{
-  struct sha3_256_ctx sha;
-  sha3_256_init(&sha);
-  sha3_256_write(&sha, (const uint8_t *)domain, strlen(domain));
-  sha3_256_write(&sha, wire, wire_len);
-  sha3_256_finalize(&sha, out);
-}
-
 enum vcs_space_result vcs_service_descriptor_root(
     const struct vcs_service_descriptor_v1 *descriptor, uint8_t out[32])
 {
@@ -228,8 +218,10 @@ enum vcs_space_result vcs_service_descriptor_root(
       descriptor, wire, sizeof(wire), &wire_len);
   if (encoded != VCS_SPACE_OK)
     return encoded;
-  domain_root(VCS_SERVICE_DESCRIPTOR_DOMAIN, wire, wire_len, out);
-  return VCS_SPACE_OK;
+  return vcs_signed_evidence_root(VCS_SERVICE_DESCRIPTOR_DOMAIN,
+                                  strlen(VCS_SERVICE_DESCRIPTOR_DOMAIN),
+                                  wire, wire_len, out)
+             ? VCS_SPACE_OK : VCS_SPACE_ERR_NULL;
 }
 
 static enum vcs_space_result manifest_shape(
@@ -556,6 +548,8 @@ enum vcs_space_result vcs_space_manifest_root(
       manifest, wire, sizeof(wire), &wire_len);
   if (encoded != VCS_SPACE_OK)
     return encoded;
-  domain_root(VCS_SPACE_MANIFEST_DOMAIN, wire, wire_len, out);
-  return VCS_SPACE_OK;
+  return vcs_signed_evidence_root(VCS_SPACE_MANIFEST_DOMAIN,
+                                  strlen(VCS_SPACE_MANIFEST_DOMAIN),
+                                  wire, wire_len, out)
+             ? VCS_SPACE_OK : VCS_SPACE_ERR_NULL;
 }

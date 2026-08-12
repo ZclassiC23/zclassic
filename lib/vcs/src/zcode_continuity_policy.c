@@ -4,8 +4,8 @@
 
 #include "base/checked.h"
 #include "codec/cursor.h"
-#include "crypto/ed25519.h"
 #include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <stdbool.h>
 #include <string.h>
@@ -18,17 +18,6 @@ static bool continuity_nonzero(const uint8_t value[32])
     uint8_t any = 0;
     for (size_t i = 0; i < 32; i++) any |= value[i];
     return any != 0;
-}
-
-static void continuity_hash(const char *domain, size_t domain_len,
-                            const uint8_t *wire, size_t wire_len,
-                            uint8_t out[32])
-{
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, domain_len);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
 }
 
 const char *vcs_zcode_continuity_error_string(
@@ -159,8 +148,9 @@ static enum vcs_zcode_continuity_error continuity_signing_root(
     enum vcs_zcode_continuity_error error = continuity_body(policy, body);
     if (error != VCS_ZCODE_CONTINUITY_OK) return error;
     static const char domain[] = VCS_ZCODE_CONTINUITY_POLICY_DOMAIN;
-    continuity_hash(domain, sizeof(domain), body, sizeof(body), out);
-    return VCS_ZCODE_CONTINUITY_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), body, sizeof(body), out)
+        ? VCS_ZCODE_CONTINUITY_OK : VCS_ZCODE_CONTINUITY_NULL;
 }
 
 enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_serialize(
@@ -237,8 +227,9 @@ enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_root(
         vcs_zcode_continuity_policy_serialize(policy, wire);
     if (error != VCS_ZCODE_CONTINUITY_OK) return error;
     static const char domain[] = VCS_ZCODE_CONTINUITY_POLICY_ROOT_DOMAIN;
-    continuity_hash(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_CONTINUITY_OK;
+    return vcs_signed_evidence_root(
+               domain, sizeof(domain), wire, sizeof(wire), out)
+        ? VCS_ZCODE_CONTINUITY_OK : VCS_ZCODE_CONTINUITY_NULL;
 }
 
 enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_seal(
@@ -252,8 +243,9 @@ enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_seal(
     enum vcs_zcode_continuity_error error =
         continuity_signing_root(policy, root);
     if (error != VCS_ZCODE_CONTINUITY_OK) return error;
-    ed25519_sign(policy->signature, root, sizeof(root), secret, pubkey);
-    return VCS_ZCODE_CONTINUITY_OK;
+    return vcs_signed_evidence_seal_root(
+               root, secret, pubkey, policy->signature)
+        ? VCS_ZCODE_CONTINUITY_OK : VCS_ZCODE_CONTINUITY_NULL;
 }
 
 enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_verify(
@@ -266,8 +258,9 @@ enum vcs_zcode_continuity_error vcs_zcode_continuity_policy_verify(
     uint8_t root[32];
     error = continuity_signing_root(policy, root);
     if (error != VCS_ZCODE_CONTINUITY_OK) return error;
-    return ed25519_verify(policy->signature, root, sizeof(root),
-                          policy->patron_zid_pubkey)
+    return vcs_signed_evidence_verify_root(
+               root, policy->signature, policy->patron_zid_pubkey,
+               policy->patron_zid_pubkey)
         ? VCS_ZCODE_CONTINUITY_OK : VCS_ZCODE_CONTINUITY_SIGNATURE;
 }
 

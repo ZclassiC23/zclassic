@@ -4,7 +4,6 @@
 #include "vcs/zcode_dev.h"
 
 #include "codec/cursor.h"
-#include "crypto/sha3.h"
 #include "vcs/signed_evidence.h"
 
 #include <string.h>
@@ -217,16 +216,6 @@ enum vcs_zcode_dev_error vcs_zcode_work_receipt_validate(
     return receipt_fields(receipt, true);
 }
 
-static void object_root(const char *domain, size_t domain_len,
-                        const uint8_t *wire, size_t wire_len, uint8_t out[32])
-{
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, domain_len);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
-}
-
 enum vcs_zcode_dev_error vcs_zcode_task_serialize(
     const struct vcs_zcode_task_v1 *task,
     uint8_t out[VCS_ZCODE_TASK_WIRE_BYTES])
@@ -303,8 +292,9 @@ enum vcs_zcode_dev_error vcs_zcode_task_root(
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
     static const char domain[] = VCS_ZCODE_TASK_DOMAIN;
-    object_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_DEV_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire,
+                                    sizeof(wire), out)
+               ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_proof_policy_serialize(
@@ -372,8 +362,9 @@ enum vcs_zcode_dev_error vcs_zcode_proof_policy_root(
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
     static const char domain[] = VCS_ZCODE_PROOF_POLICY_DOMAIN;
-    object_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_DEV_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire,
+                                    sizeof(wire), out)
+               ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_candidate_serialize(
@@ -438,8 +429,9 @@ enum vcs_zcode_dev_error vcs_zcode_candidate_root(
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
     static const char domain[] = VCS_ZCODE_CANDIDATE_DOMAIN;
-    object_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_DEV_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire,
+                                    sizeof(wire), out)
+               ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
 }
 
 enum vcs_zcode_dev_error vcs_zcode_review_serialize(
@@ -505,8 +497,9 @@ enum vcs_zcode_dev_error vcs_zcode_review_root(
     if (err != VCS_ZCODE_DEV_OK || !out)
         return out ? err : VCS_ZCODE_DEV_ERR_NULL;
     static const char domain[] = VCS_ZCODE_REVIEW_DOMAIN;
-    object_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_DEV_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire,
+                                    sizeof(wire), out)
+               ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
 }
 
 static enum vcs_zcode_dev_error receipt_body(

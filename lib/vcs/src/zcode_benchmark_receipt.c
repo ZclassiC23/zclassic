@@ -5,7 +5,7 @@
 #include "vcs/zcode_benchmark_receipt.h"
 
 #include "base/serialize_le.h"
-#include "crypto/sha3.h"
+#include "vcs/signed_evidence.h"
 
 #include <string.h>
 
@@ -77,16 +77,6 @@ static uint64_t get_u64(const uint8_t *wire, size_t *off)
     uint64_t value = zcl_read_u64_le(wire + *off);
     *off += 8;
     return value;
-}
-
-static void receipt_root(const char *domain, size_t domain_len,
-                         const uint8_t *wire, size_t wire_len, uint8_t out[32])
-{
-    struct sha3_256_ctx sha;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)domain, domain_len);
-    sha3_256_write(&sha, wire, wire_len);
-    sha3_256_finalize(&sha, out);
 }
 
 const char *vcs_zcode_receipt_error_string(enum vcs_zcode_receipt_error error)
@@ -167,8 +157,9 @@ enum vcs_zcode_receipt_error vcs_zcode_benchmark_workload_v1_root(
     if (error != VCS_ZCODE_RECEIPT_OK || !out)
         return out ? error : VCS_ZCODE_RECEIPT_ERR_NULL;
     static const char domain[] = VCS_ZCODE_BENCHMARK_WORKLOAD_DOMAIN;
-    receipt_root(domain, sizeof(domain), wire, wire_len, out);
-    return VCS_ZCODE_RECEIPT_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire, wire_len,
+                                    out)
+               ? VCS_ZCODE_RECEIPT_OK : VCS_ZCODE_RECEIPT_ERR_NULL;
 }
 
 /* ── raw-sample manifest v1 ─────────────────────────────────────────── */
@@ -246,8 +237,9 @@ enum vcs_zcode_receipt_error vcs_zcode_raw_sample_manifest_v1_root(
     if (error != VCS_ZCODE_RECEIPT_OK || !out)
         return out ? error : VCS_ZCODE_RECEIPT_ERR_NULL;
     static const char domain[] = VCS_ZCODE_RAW_SAMPLE_MANIFEST_DOMAIN;
-    receipt_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_RECEIPT_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire,
+                                    sizeof(wire), out)
+               ? VCS_ZCODE_RECEIPT_OK : VCS_ZCODE_RECEIPT_ERR_NULL;
 }
 
 /* ── sample payload v1 ──────────────────────────────────────────────── */
@@ -315,8 +307,9 @@ enum vcs_zcode_receipt_error vcs_zcode_sample_payload_v1_root(
     if (error != VCS_ZCODE_RECEIPT_OK || !out)
         return out ? error : VCS_ZCODE_RECEIPT_ERR_NULL;
     static const char domain[] = VCS_ZCODE_SAMPLE_PAYLOAD_DOMAIN;
-    receipt_root(domain, sizeof(domain), wire, wire_len, out);
-    return VCS_ZCODE_RECEIPT_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire, wire_len,
+                                    out)
+               ? VCS_ZCODE_RECEIPT_OK : VCS_ZCODE_RECEIPT_ERR_NULL;
 }
 
 /* ── benchmark evidence v1 ──────────────────────────────────────────── */
@@ -405,8 +398,9 @@ enum vcs_zcode_receipt_error vcs_zcode_benchmark_evidence_v1_root(
     if (error != VCS_ZCODE_RECEIPT_OK || !out)
         return out ? error : VCS_ZCODE_RECEIPT_ERR_NULL;
     static const char domain[] = VCS_ZCODE_BENCHMARK_EVIDENCE_DOMAIN;
-    receipt_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_RECEIPT_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire,
+                                    sizeof(wire), out)
+               ? VCS_ZCODE_RECEIPT_OK : VCS_ZCODE_RECEIPT_ERR_NULL;
 }
 
 /* ── environment policy v1 ──────────────────────────────────────────── */
@@ -487,8 +481,9 @@ enum vcs_zcode_receipt_error vcs_zcode_environment_policy_v1_root(
     if (error != VCS_ZCODE_RECEIPT_OK || !out)
         return out ? error : VCS_ZCODE_RECEIPT_ERR_NULL;
     static const char domain[] = VCS_ZCODE_ENVIRONMENT_POLICY_DOMAIN;
-    receipt_root(domain, sizeof(domain), wire, sizeof(wire), out);
-    return VCS_ZCODE_RECEIPT_OK;
+    return vcs_signed_evidence_root(domain, sizeof(domain), wire,
+                                    sizeof(wire), out)
+               ? VCS_ZCODE_RECEIPT_OK : VCS_ZCODE_RECEIPT_ERR_NULL;
 }
 
 bool vcs_zcode_environment_policy_v1_accepts(
