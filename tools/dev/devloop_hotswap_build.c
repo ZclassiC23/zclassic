@@ -1515,6 +1515,19 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=policy-only,no-filesystem,no-cas,no-package-import,no-publication\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "test-group-catalog-selection-policy.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "catalog=known-present,unknown-absent\n"
+            "exclusive=latency-yes,ordinary-no\n"
+            "semantic-leaf=declared-yes,ordinary-no\n"
+            "resolve=prefixless-and-full-exact,substring-reject\n"
+            "family=declared-oracle,unrelated-reject\n"
+            "integration=declared-yes,ordinary-no,policy-valid\n"
+            "expansion=ordinary-one,immediate-excludes-integration\n"
+            "authority=read-only-catalog,no-process,no-filesystem,no-build\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1551,6 +1564,58 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "test-group-catalog-selection-policy.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " char resolved[ZCL_TEST_GROUP_FULL_MAX];"
+            " HF_CHECK(zcl_test_group_catalog_count()>100);"
+            " HF_CHECK(zcl_test_group_catalog_contains(\"test_dev_platform\")"
+            " && !zcl_test_group_catalog_contains(\"dev_platform\"));"
+            " HF_CHECK(zcl_test_group_requires_exclusive_run(\"test_command_registry_latency\")"
+            " && !zcl_test_group_requires_exclusive_run(\"test_dev_platform\"));"
+            " HF_CHECK(zcl_test_group_source_is_semantic_leaf("
+            "\"lib/test/src/test_stage_repair_coin_backfill.c\")"
+            " && !zcl_test_group_source_is_semantic_leaf("
+            "\"lib/test/src/test_dev_platform.c\"));"
+            " HF_CHECK(zcl_test_group_resolve_exact(\"dev_platform\",resolved)"
+            " && strcmp(resolved,\"test_dev_platform\")==0);"
+            " HF_CHECK(zcl_test_group_resolve_exact(\"test_dev_platform\",resolved)"
+            " && !zcl_test_group_resolve_exact(\"dev_plat\",resolved));"
+            " HF_CHECK(zcl_test_group_plan_selects(\"oracle_policy\","
+            "\"test_zclassicd_oracle\")"
+            " && !zcl_test_group_plan_selects(\"dev_platform\","
+            "\"test_zclassicd_oracle\"));"
+            " HF_CHECK(zcl_test_group_is_integration_only("
+            "\"test_test_group_selector\")"
+            " && !zcl_test_group_is_integration_only(\"test_dev_platform\")"
+            " && zcl_test_group_integration_policy_valid());"
+            " const char *ordinary[]={\"dev_platform\"};"
+            " char groups[2][ZCL_TEST_GROUP_FULL_MAX]; bool truncated=false;"
+            " size_t count=zcl_test_group_expand_plan(ordinary,1,groups,2,&truncated);"
+            " HF_CHECK(count==1 && !truncated"
+            " && strcmp(groups[0],\"test_dev_platform\")==0);"
+            " const char *integration[]={\"test_group_selector\"};"
+            " count=zcl_test_group_expand_plan_immediate("
+            "integration,1,groups,2,&truncated);"
+            " HF_CHECK(count==0 && !truncated);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            " out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==10 && out->checks_passed==10; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "zcode-source-bundle-input-policy.v1") == 0) {
         return snprintf(out, out_size,
@@ -2329,6 +2394,59 @@ static bool hs_hotfork_build(
         free(before); free(after);
         goto fail;
     }
+    /* A newly declared owner has no dependency baseline yet. Discover the
+     * exact closure once, snapshot it, then compile again inside this same
+     * bounded action. The second pass is the proof that no dependency moved
+     * while the accepted candidate object was produced; requiring a human or
+     * agent to save identical bytes twice is neither a safety property nor a
+     * useful first-edit experience. */
+    if (!have_baseline) {
+        memcpy(before, after, after_n * sizeof(*after));
+        before_n = after_n;
+        if (!hs_cache_key(&plan, root, key_owner, before, before_n,
+                          receipt->artifact_cache_key) ||
+            !hs_cache_root_for("hotfork-v1", cache_root)) {
+            free(before); free(after);
+            hs_why(why, why_len,
+                   "could not bind cold HOT_FORK dependency closure");
+            goto fail;
+        }
+        cache_fd = hs_cache_lock(cache_root, receipt->artifact_cache_key,
+                                 cache_obj, cache_so, cache_hash);
+        if (cache_fd >= 0 &&
+            hs_cache_lookup(root, safe, cache_obj, cache_so, cache_hash,
+                            receipt)) {
+            receipt->artifact_cache_hit = true;
+            receipt->dependency_count = (uint32_t)before_n;
+            (void)unlink(cached_dep);
+            if (rename(dep, cached_dep) != 0) {
+                free(before); free(after);
+                hs_why(why, why_len,
+                       "could not publish cold HOT_FORK dependency baseline");
+                goto fail;
+            }
+            dep[0] = 0;
+            (void)snprintf(receipt->source_tu, sizeof(receipt->source_tu),
+                           "%s", def->source_tu);
+            receipt->total_us = platform_time_monotonic_us() - started;
+            free(before); free(after);
+            goto success;
+        }
+        if (cache_fd >= 0) {
+            (void)unlink(cache_obj); (void)unlink(cache_so);
+            (void)unlink(cache_hash);
+        }
+        int64_t stable_compile_us = 0;
+        receipt->compiler_processes++;
+        if (!hs_run_hotfork_compile(&plan, root, unity, candidate_obj, dep,
+                                    process, &stable_compile_us,
+                                    why, why_len) ||
+            !hs_depfile_read(root, dep, after, &after_n, true)) {
+            free(before); free(after);
+            goto fail;
+        }
+        receipt->compile_us += stable_compile_us;
+    }
     (void)unlink(cached_dep);
     if (rename(dep, cached_dep) != 0) {
         free(before); free(after);
@@ -2337,8 +2455,8 @@ static bool hs_hotfork_build(
     }
     dep[0] = 0;
     receipt->dependency_count = (uint32_t)after_n;
-    bool stable = have_baseline &&
-        hs_deps_unchanged(before, before_n, after, after_n, why, why_len);
+    bool stable = hs_deps_unchanged(before, before_n, after, after_n,
+                                    why, why_len);
     char post_key[65] = {0};
     if (stable && receipt->artifact_cache_key[0] &&
         (!hs_cache_key(&plan, root, key_owner, after, after_n, post_key) ||
@@ -2346,9 +2464,6 @@ static bool hs_hotfork_build(
         stable = false;
     free(before); free(after);
     if (!stable) {
-        if (!have_baseline)
-            hs_why(why, why_len,
-                   "HOT_FORK dependency baseline initialized; save once more to activate");
         goto fail;
     }
     if (!hs_sha256_file(candidate_obj, receipt->candidate_object_sha256)) {
@@ -2845,7 +2960,8 @@ static bool hs_hotfork_probe(
     *elapsed_us = platform_time_monotonic_us() - started;
     bool valid = waited == child && WIFEXITED(status) &&
         WEXITSTATUS(status) == 0 && !timed_out && !cancelled &&
-        have == sizeof(wire) && wire.magic == HS_HOTFORK_WIRE_MAGIC;
+        have == sizeof(wire) && wire.magic == HS_HOTFORK_WIRE_MAGIC &&
+        strcmp(wire.runtime_module_sha256, build->artifact_sha256) == 0;
     bool ok = valid && wire.descriptor_valid && wire.sandboxed &&
         wire.candidate_executed && wire.story_ok &&
         wire.observation.magic == ZCL_HOTFORK_OBSERVATION_MAGIC &&
@@ -2877,6 +2993,8 @@ static bool hs_hotfork_probe(
                            build->candidate_object_sha256);
     (void)json_push_kv_str(response, "candidate_module_root",
                            build->artifact_sha256);
+    (void)json_push_kv_str(response, "loaded_mapping_root",
+                           wire.runtime_module_sha256);
     (void)json_push_kv_bool(response, "candidate_bytes_executed",
                             wire.candidate_executed);
     (void)json_push_kv_str(response, "story_id", def->story_id);
@@ -2890,6 +3008,12 @@ static bool hs_hotfork_probe(
     (void)json_push_kv_str(response, "observation_root", observation_root);
     (void)json_push_kv_str(response, "exercised_owner_surface",
                            def->exercised_surface);
+    (void)json_push_kv_int(response, "story_checks_run",
+                           wire.observation.checks_run);
+    (void)json_push_kv_int(response, "story_checks_passed",
+                           wire.observation.checks_passed);
+    (void)json_push_kv_str(response, "story_detail",
+                           wire.observation.detail);
     (void)json_push_kv_int(response, "elapsed_us", *elapsed_us);
     if (!ok) {
         char timeout_message[96];
@@ -2919,6 +3043,8 @@ static bool hs_story_receipt_valid(
                                                "candidate_object_root"));
     const char *module = json_get_str(json_get(resident,
                                                "candidate_module_root"));
+    const char *loaded = json_get_str(json_get(resident,
+                                               "loaded_mapping_root"));
     const char *story_id = json_get_str(json_get(resident, "story_id"));
     const char *story = json_get_str(json_get(resident, "story_root"));
     const char *fixture = json_get_str(json_get(resident,
@@ -2942,7 +3068,8 @@ static bool hs_story_receipt_valid(
         (strcmp(schema, "zcl.dev_shadow_story.v2") == 0 ||
          strcmp(schema, "zcl.dev_hotfork_story.v1") == 0);
     bool manifest_ok = !feedback || strcmp(feedback, "HOT_FORK") != 0 ||
-        (hotfork && fixture_id && adapter && forbidden &&
+        (hotfork && fixture_id && adapter && forbidden && loaded && module &&
+         strcmp(loaded, module) == 0 &&
          strcmp(fixture_id, hotfork->fixture_id) == 0 &&
          strcmp(adapter, hotfork->adapter_id) == 0 &&
          json_get_int(json_get(resident, "story_timeout_ms")) ==
@@ -3168,7 +3295,7 @@ static bool hs_emit_event(const char *root, const char *source,
             "candidate_object_root", "candidate_module_root", "story_id",
             "story_root", "story_fixture_root", "observation_root",
             "story_fixture_id", "story_adapter", "forbidden_effect_mask",
-            "exercised_owner_surface",
+            "exercised_owner_surface", "loaded_mapping_root", "story_detail",
         };
         for (size_t i = 0; i < sizeof(semantic_keys) / sizeof(semantic_keys[0]);
              i++) {

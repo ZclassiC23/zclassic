@@ -93,6 +93,8 @@ static bool project_cycle(const struct json_value *cycle,
                    "candidate_object_root") &&
         copy_value(cycle, compact, "candidate_module_root",
                    "candidate_module_root") &&
+        copy_value(cycle, compact, "loaded_mapping_root",
+                   "loaded_mapping_root") &&
         copy_value(cycle, compact, "candidate_bytes_executed",
                    "candidate_bytes_executed") &&
         copy_value(cycle, compact, "story_id", "story_id") &&
@@ -107,6 +109,7 @@ static bool project_cycle(const struct json_value *cycle,
         copy_value(cycle, compact, "observation_root", "observation_root") &&
         copy_value(cycle, compact, "exercised_owner_surface",
                    "exercised_owner_surface") &&
+        copy_value(cycle, compact, "story_detail", "story_detail") &&
         copy_value(cycle, compact, "impact_us", "impact_us") &&
         copy_value(cycle, compact, "closure_us", "closure_us") &&
         json_push_kv_bool(compact, "runtime_published", live) &&

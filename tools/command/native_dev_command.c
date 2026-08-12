@@ -1852,6 +1852,9 @@ static bool dev_reflex_policy_frozen_kat(const void *vtable,
         json_push_kv_str(&cycle, "action", "hotswap") &&
         json_push_kv_str(&cycle, "edit_epoch",
             "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa") &&
+        json_push_kv_str(&cycle, "loaded_mapping_root",
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") &&
+        json_push_kv_str(&cycle, "story_detail", "checks=4/5;failed_mask=0x4") &&
         json_push_kv_int(&cycle, "elapsed_us", 73) &&
         json_push_kv_bool(&cycle, "runtime_published", false) &&
         json_push_kv_bool(&cycle, "proof_complete", false);
@@ -1860,6 +1863,10 @@ static bool dev_reflex_policy_frozen_kat(const void *vtable,
         ? json_get_str(json_get(&projected, "lane")) : NULL;
     bool vector_ok = projected_ok && lane && strcmp(lane, "REFLEX") == 0 &&
         json_get_int(json_get(&projected, "feedback_us")) == 73 &&
+        strcmp(json_get_str(json_get(&projected, "loaded_mapping_root")),
+               "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb") == 0 &&
+        strcmp(json_get_str(json_get(&projected, "story_detail")),
+               "checks=4/5;failed_mask=0x4") == 0 &&
         !json_get_bool(json_get(&projected, "runtime_published"));
     if (projected_ok) json_free(&projected);
     json_free(&cycle);

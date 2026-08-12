@@ -62,6 +62,7 @@ drive_candidate()
       .data.runtime_published==false and .data.feedback_us<1000000 and
       (.data.candidate_object_root|test("^[0-9a-f]{64}$")) and
       (.data.candidate_module_root|test("^[0-9a-f]{64}$")) and
+      .data.loaded_mapping_root==.data.candidate_module_root and
       (.data.story_root|test("^[0-9a-f]{64}$")) and
       (.data.story_fixture_root|test("^[0-9a-f]{64}$")) and
       (.data.observation_root|test("^[0-9a-f]{64}$"))' \
