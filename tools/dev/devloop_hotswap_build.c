@@ -2871,6 +2871,7 @@ static int hs_hotfork_unity_source(
                "native-dev-input-and-interrupt-policy.v1") == 0) {
         return snprintf(out, out_size,
             "#define _GNU_SOURCE\n"
+            "#define ZCL_HOTFORK_NATIVE_DEV_INPUT_CORE 1\n"
             "#include \"hotswap/hotfork_capsule.h\"\n"
             "#include \"%s\"\n"
             "__attribute__((visibility(\"hidden\")))\n"
