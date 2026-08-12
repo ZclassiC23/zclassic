@@ -1,14 +1,18 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * Purpose: human-first orchestration over existing ZCODE development owners. */
-
-#include "command/native_command.h"
+ * Purpose: human-first orchestration over existing ZCODE development owners.
+ * HOT_FORK strictly exercises caller-owned input normalization and byte totals. */
 
 #include "base/checked.h"
+#include "json/json.h"
+#include "vcs/package_prepare.h"
+
+#ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
+#include "command/native_command.h"
+
 #include "base/cleanse.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
 #include "hotswap/hotswap_service.h"
-#include "json/json.h"
 #include "models/build_fabric.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
@@ -23,19 +27,22 @@
 #include "vcs/package_recipe.h"
 #include "vcs/build_action.h"
 #include "vcs/vcs.h"
-#include "vcs/package_prepare.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev_product.h"
 #include "vcs/zcode_patch.h"
 #include "vcs/zcode_task_index.h"
 #include "vcs/zcode_work_swarm.h"
+#endif
 
-#include <limits.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
+#ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
+#include <limits.h>
+#include <stdlib.h>
 #include <unistd.h>
+#endif
 
+#ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
 #define ZWORK_PATH_MAX 4400
 #define ZWORK_LINE_COUNT_MAX 65536u
 
@@ -46,6 +53,7 @@ struct zwork_patch_summary {
     size_t public_api_changes;
     bool line_counts_exact;
 };
+#endif
 
 static const char *zwork_str(const struct json_value *input, const char *key)
 {
@@ -53,6 +61,7 @@ static const char *zwork_str(const struct json_value *input, const char *key)
     return value && value->type == JSON_STR ? json_get_str(value) : NULL;
 }
 
+#ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
 static bool zwork_open_build_ledger(
     struct node_db *ndb, const char *path, const char *reason,
     bool allow_create)
@@ -62,6 +71,7 @@ static bool zwork_open_build_ledger(
         return node_db_open_existing_runtime(ndb, path, reason);
     return allow_create && node_db_open(ndb, path);
 }
+#endif
 
 static int64_t zwork_int(
     const struct json_value *input, const char *key, int64_t fallback)
@@ -70,6 +80,7 @@ static int64_t zwork_int(
     return value && value->type == JSON_INT ? json_get_int(value) : fallback;
 }
 
+#ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
 static void zwork_fail(struct zcl_command_reply *reply, const char *code,
                        const char *phase, const char *detail, bool retryable,
                        bool mutated)
@@ -87,6 +98,7 @@ static char *zwork_hex_alloc(const uint8_t *bytes, size_t len,
     if (hex) zcl_hex_encode(bytes, len, hex);
     return hex;
 }
+#endif
 
 static bool zwork_scope_add(char out[1024], const char *path)
 {
@@ -149,6 +161,7 @@ static uint64_t zwork_source_bytes(
     return total;
 }
 
+#ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
 static bool zwork_prepare(const char *workspace,
                           struct vcs_package_prepared *prepared,
                           char *detail, size_t detail_cap)
@@ -1299,3 +1312,4 @@ void zcl_native_handle_zcode_work_accept(
     zcl_command_reply_free(&lane_reply);
     vcs_zcode_task_index_free(index);
 }
+#endif

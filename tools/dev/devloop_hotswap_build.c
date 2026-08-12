@@ -1569,6 +1569,15 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=copied-facts,pure-service,no-files,no-signatures,no-clock,no-ledger\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "zcode-work-input-core.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "json=string-present,type-reject,int-present,fallback\n"
+            "scopes=top-level,dedupe,header-source-test,empty-reject\n"
+            "bytes=selected-manifest-members,missing-ignore,overflow-reject\n"
+            "authority=caller-owned-input,pure-normalization,no-files,no-db,no-cas,no-process\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1623,6 +1632,7 @@ static int hs_hotfork_unity_source(
             " HF_CHECK(zcl_test_group_catalog_contains(\"test_dev_platform\")"
             " && !zcl_test_group_catalog_contains(\"dev_platform\"));"
             " HF_CHECK(zcl_test_group_requires_exclusive_run(\"test_command_registry_latency\")"
+            " && zcl_test_group_requires_exclusive_run(\"test_validate_parallel_determinism\")"
             " && !zcl_test_group_requires_exclusive_run(\"test_dev_platform\"));"
             " HF_CHECK(zcl_test_group_source_is_semantic_leaf("
             "\"lib/test/src/test_stage_repair_coin_backfill.c\")"
@@ -1875,6 +1885,58 @@ static int hs_hotfork_unity_source(
             "out->checks_passed,out->checks_run,failed);"
             " return out->checks_run==4 && out->checks_passed==4; }\n",
             source_path, service_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id, "zcode-work-input-core.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#define ZCL_HOTFORK_ZWORK_INPUT_CORE 1\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " struct json_value input; json_init(&input); json_set_object(&input);"
+            " json_push_kv_str(&input,\"goal\",\"ship\");"
+            " json_push_kv_int(&input,\"budget\",7);"
+            " HF_CHECK(strcmp(zwork_str(&input,\"goal\"),\"ship\")==0"
+            " && zwork_str(&input,\"budget\")==NULL);"
+            " HF_CHECK(zwork_int(&input,\"budget\",3)==7"
+            " && zwork_int(&input,\"missing\",3)==3); json_free(&input);"
+            " char scopes[1024]={0};"
+            " HF_CHECK(zwork_scope_add(scopes,\"lib/a.c\")"
+            " && zwork_scope_add(scopes,\"lib/b.c\")"
+            " && zwork_scope_add(scopes,\"app/x.c\")"
+            " && !zwork_scope_add(scopes,\"\")"
+            " && strcmp(scopes,\"lib,app\")==0);"
+            " char *headers[]={\"include/a.h\"};"
+            " char *sources[]={\"src/a.c\",\"include/b.c\"};"
+            " char *tests[]={\"tests/a.c\"};"
+            " struct vcs_package_recipe recipe; memset(&recipe,0,sizeof(recipe));"
+            " recipe.public_headers=(struct vcs_package_recipe_strings){headers,1,1};"
+            " recipe.sources=(struct vcs_package_recipe_strings){sources,2,2};"
+            " recipe.test_sources=(struct vcs_package_recipe_strings){tests,1,1};"
+            " HF_CHECK(zwork_scopes(&recipe,scopes)"
+            " && strcmp(scopes,\"include,src,tests\")==0);"
+            " struct vcs_package_prepared prepared; memset(&prepared,0,sizeof(prepared));"
+            " char *prepared_sources[]={\"src/a.c\",\"src/missing.c\"};"
+            " struct vcs_package_file files[2]={{.path=\"src/a.c\",.size=11},{.path=\"other.c\",.size=99}};"
+            " prepared.recipe.sources=(struct vcs_package_recipe_strings){prepared_sources,2,2};"
+            " prepared.manifest=(struct vcs_package_manifest){files,2,2};"
+            " HF_CHECK(zwork_source_bytes(&prepared)==11);"
+            " prepared_sources[1]=\"other.c\";"
+            " prepared.manifest.files[0].size=UINT64_MAX;"
+            " prepared.manifest.files[1].size=1;"
+            " HF_CHECK(zwork_source_bytes(&prepared)==0);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==6 && out->checks_passed==6; }\n",
+            source_path, def->exercised_surface);
     }
     if (strcmp(def->story_id,
                "zcode-source-bundle-input-policy.v1") == 0) {
@@ -2572,9 +2634,7 @@ static bool hs_hotfork_build(
 
     char safe[256], key_owner[384];
     size_t source_len = strlen(def->source_tu);
-    if (source_len >= sizeof(safe) ||
-        snprintf(key_owner, sizeof(key_owner), "HOT_FORK:%s",
-                 def->source_tu) >= (int)sizeof(key_owner)) {
+    if (source_len >= sizeof(safe)) {
         hs_why(why, why_len, "HOT_FORK owner exceeds identity bound");
         return false;
     }
@@ -2591,10 +2651,7 @@ static bool hs_hotfork_build(
     char cache_root[PATH_MAX] = {0}, cache_obj[PATH_MAX] = {0};
     char cache_so[PATH_MAX] = {0}, cache_hash[PATH_MAX] = {0};
     int cache_fd = -1;
-    if (snprintf(cached_dep, sizeof(cached_dep),
-                 "%s/build/hotswap/fast/%s.hotfork.d", root, safe) >=
-            (int)sizeof(cached_dep) ||
-        !hs_temp(unity, sizeof(unity), root, ".c") ||
+    if (!hs_temp(unity, sizeof(unity), root, ".c") ||
         !hs_temp(descriptor, sizeof(descriptor), root, ".c") ||
         !hs_temp(candidate_obj, sizeof(candidate_obj), root, ".o") ||
         !hs_temp(descriptor_obj, sizeof(descriptor_obj), root, ".o") ||
@@ -2611,6 +2668,16 @@ static bool hs_hotfork_build(
     if (unity_n <= 0 || unity_n >= (int)sizeof(unity_text) ||
         !hs_write_generated(unity, unity_text, why, why_len))
         goto fail;
+    char adapter_root[65];
+    hs_sha3_root(unity_text, adapter_root);
+    if (snprintf(key_owner, sizeof(key_owner), "HOT_FORK:%s:%s",
+                 def->source_tu, adapter_root) >= (int)sizeof(key_owner) ||
+        snprintf(cached_dep, sizeof(cached_dep),
+                 "%s/build/hotswap/fast/%s-%s.hotfork.d", root, safe,
+                 adapter_root) >= (int)sizeof(cached_dep)) {
+        hs_why(why, why_len, "HOT_FORK adapter identity exceeds bound");
+        goto fail;
+    }
 
     struct hs_dep *before = zcl_malloc(sizeof(*before) * HS_DEP_MAX,
                                        "HOT_FORK dependency baseline");
@@ -3218,6 +3285,10 @@ static bool hs_hotfork_probe(
     do { waited = waitpid(child, &status, 0); }
     while (waited < 0 && errno == EINTR);
     *elapsed_us = platform_time_monotonic_us() - started;
+    int child_signal = waited == child && WIFSIGNALED(status)
+        ? WTERMSIG(status) : 0;
+    int child_exit_code = waited == child && WIFEXITED(status)
+        ? WEXITSTATUS(status) : -1;
     bool valid = waited == child && WIFEXITED(status) &&
         WEXITSTATUS(status) == 0 && !timed_out && !cancelled &&
         have == sizeof(wire) && wire.magic == HS_HOTFORK_WIRE_MAGIC &&
@@ -3275,12 +3346,22 @@ static bool hs_hotfork_probe(
     (void)json_push_kv_str(response, "story_detail",
                            wire.observation.detail);
     (void)json_push_kv_int(response, "elapsed_us", *elapsed_us);
+    (void)json_push_kv_int(response, "child_signal", child_signal);
+    (void)json_push_kv_int(response, "child_exit_code", child_exit_code);
     if (!ok) {
         char timeout_message[96];
+        char signal_message[96];
+        char exit_message[96];
         (void)snprintf(timeout_message, sizeof(timeout_message),
                        "HOT_FORK story exceeded %u ms", def->max_time_ms);
+        (void)snprintf(signal_message, sizeof(signal_message),
+                       "HOT_FORK child terminated by signal %d", child_signal);
+        (void)snprintf(exit_message, sizeof(exit_message),
+                       "HOT_FORK child exited with code %d", child_exit_code);
         const char *message = cancelled ? "HOT_FORK story superseded" :
             timed_out ? timeout_message :
+            child_signal ? signal_message :
+            child_exit_code > 0 ? exit_message :
             !valid ? "HOT_FORK child returned no valid bounded receipt" :
             !wire.descriptor_valid ? "HOT_FORK descriptor binding mismatch" :
             !wire.sandboxed ? "HOT_FORK authority sandbox unavailable" :

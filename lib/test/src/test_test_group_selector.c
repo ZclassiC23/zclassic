@@ -290,6 +290,11 @@ static int test_process_sensitive_groups_are_catalog_exclusive(void)
             "test_command_registry_latency"));
         ASSERT(zcl_test_group_requires_exclusive_run(
             "test_command_registry_latency"));
+        /* This compares forced-pool and serial routing back-to-back. The
+         * worker pool must not introduce a different producer population
+         * between those two measurements. */
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_validate_parallel_determinism"));
         /* The clean-vs-injected growth detector is a host-latency contract;
          * parallel CPU/disk contention can invert its positive control. */
         ASSERT(zcl_test_group_requires_exclusive_run(
