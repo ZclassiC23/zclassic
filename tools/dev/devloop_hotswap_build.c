@@ -1658,6 +1658,27 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "generation=gen-lower64,legacy-lower64,uppercase-reject\n"
             "failure-id=lower64,uppercase-reject,short-reject\n%s\n",
             def->story_id);
+    } else if (strcmp(def->story_id,
+                      "curve25519-rfc7748-calculation.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "rfc7748=alice-public,alice-bob-shared-secret\n"
+            "inputs=caller-owned,unchanged\n"
+            "cleanup=module-local-cleanse-observed\n"
+            "authority=pure-calculation,no-wallet,no-keys-from-host,no-rng,no-filesystem,no-network\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
+                      "package-policy-boundary-calculation.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "tiers=names,limits,score-before-ratio\n"
+            "ratio=zero-divisor,ordinary,saturating\n"
+            "week=pre-epoch,epoch,monday\n"
+            "boundaries=publish,download,concurrency,pin,announce,request-burst\n"
+            "verifier=self,score,approval,allow\n"
+            "names=no-credit,offence,unknown\n"
+            "authority=pure-calculation,caller-owned-facts,no-clock,no-filesystem,no-network\n%s\n",
+            def->story_id);
     } else {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1674,6 +1695,135 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "curve25519-rfc7748-calculation.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include <stddef.h>\n"
+            "#include <stdio.h>\n"
+            "static unsigned hf_cleanse_calls;\n"
+            "void memory_cleanse(void *ptr,size_t len) {"
+            " volatile unsigned char *p=ptr; while(len--) *p++=0; hf_cleanse_calls++; }\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) { return false; } memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " static const uint8_t alice[32]={"
+            "0x77,0x07,0x6d,0x0a,0x73,0x18,0xa5,0x7d,0x3c,0x16,0xc1,0x72,0x51,0xb2,0x66,0x45,"
+            "0xdf,0x4c,0x2f,0x87,0xeb,0xc0,0x99,0x2a,0xb1,0x77,0xfb,0xa5,0x1d,0xb9,0x2c,0x2a};"
+            " static const uint8_t bob[32]={"
+            "0x5d,0xab,0x08,0x7e,0x62,0x4a,0x8a,0x4b,0x79,0xe1,0x7f,0x8b,0x83,0x80,0x0e,0xe6,"
+            "0x6f,0x3b,0xb1,0x29,0x26,0x18,0xb6,0xfd,0x1c,0x2f,0x8b,0x27,0xff,0x88,0xe0,0xeb};"
+            " static const uint8_t alice_public[32]={"
+            "0x85,0x20,0xf0,0x09,0x89,0x30,0xa7,0x54,0x74,0x8b,0x7d,0xdc,0xb4,0x3e,0xf7,0x5a,"
+            "0x0d,0xbf,0x3a,0x0d,0x26,0x38,0x1a,0xf4,0xeb,0xa4,0xa9,0x8e,0xaa,0x9b,0x4e,0x6a};"
+            " static const uint8_t shared_expected[32]={"
+            "0x4a,0x5d,0x9d,0x5b,0xa4,0xce,0x2d,0xe1,0x72,0x8e,0x3b,0xf4,0x80,0x35,0x0f,0x25,"
+            "0xe0,0x7e,0x21,0xc9,0x47,0xd1,0x9e,0x33,0x76,0xf0,0x9b,0x3c,0x1e,0x16,0x17,0x42};"
+            " uint8_t a_before[32],b_before[32],ap[32],bp[32],ab[32],ba[32];"
+            " memcpy(a_before,alice,32); memcpy(b_before,bob,32); hf_cleanse_calls=0;\n"
+            " HF_CHECK(curve25519_scalarmult_base(ap,alice) && memcmp(ap,alice_public,32)==0);"
+            " bool dh=curve25519_scalarmult_base(bp,bob)"
+            " && curve25519_scalarmult(ab,alice,bp)"
+            " && curve25519_scalarmult(ba,bob,ap);"
+            " HF_CHECK(dh && memcmp(ab,ba,32)==0 && memcmp(ab,shared_expected,32)==0);"
+            " HF_CHECK(memcmp(alice,a_before,32)==0 && memcmp(bob,b_before,32)==0);"
+            " HF_CHECK(hf_cleanse_calls==32);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==4 && out->checks_passed==4; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "package-policy-boundary-calculation.v1") == 0) {
+        int prefix = snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include <stdio.h>\n"
+            "#include <string.h>\n"
+            "#include \"%s\"\n"
+            "static bool hf_dec(bool allow,const char *rule,struct vcs_policy_decision d) {"
+            " return d.allow==allow && (allow ? d.rule==NULL : d.rule && strcmp(d.rule,rule)==0); }\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) { return false; } memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " const struct vcs_policy_limits *n=vcs_policy_limits_for(VCS_POLICY_TIER_NEW_USER);"
+            " const struct vcs_policy_limits *c=vcs_policy_limits_for(VCS_POLICY_TIER_EARNED_CONTRIBUTOR);"
+            " const struct vcs_policy_limits *s=vcs_policy_limits_for(VCS_POLICY_TIER_VERIFIED_SEEDER);\n"
+            " HF_CHECK(strcmp(vcs_policy_tier_string(VCS_POLICY_TIER_NEW_USER),\"new-user\")==0"
+            " && strcmp(vcs_policy_tier_string(VCS_POLICY_TIER_EARNED_CONTRIBUTOR),\"earned-contributor\")==0"
+            " && strcmp(vcs_policy_tier_string(VCS_POLICY_TIER_VERIFIED_SEEDER),\"verified-seeder\")==0"
+            " && strcmp(vcs_policy_tier_string(VCS_POLICY_TIER_COUNT),\"unknown\")==0);"
+            " HF_CHECK(n->publish_per_week==1 && n->request_burst_per_window==512"
+            " && c->request_burst_per_window==1024 && s->request_burst_per_window==2048"
+            " && vcs_policy_limits_for(VCS_POLICY_TIER_COUNT)==n);"
+            " HF_CHECK(vcs_policy_ratio_milli(7,0)==7000"
+            " && vcs_policy_ratio_milli(5,2)==2500"
+            " && vcs_policy_ratio_milli(UINT64_MAX,1)==UINT64_MAX);"
+            " HF_CHECK(vcs_policy_tier_for(0,UINT64_MAX,1)==VCS_POLICY_TIER_NEW_USER"
+            " && vcs_policy_tier_for(100,0,0)==VCS_POLICY_TIER_EARNED_CONTRIBUTOR"
+            " && vcs_policy_tier_for(500,UINT64_C(256)*1024*1024,UINT64_C(256)*1024*1024)"
+            " ==VCS_POLICY_TIER_VERIFIED_SEEDER);"
+            " HF_CHECK(vcs_policy_week_start(-1)==-3 && vcs_policy_week_start(0)==-3"
+            " && vcs_policy_week_start(4)==4);\n",
+            source_path);
+        if (prefix <= 0 || prefix >= (int)out_size)
+            return prefix;
+        int suffix = snprintf(out + prefix, out_size - (size_t)prefix,
+            " HF_CHECK(hf_dec(true,NULL,vcs_policy_check_publish(VCS_POLICY_TIER_NEW_USER,0))"
+            " && hf_dec(false,VCS_POLICY_RULE_PUBLISH_FREQUENCY,"
+            "vcs_policy_check_publish(VCS_POLICY_TIER_NEW_USER,1)));"
+            " HF_CHECK(hf_dec(true,NULL,vcs_policy_check_download(VCS_POLICY_TIER_NEW_USER,"
+            "VCS_POLICY_FREE_WEEKLY_DOWNLOAD_BYTES-1,1))"
+            " && hf_dec(false,VCS_POLICY_RULE_DOWNLOAD_ALLOWANCE,"
+            "vcs_policy_check_download(VCS_POLICY_TIER_NEW_USER,VCS_POLICY_FREE_WEEKLY_DOWNLOAD_BYTES-1,2)));"
+            " HF_CHECK(hf_dec(true,NULL,vcs_policy_check_concurrent_downloads(VCS_POLICY_TIER_NEW_USER,0))"
+            " && hf_dec(false,VCS_POLICY_RULE_CONCURRENT_DOWNLOADS,"
+            "vcs_policy_check_concurrent_downloads(VCS_POLICY_TIER_NEW_USER,1)));"
+            " HF_CHECK(hf_dec(false,VCS_POLICY_RULE_PIN_ALLOWANCE,"
+            "vcs_policy_check_pin(VCS_POLICY_TIER_NEW_USER,0,0))"
+            " && hf_dec(true,NULL,vcs_policy_check_pin(VCS_POLICY_TIER_EARNED_CONTRIBUTOR,0,1)));"
+            " HF_CHECK(hf_dec(true,NULL,vcs_policy_check_announce(VCS_POLICY_TIER_NEW_USER,3))"
+            " && hf_dec(false,VCS_POLICY_RULE_ANNOUNCE_RATE,"
+            "vcs_policy_check_announce(VCS_POLICY_TIER_NEW_USER,4)));"
+            " HF_CHECK(hf_dec(true,NULL,vcs_policy_check_request_burst(VCS_POLICY_TIER_NEW_USER,511))"
+            " && hf_dec(false,VCS_POLICY_RULE_REQUEST_BURST,"
+            "vcs_policy_check_request_burst(VCS_POLICY_TIER_NEW_USER,512))"
+            " && hf_dec(true,NULL,vcs_policy_check_request_burst(VCS_POLICY_TIER_EARNED_CONTRIBUTOR,1023))"
+            " && hf_dec(false,VCS_POLICY_RULE_REQUEST_BURST,"
+            "vcs_policy_check_request_burst(VCS_POLICY_TIER_VERIFIED_SEEDER,2048)));"
+            " HF_CHECK(vcs_policy_queue_priority(VCS_POLICY_TIER_NEW_USER)==0"
+            " && vcs_policy_queue_priority(VCS_POLICY_TIER_EARNED_CONTRIBUTOR)==1"
+            " && vcs_policy_queue_priority(VCS_POLICY_TIER_VERIFIED_SEEDER)==2);"
+            " HF_CHECK(hf_dec(false,VCS_POLICY_RULE_SELF_VERIFICATION,vcs_policy_check_verifier(2000,true,true))"
+            " && hf_dec(false,VCS_POLICY_RULE_VERIFIER_SCORE,vcs_policy_check_verifier(999,true,false))"
+            " && hf_dec(false,VCS_POLICY_RULE_VERIFIER_APPROVED,vcs_policy_check_verifier(1000,false,false))"
+            " && hf_dec(true,NULL,vcs_policy_check_verifier(1000,true,false)));"
+            " static const char *const nc[]={\"announcement-bytes\",\"unverified-bytes\","
+            "\"duplicate-request-replay\",\"unrequested-bytes\",\"invalid-chunk\",\"incomplete-staging\"};"
+            " bool names=true; for(int i=0;i<VCS_POLICY_NO_CREDIT_COUNT;i++)"
+            " names=names && strcmp(vcs_policy_no_credit_string((enum vcs_policy_no_credit)i),nc[i])==0;"
+            " HF_CHECK(names && strcmp(vcs_policy_no_credit_string(VCS_POLICY_NO_CREDIT_COUNT),\"unknown\")==0);"
+            " static const char *const off[]={\"duplicate-request\",\"unrequested-bytes\","
+            "\"invalid-chunk\",\"announce-flood\",\"request-flood\"};"
+            " names=true; for(int i=0;i<VCS_POLICY_OFFENCE_COUNT;i++)"
+            " names=names && strcmp(vcs_policy_offence_string((enum vcs_policy_offence)i),off[i])==0;"
+            " HF_CHECK(names && strcmp(vcs_policy_offence_string(VCS_POLICY_OFFENCE_COUNT),\"unknown\")==0);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==15 && out->checks_passed==15; }\n",
+            def->exercised_surface);
+        return suffix < 0 ? suffix : prefix + suffix;
+    }
     if (strcmp(def->story_id,
                "command-registry-input-validation-core.v1") == 0) {
         return snprintf(out, out_size,

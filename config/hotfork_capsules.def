@@ -216,6 +216,28 @@ HOTFORK_CAPSULE(
     "zcl_command_registry_input_validate+zcl_command_registry_input_str_max+zcl_command_registry_input_budget_bytes")
 
 HOTFORK_CAPSULE(
+    "crypto.curve25519-calculation.v1",
+    "HOT_FORK",
+    "lib/crypto/src/curve25519.c",
+    "curve25519-rfc7748-calculation.v1",
+    "curve25519-rfc7748-calculation.v1",
+    "curve25519-rfc7748-calculation.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "curve25519_scalarmult+curve25519_scalarmult_base")
+
+HOTFORK_CAPSULE(
+    "vcs.package-policy-calculation.v1",
+    "HOT_FORK",
+    "lib/vcs/src/package_policy.c",
+    "package-policy-boundary-calculation.v1",
+    "package-policy-boundary-calculation.v1",
+    "package-policy-boundary-calculation.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "lib/vcs/src/package_policy.c:all-15-public-functions.v1")
+
+HOTFORK_CAPSULE(
     "zcode.package-view-contract.v1",
     "HOT_FORK",
     "tools/command/native_zcode_package_view_command.c",

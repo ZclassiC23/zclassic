@@ -257,8 +257,28 @@ static void watch_proof_cancel(struct watch_context *ctx)
         return;
     ctx->proof_pending_count = 0;
     watch_proof_reap(ctx);
-    if (ctx->proof_worker_pid > 1)
-        (void)kill(ctx->proof_worker_pid, SIGTERM);
+    if (ctx->proof_worker_pid <= 1)
+        return;
+
+    /* Cancellation is a priority boundary, not a best-effort notification.
+     * The worker's handler immediately signals its exact active child session
+     * through devloop_process. Do not wait here: this function also runs on
+     * the first byte of a newer edit, whose reflex must start immediately. */
+    (void)kill(ctx->proof_worker_pid, SIGTERM);
+}
+
+static void watch_proof_join(struct watch_context *ctx)
+{
+    if (!ctx || ctx->proof_worker_pid <= 1)
+        return;
+    pid_t worker = ctx->proof_worker_pid;
+    int status = 0;
+    pid_t got;
+    do {
+        got = waitpid(worker, &status, 0);
+    } while (got < 0 && errno == EINTR);
+    if (got == worker || (got < 0 && errno == ECHILD))
+        ctx->proof_worker_pid = 0;
 }
 
 static bool watch_proof_start(struct watch_context *ctx, int watcher_lock_fd)
@@ -1414,7 +1434,11 @@ int zcl_devloop_watch_mode(const char *repo_root,
     printf("{\"schema\":\"zcl.dev_watch_heartbeat.v1\","
            "\"status\":\"stopped\",\"pid\":%ld}\n", (long)getpid());
     close(ctx.fd);
+    /* Release singleton ownership after the obsolete proof's active child
+     * session has been signalled. Reaping the already-cancelled worker cannot
+     * delay the next resident reactor from attaching to this checkout. */
     close(lock_fd);
+    watch_proof_join(&ctx);
     ci_merkle_free(ctx.verified_tree);
     return 0;
 }

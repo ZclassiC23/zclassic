@@ -22,6 +22,7 @@
 #include <unistd.h>
 
 static volatile sig_atomic_t g_process_cancel_requested;
+static volatile sig_atomic_t g_process_active_leader;
 static zcl_devloop_process_cancel_poll_fn g_process_cancel_poll;
 static void *g_process_cancel_poll_opaque;
 static pthread_mutex_t g_process_cancel_poll_mu = PTHREAD_MUTEX_INITIALIZER;
@@ -29,7 +30,17 @@ static pthread_mutex_t g_process_cancel_poll_mu = PTHREAD_MUTEX_INITIALIZER;
 void zcl_devloop_process_cancel_request(void)
 {
     g_process_cancel_requested = 1;
+    /* This entry point is called from watcher/proof signal handlers. kill(2)
+     * is async-signal-safe; wake the exact bounded child immediately instead
+     * of waiting for the proof worker's next 5 ms control-loop poll. The
+     * ordinary reap path below still performs the complete session sweep. */
+    sig_atomic_t leader = g_process_active_leader;
+    if (leader > 1) {
+        (void)kill(-(pid_t)leader, SIGTERM);
+        (void)kill((pid_t)leader, SIGTERM);
+    }
 }
+
 
 void zcl_devloop_process_cancel_clear(void)
 {
@@ -254,6 +265,7 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         }
         _exit(127);
     }
+    g_process_active_leader = (sig_atomic_t)pid;
 
     close(fds[1]);
     close(ready_fds[1]);
@@ -267,6 +279,8 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         (void)kill(pid, SIGKILL);
         (void)waitpid(pid, NULL, 0);
         close(fds[0]);
+        if (g_process_active_leader == (sig_atomic_t)pid)
+            g_process_active_leader = 0;
         fprintf(stderr, "[devloop] process: child session setup failed\n");
         return false;
     }
@@ -279,6 +293,8 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         (void)kill(pid, SIGKILL);
         (void)waitpid(pid, NULL, 0);
         close(fds[0]);
+        if (g_process_active_leader == (sig_atomic_t)pid)
+            g_process_active_leader = 0;
         fprintf(stderr, "[devloop] process: exec boundary failed\n");
         return false;
     }
@@ -315,6 +331,8 @@ static bool process_run_impl(const char *cwd, int exec_fd,
             terminate_child_session(pid, SIGKILL);
             (void)waitpid(pid, &status, 0);
             close(fds[0]);
+            if (g_process_active_leader == (sig_atomic_t)pid)
+                g_process_active_leader = 0;
             return false;
         }
         bool cancelled = g_process_cancel_requested != 0;
@@ -351,6 +369,8 @@ static bool process_run_impl(const char *cwd, int exec_fd,
     if (out->first_output_us == 0 && out->output_len > output_before)
         out->first_output_us = platform_time_monotonic_us() - started_us;
     close(fds[0]);
+    if (g_process_active_leader == (sig_atomic_t)pid)
+        g_process_active_leader = 0;
 
     if (WIFEXITED(status))
         out->exit_code = WEXITSTATUS(status);

@@ -50,6 +50,18 @@ elif [[ "$OWNER_KIND" == native-dev ]]; then
     STORY='native-dev-input-and-interrupt-policy.v1'
     MUTANT_OLD='strstr(path, "..")'
     MUTANT_NEW='strstr(path, "__never__")'
+elif [[ "$OWNER_KIND" == curve25519 ]]; then
+    SOURCE="$ROOT/lib/crypto/src/curve25519.c"
+    OUTPUT="${ZCL_REFLEX_CURVE25519_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-curve25519-acceptance.json}"
+    STORY='curve25519-rfc7748-calculation.v1'
+    MUTANT_OLD='c * (1LL << 16)'
+    MUTANT_NEW='c * (1LL << 15)'
+elif [[ "$OWNER_KIND" == package-policy ]]; then
+    SOURCE="$ROOT/lib/vcs/src/package_policy.c"
+    OUTPUT="${ZCL_REFLEX_PACKAGE_POLICY_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-package-policy-acceptance.json}"
+    STORY='package-policy-boundary-calculation.v1'
+    MUTANT_OLD='VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW,'
+    MUTANT_NEW='VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW - 1u,'
 fi
 
 fail() { printf 'reflex-hotfork-watch-core-acceptance: %s\n' "$*" >&2; exit 2; }
