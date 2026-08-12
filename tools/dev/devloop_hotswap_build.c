@@ -1578,6 +1578,15 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=caller-owned-input,pure-normalization,no-files,no-db,no-cas,no-process\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "devloop-watch-classification-core.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "sources=lowercase-c,header-reject,uppercase-reject,null-reject\n"
+            "epoch=all-c,mixed-reject,empty-reject,null-reject\n"
+            "component=same-owner,mixed-owner,root-path\n"
+            "authority=copied-paths,pure-classification,no-filesystem,no-signals,no-process\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1614,6 +1623,45 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "devloop-watch-classification-core.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#define ZCL_HOTFORK_DEVLOOP_WATCH_CORE 1\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " HF_CHECK(watch_c_source(\"tools/dev/a.c\")"
+            " && !watch_c_source(\"tools/dev/a.h\")"
+            " && !watch_c_source(\"tools/dev/a.C\")"
+            " && !watch_c_source(NULL));"
+            " const char *all_c[]={\"tools/dev/a.c\",\"tools/dev/b.c\"};"
+            " const char *mixed[]={\"tools/dev/a.c\",\"tools/dev/b.h\"};"
+            " HF_CHECK(watch_epoch_all_c(all_c,2)"
+            " && !watch_epoch_all_c(mixed,2)"
+            " && !watch_epoch_all_c(NULL,2)"
+            " && !watch_epoch_all_c(all_c,0));"
+            " char component[128]; watch_component_for_files(all_c,2,component);"
+            " HF_CHECK(strcmp(component,\"tools/dev\")==0);"
+            " const char *owners[]={\"tools/dev/a.c\",\"lib/vcs/a.c\"};"
+            " watch_component_for_files(owners,2,component);"
+            " bool mixed_ok=strcmp(component,\"mixed\")==0;"
+            " const char *root[]={\"Makefile\"};"
+            " watch_component_for_files(root,1,component);"
+            " HF_CHECK(mixed_ok && strcmp(component,\"Makefile\")==0);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==4 && out->checks_passed==4; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "test-group-catalog-selection-policy.v1") == 0) {
         return snprintf(out, out_size,

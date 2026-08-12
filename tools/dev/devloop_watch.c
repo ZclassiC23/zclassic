@@ -1,6 +1,12 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #define _GNU_SOURCE
+#ifdef ZCL_HOTFORK_DEVLOOP_WATCH_CORE
+#include <stdbool.h>
+#include <stddef.h>
+#include <stdio.h>
+#include <string.h>
+#else
 #include "devloop.h"
 
 #include "base/serialize_le.h"
@@ -25,6 +31,49 @@
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
+
+#if defined(ZCL_DEV_BUILD) || defined(ZCL_HOTFORK_DEVLOOP_WATCH_CORE)
+static bool watch_c_source(const char *path)
+{
+    size_t n = path ? strlen(path) : 0;
+    return n > 2 && path[n - 2] == '.' && path[n - 1] == 'c';
+}
+
+static bool watch_epoch_all_c(const char *const *paths, size_t path_count)
+{
+    if (!paths || path_count == 0)
+        return false;
+    for (size_t i = 0; i < path_count; i++)
+        if (!watch_c_source(paths[i]))
+            return false;
+    return true;
+}
+
+static void watch_component_for_files(const char *const *files, size_t count,
+                                      char out[128])
+{
+    out[0] = 0;
+    for (size_t i = 0; i < count; i++) {
+        char component[128];
+        const char *first = strchr(files[i], '/');
+        const char *second = first ? strchr(first + 1, '/') : NULL;
+        size_t len = second ? (size_t)(second - files[i]) : strlen(files[i]);
+        if (len >= sizeof(component))
+            len = sizeof(component) - 1;
+        memcpy(component, files[i], len);
+        component[len] = 0;
+        if (i == 0)
+            (void)snprintf(out, 128, "%s", component);
+        else if (strcmp(out, component) != 0) {
+            (void)snprintf(out, 128, "%s", "mixed");
+            return;
+        }
+    }
+}
+#endif
+
+#ifndef ZCL_HOTFORK_DEVLOOP_WATCH_CORE
 
 #ifdef ZCL_DEV_BUILD
 
@@ -115,22 +164,6 @@ struct watch_context {
 };
 
 static volatile sig_atomic_t g_watch_stop;
-
-static bool watch_c_source(const char *path)
-{
-    size_t n = path ? strlen(path) : 0;
-    return n > 2 && path[n - 2] == '.' && path[n - 1] == 'c';
-}
-
-static bool watch_epoch_all_c(const char *const *paths, size_t path_count)
-{
-    if (!paths || path_count == 0)
-        return false;
-    for (size_t i = 0; i < path_count; i++)
-        if (!watch_c_source(paths[i]))
-            return false;
-    return true;
-}
 
 /* A public service contract header is intentionally outside the live island:
  * changing ABI/schema/wire/KAT bytes invalidates the resident frozen contract.
@@ -352,28 +385,6 @@ static bool watch_previous_blob(struct watch_context *ctx, const char *path,
      * proves a present leaf's digest. */
     blob->previous_known = ctx->snapshot_exact && !ctx->snapshot_raced;
     return true;
-}
-
-static void watch_component_for_files(const char *const *files, size_t count,
-                                      char out[128])
-{
-    out[0] = 0;
-    for (size_t i = 0; i < count; i++) {
-        char component[128];
-        const char *first = strchr(files[i], '/');
-        const char *second = first ? strchr(first + 1, '/') : NULL;
-        size_t len = second ? (size_t)(second - files[i]) : strlen(files[i]);
-        if (len >= sizeof(component))
-            len = sizeof(component) - 1;
-        memcpy(component, files[i], len);
-        component[len] = 0;
-        if (i == 0)
-            (void)snprintf(out, 128, "%s", component);
-        else if (strcmp(out, component) != 0) {
-            (void)snprintf(out, 128, "%s", "mixed");
-            return;
-        }
-    }
 }
 
 static bool watch_build_edit_epoch(struct watch_context *ctx,
@@ -1431,4 +1442,5 @@ int zcl_devloop_watch(const char *repo_root)
                                   zcl_devloop_default_watch_publish_mode());
 }
 
+#endif
 #endif
