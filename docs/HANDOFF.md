@@ -4,6 +4,12 @@
 
 # HANDOFF — current state
 
+This page records only the current state of the maintainer's hosted node. It
+does not define product direction or development priority. Read
+[`../AGENTS.md`](../AGENTS.md) for the durable contract and
+[`work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md) for the current ordered mission,
+then re-derive every live claim below through the node.
+
 The typed status commands are ground truth; this page is a pointer to
 evidence files, never a substitute for re-checking them:
 
