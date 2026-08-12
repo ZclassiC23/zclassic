@@ -6,11 +6,39 @@ set -euo pipefail
 
 ROOT="${ZCL_SOURCE_ROOT:-$(pwd -P)}"
 BIN="${ZCL_DEV_BIN:-$ROOT/build/bin/zclassic23-dev}"
+OWNER_KIND="${ZCL_REFLEX_OWNER_KIND:-watch}"
 SOURCE="$ROOT/tools/dev/devloop_watch.c"
 UNRELATED="$ROOT/app/services/src/market_moderation_service.c"
 OUTPUT="${ZCL_REFLEX_WATCH_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-watch-core-acceptance.json}"
 STORY='devloop-watch-classification-core.v1'
 FORBIDDEN='git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite'
+MUTANT_OLD="path[n - 1] == 'c'"
+MUTANT_NEW="path[n - 1] != 'c'"
+if [[ "$OWNER_KIND" == cycle ]]; then
+    SOURCE="$ROOT/tools/dev/devloop_cycle.c"
+    OUTPUT="${ZCL_REFLEX_CYCLE_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-cycle-core-acceptance.json}"
+    STORY='devloop-cycle-diagnostic-policy.v1'
+    MUTANT_OLD='strcmp(status, "passed") == 0'
+    MUTANT_NEW='strcmp(status, "passed") != 0'
+elif [[ "$OWNER_KIND" == corpus ]]; then
+    SOURCE="$ROOT/tools/command/native_zcode_corpus_command.c"
+    OUTPUT="${ZCL_REFLEX_CORPUS_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-corpus-core-acceptance.json}"
+    STORY='zcode-corpus-command-core.v1'
+    MUTANT_OLD="root[i] >= 'a'"
+    MUTANT_NEW="root[i] > 'a'"
+elif [[ "$OWNER_KIND" == plan ]]; then
+    SOURCE="$ROOT/tools/dev/devloop_plan.c"
+    OUTPUT="${ZCL_REFLEX_PLAN_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-plan-core-acceptance.json}"
+    STORY='devloop-plan-classification.v1'
+    MUTANT_OLD='strcmp(name, "build") == 0'
+    MUTANT_NEW='strcmp(name, "build") != 0'
+elif [[ "$OWNER_KIND" == shop-want ]]; then
+    SOURCE="$ROOT/app/controllers/src/shop_native_want.c"
+    OUTPUT="${ZCL_REFLEX_SHOP_WANT_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-shop-want-core-acceptance.json}"
+    STORY='shop-want-command-input-core.v1'
+    MUTANT_OLD='w->expires_unix <= now_unix'
+    MUTANT_NEW='w->expires_unix < now_unix'
+fi
 
 fail() { printf 'reflex-hotfork-watch-core-acceptance: %s\n' "$*" >&2; exit 2; }
 [[ -x "$BIN" ]] || fail "missing dev binary: $BIN"
@@ -104,9 +132,10 @@ unrelated_raw="$($BIN dev loop wait --input="{\"after_epoch\":$((after-1)),\"tim
 
 mutant="$(mktemp "$ROOT/tools/dev/.reflex-watch-core-red.XXXXXX")"
 cp -p -- "$SOURCE" "$mutant"
-perl -0pi -e "s/path\[n - 1\] == 'c'/path[n - 1] != 'c'/" "$mutant"
-[[ "$(LC_ALL=C grep -c "path\[n - 1\] != 'c'" "$mutant")" -eq 1 ]] ||
-    fail 'compile-valid semantic mutation was not staged'
+MUTANT_OLD="$MUTANT_OLD" MUTANT_NEW="$MUTANT_NEW" perl -0pi -e '
+  my $old = $ENV{MUTANT_OLD}; my $new = $ENV{MUTANT_NEW};
+  my $count = s/\Q$old\E/$new/; die "mutation count=$count\n" unless $count == 1;
+' "$mutant"
 drive_candidate "$mutant" STORY_RED
 red_result="$result"
 
@@ -129,7 +158,7 @@ for raw in "$unrelated_raw" "$revert_raw"; do
 done
 
 mkdir -p "$(dirname "$OUTPUT")"
-jq -n --arg owner 'tools/dev/devloop_watch.c' \
+jq -n --arg owner "${SOURCE#$ROOT/}" \
   --argjson green "$green_result" --argjson red "$red_result" \
   --argjson unrelated "$unrelated_result" --argjson unrelated_raw "$unrelated_raw" \
   --argjson revert "$revert_result" --argjson revert_raw "$revert_raw" '
@@ -160,4 +189,4 @@ jq -n --arg owner 'tools/dev/devloop_watch.c' \
 watcher_id=0
 cp -p -- "$backup" "$SOURCE"
 cp -p -- "$unrelated_backup" "$UNRELATED"
-printf 'reflex-hotfork-watch-core-acceptance: PASS receipt=%s\n' "$OUTPUT"
+printf 'reflex-hotfork-%s-core-acceptance: PASS receipt=%s\n' "$OWNER_KIND" "$OUTPUT"

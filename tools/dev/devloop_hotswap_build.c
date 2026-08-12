@@ -1539,6 +1539,15 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=caller-owned-row,pure-service,no-store,no-clock,no-wallet\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "shop-want-command-input-core.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "hex=lowercase-32,uppercase-reject,length-reject\n"
+            "want=amount,criteria,expiry,nonce,deterministic-signature\n"
+            "reject=expiry-equal-now\n"
+            "authority=caller-owned-json,pure-build-and-sign,no-db,no-filesystem,no-clock,no-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "zcode-package-view-contract.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1578,6 +1587,15 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=caller-owned-input,pure-normalization,no-files,no-db,no-cas,no-process\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "zcode-corpus-command-core.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "root=lowercase-64,uppercase-reject,length-reject\n"
+            "checkpoint=total-loc,overflow-reject,null-reject\n"
+            "shard=counted,durable,excluded,totals,overflow-reject\n"
+            "authority=caller-owned-structs,pure-aggregation,no-storage,no-clock,no-service-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "devloop-watch-classification-core.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1585,6 +1603,26 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "epoch=all-c,mixed-reject,empty-reject,null-reject\n"
             "component=same-owner,mixed-owner,root-path\n"
             "authority=copied-paths,pure-classification,no-filesystem,no-signals,no-process\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
+                      "devloop-cycle-diagnostic-policy.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "diagnostic=first-actionable,transient-reject,compiler-shape\n"
+            "preview=printable,control-sanitize,truncation,bounds-reject\n"
+            "proof=passed-verify-only\n"
+            "publish=verify,apply,invalid,port\n"
+            "watcher=stopped,starting,runtime-starting,current\n"
+            "authority=copied-text-and-enums,pure-policy,no-filesystem,no-process,no-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
+                      "devloop-plan-classification.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "paths=safe,traversal,absolute,control,docs,sealed,relevant,temp\n"
+            "watch=mutation,attribute,ignored,source-dir\n"
+            "dimensions=names,status-names\n"
+            "authority=copied-paths-and-masks,pure-classification,no-index,no-filesystem,no-process\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
@@ -1623,6 +1661,206 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "shop-want-command-input-core.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"hotswap/hotswap_service.h\"\n"
+            "#define zcl_hotswap_service_acquire(...) NULL\n"
+            "#define zcl_hotswap_service_release(...) ((void)0)\n"
+            "#include \"%s\"\n"
+            "#undef zcl_hotswap_service_release\n"
+            "#undef zcl_hotswap_service_acquire\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " uint8_t decoded[32];"
+            " const char *secret=\"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\";"
+            " HF_CHECK(shw_hex32(secret,decoded) && decoded[0]==0xa1"
+            " && !shw_hex32(\"A1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1\",decoded)"
+            " && !shw_hex32(\"a1\",decoded));"
+            " struct json_value input; json_init(&input); json_set_object(&input);"
+            " json_push_kv_str(&input,\"buyer_secret\",secret);"
+            " json_push_kv_int(&input,\"amount_zatoshi\",500000);"
+            " json_push_kv_str(&input,\"criteria\",\"sha3-verified result\");"
+            " json_push_kv_int(&input,\"expires_unix\",1780086400);"
+            " json_push_kv_int(&input,\"nonce\",42);"
+            " struct zcl_command_request request={.input=&input};"
+            " struct zcl_command_reply reply; zcl_command_reply_init(&reply,\"zcl.test.v1\");"
+            " struct shop_want row; bool built=shw_build_want(&request,1780000000,&row,&reply);"
+            " HF_CHECK(built && row.want.amount_zatoshi==500000"
+            " && row.want.criteria_len==20 && row.want.nonce==42"
+            " && row.want.issued_unix==1780000000 && row.want.expires_unix==1780086400"
+            " && shop_want_verify(&row.want)==SHOP_WANT_OK);"
+            " zcl_command_reply_free(&reply); json_free(&input);"
+            " json_init(&input); json_set_object(&input);"
+            " json_push_kv_str(&input,\"buyer_secret\",secret);"
+            " json_push_kv_int(&input,\"amount_zatoshi\",1);"
+            " json_push_kv_str(&input,\"criteria\",\"x\");"
+            " json_push_kv_int(&input,\"expires_unix\",1780000000);"
+            " request.input=&input; zcl_command_reply_init(&reply,\"zcl.test.v1\");"
+            " HF_CHECK(!shw_build_want(&request,1780000000,&row,&reply)"
+            " && strcmp(reply.error.code,\"WANT_ALREADY_EXPIRED\")==0);"
+            " zcl_command_reply_free(&reply); json_free(&input);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==3 && out->checks_passed==3; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "devloop-plan-classification.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " HF_CHECK(path_is_safe(\"tools/dev/a.c\")"
+            " && !path_is_safe(\"../a.c\") && !path_is_safe(\"/a.c\")"
+            " && !path_is_safe(\"a\\\\b.c\") && !path_is_safe(NULL));"
+            " HF_CHECK(path_is_docs(\"docs/a.md\") && path_is_docs(\"README.md\")"
+            " && !path_is_docs(\"lib/a.c\")"
+            " && zcl_devloop_path_is_sealed_core(\"core/math/a.c\")"
+            " && !zcl_devloop_path_is_sealed_core(\"lib/a.c\"));"
+            " HF_CHECK(zcl_devloop_path_is_relevant(\"lib/a.c\")"
+            " && zcl_devloop_path_is_relevant(\"Makefile\")"
+            " && !zcl_devloop_path_is_relevant(\"build/a.c\")"
+            " && !zcl_devloop_path_is_relevant(\"lib/a.c~\")"
+            " && !zcl_devloop_path_is_relevant(\"lib/_x_fixture.c\"));"
+            " HF_CHECK(zcl_devloop_watch_event_is_mutation(IN_CLOSE_WRITE)"
+            " && zcl_devloop_watch_event_is_mutation(IN_DELETE)"
+            " && !zcl_devloop_watch_event_is_mutation(IN_ATTRIB));"
+            " HF_CHECK(zcl_devloop_watch_dir_is_ignored(\"build\")"
+            " && zcl_devloop_watch_dir_is_ignored(\".cache\")"
+            " && !zcl_devloop_watch_dir_is_ignored(\"lib\"));"
+            " HF_CHECK(strcmp(zcl_devloop_dim_name(ZCL_DEVLOOP_DIM_OPAQUE),\"opaque\")==0"
+            " && strcmp(zcl_devloop_dim_name(ZCL_DEVLOOP_DIM_SEMANTIC),\"semantic\")==0"
+            " && strcmp(zcl_devloop_dim_status_name(ZCL_DEVLOOP_DIM_COMPLETE),\"complete\")==0"
+            " && strcmp(zcl_devloop_dim_status_name(ZCL_DEVLOOP_DIM_UNAVAILABLE),\"unavailable\")==0);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==6 && out->checks_passed==6; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "zcode-corpus-command-core.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"hotswap/hotswap_service.h\"\n"
+            "#define zcl_hotswap_service_acquire(...) NULL\n"
+            "#define zcl_hotswap_service_release(...) ((void)0)\n"
+            "#define zcl_hotswap_service_generation(...) 0\n"
+            "#include \"%s\"\n"
+            "#undef zcl_hotswap_service_generation\n"
+            "#undef zcl_hotswap_service_release\n"
+            "#undef zcl_hotswap_service_acquire\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " const char *lower=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\";"
+            " const char *upper=\"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdeF\";"
+            " HF_CHECK(lowercase_root(lower) && !lowercase_root(upper)"
+            " && !lowercase_root(\"abcd\") && !lowercase_root(NULL));"
+            " struct vcs_zcode_c23_corpus_checkpoint_v1 checkpoint={0};"
+            " checkpoint.production_loc=7; checkpoint.test_loc=5; uint64_t total=0;"
+            " HF_CHECK(corpus_checkpoint_renderable(&checkpoint,&total) && total==12);"
+            " checkpoint.production_loc=UINT64_MAX; checkpoint.test_loc=1;"
+            " HF_CHECK(!corpus_checkpoint_renderable(&checkpoint,&total)"
+            " && !corpus_checkpoint_renderable(NULL,&total));"
+            " struct vcs_zcode_c23_corpus_entry_v1 entries[2]={{0}};"
+            " entries[0].production_loc=3; entries[0].test_loc=2;"
+            " entries[0].physical_lines=6; entries[0].unique_semantic_units=2;"
+            " entries[0].flags=VCS_ZCODE_C23_ENTRY_COUNTED|VCS_ZCODE_C23_ENTRY_DURABLE;"
+            " entries[1].production_loc=4; entries[1].test_loc=1;"
+            " entries[1].physical_lines=8; entries[1].unique_semantic_units=3;"
+            " struct vcs_zcode_c23_corpus_shard_v1 shard={.entries=entries,.entry_count=2};"
+            " struct corpus_shard_metrics metrics;"
+            " HF_CHECK(corpus_shard_metrics_collect(&shard,&metrics)"
+            " && metrics.counted_entries==1 && metrics.durable_entries==1"
+            " && metrics.excluded_entries==1 && metrics.production_loc==7"
+            " && metrics.test_loc==3 && metrics.total_loc==10"
+            " && metrics.durable_loc==5 && metrics.physical_lines==14"
+            " && metrics.unique_semantic_units==5);"
+            " entries[1].production_loc=UINT64_MAX;"
+            " HF_CHECK(!corpus_shard_metrics_collect(&shard,&metrics)"
+            " && !corpus_shard_metrics_collect(NULL,&metrics));\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==5 && out->checks_passed==5; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "devloop-cycle-diagnostic-policy.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#define ZCL_TESTING 1\n"
+            "#define ZCL_HOTFORK_DEVLOOP_CYCLE_CORE 1\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " const char log[]=\"noise\\na.c:7:2: error: broken\\nFAIL later\\n\"; char first[64];"
+            " HF_CHECK(distill_first_error(log,sizeof(log)-1,first,sizeof(first))"
+            " && strcmp(first,\"a.c:7:2: error: broken\")==0);"
+            " const char good[]=\"a.c:7:2: error: broken\";"
+            " const char transient[]=\"a.c:7:2: error: Killed\";"
+            " HF_CHECK(compiler_error_shape(good,sizeof(good)-1)"
+            " && !compiler_error_shape(transient,sizeof(transient)-1));"
+            " char preview[8]; bool truncated=false;"
+            " HF_CHECK(cycle_text_preview(\"a\\nbcd\",4,preview,sizeof(preview),&truncated)"
+            " && strcmp(preview,\"a?bc\")==0 && truncated"
+            " && !cycle_text_preview(\"x\",8,preview,sizeof(preview),NULL));"
+            " HF_CHECK(zcl_devloop_cycle_proof_complete(\"passed\",\"verify\")"
+            " && !zcl_devloop_cycle_proof_complete(\"passed\",\"compile\")"
+            " && !zcl_devloop_cycle_proof_complete(\"rejected\",\"verify\"));"
+            " HF_CHECK(!zcl_devloop_publish_mode_applies(ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY)"
+            " && zcl_devloop_publish_mode_applies(ZCL_DEVLOOP_PUBLISH_APPLY)"
+            " && strcmp(zcl_devloop_publish_mode_name(ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),\"verify\")==0"
+            " && strcmp(zcl_devloop_publish_mode_name(ZCL_DEVLOOP_PUBLISH_APPLY),\"auto\")==0"
+            " && zcl_devloop_publish_mode_name((enum zcl_devloop_publish_mode)9)==NULL"
+            " && zcl_devloop_publication_target_port_supported(18252)"
+            " && !zcl_devloop_publication_target_port_supported(18232));"
+            " HF_CHECK(strcmp(zcl_devloop_watcher_freshness(false,false,false),\"watcher_not_running\")==0"
+            " && strcmp(zcl_devloop_watcher_freshness(true,false,false),\"watcher_starting\")==0"
+            " && strcmp(zcl_devloop_watcher_freshness(true,true,false),\"runtime_starting\")==0"
+            " && strcmp(zcl_devloop_watcher_freshness(true,true,true),\"current\")==0"
+            " && strcmp(zcl_devloop_watcher_next_action(false,false,false,ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),"
+            "\"zclassic23-dev dev begin\")==0"
+            " && strcmp(zcl_devloop_watcher_next_action(true,true,true,ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),"
+            "\"edit one C23 file\")==0);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==6 && out->checks_passed==6; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "devloop-watch-classification-core.v1") == 0) {
         return snprintf(out, out_size,

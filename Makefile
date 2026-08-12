@@ -2340,7 +2340,7 @@ fast-changed-compile:
 # import unrelated compiler depfiles.
 watcher-safety-gates: check-core-seal check-consensus-parity check-dev-loop-profiles
 
-.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest dev-loop-history-replay dev-loop-history-replay-selftest reflex-reactor-bench reflex-coverage-audit reflex-coverage-audit-selftest reflex-hotfork-transport-acceptance reflex-hotfork-source-bundle-acceptance reflex-hotfork-test-catalog-acceptance reflex-hotfork-shop-want-view-acceptance reflex-hotfork-zcode-package-view-acceptance reflex-hotfork-shop-status-acceptance reflex-hotfork-shop-reputation-acceptance reflex-hotfork-zcode-work-acceptance reflex-hotfork-watch-core-acceptance
+.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest dev-loop-history-replay dev-loop-history-replay-selftest reflex-reactor-bench reflex-coverage-audit reflex-coverage-audit-selftest reflex-hotfork-transport-acceptance reflex-hotfork-source-bundle-acceptance reflex-hotfork-test-catalog-acceptance reflex-hotfork-shop-want-view-acceptance reflex-hotfork-zcode-package-view-acceptance reflex-hotfork-shop-status-acceptance reflex-hotfork-shop-reputation-acceptance reflex-hotfork-zcode-work-acceptance reflex-hotfork-watch-core-acceptance reflex-hotfork-cycle-core-acceptance reflex-hotfork-corpus-core-acceptance reflex-hotfork-plan-core-acceptance reflex-hotfork-shop-want-core-acceptance
 dev-loop-profile-flags:
 	@printf 'DEV_LIVE\t%s\t%s\n' '$(DEV_LIVE_CFLAGS)' '$(HOTSWAP_MODULE_LDFLAGS)'
 	@printf 'DEV_RESTART\t%s\t%s\n' '$(DEV_RESTART_CFLAGS)' '$(DEV_RESTART_LDFLAGS)'
@@ -2403,6 +2403,18 @@ reflex-hotfork-zcode-work-acceptance: dev-bin
 
 reflex-hotfork-watch-core-acceptance: dev-bin
 	@tools/dev/reflex-hotfork-watch-core-acceptance.sh
+
+reflex-hotfork-cycle-core-acceptance: dev-bin
+	@ZCL_REFLEX_OWNER_KIND=cycle tools/dev/reflex-hotfork-watch-core-acceptance.sh
+
+reflex-hotfork-corpus-core-acceptance: dev-bin
+	@ZCL_REFLEX_OWNER_KIND=corpus tools/dev/reflex-hotfork-watch-core-acceptance.sh
+
+reflex-hotfork-plan-core-acceptance: dev-bin
+	@ZCL_REFLEX_OWNER_KIND=plan tools/dev/reflex-hotfork-watch-core-acceptance.sh
+
+reflex-hotfork-shop-want-core-acceptance: dev-bin
+	@ZCL_REFLEX_OWNER_KIND=shop-want tools/dev/reflex-hotfork-watch-core-acceptance.sh
 
 dev-linker-shootout:
 	@tools/dev/dev-linker-shootout.sh run

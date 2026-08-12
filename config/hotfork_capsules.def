@@ -51,6 +51,28 @@ HOTFORK_CAPSULE(
     "watch_c_source+watch_epoch_all_c+watch_component_for_files")
 
 HOTFORK_CAPSULE(
+    "dev.cycle-diagnostic-policy.v1",
+    "HOT_FORK",
+    "tools/dev/devloop_cycle.c",
+    "devloop-cycle-diagnostic-policy.v1",
+    "devloop-cycle-diagnostic-policy.v1",
+    "devloop-cycle-diagnostic-policy.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "distill_first_error+compiler_error_shape+cycle_text_preview+proof_complete+publish_mode+watcher_guidance")
+
+HOTFORK_CAPSULE(
+    "dev.impact-plan-classification.v1",
+    "HOT_FORK",
+    "tools/dev/devloop_plan.c",
+    "devloop-plan-classification.v1",
+    "devloop-plan-classification.v1",
+    "devloop-plan-classification.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "path_is_safe+path_classification+watch_event_classification+dimension_names")
+
+HOTFORK_CAPSULE(
     "vcs.devloop-proof-envelope.v1",
     "HOT_FORK",
     "lib/vcs/src/vcs_devloop.c",
@@ -172,6 +194,17 @@ HOTFORK_CAPSULE(
     "want_view_render+want_view_json+want_view_frozen_kat")
 
 HOTFORK_CAPSULE(
+    "shop.want-command-input-core.v1",
+    "HOT_FORK",
+    "app/controllers/src/shop_native_want.c",
+    "shop-want-command-input-core.v1",
+    "shop-want-command-input-core.v1",
+    "shop-want-command-input-core.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "shw_hex32+shw_build_want")
+
+HOTFORK_CAPSULE(
     "zcode.package-view-contract.v1",
     "HOT_FORK",
     "tools/command/native_zcode_package_view_command.c",
@@ -214,3 +247,14 @@ HOTFORK_CAPSULE(
     1000,
     "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
     "zwork_str+zwork_int+zwork_scope_add+zwork_scopes+zwork_source_bytes")
+
+HOTFORK_CAPSULE(
+    "zcode.corpus-command-core.v1",
+    "HOT_FORK",
+    "tools/command/native_zcode_corpus_command.c",
+    "zcode-corpus-command-core.v1",
+    "zcode-corpus-command-core.v1",
+    "zcode-corpus-command-core.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "lowercase_root+corpus_checkpoint_renderable+corpus_shard_metrics_collect")
