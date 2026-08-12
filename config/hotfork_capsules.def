@@ -45,3 +45,9 @@ HOTFORK_CAPSULE(
     "tools/command/native_zcode_dev_command.c",
     "zcode-dev-input-policy.v1",
     "zdev_str+zdev_int+zdev_root+zdev_push_root+zdev_hex_wire+zdev_paths_overlap+zdev_candidate_input_path")
+
+HOTFORK_CAPSULE(
+    "zcode.epoch-propose-input-policy.v1",
+    "tools/command/native_zcode_epoch_propose_command.c",
+    "zcode-epoch-propose-input-policy.v1",
+    "zep_str+zep_keys+zep_root+zep_u64_positive+zep_parse_propose")

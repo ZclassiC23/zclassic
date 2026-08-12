@@ -1422,6 +1422,16 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=validation-only,no-ledger,no-rpc,no-cas-write\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "zcode-epoch-propose-input-policy.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "json=string-present,string-missing,closed-key-set\n"
+            "roots=lowercase-decode,uppercase-reject,missing-reject\n"
+            "epoch=positive,zero-reject,negative-reject\n"
+            "proposal=exact-valid,unknown-key-reject,nonscratch-reject\n"
+            "authority=validation-only,no-projection,no-cas-write\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1619,6 +1629,71 @@ static int hs_hotfork_unity_source(
             " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
             " out->checks_passed,out->checks_run);"
             " return out->checks_run==16 && out->checks_passed==16; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "zcode-epoch-propose-input-policy.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#define zcl_native_zcode_workspace_is_explicit_scratch hotfork_workspace_is_scratch\n"
+            "#include \"%s\"\n"
+            "#undef zcl_native_zcode_workspace_is_explicit_scratch\n"
+            "bool hotfork_workspace_is_scratch(const char *path) {"
+            " return path && strcmp(path,\"/tmp/zcl-hotfork-scratch\")==0; }\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " static const char *const allowed[]={\"workspace\",\"epoch\",\"previous_proposal_root\"};"
+            " char lower[65],upper[65]; memset(lower,'a',64); lower[64]=0;"
+            " memset(upper,'A',64); upper[64]=0;"
+            " char valid[256]; snprintf(valid,sizeof(valid),"
+            " \"{\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\",\\\"epoch\\\":7,\\\"previous_proposal_root\\\":\\\"%%s\\\"}\",lower);"
+            " struct json_value doc; json_init(&doc);"
+            " bool parsed=json_read(&doc,valid,strlen(valid));"
+            " HF_CHECK(parsed && strcmp(zep_str(&doc,\"workspace\"),\"/tmp/zcl-hotfork-scratch\")==0);"
+            " HF_CHECK(parsed && zep_str(&doc,\"missing\")==NULL);"
+            " HF_CHECK(parsed && zep_keys(&doc,allowed,3));"
+            " uint8_t root[32]; HF_CHECK(parsed && zep_root(&doc,\"previous_proposal_root\",root) && root[0]==0xaa && root[31]==0xaa);"
+            " uint64_t epoch=0; HF_CHECK(parsed && zep_u64_positive(&doc,\"epoch\",&epoch) && epoch==7);"
+            " struct zcl_command_request request={.input=&doc}; struct zcl_command_reply reply;"
+            " struct vcs_zcode_epoch_schedule_input input; uint8_t previous[32];"
+            " zcl_command_reply_init(&reply,\"zcl.hotfork.zep.v1\");"
+            " HF_CHECK(zep_parse_propose(&request,&reply,&input,previous) && input.epoch==7"
+            " && strcmp(input.workspace,\"/tmp/zcl-hotfork-scratch\")==0 && previous[0]==0xaa);"
+            " zcl_command_reply_free(&reply); json_free(&doc);\n"
+            " char candidate[320]; snprintf(candidate,sizeof(candidate),"
+            " \"{\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\",\\\"epoch\\\":7,\\\"previous_proposal_root\\\":\\\"%%s\\\"}\",upper);"
+            " json_init(&doc); parsed=json_read(&doc,candidate,strlen(candidate));"
+            " HF_CHECK(parsed && !zep_root(&doc,\"previous_proposal_root\",root)); json_free(&doc);\n"
+            " snprintf(candidate,sizeof(candidate),"
+            " \"{\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\",\\\"epoch\\\":0,\\\"previous_proposal_root\\\":\\\"%%s\\\"}\",lower);"
+            " json_init(&doc); parsed=json_read(&doc,candidate,strlen(candidate));"
+            " zcl_command_reply_init(&reply,\"zcl.hotfork.zep.v1\"); request.input=&doc;"
+            " HF_CHECK(parsed && !zep_parse_propose(&request,&reply,&input,previous));"
+            " zcl_command_reply_free(&reply); json_free(&doc);\n"
+            " snprintf(candidate,sizeof(candidate),"
+            " \"{\\\"workspace\\\":\\\"/tmp/zcl-hotfork-scratch\\\",\\\"epoch\\\":7,\\\"previous_proposal_root\\\":\\\"%%s\\\",\\\"extra\\\":true}\",lower);"
+            " json_init(&doc); parsed=json_read(&doc,candidate,strlen(candidate));"
+            " zcl_command_reply_init(&reply,\"zcl.hotfork.zep.v1\"); request.input=&doc;"
+            " HF_CHECK(parsed && !zep_parse_propose(&request,&reply,&input,previous));"
+            " zcl_command_reply_free(&reply); json_free(&doc);\n"
+            " snprintf(candidate,sizeof(candidate),"
+            " \"{\\\"workspace\\\":\\\"/srv/zcode\\\",\\\"epoch\\\":7,\\\"previous_proposal_root\\\":\\\"%%s\\\"}\",lower);"
+            " json_init(&doc); parsed=json_read(&doc,candidate,strlen(candidate));"
+            " zcl_command_reply_init(&reply,\"zcl.hotfork.zep.v1\"); request.input=&doc;"
+            " HF_CHECK(parsed && !zep_parse_propose(&request,&reply,&input,previous));"
+            " zcl_command_reply_free(&reply); json_free(&doc);\n"
+            " json_init(&doc); json_set_array(&doc); HF_CHECK(!zep_keys(&doc,allowed,3)); json_free(&doc);"
+            " json_init(&doc); json_set_object(&doc); HF_CHECK(!zep_root(&doc,\"missing\",root));"
+            " json_push_kv_int(&doc,\"epoch\",-1); HF_CHECK(!zep_u64_positive(&doc,\"epoch\",&epoch)); json_free(&doc);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==13 && out->checks_passed==13; }\n",
             source_path, def->exercised_surface);
     }
     if (strcmp(def->story_id,

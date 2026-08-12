@@ -3361,6 +3361,17 @@ static int test_hotfork_descriptor_boundary(void)
             "9628ecb3dda66dc1e4cbb61c95c2a8d4a69b5aee132949a446710c7b3a264526";
         ASSERT(zcl_devloop_hotfork_descriptor_validate(
             capsule.source_tu, object_root, &capsule));
+
+        capsule.owner_id = "zcode.epoch-propose-input-policy.v1";
+        capsule.source_tu =
+            "tools/command/native_zcode_epoch_propose_command.c";
+        capsule.story_id = "zcode-epoch-propose-input-policy.v1";
+        capsule.story_root =
+            "77f10f21b24ddf88b3b29129ac21b700342b640c65ebf85aebfd61783cbcabb2";
+        capsule.story_fixture_root =
+            "0fa5413c5a1995a9218b25e09fb199df5097e6d74579aec86755423913c85e5e";
+        ASSERT(zcl_devloop_hotfork_descriptor_validate(
+            capsule.source_tu, object_root, &capsule));
         PASS();
     } _test_next:;
     return failures;
