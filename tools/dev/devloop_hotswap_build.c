@@ -1412,6 +1412,16 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=validation-only,no-projection,no-service-lease\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "zcode-dev-input-policy.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "json=string-present,string-missing,int-present,int-fallback\n"
+            "roots=lowercase-decode,canonical-render,uppercase-reject\n"
+            "wire=even-decode,odd-reject,bound-reject\n"
+            "paths=equal,parent,child,sibling;candidate=canonical,traversal-reject\n"
+            "authority=validation-only,no-ledger,no-rpc,no-cas-write\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "native-dev-hotswap-receipt-policy.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1561,6 +1571,54 @@ static int hs_hotfork_unity_source(
             " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
             " out->checks_passed,out->checks_run);"
             " return out->checks_run==10 && out->checks_passed==10; }\n",
+            source_path, def->exercised_surface);
+    }
+    if (strcmp(def->story_id,
+               "zcode-dev-input-policy.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC;\n"
+            " #define HF_CHECK(x) do { out->checks_run++; if (x) out->checks_passed++; } while(0)\n"
+            " struct json_value doc,rendered; json_init(&doc); json_set_object(&doc);"
+            " json_push_kv_str(&doc,\"name\",\"alice\"); json_push_kv_int(&doc,\"count\",7);"
+            " HF_CHECK(strcmp(zdev_str(&doc,\"name\"),\"alice\")==0);"
+            " HF_CHECK(zdev_str(&doc,\"missing\")==NULL);"
+            " HF_CHECK(zdev_int(&doc,\"count\",3)==7);"
+            " HF_CHECK(zdev_int(&doc,\"missing\",3)==3);\n"
+            " char lower[65],upper[65]; memset(lower,'a',64); lower[64]=0;"
+            " memset(upper,'A',64); upper[64]=0; json_push_kv_str(&doc,\"root\",lower);"
+            " uint8_t root[32]; struct zcl_command_reply reply;"
+            " zcl_command_reply_init(&reply,\"zcl.hotfork.zdev.v1\");"
+            " HF_CHECK(zdev_root(&doc,\"root\",root,&reply));"
+            " json_init(&rendered); json_set_object(&rendered); zdev_push_root(&rendered,\"root\",root);"
+            " HF_CHECK(strcmp(json_get_str(json_get(&rendered,\"root\")),lower)==0);"
+            " json_free(&rendered); json_push_kv_str(&doc,\"upper\",upper);"
+            " HF_CHECK(!zdev_root(&doc,\"upper\",root,&reply));"
+            " size_t wire_len=0; json_push_kv_str(&doc,\"wire\",\"00ff\");"
+            " uint8_t *wire=zdev_hex_wire(&doc,\"wire\",2,&wire_len);"
+            " HF_CHECK(wire && wire_len==2 && wire[0]==0 && wire[1]==255); free(wire);"
+            " json_push_kv_str(&doc,\"odd\",\"abc\");"
+            " HF_CHECK(zdev_hex_wire(&doc,\"odd\",2,&wire_len)==NULL && wire_len==0);"
+            " HF_CHECK(zdev_hex_wire(&doc,\"wire\",1,&wire_len)==NULL && wire_len==0);\n"
+            " HF_CHECK(zdev_paths_overlap(\"src\",\"src\"));"
+            " HF_CHECK(zdev_paths_overlap(\"src\",\"src/lib/x.c\"));"
+            " HF_CHECK(zdev_paths_overlap(\"src/lib\",\"src\"));"
+            " HF_CHECK(!zdev_paths_overlap(\"src/a\",\"src/b\"));"
+            " char path[VCS_PATH_MAX+1u];"
+            " HF_CHECK(zdev_candidate_input_path(NULL,NULL,\"src/lib/x.c\",path,&reply)"
+            " && strcmp(path,\"src/lib/x.c\")==0);"
+            " HF_CHECK(!zdev_candidate_input_path(NULL,NULL,\"src/../x.c\",path,&reply));"
+            " zcl_command_reply_free(&reply); json_free(&doc);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),\"checks=%%u/%%u\","
+            " out->checks_passed,out->checks_run);"
+            " return out->checks_run==16 && out->checks_passed==16; }\n",
             source_path, def->exercised_surface);
     }
     if (strcmp(def->story_id,
