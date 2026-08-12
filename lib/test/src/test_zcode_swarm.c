@@ -1713,6 +1713,46 @@ static int t_swarm_legacy_record(void)
     return failures;
 }
 
+static int t_swarm_event_driven_schedule(void)
+{
+    int failures = 0;
+    struct sw_node n;
+    struct sw_pkg p;
+    uint8_t key[33];
+    sw_key(95, key);
+    const uint64_t peer = 905;
+    if (!sw_node_open(&n, "event_schedule", sw_score_contributor) ||
+        !sw_make_package(&p, 4, 32))
+        return 1;
+    SW_CHECK("event schedule: peer registers",
+             vcs_swarm_engine_peer_add(n.engine, peer, key));
+    sw_announce(n.engine, peer, &p);
+    SW_CHECK("event schedule: fetch registers",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 7,
+                                         &peer, 1) == VCS_SWARM_FETCH_OK);
+    vcs_swarm_engine_schedule_ready(n.engine, SW_DAY, 7);
+    struct vcs_package_swarm_object wants[SW_MAX_FILES];
+    SW_CHECK("event schedule: manifest want needs no clock tick",
+             sw_drain_wants(&n, peer, wants, SW_MAX_FILES) == 1 &&
+             wants[0].object_kind == VCS_PACKAGE_SWARM_OBJECT_MANIFEST);
+    struct vcs_swarm_frame_result res = sw_answer(
+        &n, peer, &wants[0], p.wire, p.wire_len, UINT32_MAX);
+    SW_CHECK("event schedule: manifest accepted",
+             res.penalty == VCS_SWARM_PENALTY_NONE);
+    free(res.reply);
+    vcs_swarm_engine_schedule_ready(n.engine, SW_DAY, 7);
+    size_t chunks = sw_drain_wants(&n, peer, wants, SW_MAX_FILES);
+    bool all_chunks = chunks == p.count;
+    for (size_t i = 0; i < chunks; i++)
+        all_chunks = all_chunks &&
+            wants[i].object_kind == VCS_PACKAGE_SWARM_OBJECT_CHUNK;
+    SW_CHECK("event schedule: chunk wants need no clock tick", all_chunks);
+    sw_free_package(&p);
+    sw_node_close(&n);
+    test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
 int test_zcode_swarm(void)
 {
     int failures = 0;
@@ -1730,5 +1770,6 @@ int test_zcode_swarm(void)
     failures += t_swarm_provider_restricted();
     failures += t_swarm_bounded_provider();
     failures += t_swarm_legacy_record();
+    failures += t_swarm_event_driven_schedule();
     return failures;
 }

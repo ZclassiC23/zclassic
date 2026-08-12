@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * The only lib/net-to-swarm adapter; see config/boot_zcode_swarm.h. */
 #include "config/boot_zcode_swarm.h"
+#include "config/boot_zcode_swarm_membership.h"
 #include "config/boot_zcode_dht.h"
 #include "config/boot_internal.h"
 #include "config/runtime.h"
@@ -39,7 +40,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#define ZCODE_SWARM_KEY_DOMAIN "zcl.zcode_swarm_peer.v1"
 #define ZCODE_SWARM_SYNC_PERIOD_SEC 15
 #define ZCODE_SWARM_TICK_PERIOD_SEC 1
 static zcl_mutex_t s_lock;
@@ -59,6 +59,9 @@ static struct boot_svc_ctx *s_svc;          /* borrowed; set by wire() */
 static struct liveness_contract s_timer_contract;
 static supervisor_child_id s_timer_child = SUPERVISOR_INVALID_ID;
 static uint64_t s_frames_sent;              /* supervisor progress marker */
+static size_t boot_zcode_swarm_drain_node(
+    struct msg_processor *mp, struct vcs_swarm_engine *engine,
+    struct p2p_node *node);
 static bool boot_zcode_work_workspace(void)
 {
     if (s_work_workspace[0]) return true;
@@ -341,6 +344,18 @@ static void boot_zcode_work_publish_results(int64_t now)
             enum vcs_zcode_work_node_result published =
                 vcs_zcode_work_node_publish_result(
                     s_work, peers[i], &result);
+            if (published == VCS_ZCODE_WORK_NODE_OK) {
+                struct vcs_zcode_work_swarm_message message = {
+                    .type = VCS_ZCODE_WORK_SWARM_RESULT,
+                    .body.result = result,
+                };
+                LOG_INFO("zcode.proof_perf",
+                         "schema=zcl.async_proof_perf.v1 action=%s "
+                         "stage=worker_result_publish at_unix_us=%lld "
+                         "result_wire_bytes=%zu",
+                         action_id, (long long)platform_time_realtime_us(),
+                         vcs_zcode_work_swarm_wire_size(&message));
+            }
             if (published != VCS_ZCODE_WORK_NODE_OK)
                 LOG_WARN("net.zcode_swarm", "result %llu: %s",
                          (unsigned long long)requests[i].request_id,
@@ -448,29 +463,6 @@ static uint64_t boot_zcode_swarm_score(const uint8_t contributor[33],
     return t.earned_score;
 }
 
-/* Engine peer handle for a node. node->id starts at 0 on a fresh
- * net_manager (nm->last_node_id++), and the engine reserves peer id 0
- * (the next_outbound no-filter convention), so translate by +1. */
-static uint64_t boot_zcode_swarm_peer_id(const struct p2p_node *node)
-{
-    return (uint64_t)node->id + 1u;
-}
-
-static bool boot_zcode_swarm_peer_key(const struct p2p_node *node,
-                                      uint8_t out[33])
-{
-    char host[ZCL_PEER_HOST_KEY_MAX];
-    if (!zcl_peer_host_key(node, host, sizeof(host)))
-        return false;
-    out[0] = 0x02;
-    struct sha3_256_ctx h;
-    sha3_256_init(&h);
-    sha3_256_write(&h, (const unsigned char *)ZCODE_SWARM_KEY_DOMAIN,
-                   sizeof(ZCODE_SWARM_KEY_DOMAIN) - 1);
-    sha3_256_write(&h, (const unsigned char *)host, strlen(host));
-    sha3_256_finalize(&h, out + 1);
-    return true;
-}
 
 /* Lazily create the node-global engine. Caller holds s_lock. Returns
  * NULL (named, logged) when hosting is off, the store is not open, the
@@ -528,20 +520,6 @@ static struct vcs_swarm_engine *boot_zcode_swarm_ensure(
         LOG_NULL("net.zcode_swarm", "work capability failed; swarm off");
     }
     return s_engine;
-}
-
-/* A node is swarm-eligible once the version handshake completed, it
- * speaks the zclassic23 service bit, and it is not being torn down. */
-static bool boot_zcode_swarm_eligible(const struct p2p_node *node)
-{
-    enum peer_state st = atomic_load(&node->state);
-    if (st < PEER_HANDSHAKE_COMPLETE || st > PEER_SNAPSHOT_RECEIVING)
-        return false;
-    if (atomic_load(&node->disconnect))
-        return false;
-    if (node->is_feeler || node->one_shot)
-        return false;
-    return peer_supports_fast_sync(node->services);
 }
 
 static enum peer_offence boot_zcode_swarm_offence(
@@ -627,7 +605,13 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
                      * the independent broadcast-ANNOUNCE quota. */
                     (void)vcs_swarm_engine_fetch_from(
                         engine, wanted, day, now, &peer_id, 1);
+                    vcs_swarm_engine_schedule_ready(engine, day, now);
                 }
+                /* Network callbacks may advance only the in-memory swarm.
+                 * SQLite-backed admission/projection remains owned by the
+                 * periodic service lane; doing it here races foreground
+                 * requester transactions on the canonical node handle. */
+                (void)boot_zcode_swarm_drain_node(mp, engine, node);
             }
         }
         zcl_mutex_unlock(&s_lock);
@@ -650,6 +634,8 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
     struct vcs_swarm_frame_result ev = vcs_swarm_engine_handle_frame(
         engine, boot_zcode_swarm_peer_id(node), payload, payload_len, day,
         now);
+    vcs_swarm_engine_schedule_ready(engine, day, now);
+    (void)boot_zcode_swarm_drain_node(mp, engine, node);
     zcl_mutex_unlock(&s_lock);
 
     if (ev.penalty != VCS_SWARM_PENALTY_NONE && mp->net_mgr) {
@@ -671,51 +657,6 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
 
 /* Under cs_nodes add eligible nodes, announce newly complete roots, and drop
  * ineligible peers. announce_to only queues frames. Caller holds s_lock. */
-static void boot_zcode_swarm_sync_membership(struct msg_processor *mp,
-                                             struct vcs_swarm_engine *engine)
-{
-    struct net_manager *nm = mp->net_mgr;
-    if (!nm)
-        return;
-    zcl_mutex_lock(&nm->cs_nodes);
-    for (size_t i = 0; i < nm->num_nodes; i++) {
-        struct p2p_node *node = nm->nodes[i];
-        if (!node || !boot_zcode_swarm_eligible(node))
-            continue;
-        uint8_t key[33];
-        if (!boot_zcode_swarm_peer_key(node, key))
-            continue;
-        (void)vcs_swarm_engine_peer_add(engine,
-                                        boot_zcode_swarm_peer_id(node),
-                                        key);
-        /* Deduped per peer: only newly complete roots queue, so calling
-         * every sync propagates content published after the peer joined. */
-        (void)vcs_swarm_engine_announce_to(
-            engine, boot_zcode_swarm_peer_id(node));
-        (void)vcs_zcode_work_node_peer_add(
-            s_work, boot_zcode_swarm_peer_id(node));
-    }
-    uint64_t ids[VCS_SWARM_MAX_PEERS];
-    size_t count = vcs_swarm_engine_peer_ids(engine, ids,
-                                             VCS_SWARM_MAX_PEERS);
-    for (size_t i = 0; i < count; i++) {
-        bool live = false;
-        for (size_t j = 0; j < nm->num_nodes; j++) {
-            struct p2p_node *node = nm->nodes[j];
-            if (node && boot_zcode_swarm_peer_id(node) == ids[i] &&
-                boot_zcode_swarm_eligible(node)) {
-                live = true;
-                break;
-            }
-        }
-        if (!live)
-            vcs_swarm_engine_peer_drop(engine, ids[i]);
-        if (!live)
-            vcs_zcode_work_node_peer_drop(s_work, ids[i]);
-    }
-    zcl_mutex_unlock(&nm->cs_nodes);
-}
-
 /* Throttled periodic work shared by the message-cycle tick and the
  * supervisor timer: membership sync every SYNC_PERIOD, engine scheduler
  * tick + work-node drains every TICK_PERIOD. Caller holds s_lock. */
@@ -725,7 +666,7 @@ static void boot_zcode_swarm_periodic(struct msg_processor *mp,
 {
     if (wall - s_last_sync >= ZCODE_SWARM_SYNC_PERIOD_SEC) {
         s_last_sync = wall;
-        boot_zcode_swarm_sync_membership(mp, engine);
+        boot_zcode_swarm_sync_membership(mp, engine, s_work);
     }
     if (wall - s_last_tick >= ZCODE_SWARM_TICK_PERIOD_SEC) {
         s_last_tick = wall;
@@ -790,6 +731,10 @@ void boot_zcode_swarm_tick(struct msg_processor *mp, struct p2p_node *node,
     struct vcs_swarm_engine *engine =
         boot_zcode_swarm_ensure((struct boot_svc_ctx *)ctx);
     if (engine) {
+        /* The message-cycle already owns this authenticated peer. Register
+         * that exact session immediately so capability exchange never waits
+         * behind the independent 15-second full-membership reconciliation. */
+        (void)boot_zcode_swarm_add_peer(engine, s_work, node, false);
         boot_zcode_swarm_periodic(mp, engine, (struct boot_svc_ctx *)ctx,
                                   wall);
         (void)boot_zcode_swarm_drain_node(mp, engine, node);

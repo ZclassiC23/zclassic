@@ -767,13 +767,15 @@ struct zcl_result build_fabric_worker_execute(
         capture, "test_processes", test_action || fuzz_action ? 1 : 0);
     LOG_INFO("zcode.proof_perf",
              "schema=zcl.async_proof_perf.v1 action=%s stage=worker_execute "
+             "at_unix_us=%lld "
              "lookup_us=%lld input_reconstruction_us=%lld "
              "sandbox_prepare_us=%lld execution_us=%lld child_cpu_us=%lld "
              "output_verify_us=%lld output_cas_us=%lld revalidation_us=%lld "
              "receipt_sign_us=%lld projection_us=%lld input_bytes=%llu "
              "output_bytes=%zu processes=%llu compiler_processes=%llu "
              "test_processes=%llu cache_hit=%d total_us=%lld",
-             action.action_id, (long long)action_lookup_us,
+             action.action_id, (long long)platform_time_realtime_us(),
+             (long long)action_lookup_us,
              (long long)input_reconstruction_us,
              (long long)sandbox_prepare_us, (long long)action_execution_us,
              (long long)(child_cpu_us < 0 ? 0 : child_cpu_us),

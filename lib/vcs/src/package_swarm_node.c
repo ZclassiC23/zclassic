@@ -1727,6 +1727,17 @@ void vcs_swarm_engine_tick(struct vcs_swarm_engine *engine, int64_t day,
     pthread_mutex_unlock(&engine->lock);
 }
 
+void vcs_swarm_engine_schedule_ready(struct vcs_swarm_engine *engine,
+                                     int64_t day, uint64_t now)
+{
+    if (!engine)
+        return;
+    pthread_mutex_lock(&engine->lock);
+    if (engine->store)
+        schedule_locked(engine, day, now);
+    pthread_mutex_unlock(&engine->lock);
+}
+
 bool vcs_swarm_engine_next_outbound(struct vcs_swarm_engine *engine,
                                     uint64_t peer_filter, uint64_t *peer_out,
                                     uint8_t *out, size_t *out_len)
