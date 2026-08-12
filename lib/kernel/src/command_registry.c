@@ -21,6 +21,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#ifndef ZCL_HOTFORK_COMMAND_INPUT_CORE
 static bool command_is_branch(const struct zcl_command_spec *spec);
 
 static _Atomic uint64_t g_request_sequence = 1;
@@ -583,6 +584,8 @@ static bool path_valid(const char *path)
     }
     return !token_start;
 }
+#endif
+
 
 static bool csv_token_equal(const char *csv, const char *value)
 {
@@ -602,6 +605,7 @@ static bool csv_token_equal(const char *csv, const char *value)
     return false;
 }
 
+#ifndef ZCL_HOTFORK_COMMAND_INPUT_CORE
 static bool csv_valid_paths(const char *csv)
 {
     if (!csv || !csv[0])
@@ -829,6 +833,7 @@ const struct zcl_command_spec *zcl_command_registry_resolve_words(
         *was_alias = best_alias;
     return best;
 }
+#endif
 
 /* ── Per-key input value bounds ──────────────────────────────────────────
  *
@@ -1423,6 +1428,7 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
     return true;
 }
 
+#ifndef ZCL_HOTFORK_COMMAND_INPUT_CORE
 static void digest_text(struct sha256_ctx *sha, const char *value)
 {
     static const unsigned char separator = 0;
@@ -2310,3 +2316,4 @@ size_t zcl_command_registry_execute_json(
     zcl_command_reply_free(&reply);
     return result;
 }
+#endif

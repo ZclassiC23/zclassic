@@ -38,6 +38,12 @@ elif [[ "$OWNER_KIND" == shop-want ]]; then
     STORY='shop-want-command-input-core.v1'
     MUTANT_OLD='w->expires_unix <= now_unix'
     MUTANT_NEW='w->expires_unix < now_unix'
+elif [[ "$OWNER_KIND" == command-input ]]; then
+    SOURCE="$ROOT/lib/kernel/src/command_registry.c"
+    OUTPUT="${ZCL_REFLEX_COMMAND_INPUT_CORE_ACCEPTANCE_OUTPUT:-$ROOT/build/dev-loop/reflex-hotfork-command-input-core-acceptance.json}"
+    STORY='command-registry-input-validation-core.v1'
+    MUTANT_OLD='json_get_int(value) <= 600;'
+    MUTANT_NEW='json_get_int(value) < 600;'
 fi
 
 fail() { printf 'reflex-hotfork-watch-core-acceptance: %s\n' "$*" >&2; exit 2; }

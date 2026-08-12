@@ -101,6 +101,7 @@ static void hs_why(char *why, size_t why_len, const char *message)
         (void)snprintf(why, why_len, "%s", message ? message : "unknown");
 }
 
+
 void zcl_devloop_hotswap_guidance(
     const char *status, const char *phase, const char *why,
     char *why_not_live, size_t why_not_live_size,
@@ -1548,6 +1549,18 @@ static void hs_hotfork_story_roots(const struct hs_hotfork_def *def,
             "authority=caller-owned-json,pure-build-and-sign,no-db,no-filesystem,no-clock,no-publication\n%s\n",
             def->story_id);
     } else if (strcmp(def->story_id,
+                      "command-registry-input-validation-core.v1") == 0) {
+        (void)snprintf(fixture, sizeof(fixture),
+            "zcl.dev.hotfork.fixture.v1\n"
+            "booleans=wait-for-edit,all,string-reject\n"
+            "maximum-bytes=package-256m,space-8m,path-sensitive\n"
+            "cutoffs=height,mtp,epoch-capacity,positive-only\n"
+            "cpu=one-through-600\n"
+            "shop=issued,expires,amount,integer-or-string-nonce\n"
+            "budget=manifest-derived,default-floor\n"
+            "authority=caller-owned-spec-and-json,pure-validation,no-handler,no-latency-ring,no-publication\n%s\n",
+            def->story_id);
+    } else if (strcmp(def->story_id,
                       "zcode-package-view-contract.v1") == 0) {
         (void)snprintf(fixture, sizeof(fixture),
             "zcl.dev.hotfork.fixture.v1\n"
@@ -1661,6 +1674,65 @@ static int hs_hotfork_unity_source(
     const struct hs_hotfork_def *def, const char *source_path,
     char *out, size_t out_size)
 {
+    if (strcmp(def->story_id,
+               "command-registry-input-validation-core.v1") == 0) {
+        return snprintf(out, out_size,
+            "#define _GNU_SOURCE\n"
+            "#define ZCL_HOTFORK_COMMAND_INPUT_CORE 1\n"
+            "#include \"hotswap/hotfork_capsule.h\"\n"
+            "#include \"%s\"\n"
+            "static bool hf_valid(const char *path,const char *keys,const char *body) {\n"
+            " struct json_value input; json_init(&input);"
+            " bool parsed=json_read(&input,body,strlen(body));"
+            " struct zcl_command_spec spec={.path=path,.input_schema=\"zcl.test.input.v1\",.input_keys=keys};"
+            " char why[160]; bool ok=parsed && zcl_command_registry_input_validate(&spec,&input,why,sizeof(why));"
+            " json_free(&input); return ok; }\n"
+            "__attribute__((visibility(\"hidden\")))\n"
+            "bool zcl_hotfork_candidate_story_v1(struct zcl_hotfork_observation_v1 *out) {\n"
+            " if (!out) return false; memset(out,0,sizeof(*out));"
+            " out->magic=ZCL_HOTFORK_OBSERVATION_MAGIC; unsigned failed=0;\n"
+            " #define HF_CHECK(x) do { unsigned n=out->checks_run++;"
+            " if (x) out->checks_passed++; else failed|=1u<<n; } while(0)\n"
+            " HF_CHECK(hf_valid(\"dev.loop.drive\",\"wait_for_edit,all\","
+            "\"{\\\"wait_for_edit\\\":true,\\\"all\\\":false}\")"
+            " && !hf_valid(\"dev.loop.drive\",\"wait_for_edit\","
+            "\"{\\\"wait_for_edit\\\":\\\"true\\\"}\"));"
+            " HF_CHECK(hf_valid(\"zcode.package.fetch\",\"maximum_bytes\","
+            "\"{\\\"maximum_bytes\\\":268435456}\")"
+            " && !hf_valid(\"zcode.package.fetch\",\"maximum_bytes\","
+            "\"{\\\"maximum_bytes\\\":268435457}\")"
+            " && hf_valid(\"metaverse.space.scout.run\",\"maximum_bytes\","
+            "\"{\\\"maximum_bytes\\\":8388608}\")"
+            " && !hf_valid(\"metaverse.space.scout.run\",\"maximum_bytes\","
+            "\"{\\\"maximum_bytes\\\":8388609}\"));"
+            " HF_CHECK(hf_valid(\"zcode.epoch.plan\","
+            "\"cutoff_height,cutoff_mtp,epoch_capacity_atoms\","
+            "\"{\\\"cutoff_height\\\":1,\\\"cutoff_mtp\\\":2,\\\"epoch_capacity_atoms\\\":3}\")"
+            " && !hf_valid(\"zcode.epoch.plan\",\"cutoff_height\","
+            "\"{\\\"cutoff_height\\\":0}\"));"
+            " HF_CHECK(hf_valid(\"zcode.work.start\",\"max_cpu_seconds\","
+            "\"{\\\"max_cpu_seconds\\\":600}\")"
+            " && !hf_valid(\"zcode.work.start\",\"max_cpu_seconds\","
+            "\"{\\\"max_cpu_seconds\\\":601}\"));"
+            " HF_CHECK(hf_valid(\"app.shop.want.post\","
+            "\"issued_unix,expires_unix,amount_zatoshi,nonce\","
+            "\"{\\\"issued_unix\\\":1,\\\"expires_unix\\\":2,\\\"amount_zatoshi\\\":2100000000000000,\\\"nonce\\\":7}\")"
+            " && hf_valid(\"app.auth.verify\",\"nonce\","
+            "\"{\\\"nonce\\\":\\\"server-issued\\\"}\")"
+            " && !hf_valid(\"app.shop.want.post\",\"amount_zatoshi\","
+            "\"{\\\"amount_zatoshi\\\":0}\"));"
+            " struct zcl_command_spec bounded={.input_keys=\"manifest_hex\"};"
+            " HF_CHECK(zcl_command_registry_input_str_max(\"manifest_hex\")>4096"
+            " && zcl_command_registry_input_str_max(\"ordinary\")==4096"
+            " && zcl_command_registry_input_budget_bytes(&bounded)>ZCL_COMMAND_MAX_INPUT);\n"
+            " #undef HF_CHECK\n"
+            " snprintf(out->exercised_surface,sizeof(out->exercised_surface),\"%s\");"
+            " snprintf(out->detail,sizeof(out->detail),"
+            "\"checks=%%u/%%u;failed_mask=0x%%x\","
+            "out->checks_passed,out->checks_run,failed);"
+            " return out->checks_run==6 && out->checks_passed==6; }\n",
+            source_path, def->exercised_surface);
+    }
     if (strcmp(def->story_id,
                "shop-want-command-input-core.v1") == 0) {
         return snprintf(out, out_size,
