@@ -35,14 +35,16 @@ ZCL_COMMAND_DEV_COMMAND(
 
 ZCL_COMMAND_DEV_READ(
     "dev.drive", "dev", "", "Wait for feedback and return one compact next action",
-    "The latest exact cycle newer than after_epoch, compacted with its live "
-    "or fallback latency, proof state, ZVCS root and restart-safe publication "
+    "The first action-changing result newer than after_epoch, compacted with "
+    "its live or fallback latency, proof state, ZVCS root and restart-safe publication "
     "phase. If a publication job exists, drive verifies and renders that "
     "existing receipt chain without moving roots manually or granting any "
-    "signing, network, wallet, transaction or human-acceptance authority.", 0,
+    "signing, network, wallet, transaction or human-acceptance authority. "
+    "EDIT_SEEN and IMPACT_READY remain available through dev.loop.wait but "
+    "one normal drive consumes them without extra commands.", 0,
     "dev,drive,feedback,proof,zvcs,publication,next",
     "zcl.dev_drive_input.v1", "zcl.dev_drive.v1",
-    "after_epoch,timeout_ms", "",
+    "after_epoch,timeout_ms,wait_for_edit", "",
     "zclassic23-dev dev drive", ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -604,6 +606,26 @@ ZCL_COMMAND_DEV_READ(
     zcl_native_handle_dev_test_run,
     "focused tests require the dev-only process executor",
     "zclassic23-dev dev test focused")
+
+ZCL_COMMAND_DEV_READ(
+    "dev.test.story", "dev.test", "",
+    "Run one exact owner-bound fail-fast behavior story",
+    "A deterministic HOT_SHADOW result for the named owner, evaluated over "
+    "resident-frozen immutable fixtures by a proposal-only decision core. "
+    "The story has no wallet, database, network, signing, custody, reducer, "
+    "supervisor, deployment, or publication capability.", 0,
+    "test,story,shadow,owner,fail-fast",
+    "zcl.dev_test_story_input.v1", "zcl.vault_intent_decision_story.v1",
+    "owner", "owner",
+    "zclassic23-dev dev test story --input='{\"owner\":\"transaction_intent\"}'",
+    ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
+    ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_TEST_RUN,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT |
+        ZCL_COMMAND_TRAIT_DEV_ONLY,
+    zcl_native_handle_dev_test_story,
+    "behavior stories require the dev-only frozen fixture registry",
+    "zclassic23-dev dev test story")
 
 ZCL_COMMAND_DEV_READ(
     "dev.test.sim", "dev.test", "", "Run the generic hot-swap network proof",

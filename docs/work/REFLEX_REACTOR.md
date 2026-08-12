@@ -1,139 +1,176 @@
 # Local zero-wait reflex reactor
 
-North star: one warm, local service turns each immutable edit epoch into the
-earliest trustworthy observation it can prove, then continues monotonically
-through exact affected evidence, reusable acceptance, human approval, and P2P
-publication; the foreground reflex never waits on Git, Make, a database,
-network I/O, publication, a full link, or a full proof, and no faster candidate
-may replace the trusted machinery until the current machinery proves it.
-
-## Stage contract
+North star: edit C23, receive the first exact result that can change the next
+action almost immediately, and keep working while stronger proof proceeds.
+One warm local service owns the loop:
 
 ```text
-save
-  |
-  +--> EDIT_SEEN ------> IMPACT_READY ------> REFLEX
-                                               |
-                                               +--> ASYNC PROOF
-                                                      |
-                                                      +--> ACCEPTANCE
-                                                             |
-                                                        human approval
-                                                             |
-                                                      PUBLICATION
+begin -> edit -> drive
 ```
 
-`EDIT_SEEN`, `IMPACT_READY`, and `reflex_ready` are observations, not proof or
-publication authority. `feedback_ready` means the immediate exact groups are
-green; it still names every deferred group and keeps `proof_complete=false`.
-Only the existing conservative source-wide verify can produce reusable
-acceptance. Only the existing ZVCS boundary after that acceptance may enqueue
-publication. No stage publishes a runtime in verify mode.
+Git, Make, a database, network I/O, publication, full links, full scans and
+full-suite proof are behind the latency firewall. They may consume an immutable
+candidate, but cannot be prerequisites for reflex feedback.
 
-The first slice persists each stage through the SHA3-sealed workspace cycle
-record so `dev drive` can observe progress. That record is latest-value state,
-not yet a lossless event journal: a sufficiently slow poller may skip an
-intermediate stage. A per-edit immutable event stream is the next slice; until
-then, missing stage observations are reported as missing rather than zero.
+## Stage and authority contract
 
-## Exact ordinary-edit trace
+```text
+EDIT_SEEN -> IMPACT_READY -> COMPILE_GREEN / COMPILE_RED
+                              |
+                              v
+                       STORY_GREEN / STORY_RED       REFLEX
+                              |
+                              v
+                       FOCUSED_GREEN / FOCUSED_RED   ASYNC PROOF
+                              |
+                              v
+                         PROOF_PENDING               ACCEPTANCE
+                              |
+                        human approval
+                              |
+                              v
+                        ZVCS evidence -> P2P publication
+```
 
-The frozen representative is
-`app/controllers/src/vault_intent_controller.c`, the highest-frequency
-ordinary production owner in the current replay population (6 weighted edits).
-The harness atomically adds a unique comment, uses an isolated verify-only
-watcher and cross-filesystem cache, then restores the source byte-for-byte.
+`SUPERSEDED` terminates obsolete work when a newer save arrives. Every event is
+an observation about one immutable edit epoch, never approval or publication
+authority. `dev loop wait` exposes every event. A normal `dev drive` consumes
+the mechanical acknowledgements and returns the first action-changing
+diagnostic/story for the new edit. `FOCUSED_GREEN` still keeps
+`proof_complete=false`; only the conservative source-wide proof can create
+reusable acceptance, and only a later human-approved ZVCS boundary may publish.
+Verify mode never publishes a runtime.
 
-Before the split, the first green receipt arrived in 12.677 s. Its 9.906 s
-test process dominated 1.066 s aggregate compilation and 2.028 s aggregate
-overlay linking. The first split-only run put the candidate reflex at 1.613 s.
-The final run with all progress stages and timing fields observed the candidate
-reflex at 2.463 s and the same five-group proof at 10.603 s under host load.
-That exact stage-1 receipt records:
+## Why this owner
+
+The frozen recent-history replay selected
+`app/controllers/src/vault_intent_controller.c` as the highest-frequency
+ordinary production owner (6 weighted edits), rather than choosing a toy file.
+That controller mixed custody authority with a deterministic planning decision.
+The refactor leaves parsing, wallet snapshots, coin reservation, persistence,
+signing and broadcast in the static controller. Only the proposal moves to
+`app/services/src/vault_intent_decision_service.c`:
+
+```text
+STATIC AUTHORITY SHELL                 PURE DECISION CORE
+wallet/database/value authority  ---> immutable copied snapshot
+                                      proposal-only decision
+                               <---   no effect capabilities
+```
+
+Its five-case KAT is the smallest executable user story: current funds permit
+an exact reservation, while stale money, bad fees, insufficient funds and the
+development cap refuse. The candidate runs as `HOT_SHADOW` in a forked child
+against frozen fixtures. It cannot acquire wallet, database, network, reducer,
+custody, supervisor, deployment or publication authority.
+
+## Before extraction: exact trace
+
+The original ordinary-edit path took 12.677 s to its first green receipt. Tests
+consumed 9.906 s, aggregate compilation 1.066 s and aggregate overlay linking
+2.028 s. After the first stage split—but before this reactor—the same owner
+reached candidate feedback in 2.463 s and five-group proof in 10.603 s:
 
 | Work | Monotonic time | Processes |
 |---|---:|---:|
-| `EDIT_SEEN` observation | missed by latest-value polling | 0 |
-| `IMPACT_READY`, edit to observation | 164.468 ms | 0 |
-| path impact body | 0.113 ms | 0 |
+| `EDIT_SEEN` | missed by latest-value polling | 0 |
+| observable `IMPACT_READY` | 164.468 ms | 0 |
+| path impact | 0.113 ms | 0 |
 | closure snapshot | 20.263 ms | 0 |
 | exact test selection | 207.636 ms | 0 |
-| source guards, three incremental captures | 98.428 ms | 0 |
-| candidate + proof compiler startup | 12.232 ms | 4 |
-| candidate + proof compiler bodies | 1,009.205 ms | 4 |
-| candidate + proof linker startup | 6.541 ms | 2 |
-| candidate + proof linker bodies | 3,353.458 ms | 2 |
-| test-runner startup | 2.742 ms | 1 |
-| test-runner body | 4,741.473 ms | 1 |
-| command-runtime probe | separately receipt-bound | 1 |
+| three incremental source guards | 98.428 ms | 0 |
+| candidate + proof compiler startup/body | 12.232 / 1,009.205 ms | 4 |
+| candidate + proof linker startup/body | 6.541 / 3,353.458 ms | 2 |
+| test startup/body | 2.742 / 4,741.473 ms | 1 |
+| bounded runtime probe | receipt-bound | 1 |
 
-The test selection is five immediate exact groups and 71 named deferred
-groups. The five are `test_db_migration_idempotent`,
+The exact selected groups were `test_db_migration_idempotent`,
 `test_transaction_intent`, `test_wallet_funds_safety`,
-`test_command_registry_catalog`, and `test_command_input_bounds`. The receipt
-contains a separate monotonic selection duration; no agent chose this set.
-Every save-path receipt reports zero Make, shell, LTO, and complete-graph link
-processes.
+`test_command_registry_catalog` and `test_command_input_bounds`; 71 broader
+groups remained named. This trace identified polling, broad proof and process
+setup as latency, not the 0.113 ms path rule itself.
 
-The current first-slice gates are honest: the 0.113 ms impact calculation is
-fast, but observable `IMPACT_READY`, candidate reflex, and immediate proof all
-miss their final targets; latest-value polling missed `EDIT_SEEN` entirely.
-The destination remains `EDIT_SEEN p95 <10 ms`,
-`IMPACT_READY p95 <50 ms`, first diagnostic `<250 ms`, ordinary behavior story
-`<500 ms` (hard story `<1 s`), and first useful red `<1 s`.
+## Implemented reactor
 
-## Reachability and latency firewall
+The resident watcher now keeps the last reconciled Merkle snapshot in memory.
+One save hashes only known changed paths and creates an immutable epoch carrying
+changed paths, previous/new SHA3 blob roots and sizes, owner/component,
+dependency generation, sequence and parent epoch. No Git status or repository
+inventory scan occurs on this path. A newer save constructs and publishes its
+impact inside the old proof's cancellation observation, so process reaping
+cannot delay the new epoch.
+
+The progressive stream is a 64-slot bounded local ring ahead of an append-only,
+SHA3-sealed journal. Ring publication has no fsync or storage acknowledgement.
+After the action-changing event is visible, `flush-through` seals every epoch
+in order; the journal remains evidence authority and restart recovery rejects
+gaps or bad seals. `dev drive` waits with inotify, closing the check/sleep race;
+there is no polling sleep.
+
+The candidate builder keeps its frozen action/dependency plan and artifact
+cache warm, invokes the compiler and module linker directly, then forks the
+preloaded parent for the story. No command shell, Make parser, test runner or
+full-program linker enters the reflex. Exact affected proof starts only after
+the story. Scheduling remembers the prior failed exact group for the task,
+then runs the goal story, cheap likely regression, direct owner invariant and
+the complete affected batch; priority changes, required proof does not.
+
+## Dependency map and latency firewall
 
 ```text
-REFLEX (foreground)
-  inotify + 15 ms debounce
-    -> static path impact rules
-    -> local incremental source CAS
-    -> local code-index closure snapshot
-    -> pinned compiler children
-    -> overlay/frozen-base linker child
-    -> local immutable artifact cache
-    -> bounded candidate command probe
+REFLEX
+  inotify -> resident path/blob epoch -> direct module compile/link
+          -> forked HOT_SHADOW story -> volatile event
 
 ASYNC PROOF
-    -> exact group expansion (path floor + closure)
-    -> pinned test-profile compiler/linker
-    -> exact test runner + verified local PASS cache
+  exact path floor + code-index closure -> failure-first focused groups
 
 ACCEPTANCE
-    -> zcl_devloop_run_cycle_mode
-    -> make ff (source-wide compile, tests, lint-fast)
-    -> finish_cycle
+  conservative source-wide compile + tests + lint-fast
 
 PUBLICATION
-    -> vcs_devloop_anchor_cycle
-    -> local ZVCS commit/proof receipt
-    -> publication queue / DHT / P2P workers
+  reusable proof -> human approval -> ZVCS receipt -> DHT/P2P workers
 ```
 
-Audited foreground reachability has no Git, Make, SQL/SQLite/database, DHT,
-socket/network, P2P publication, full proof, or complete-object-graph link.
-Those first become reachable after the reflex receipt: Make at conservative
-acceptance, and ZVCS/DHT/P2P publication only after a green complete proof.
-The local SHA3-sealed cycle record and content-addressed artifact cache are the
-only foreground durable writes.
+The audited reflex events carry explicit zero counters for Make, shells, Git,
+publication, remote/network operations, storage-ack waits, SQLite, full-tree
+scans and full-program links. Local candidate artifacts are content-addressed
+inputs, not acceptance. The foreground has no call edge into ZVCS, DHT, P2P,
+wallet or runtime activation.
 
-## Self-hosting rule and next slices
+## Reproducible measurement
 
-The trusted pre-change resident is stage 0. New reactor binaries run only as
-isolated stage-1/shadow candidates until stage 0 proves their exact source.
-A focused test or a candidate self-test is necessary evidence but cannot grant
-replacement authority.
+Run `make reflex-reactor-bench`. It applies 20 randomized, distinct atomic
+source edits plus one compile-valid behavior regression, uses one verify-only
+watcher and one `drive` per edit, reads the exact sealed event range, restores
+the source bytes and writes the ignored receipt
+`build/dev-loop/reflex-reactor-benchmark.json`.
 
-Next, in order:
+The final 21-edit run measured:
 
-1. Replace latest-value progress with a bounded immutable per-edit event
-   journal keyed by one in-memory edit epoch; expose it through the same warm
-   `drive` surface without polling gaps.
-2. Make compiler diagnostics stream as soon as bytes arrive and preserve the
-   first-error timestamp independently of successful process completion.
-3. Add behavior stories that execute against the exact candidate epoch and
-   become the default sub-second human/agent feedback unit.
-4. Keep a persistent shadow compiler/test runner warm, compare it against the
-   pinned authoritative path, and promote it only after exact equivalence and
-   stage-0 proof.
+| Result | p50 | p95 | max | Gate |
+|---|---:|---:|---:|---:|
+| `EDIT_SEEN` | 13 us | 14 us | 16 us | <10 ms p95 |
+| `IMPACT_READY` | 238 us | 302 us | 1.340 ms | <50 ms p95 |
+| compile diagnostic | 61.631 ms | 67.090 ms | 68.838 ms | <250 ms p95 |
+| green `HOT_SHADOW` story | 65.076 ms | 70.763 ms | 73.506 ms | <1 s p95 |
+| edit to compact `drive` reply | 260.685 ms | 294.323 ms | 294.707 ms | measured |
+| useful `STORY_RED` | 67.935 ms feedback | 286.265 ms wall | n/a | <1 s |
+
+The run observed 21 each of `EDIT_SEEN`, `IMPACT_READY`, `COMPILE_GREEN` and
+shadow forks, 20 `STORY_GREEN`, one `STORY_RED`, and 20 `SUPERSEDED`. Every
+candidate was distinct: 21 compiler children, 21 module-linker children and
+zero foreground test processes. Every firewall counter was zero.
+
+The `<2% active-development time blocked` target requires longitudinal editor
+telemetry and is not claimed from a synthetic 21-edit latency run. The reactor
+now makes the necessary behavior true—proof is asynchronous and obsolete work
+is cancelled—but that ratio remains a product/workload measurement, not a
+fabricated benchmark result.
+
+## Self-hosting safety
+
+The pre-change binary remains trusted stage 0. A changed watcher, scheduler,
+event system, loader, identity layer or proof router is only a stage-1 shadow
+candidate until that saved stage-0 binary proves the final source. Candidate
+KATs and focused tests cannot certify or replace the machinery that ran them.

@@ -254,6 +254,13 @@ static int test_change_classification(void)
         ASSERT(zcl_devloop_plan_files(service_source, 1, &plan));
         ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
         ASSERT(strcmp(plan.probe_tool, "zcode.commons.corpus.show") == 0);
+        const char *story_service[] = {
+            "app/services/src/vault_intent_decision_service.c",
+        };
+        ASSERT(zcl_devloop_plan_files(story_service, 1, &plan));
+        ASSERT(plan.action == ZCL_DEVLOOP_HOTSWAP);
+        ASSERT(strcmp(plan.proof_group, "transaction_intent") == 0);
+        ASSERT(strcmp(plan.probe_tool, "dev.test.story") == 0);
         const char *service_header[] = {
             "app/services/include/services/zcode_c23_corpus_service.h",
         };
@@ -1810,6 +1817,16 @@ static bool run_failure_store_fixture(void)
         "\"status\":\"passed\",\"action\":\"check\","
         "\"reason\":\"fixture\",\"phase\":\"verify\","
         "\"runtime_published\":false,\"elapsed_ms\":1,\"files\":[]}";
+    static const char cycle_impact[] =
+        "{\"schema\":\"zcl.dev_cycle.v1\",\"producer\":\"test\","
+        "\"status\":\"impact_ready\",\"action\":\"reflex\","
+        "\"reason\":\"fixture\",\"phase\":\"IMPACT_READY\","
+        "\"runtime_published\":false,\"elapsed_ms\":2,\"files\":[]}";
+    static const char cycle_compile[] =
+        "{\"schema\":\"zcl.dev_cycle.v1\",\"producer\":\"test\","
+        "\"status\":\"compile_green\",\"action\":\"reflex\","
+        "\"reason\":\"fixture\",\"phase\":\"COMPILE_GREEN\","
+        "\"runtime_published\":false,\"elapsed_ms\":3,\"files\":[]}";
     FS_REQUIRE(zcl_devloop_cycle_state_write(
         repo1, cycle, sizeof(cycle) - 1, why, sizeof(why)));
     char cycle_out[4096];
@@ -1821,6 +1838,14 @@ static bool run_failure_store_fixture(void)
     FS_REQUIRE(cycle_len == sizeof(cycle) - 1 &&
                memcmp(cycle_out, cycle, cycle_len) == 0 && cycle_epoch > 0);
     int64_t first_cycle_epoch = cycle_epoch;
+    cycle_len = 0;
+    cycle_epoch = 0;
+    FS_REQUIRE(zcl_devloop_cycle_state_read_after(
+        repo1, 0, cycle_out, sizeof(cycle_out), &cycle_len, &cycle_epoch,
+        why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(cycle_epoch == first_cycle_epoch &&
+               cycle_len == sizeof(cycle) - 1 &&
+               memcmp(cycle_out, cycle, cycle_len) == 0);
     FS_REQUIRE(zcl_devloop_cycle_state_read(
         repo2, cycle_out, sizeof(cycle_out), &cycle_len, &cycle_epoch,
         why, sizeof(why)) == ZCL_DEVLOOP_STATE_ABSENT);
@@ -1857,13 +1882,73 @@ static bool run_failure_store_fixture(void)
         repo1, cycle_out, sizeof(cycle_out), &cycle_len, &restored_epoch,
         why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
     FS_REQUIRE(restored_epoch == first_cycle_epoch);
-    FS_REQUIRE(zcl_devloop_cycle_state_write(
-        repo1, cycle, sizeof(cycle) - 1, why, sizeof(why)));
+    FS_REQUIRE(zcl_devloop_cycle_stream_reset(
+        repo1, restored_epoch, why, sizeof(why)));
     int64_t second_epoch = 0;
-    FS_REQUIRE(zcl_devloop_cycle_state_read(
-        repo1, cycle_out, sizeof(cycle_out), &cycle_len, &second_epoch,
-        why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(zcl_devloop_cycle_stream_publish(
+        repo1, cycle_impact, sizeof(cycle_impact) - 1, &second_epoch,
+        why, sizeof(why)));
     FS_REQUIRE(second_epoch == restored_epoch + 1);
+    int64_t still_durable_epoch = 0;
+    FS_REQUIRE(zcl_devloop_cycle_state_read(
+        repo1, cycle_out, sizeof(cycle_out), &cycle_len, &still_durable_epoch,
+        why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(still_durable_epoch == restored_epoch);
+    /* The volatile bounded stream is observable before its durable journal
+     * consumer runs; this is the latency firewall's load-bearing property. */
+    FS_REQUIRE(zcl_devloop_cycle_state_read_after(
+        repo1, first_cycle_epoch, cycle_out, sizeof(cycle_out), &cycle_len,
+        &cycle_epoch, why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(cycle_epoch == second_epoch &&
+               cycle_len == sizeof(cycle_impact) - 1 &&
+               memcmp(cycle_out, cycle_impact, cycle_len) == 0);
+
+    int64_t third_epoch = 0;
+    FS_REQUIRE(zcl_devloop_cycle_stream_publish(
+        repo1, cycle_compile, sizeof(cycle_compile) - 1, &third_epoch,
+        why, sizeof(why)));
+    FS_REQUIRE(zcl_devloop_cycle_state_read_after(
+        repo1, second_epoch, cycle_out, sizeof(cycle_out), &cycle_len,
+        &third_epoch, why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(third_epoch == second_epoch + 1 &&
+               cycle_len == sizeof(cycle_compile) - 1 &&
+               memcmp(cycle_out, cycle_compile, cycle_len) == 0);
+    /* One post-feedback flush seals every earlier volatile event in order;
+     * callers never have to move epoch numbers or bodies by hand. */
+    FS_REQUIRE(zcl_devloop_cycle_stream_flush_through(
+        repo1, third_epoch, why, sizeof(why)));
+    FS_REQUIRE(zcl_devloop_cycle_state_read(
+        repo1, cycle_out, sizeof(cycle_out), &cycle_len, &still_durable_epoch,
+        why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    FS_REQUIRE(still_durable_epoch == third_epoch);
+
+    /* Restarting the resident stream at its durable anchor must discard every
+     * unjournaled slot from the prior generation, even when the ring file was
+     * already at its final size. */
+    pid_t stream_child = fork();
+    FS_REQUIRE(stream_child >= 0);
+    if (stream_child == 0) {
+        char child_why[128] = {0};
+        int64_t child_epoch = 0;
+        platform_sleep_ms(20);
+        bool child_ok = zcl_devloop_cycle_stream_publish(
+            repo1, cycle_impact, sizeof(cycle_impact) - 1, &child_epoch,
+            child_why, sizeof(child_why));
+        _exit(child_ok ? 0 : 92);
+    }
+    int64_t abandoned_epoch = 0;
+    FS_REQUIRE(zcl_devloop_cycle_state_wait_after(
+        repo1, third_epoch, 1000, cycle_out, sizeof(cycle_out), &cycle_len,
+        &abandoned_epoch, why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
+    int stream_status = 0;
+    FS_REQUIRE(waitpid(stream_child, &stream_status, 0) == stream_child);
+    FS_REQUIRE(WIFEXITED(stream_status) && WEXITSTATUS(stream_status) == 0);
+    FS_REQUIRE(abandoned_epoch == third_epoch + 1);
+    FS_REQUIRE(zcl_devloop_cycle_stream_reset(
+        repo1, third_epoch, why, sizeof(why)));
+    FS_REQUIRE(zcl_devloop_cycle_state_read_after(
+        repo1, third_epoch, cycle_out, sizeof(cycle_out), &cycle_len,
+        &cycle_epoch, why, sizeof(why)) == ZCL_DEVLOOP_STATE_ABSENT);
 
     /* Inode timestamp changes are not wait authority. */
     struct timespec times[2] = {
@@ -1875,7 +1960,7 @@ static bool run_failure_store_fixture(void)
         repo1, cycle_out, sizeof(cycle_out), &cycle_len,
         &timestamp_tamper_epoch, why, sizeof(why)) ==
                ZCL_DEVLOOP_STATE_FOUND);
-    FS_REQUIRE(timestamp_tamper_epoch == second_epoch);
+    FS_REQUIRE(timestamp_tamper_epoch == third_epoch);
 
     /* Concurrent writers serialize through the workspace capability lock. */
     pid_t cycle_children[8];
@@ -1900,7 +1985,19 @@ static bool run_failure_store_fixture(void)
     FS_REQUIRE(zcl_devloop_cycle_state_read(
         repo1, cycle_out, sizeof(cycle_out), &cycle_len, &concurrent_epoch,
         why, sizeof(why)) == ZCL_DEVLOOP_STATE_FOUND);
-    FS_REQUIRE(concurrent_epoch == second_epoch + 8);
+    FS_REQUIRE(concurrent_epoch == third_epoch + 8);
+
+    /* The first-newer contract never jumps over a damaged sealed event. */
+    char event_path[PATH_MAX];
+    FS_REQUIRE(snprintf(event_path, sizeof(event_path),
+                        "%s/cycle-events/%020lld.json", state_dir,
+                        (long long)second_epoch) > 0);
+    fd = open(event_path, O_WRONLY | O_CLOEXEC);
+    FS_REQUIRE(fd >= 0 && pwrite(fd, "X", 1, 0) == 1 && close(fd) == 0);
+    FS_REQUIRE(zcl_devloop_cycle_state_read_after(
+        repo1, first_cycle_epoch, cycle_out, sizeof(cycle_out), &cycle_len,
+        &cycle_epoch, why, sizeof(why)) == ZCL_DEVLOOP_STATE_INVALID);
+    FS_REQUIRE(strcmp(why, "cycle_event_integrity_invalid") == 0);
 
     /* A syntactically valid-looking counter edit still breaks its SHA3 seal. */
     FS_REQUIRE(failure_record_path(path, home, &record,
@@ -2633,7 +2730,10 @@ static bool run_resident_restart_fixture(void)
         proof.artifact_cache_hit || proof.compiler_processes != 2 ||
         proof.linker_processes != 1 ||
         proof.complete_graph_linker_processes != 0 ||
-        proof.test_processes != 1 || proof.source_guard_captures != 2 ||
+        proof.test_processes != 2 || proof.source_guard_captures != 2 ||
+        strcmp(proof.priority_group, "test_make_lint_gates") != 0 ||
+        strcmp(proof.priority_reason, "direct_owner_invariant") != 0 ||
+        proof.priority_test_us <= 0 ||
         proof.selection_us <= 0 ||
         proof.compile_startup_us <= 0 || proof.compile_body_us <= 0 ||
         proof.link_startup_us <= 0 || proof.link_body_us <= 0 ||
@@ -2653,12 +2753,23 @@ static bool run_resident_restart_fixture(void)
     memset(&process, 0, sizeof(process));
     if (zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
                                   &process, why, sizeof(why)) ||
-        strcmp(why,
-               "affected proofs failed: 2 of 18 exact groups failed; see process_output") != 0 ||
+        strcmp(why, "failure-first direct owner invariant failed") != 0 ||
         proof.groups_failed != 2 ||
         proof.immediate_proof_complete || proof.proof_complete)
         goto out;
     if (setenv("ZCL_DEVLOOP_TEST_FAIL_GROUPS", "0", 1) != 0)
+        goto out;
+
+    /* The next edit for the same task executes the remembered RED before
+     * default/catalog order. Passing it clears the warm scheduling hint; it
+     * never substitutes for the complete affected batch that follows. */
+    memset(&proof, 0, sizeof(proof));
+    memset(&process, 0, sizeof(process));
+    if (!zcl_devloop_restart_prove(root, changed, 1, &proof_plan, &proof,
+                                   &process, why, sizeof(why)) ||
+        !proof.proof_complete || proof.test_processes != 2 ||
+        strcmp(proof.priority_group, "test_make_lint_gates") != 0 ||
+        strcmp(proof.priority_reason, "previous_failure") != 0)
         goto out;
 
     /* Born-red P0 regression: a tooling edit whose mapped closure includes
@@ -2684,7 +2795,7 @@ static bool run_resident_restart_fixture(void)
         !proof.source_identity_overlay ||
         strlen(proof.source_cas_sha3) != 64 ||
         proof.compiler_processes != 3 || proof.linker_processes != 1 ||
-        proof.test_processes != 1)
+        proof.test_processes != 2)
         goto out;
 
     memset(&proof, 0, sizeof(proof));
@@ -3030,6 +3141,43 @@ static int test_cycle_proof_reuse_contract(void)
     return failures;
 }
 
+static int test_progressive_event_vocabulary(void)
+{
+    int failures = 0;
+    TEST("dev platform: progressive events have one stable scheduling vocabulary") {
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "edit_seen", "legacy"), "EDIT_SEEN") == 0);
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "impact_ready", "legacy"), "IMPACT_READY") == 0);
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "reflex_ready", "candidate_probe"),
+                      "COMPILE_GREEN") == 0);
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "rejected", "compile_link_probe"),
+                      "COMPILE_RED") == 0);
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "story_green", "vault_intent_story"),
+                      "STORY_GREEN") == 0);
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "story_red", "vault_intent_story"),
+                      "STORY_RED") == 0);
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "feedback_ready", "immediate_affected_proofs"),
+                      "FOCUSED_GREEN") == 0);
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "rejected", "affected_proofs"),
+                      "FOCUSED_RED") == 0);
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "proof_pending", "integration"),
+                      "PROOF_PENDING") == 0);
+        ASSERT(strcmp(zcl_devloop_progress_phase(
+                          "superseded", "source_epoch_cas"),
+                      "SUPERSEDED") == 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_platform(void)
 {
     int failures = 0;
@@ -3041,6 +3189,7 @@ int test_dev_platform(void)
     failures += test_resident_process_supersession();
     failures += test_native_source_cas_shadow();
     failures += test_cycle_proof_reuse_contract();
+    failures += test_progressive_event_vocabulary();
     failures += test_menu_and_search();
     failures += test_change_classification();
     failures += test_change_plan_closure();

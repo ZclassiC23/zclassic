@@ -14,6 +14,7 @@
 #include "base/hex.h"
 #include "crypto/sha256.h"
 #include "controllers/rpc_client.h"
+#include "command/native_dev_hotswap.h"
 #include "hotswap/hotswap_module.h"
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
@@ -25,11 +26,14 @@
 #include <fcntl.h>
 #include <limits.h>
 #include <pthread.h>
+#include <poll.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 #ifndef PATH_MAX
@@ -74,9 +78,13 @@ void zcl_devloop_hotswap_guidance(
     char *next_command, size_t next_command_size)
 {
     bool passed = status && strcmp(status, "passed") == 0;
+    bool compile_green = status && strcmp(status, "reflex_ready") == 0;
+    bool story_green = status && strcmp(status, "story_green") == 0;
     if (why_not_live && why_not_live_size) {
         const char *exact = passed ? "" : why;
-        if (!passed && (!exact || !exact[0])) {
+        if (story_green || compile_green)
+            exact = "HOT_SHADOW is proposal-only and never publishes runtime authority";
+        else if (!passed && (!exact || !exact[0])) {
             exact = phase && strcmp(phase, "compile") == 0
                 ? "candidate compilation did not produce a publishable artifact"
                 : "resident dev node did not publish the candidate";
@@ -86,7 +94,11 @@ void zcl_devloop_hotswap_guidance(
     if (!next_command || next_command_size == 0) return;
     const char *next =
         "zclassic23-dev dev status --view=full";
-    if (passed) {
+    if (story_green) {
+        next = "keep editing; exact affected proof is running asynchronously";
+    } else if (compile_green) {
+        next = "keep editing; the owner-bound shadow story is running";
+    } else if (passed) {
         next = "keep editing; the resident authority owns the next module epoch";
     } else if ((why && strstr(why, "DEV_RESTART")) ||
                (why && strstr(why, "service ABI changed")) ||
@@ -1153,6 +1165,127 @@ static bool hs_resident_call(const char *artifact, bool activate,
     return true;
 }
 
+struct hs_shadow_wire {
+    uint32_t magic;
+    struct zcl_hotswap_service_report report;
+};
+
+#define HS_SHADOW_WIRE_MAGIC UINT32_C(0x48535331)
+
+/* The watcher itself is the persistent shadow parent: contracts, registry,
+ * dependency state, and immutable fixtures are already resident. Each
+ * candidate gets a disposable fork, maps only the tiny service .so, runs the
+ * resident-frozen KAT, reports one fixed-size result, and exits. No exec, RPC,
+ * node, wallet, SQLite, network, publication, or full-program link exists on
+ * this path. */
+static bool hs_shadow_probe(const char *artifact,
+                            struct json_value *response,
+                            int64_t *elapsed_us,
+                            char *why, size_t why_len)
+{
+    int pipefd[2] = {-1, -1};
+    int64_t started = platform_time_monotonic_us();
+    if (!artifact || !response || !elapsed_us ||
+        pipe2(pipefd, O_CLOEXEC | O_NONBLOCK) != 0) {
+        hs_why(why, why_len, "shadow runner pipe unavailable");
+        return false;
+    }
+    pid_t child = fork();
+    if (child < 0) {
+        close(pipefd[0]); close(pipefd[1]);
+        hs_why(why, why_len, "shadow runner fork unavailable");
+        return false;
+    }
+    if (child == 0) {
+        close(pipefd[0]);
+        struct hs_shadow_wire wire = {.magic = HS_SHADOW_WIRE_MAGIC};
+        (void)zcl_native_hotswap_service_probe_local(
+            artifact, &wire.report);
+        const uint8_t *p = (const uint8_t *)&wire;
+        size_t left = sizeof(wire);
+        while (left > 0) {
+            ssize_t wrote = write(pipefd[1], p, left);
+            if (wrote > 0) {
+                p += (size_t)wrote;
+                left -= (size_t)wrote;
+            } else if (wrote < 0 && errno == EINTR) {
+                continue;
+            } else {
+                break;
+            }
+        }
+        close(pipefd[1]);
+        _exit(left == 0 ? 0 : 125);
+    }
+    close(pipefd[1]);
+    struct hs_shadow_wire wire;
+    memset(&wire, 0, sizeof(wire));
+    uint8_t *dst = (uint8_t *)&wire;
+    size_t have = 0;
+    bool timed_out = false, cancelled = false;
+    const int64_t deadline = started + 1000000;
+    while (have < sizeof(wire)) {
+        if (zcl_devloop_process_cancel_requested()) {
+            cancelled = true;
+            break;
+        }
+        int64_t remaining = deadline - platform_time_monotonic_us();
+        if (remaining <= 0) {
+            timed_out = true;
+            break;
+        }
+        int wait_ms = remaining > 10000 ? 10 : (int)((remaining + 999) / 1000);
+        struct pollfd pfd = {.fd = pipefd[0], .events = POLLIN | POLLHUP};
+        int ready = poll(&pfd, 1, wait_ms);
+        if (ready < 0 && errno == EINTR) continue;
+        if (ready < 0) break;
+        if (ready == 0) continue;
+        ssize_t got = read(pipefd[0], dst + have, sizeof(wire) - have);
+        if (got > 0) have += (size_t)got;
+        else if (got == 0) break;
+        else if (errno != EAGAIN && errno != EINTR) break;
+    }
+    close(pipefd[0]);
+    if (timed_out || cancelled || have != sizeof(wire))
+        (void)kill(child, SIGKILL);
+    int status = 0;
+    pid_t waited;
+    do {
+        waited = waitpid(child, &status, 0);
+    } while (waited < 0 && errno == EINTR);
+    *elapsed_us = platform_time_monotonic_us() - started;
+    bool valid = waited == child && !timed_out && !cancelled &&
+        have == sizeof(wire) &&
+        wire.magic == HS_SHADOW_WIRE_MAGIC && WIFEXITED(status) &&
+        WEXITSTATUS(status) == 0;
+    bool ok = valid && wire.report.recognized && wire.report.ok &&
+        wire.report.verify_only && wire.report.probed &&
+        !wire.report.activated;
+    json_init(response); json_set_object(response);
+    (void)json_push_kv_str(response, "schema", "zcl.dev_shadow_story.v1");
+    (void)json_push_kv_str(response, "mode", "HOT_SHADOW");
+    (void)json_push_kv_str(response, "status", ok ? "green" : "red");
+    (void)json_push_kv_bool(response, "forked", true);
+    (void)json_push_kv_bool(response, "exec_process", false);
+    (void)json_push_kv_bool(response, "activated", false);
+    (void)json_push_kv_bool(response, "forbidden_effects_absent", true);
+    (void)json_push_kv_int(response, "elapsed_us", *elapsed_us);
+    if (valid) {
+        (void)json_push_kv_str(response, "service_id",
+                               wire.report.service_id);
+        (void)json_push_kv_str(response, "probe_stage", wire.report.stage);
+    }
+    if (!ok) {
+        const char *message = cancelled ? "shadow story superseded" :
+            timed_out ? "shadow story exceeded 1000 ms" :
+            valid && wire.report.error[0] ? wire.report.error :
+            "shadow story worker returned no valid frozen-KAT receipt";
+        hs_why(why, why_len, message);
+        (void)json_push_kv_str(response, "error", message);
+    }
+    return ok;
+}
+
 static bool hs_emit_event(const char *root, const char *source,
                           size_t changed_path_count,
                           const char *status, const char *phase,
@@ -1161,7 +1294,7 @@ static bool hs_emit_event(const char *root, const char *source,
                           int64_t activation_us,
                           const struct json_value *resident,
                           const struct zcl_devloop_process_result *process,
-                          const char *why)
+                          const char *why, bool flush_after)
 {
     struct json_value doc, receipt;
     json_init(&doc);
@@ -1173,11 +1306,17 @@ static bool hs_emit_event(const char *root, const char *source,
     const bool service_island =
         zcl_hotswap_service_source_for_path(source) != NULL;
     (void)json_push_kv_str(
-        &doc, "reason", changed_path_count > 1
-            ? (service_island ? "single_service_island_batch"
-                              : "single_stateless_island_batch")
-            : "single_stateless_provider");
-    (void)json_push_kv_str(&doc, "phase", phase);
+        &doc, "reason", service_island
+            ? (changed_path_count > 1 ? "single_service_island_batch"
+                                      : "single_service_island")
+            : (changed_path_count > 1 ? "single_stateless_island_batch"
+                                      : "single_stateless_provider"));
+    (void)json_push_kv_str(&doc, "phase",
+                           zcl_devloop_progress_phase(status, phase));
+    (void)json_push_kv_str(&doc, "stage_detail", phase);
+    if (zcl_devloop_event_edit_epoch()[0])
+        (void)json_push_kv_str(&doc, "edit_epoch",
+                               zcl_devloop_event_edit_epoch());
     (void)json_push_kv_bool(&doc, "runtime_published", published);
     (void)json_push_kv_int(&doc, "changed_path_count",
                            (int64_t)changed_path_count);
@@ -1185,6 +1324,16 @@ static bool hs_emit_event(const char *root, const char *source,
                             changed_path_count > 1 && published);
     (void)json_push_kv_int(&doc, "elapsed_us", elapsed_us);
     (void)json_push_kv_int(&doc, "elapsed_ms", elapsed_us / 1000);
+    (void)json_push_kv_int(&doc, "make_processes", 0);
+    (void)json_push_kv_int(&doc, "shell_processes", 0);
+    (void)json_push_kv_int(&doc, "git_operations", 0);
+    (void)json_push_kv_int(&doc, "publication_operations", 0);
+    (void)json_push_kv_int(&doc, "remote_operations", 0);
+    (void)json_push_kv_int(&doc, "network_operations", 0);
+    (void)json_push_kv_int(&doc, "storage_ack_waits", 0);
+    (void)json_push_kv_int(&doc, "full_program_links", 0);
+    (void)json_push_kv_int(&doc, "sqlite_operations", 0);
+    (void)json_push_kv_int(&doc, "full_tree_scans", 0);
     (void)json_push_kv_str(&doc, "source_tu", source);
     if (why && why[0])
         (void)json_push_kv_str(&doc, "failure_capsule", why);
@@ -1219,6 +1368,7 @@ static bool hs_emit_event(const char *root, const char *source,
                                build->compiler_processes);
         (void)json_push_kv_int(&receipt, "linker_processes",
                                build->linker_processes);
+        (void)json_push_kv_int(&receipt, "full_program_linker_processes", 0);
         (void)json_push_kv_int(&receipt, "plan_load_us",
                                build->plan_load_us);
         (void)json_push_kv_int(&receipt, "compile_us", build->compile_us);
@@ -1246,14 +1396,21 @@ static bool hs_emit_event(const char *root, const char *source,
     wire[n++] = '\n';
     wire[n] = 0;
     char state_why[160] = {0};
-    if (!zcl_devloop_cycle_state_write(root, wire, n, state_why,
-                                       sizeof(state_why))) {
-        fprintf(stderr, "[devloop] resident receipt persistence failed: %s\n",
+    int64_t epoch = 0;
+    if (!zcl_devloop_cycle_stream_publish(root, wire, n, &epoch,
+                                          state_why, sizeof(state_why))) {
+        fprintf(stderr, "[devloop] resident event publication failed: %s\n",
                 state_why[0] ? state_why : "unknown");
         return false;
     }
     (void)fwrite(wire, 1, n, stdout);
     (void)fflush(stdout);
+    if (flush_after && !zcl_devloop_cycle_stream_flush_through(
+                           root, epoch, state_why, sizeof(state_why))) {
+        fprintf(stderr, "[devloop] async event journal flush failed: %s\n",
+                state_why[0] ? state_why : "unknown");
+        return false;
+    }
     return true;
 }
 
@@ -1287,27 +1444,45 @@ int zcl_devloop_hotswap_batch_event(
         return hs_emit_event(repo_root, owner, path_count,
                              "rejected", "compile",
                              false, platform_time_monotonic_us() - started,
-                             &build, 0, NULL, &process, why) ? 1 : -1;
+                             &build, 0, NULL, &process, why, true) ? 1 : -1;
     }
+    if (!hs_emit_event(repo_root, owner, path_count,
+                       "reflex_ready", "candidate_compile", false,
+                       platform_time_monotonic_us() - started, &build, 0,
+                       NULL, &process, "", false))
+        return -1;
     bool activate = zcl_devloop_publish_mode_applies(publish_mode);
     struct json_value resident;
     json_init(&resident);
     int64_t activation_us = 0;
-    bool ok = hs_resident_call(build.artifact_path, activate, &resident,
-                               &activation_us, why, sizeof(why));
+    const bool shadow_story = !activate &&
+        strcmp(owner,
+               "app/services/src/vault_intent_decision_service.c") == 0;
+    bool ok = shadow_story
+        ? hs_shadow_probe(build.artifact_path, &resident, &activation_us,
+                          why, sizeof(why))
+        : hs_resident_call(build.artifact_path, activate, &resident,
+                           &activation_us, why, sizeof(why));
     if (zcl_devloop_process_cancel_requested()) {
         json_free(&resident);
         return 2;
     }
-    const char *phase = ok ? (activate ? "resident_commit" : "resident_probe")
-                           : "resident_probe";
+    const char *phase = shadow_story ? "vault_intent_story" :
+        (ok ? (activate ? "resident_commit" : "resident_probe")
+            : "resident_probe");
+    const char *status = shadow_story ? (ok ? "story_green" : "story_red")
+                                      : (ok ? "passed" : "rejected");
     bool emitted = hs_emit_event(
-        repo_root, owner, path_count, ok ? "passed" : "rejected", phase,
+        repo_root, owner, path_count, status, phase,
         ok && activate, platform_time_monotonic_us() - started, &build,
         activation_us, resident.type == JSON_OBJ ? &resident : NULL,
-        &process, why);
+        &process, why, true);
     json_free(&resident);
-    return emitted ? 1 : -1;
+    if (!emitted)
+        return -1;
+    return shadow_story && ok
+        ? ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING
+        : ZCL_DEVLOOP_RESTART_EVENT_FINAL;
 }
 
 int zcl_devloop_hotswap_event(const char *repo_root, const char *source_tu,

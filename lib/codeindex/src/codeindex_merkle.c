@@ -167,14 +167,21 @@ static void merkle_node_digest(const char *path, const struct merkle_child *kids
  * inode state", so the key we store is the key the digest belongs to. */
 static bool merkle_leaf_digest(const char *root, const char *relpath,
                                struct zcl_sha3_digest *out, uint64_t *out_size,
-                               struct merkle_stat_key *out_key)
+                               struct merkle_stat_key *out_key, bool *found)
 {
+    *found = false;
     char full[CI_PATH_MAX];
     int n = snprintf(full, sizeof(full), "%s/%s", root, relpath);
     if (n <= 0 || (size_t)n >= sizeof(full))
         LOG_FAIL("codeindex", "merkle leaf path too long: %s", relpath);
 
     int fd = open(full, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0 && errno == ENOENT) {
+        memset(out, 0, sizeof(*out));
+        *out_size = 0;
+        memset(out_key, 0, sizeof(*out_key));
+        return true;
+    }
     if (fd < 0)
         LOG_FAIL("codeindex", "merkle open leaf failed path=%s: %s", relpath,
                  strerror(errno));
@@ -230,6 +237,7 @@ static bool merkle_leaf_digest(const char *root, const char *relpath,
     out_key->mtime_nsec = (uint64_t)after.st_mtim.tv_nsec;
     out_key->ctime_sec = (uint64_t)after.st_ctim.tv_sec;
     out_key->ctime_nsec = (uint64_t)after.st_ctim.tv_nsec;
+    *found = true;
     return true;
 }
 
@@ -846,8 +854,9 @@ static bool merkle_file_cb(const char *relpath, const struct stat *st,
         leaf.dirty = false;
         b->cost.leaves_reused++;
     } else {
+        bool found = false;
         if (!merkle_leaf_digest(b->root, relpath, &leaf.digest, &leaf.size,
-                               &leaf.key)) {
+                                &leaf.key, &found) || !found) {
             b->err = true;
             return false;
         }
@@ -1095,6 +1104,37 @@ bool ci_merkle_leaf(const struct ci_merkle *m, const char *filepath,
     out->size = l->size;
     *found = true;
     return true;
+}
+
+static bool merkle_relative_path_valid(const char *path)
+{
+    if (!path || !path[0] || path[0] == '/' || strlen(path) >= 256)
+        return false;
+    const char *part = path;
+    while (*part) {
+        const char *slash = strchr(part, '/');
+        size_t len = slash ? (size_t)(slash - part) : strlen(part);
+        if (len == 0 || (len == 1 && part[0] == '.') ||
+            (len == 2 && part[0] == '.' && part[1] == '.'))
+            return false;
+        if (!slash)
+            break;
+        part = slash + 1;
+    }
+    return true;
+}
+
+bool ci_merkle_hash_changed_leaf(const char *root, const char *filepath,
+                                 struct ci_merkle_leaf *out, bool *found)
+{
+    if (!root || !root[0] || !merkle_relative_path_valid(filepath) || !out ||
+        !found)
+        LOG_FAIL("codeindex", "invalid changed-leaf hash request");
+    struct merkle_stat_key key;
+    memset(out, 0, sizeof(*out));
+    (void)snprintf(out->path, sizeof(out->path), "%s", filepath);
+    return merkle_leaf_digest(root, filepath, &out->digest, &out->size, &key,
+                              found);
 }
 
 int ci_merkle_child_dirs(const struct ci_merkle *m, const char *dirpath,

@@ -201,6 +201,17 @@ static int test_cm_sensitivity_and_locality(void)
         ASSERT(cm_leaf_hex(after, "lib/crypto/src/cm_c.c", c_after));
         ASSERT(cm_leaf_hex(after, "core/cm_core.c", core_after));
 
+        /* The resident edit seam hashes only the known changed path and lands
+         * on the exact canonical leaf; it does not refresh or enumerate. */
+        struct ci_merkle_leaf changed_leaf;
+        bool changed_found = false;
+        ASSERT(ci_merkle_hash_changed_leaf(
+            CM_FIX, "lib/net/src/cm_a.c", &changed_leaf, &changed_found));
+        ASSERT(changed_found);
+        char changed_hex[65];
+        ci_merkle_hex(&changed_leaf.digest, changed_hex);
+        ASSERT(strcmp(changed_hex, a_after) == 0);
+
         /* changed: the edited leaf, its two ancestors, the root. */
         ASSERT(strcmp(a_before, a_after) != 0);
         ASSERT(strcmp(net_before, net_after) != 0);
@@ -391,6 +402,12 @@ static int test_cm_inventory_reconciliation(void)
         ci_merkle_free(with_added);
 
         ASSERT(remove(CM_FIX "/lib/net/src/cm_added.c") == 0);
+        struct ci_merkle_leaf removed_leaf;
+        bool removed_found = true;
+        ASSERT(ci_merkle_hash_changed_leaf(
+            CM_FIX, "lib/net/src/cm_added.c", &removed_leaf,
+            &removed_found));
+        ASSERT(!removed_found);
         struct ci_merkle_cost removed = {0};
         struct ci_merkle *without_added =
             ci_merkle_refresh_reconciled(CM_FIX, &removed);

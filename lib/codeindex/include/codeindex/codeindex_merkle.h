@@ -116,6 +116,13 @@ bool ci_merkle_node(const struct ci_merkle *m, const char *dirpath,
 bool ci_merkle_leaf(const struct ci_merkle *m, const char *filepath,
                     struct ci_merkle_leaf *out, bool *found);
 
+/* Hash one known changed path with the exact leaf preimage used by this tree,
+ * without enumerating or refreshing the repository. Missing is an honest
+ * result (*found=false); symlinks, path escapes, type changes, and bytes that
+ * mutate during the read fail closed. This is the resident edit-epoch seam. */
+bool ci_merkle_hash_changed_leaf(const char *root, const char *filepath,
+                                 struct ci_merkle_leaf *out, bool *found);
+
 /* Direct subdirectories of `dirpath`, in the documented child order. Fills up
  * to `cap` rows, returns the count of direct subdirectories that EXIST (which
  * may exceed `cap`, so a caller can report truncation), -1 on error. */

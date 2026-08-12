@@ -20,6 +20,7 @@ extern "C" {
 
 struct rpc_table;
 struct hotswap_publish_hooks;
+struct zcl_hotswap_service_report;
 
 /* Register the resident-node RPC method `dev_hotswap_native` on `table`.
  * DEV-ONLY, and a successful no-op on a release build or a non-dev-lane
@@ -42,7 +43,16 @@ bool register_dev_native_hotswap_rpc(struct rpc_table *table,
  * exists. DEV-ONLY, like every other symbol on this path. */
 void zcl_native_hotswap_publish_hooks(struct hotswap_publish_hooks *out,
                                       bool with_quiesce);
+
 #endif /* ZCL_DEV_BUILD */
+
+/* Verify one pure service module entirely inside the caller. This never
+ * activates a generation and never reaches RPC/network/storage. It exists so
+ * the warm watcher can fork a disposable HOT_SHADOW child over resident
+ * frozen contracts and fixtures. Non-dev builds return false without loading
+ * code, preserving the release/test containment boundary. */
+bool zcl_native_hotswap_service_probe_local(
+    const char *so_path, struct zcl_hotswap_service_report *report);
 
 #ifdef __cplusplus
 }

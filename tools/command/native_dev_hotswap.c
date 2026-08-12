@@ -44,6 +44,7 @@
 #include "services/shop_reputation_view_service.h"
 #include "services/shop_status_view_service.h"
 #include "services/shop_want_view_service.h"
+#include "services/vault_intent_decision_service.h"
 #include "controllers/rpc_client.h"
 #include "rpc/protocol.h"
 #include "rpc/server.h"
@@ -53,6 +54,38 @@
 #include <string.h>
 
 #ifdef ZCL_DEV_BUILD
+
+static bool probe_service_any(const char *so_path,
+                              const char *resolved_datadir,
+                              bool activate,
+                              struct zcl_hotswap_service_report *report)
+{
+    const struct zcl_hotswap_service_contract *service_contracts[] = {
+        zcl_native_zcode_corpus_service_contract(),
+        zcl_native_zcode_economics_service_contract(),
+        zcl_native_market_purchase_view_service_contract(),
+        zcl_native_market_moderation_view_service_contract(),
+        zcl_native_zcode_package_view_service_contract(),
+        zcl_native_zcode_moderation_view_service_contract(),
+        zcl_native_zcode_passport_view_service_contract(),
+        zcode_goal_context_calc_service_contract(),
+        zcode_lane_view_service_contract(),
+        zcl_native_zcode_workspace_view_service_contract(),
+        zcl_native_shop_reputation_view_service_contract(),
+        zcl_native_shop_status_view_service_contract(),
+        zcl_native_shop_want_view_service_contract(),
+        zcl_native_vault_intent_decision_service_contract(),
+    };
+    return zcl_hotswap_service_activate_so_any(
+        so_path, resolved_datadir, activate, service_contracts,
+        sizeof(service_contracts) / sizeof(service_contracts[0]), report);
+}
+
+bool zcl_native_hotswap_service_probe_local(
+    const char *so_path, struct zcl_hotswap_service_report *report)
+{
+    return probe_service_any(so_path, "", false, report);
+}
 
 /* The resident node's own datadir, captured at RPC registration (boot) time.
  * rpc_dev_hotswap_native runs INSIDE the node process, where the one-shot
@@ -520,26 +553,9 @@ static bool rpc_dev_hotswap_native(const struct json_value *params, bool help,
      * existing v2 command path. A recognized-but-invalid service NEVER falls
      * through: contract/KAT drift must route to DEV_RESTART, not be
      * reinterpreted under another ABI. */
-    const struct zcl_hotswap_service_contract *service_contracts[] = {
-        zcl_native_zcode_corpus_service_contract(),
-        zcl_native_zcode_economics_service_contract(),
-        zcl_native_market_purchase_view_service_contract(),
-        zcl_native_market_moderation_view_service_contract(),
-        zcl_native_zcode_package_view_service_contract(),
-        zcl_native_zcode_moderation_view_service_contract(),
-        zcl_native_zcode_passport_view_service_contract(),
-        zcode_goal_context_calc_service_contract(),
-        zcode_lane_view_service_contract(),
-        zcl_native_zcode_workspace_view_service_contract(),
-        zcl_native_shop_reputation_view_service_contract(),
-        zcl_native_shop_status_view_service_contract(),
-        zcl_native_shop_want_view_service_contract(),
-    };
     struct zcl_hotswap_service_report service_report;
-    bool service_ok = zcl_hotswap_service_activate_so_any(
-        so_path, g_resident_datadir, activate, service_contracts,
-        sizeof(service_contracts) / sizeof(service_contracts[0]),
-        &service_report);
+    bool service_ok = probe_service_any(
+        so_path, g_resident_datadir, activate, &service_report);
     if (service_report.recognized) {
         json_set_object(result);
         json_push_kv_str(result, "schema", "zcl.hotswap_service_activate.v1");
@@ -680,26 +696,9 @@ void zcl_native_handle_dev_hotswap_probe(
             false, "so_path (absolute) is required", "dev.hotswap.probe");
         return;
     }
-    const struct zcl_hotswap_service_contract *service_contracts[] = {
-        zcl_native_zcode_corpus_service_contract(),
-        zcl_native_zcode_economics_service_contract(),
-        zcl_native_market_purchase_view_service_contract(),
-        zcl_native_market_moderation_view_service_contract(),
-        zcl_native_zcode_package_view_service_contract(),
-        zcl_native_zcode_moderation_view_service_contract(),
-        zcl_native_zcode_passport_view_service_contract(),
-        zcode_goal_context_calc_service_contract(),
-        zcode_lane_view_service_contract(),
-        zcl_native_zcode_workspace_view_service_contract(),
-        zcl_native_shop_reputation_view_service_contract(),
-        zcl_native_shop_status_view_service_contract(),
-        zcl_native_shop_want_view_service_contract(),
-    };
     struct zcl_hotswap_service_report service_report;
-    (void)zcl_hotswap_service_activate_so_any(
-        so_path, node_rpc_client_datadir(), false, service_contracts,
-        sizeof(service_contracts) / sizeof(service_contracts[0]),
-        &service_report);
+    (void)probe_service_any(
+        so_path, node_rpc_client_datadir(), false, &service_report);
     if (service_report.recognized) {
         service_report_to_reply(reply, &service_report);
         return;
@@ -743,6 +742,15 @@ bool register_dev_native_hotswap_rpc(struct rpc_table *table,
 }
 
 #else /* !ZCL_DEV_BUILD — release: no resident hot-swap RPC surface */
+
+bool zcl_native_hotswap_service_probe_local(
+    const char *so_path, struct zcl_hotswap_service_report *report)
+{
+    (void)so_path;
+    if (report)
+        memset(report, 0, sizeof(*report));
+    return false;
+}
 
 bool register_dev_native_hotswap_rpc(struct rpc_table *table,
                                      const char *datadir, int rpc_port)

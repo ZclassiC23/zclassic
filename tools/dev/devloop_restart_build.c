@@ -75,6 +75,18 @@ struct rr_overlay {
 static pthread_mutex_t g_rr_mu = PTHREAD_MUTEX_INITIALIZER;
 static struct rr_plan g_rr_plan;
 
+/* One warm watcher owns this process. Remember the last affected RED in
+ * memory so the next edit in the same checkout runs that exact group before
+ * catalog/default owner order. This is scheduling evidence only: no test is
+ * removed, cached as proof, or persisted across watcher generations. */
+struct rr_failure_priority {
+    char root[PATH_MAX];
+    char group[ZCL_TEST_GROUP_FULL_MAX];
+    bool present;
+};
+
+static struct rr_failure_priority g_rr_failure_priority;
+
 static void rr_why(char *why, size_t why_len, const char *message)
 {
     if (why && why_len)
@@ -1389,6 +1401,94 @@ static bool rr_summary_value(const char *summary, const char *key,
     return true;
 }
 
+static bool rr_group_list_contains(const char *groups, const char *group)
+{
+    if (!groups || !group || !group[0]) return false;
+    size_t want = strlen(group);
+    for (const char *at = groups; *at;) {
+        const char *end = strchr(at, ',');
+        size_t len = end ? (size_t)(end - at) : strlen(at);
+        if (len == want && memcmp(at, group, want) == 0)
+            return true;
+        if (!end) break;
+        at = end + 1;
+    }
+    return false;
+}
+
+static bool rr_failure_priority_select(
+    const char *root, const char *groups, const char *direct_group,
+    char out[ZCL_TEST_GROUP_FULL_MAX], char reason[64])
+{
+    bool previous = false;
+    pthread_mutex_lock(&g_rr_mu);
+    if (g_rr_failure_priority.present &&
+        strcmp(g_rr_failure_priority.root, root) == 0 &&
+        rr_group_list_contains(groups, g_rr_failure_priority.group)) {
+        (void)snprintf(out, ZCL_TEST_GROUP_FULL_MAX, "%s",
+                       g_rr_failure_priority.group);
+        previous = true;
+    }
+    pthread_mutex_unlock(&g_rr_mu);
+    if (previous) {
+        (void)snprintf(reason, 64, "%s", "previous_failure");
+        return true;
+    }
+    if (!direct_group || !rr_group_list_contains(groups, direct_group))
+        return false;
+    (void)snprintf(out, ZCL_TEST_GROUP_FULL_MAX, "%s", direct_group);
+    (void)snprintf(reason, 64, "%s", "direct_owner_invariant");
+    return true;
+}
+
+static void rr_failure_priority_store(const char *root, const char *group)
+{
+    if (!root || !group || !group[0])
+        return;
+    pthread_mutex_lock(&g_rr_mu);
+    (void)snprintf(g_rr_failure_priority.root,
+                   sizeof(g_rr_failure_priority.root), "%s", root);
+    (void)snprintf(g_rr_failure_priority.group,
+                   sizeof(g_rr_failure_priority.group), "%s", group);
+    g_rr_failure_priority.present = true;
+    pthread_mutex_unlock(&g_rr_mu);
+}
+
+static void rr_failure_priority_clear(const char *root, const char *group)
+{
+    pthread_mutex_lock(&g_rr_mu);
+    if (g_rr_failure_priority.present && root && group &&
+        strcmp(g_rr_failure_priority.root, root) == 0 &&
+        strcmp(g_rr_failure_priority.group, group) == 0)
+        memset(&g_rr_failure_priority, 0, sizeof(g_rr_failure_priority));
+    pthread_mutex_unlock(&g_rr_mu);
+}
+
+static bool rr_failed_group_from_output(
+    const char *output, const char *selected_groups,
+    char out[ZCL_TEST_GROUP_FULL_MAX])
+{
+    static const char marker[] = "Failed groups:\n";
+    const char *section = output ? strstr(output, marker) : NULL;
+    if (!section)
+        return false;
+    section += sizeof(marker) - 1;
+    if (strncmp(section, "  - ", 4) != 0)
+        return false;
+    const char *name = section + 4;
+    const char *colon = strchr(name, ':');
+    size_t len = colon ? (size_t)(colon - name) : 0;
+    if (len == 0 || len >= ZCL_TEST_GROUP_FULL_MAX)
+        return false;
+    char candidate[ZCL_TEST_GROUP_FULL_MAX];
+    memcpy(candidate, name, len);
+    candidate[len] = 0;
+    if (!rr_group_list_contains(selected_groups, candidate))
+        return false;
+    (void)snprintf(out, ZCL_TEST_GROUP_FULL_MAX, "%s", candidate);
+    return true;
+}
+
 static bool rr_restart_prove(
     const char *repo_root, const char *const *source_tus, size_t source_count,
     const struct zcl_devloop_plan *proof_plan,
@@ -1554,12 +1654,84 @@ static bool rr_restart_prove(
         test_argv[test_argc++] = changed_args[i];
     }
     test_argv[test_argc] = NULL;
-    receipt->test_processes = 1;
+    /* The exact story has already run in HOT_SHADOW. Within affected proof,
+     * run the last RED for this checkout/task first when it is still selected;
+     * otherwise run the direct owner invariant. The complete batch still runs
+     * afterward and accounts for every required group. */
+    char direct_full[ZCL_TEST_GROUP_FULL_MAX] = {0};
+    const char *direct_group = proof_plan->proof_group &&
+        zcl_test_group_resolve_exact(proof_plan->proof_group, direct_full)
+            ? direct_full : NULL;
+    char priority_full[ZCL_TEST_GROUP_FULL_MAX] = {0};
+    char priority_reason[64] = {0};
+    bool have_priority = rr_failure_priority_select(
+        root, receipt->groups, direct_group, priority_full, priority_reason);
+    if (have_priority) {
+        char priority_exact[ZCL_TEST_GROUP_FULL_MAX + 16];
+        if (snprintf(priority_exact, sizeof(priority_exact), "--exact=%s",
+                     priority_full) >= (int)sizeof(priority_exact)) {
+            rr_why(why, why_len, "priority group selector exceeds its bound");
+            return false;
+        }
+        const char *priority_argv[RR_SOURCE_MAX + 5] = {
+            receipt->artifact_path, priority_exact, "--cache",
+            "--cache-snapshot",
+        };
+        for (size_t i = 0; i < source_count; i++)
+            priority_argv[4 + i] = changed_args[i];
+        priority_argv[4 + source_count] = NULL;
+        struct zcl_devloop_process_result priority_process = {0};
+        int64_t priority_started = platform_time_monotonic_us();
+        receipt->test_processes++;
+        bool priority_ran = zcl_devloop_process_run_test(
+            root, priority_argv, 300000, &priority_process);
+        receipt->priority_test_us =
+            platform_time_monotonic_us() - priority_started;
+        (void)snprintf(receipt->priority_group,
+                       sizeof(receipt->priority_group), "%s", priority_full);
+        (void)snprintf(receipt->priority_reason,
+                       sizeof(receipt->priority_reason), "%s",
+                       priority_reason);
+        uint32_t priority_ran_count = 0, priority_cached = 0;
+        uint32_t priority_failed = 0, priority_skips = 0;
+        bool priority_summary = priority_ran &&
+            rr_summary_value(priority_process.output, "groups_ran=",
+                             &priority_ran_count) &&
+            rr_summary_value(priority_process.output, "groups_cached=",
+                             &priority_cached) &&
+            rr_summary_value(priority_process.output, "groups_failed=",
+                             &priority_failed) &&
+            rr_summary_value(priority_process.output, "self_skips=",
+                             &priority_skips);
+        bool priority_ok = priority_summary && !priority_process.timed_out &&
+            !priority_process.term_signal && priority_process.exit_code == 0 &&
+            priority_ran_count + priority_cached == 1 &&
+            priority_failed == 0 && priority_skips == 0;
+        if (!priority_ok) {
+            if (!priority_process.cancelled)
+                rr_failure_priority_store(root, priority_full);
+            *process = priority_process;
+            receipt->test_us += receipt->priority_test_us;
+            receipt->test_startup_us += priority_process.startup_us;
+            receipt->test_body_us += priority_process.body_us;
+            receipt->groups_ran = priority_ran_count;
+            receipt->groups_cached = priority_cached;
+            receipt->groups_failed = priority_failed;
+            receipt->self_skips = priority_skips;
+            receipt->total_us = platform_time_monotonic_us() - started;
+            rr_why(why, why_len,
+                   "failure-first direct owner invariant failed");
+            return false;
+        }
+        if (strcmp(priority_reason, "previous_failure") == 0)
+            rr_failure_priority_clear(root, priority_full);
+    }
+    receipt->test_processes++;
     int64_t test_started = platform_time_monotonic_us();
     bool ran = zcl_devloop_process_run_test(root, test_argv, 300000, process);
-    receipt->test_us = platform_time_monotonic_us() - test_started;
-    receipt->test_startup_us = process->startup_us;
-    receipt->test_body_us = process->body_us;
+    receipt->test_us += platform_time_monotonic_us() - test_started;
+    receipt->test_startup_us += process->startup_us;
+    receipt->test_body_us += process->body_us;
     bool summary_ok = ran &&
         rr_summary_value(process->output, "groups_ran=",
                          &receipt->groups_ran) &&
@@ -1581,6 +1753,10 @@ static bool rr_restart_prove(
         !receipt->integration_proof_deferred;
     receipt->total_us = platform_time_monotonic_us() - started;
     if (!receipt->immediate_proof_complete) {
+        char failed_group[ZCL_TEST_GROUP_FULL_MAX];
+        if (!process->cancelled && rr_failed_group_from_output(
+                process->output, receipt->groups, failed_group))
+            rr_failure_priority_store(root, failed_group);
         char detail[256];
         if (!ran) {
             rr_why(why, why_len,
@@ -1668,6 +1844,7 @@ static bool rr_emit_event(
     int64_t impact_us, int64_t closure_us, bool closure_refresh_deferred,
     bool feedback_parallel)
 {
+    const char *progress_phase = zcl_devloop_progress_phase(status, phase);
     struct json_value doc, files, receipt;
     json_init(&doc); json_set_object(&doc);
     (void)json_push_kv_str(&doc, "schema", "zcl.dev_cycle.v1");
@@ -1675,7 +1852,11 @@ static bool rr_emit_event(
     (void)json_push_kv_str(&doc, "status", status);
     (void)json_push_kv_str(&doc, "action", "restart");
     (void)json_push_kv_str(&doc, "reason", "process_restart_candidate");
-    (void)json_push_kv_str(&doc, "phase", phase);
+    (void)json_push_kv_str(&doc, "phase", progress_phase);
+    (void)json_push_kv_str(&doc, "stage_detail", phase);
+    if (zcl_devloop_event_edit_epoch()[0])
+        (void)json_push_kv_str(&doc, "edit_epoch",
+                               zcl_devloop_event_edit_epoch());
     (void)json_push_kv_bool(&doc, "runtime_published", false);
     (void)json_push_kv_bool(&doc, "publication_requested",
                             zcl_devloop_publish_mode_applies(requested_mode));
@@ -1832,6 +2013,12 @@ static bool rr_emit_event(
             (void)json_push_kv_str(&receipt,
                                    "deferred_groups_sha256",
                                    proof->deferred_groups_sha256);
+        if (proof->priority_group[0])
+            (void)json_push_kv_str(&receipt, "priority_group",
+                                   proof->priority_group);
+        if (proof->priority_reason[0])
+            (void)json_push_kv_str(&receipt, "priority_reason",
+                                   proof->priority_reason);
         (void)json_push_kv_bool(&receipt, "proof_complete",
                                 proof->proof_complete);
         (void)json_push_kv_bool(&receipt, "artifact_cache_hit",
@@ -1878,6 +2065,8 @@ static bool rr_emit_event(
                                proof->test_startup_us);
         (void)json_push_kv_int(&receipt, "test_body_us",
                                proof->test_body_us);
+        (void)json_push_kv_int(&receipt, "priority_test_us",
+                               proof->priority_test_us);
         (void)json_push_kv_int(&receipt, "proof_total_us", proof->total_us);
         (void)json_push_kv(&doc, "proof_receipt", &receipt);
         json_free(&receipt);
@@ -1899,6 +2088,22 @@ static bool rr_emit_event(
     if (!n) return false;
     wire[n++] = '\n'; wire[n] = 0;
     char state_why[160] = {0};
+    int64_t epoch = 0;
+    if (zcl_devloop_cycle_stream_publish(root, wire, n, &epoch,
+                                         state_why, sizeof(state_why))) {
+        (void)fwrite(wire, 1, n, stdout); (void)fflush(stdout);
+        if (!zcl_devloop_cycle_stream_flush_through(
+                root, epoch, state_why, sizeof(state_why))) {
+            fprintf(stderr,
+                    "[devloop] async restart journal flush failed: %s\n",
+                    state_why[0] ? state_why : "unknown");
+            return false;
+        }
+        return true;
+    }
+    /* Standalone unit/API callers do not own a resident ring. Preserve their
+     * durable behavior; the actual watcher always initializes the ring before
+     * reaching this path, so reflex feedback never takes this fallback. */
     if (!zcl_devloop_cycle_state_write(root, wire, n, state_why,
                                        sizeof(state_why))) {
         fprintf(stderr, "[devloop] restart receipt persistence failed: %s\n",
@@ -1933,12 +2138,10 @@ int zcl_devloop_restart_event(const char *repo_root,
             !rr_source_is_test_only(source_tus[i]);
     if (!has_runtime_source)
         return 0;
-    if (!rr_emit_event(
-            repo_root, source_tus, source_count, "impact_ready",
-            "IMPACT_READY", platform_time_monotonic_us() - started,
-            publish_mode, NULL, NULL, NULL, "", 0, 0, 0, 0, false,
-            impact_us, 0, false, false))
-        return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
+    /* The resident watcher has already published the immutable edit epoch and
+     * IMPACT_READY before entering this compiler lane. Keep the measured path
+     * classification cost in later receipts, but never emit a duplicate
+     * latest-value impact event from the slower proof stage. */
     int64_t source_guard_us = 0;
     uint64_t source_guard_bytes_read = 0;
     uint64_t source_bytes_total = 0;
@@ -2099,4 +2302,60 @@ int zcl_devloop_restart_event(const char *repo_root,
         return ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
     return fallback_pending ? ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING
                             : ZCL_DEVLOOP_RESTART_EVENT_FINAL;
+}
+
+int zcl_devloop_restart_story_prove_event(
+    const char *repo_root, const char *const *source_tus,
+    size_t source_count, enum zcl_devloop_publish_mode publish_mode)
+{
+    if (!repo_root || !source_tus || source_count == 0 ||
+        source_count > RR_SOURCE_MAX)
+        return ZCL_DEVLOOP_RESTART_EVENT_NOT_APPLICABLE;
+    int64_t started = platform_time_monotonic_us();
+    struct zcl_devloop_plan plan;
+    char why[512] = {0};
+    if (!zcl_devloop_plan_files(source_tus, source_count, &plan) ||
+        plan.docs_only || plan.consensus_risk) {
+        return ZCL_DEVLOOP_RESTART_EVENT_NOT_APPLICABLE;
+    }
+    const char *closure_reason = "";
+    bool closure_ok = zcl_devloop_plan_add_closure_snapshot(
+        repo_root, source_tus, source_count, &plan) &&
+        zcl_devloop_plan_proof_admissible(&plan, &closure_reason);
+    if (!closure_ok) {
+        (void)snprintf(why, sizeof(why),
+                       "affected proof closure refused: %s",
+                       closure_reason && closure_reason[0]
+                           ? closure_reason : "closure_unavailable");
+    }
+    struct zcl_devloop_restart_proof_receipt proof = {0};
+    struct zcl_devloop_process_result process = {0};
+    bool ok = closure_ok && rr_restart_prove(
+        repo_root, source_tus, source_count, &plan, &proof, &process,
+        why, sizeof(why), true, true, NULL);
+    if (process.cancelled || zcl_devloop_process_cancel_requested())
+        return ZCL_DEVLOOP_RESTART_EVENT_CANCELLED;
+    bool fallback = !ok &&
+        (strstr(why, "proof plan is incomplete") ||
+         strstr(why, "proof set exceeds resident bound") ||
+         strstr(why, "action plan stale") ||
+         strstr(why, "proof closure refused:"));
+    if (fallback) {
+        proof.integration_proof_deferred = true;
+        proof.bounded_proof_deferred = true;
+    }
+    bool emitted = rr_emit_event(
+        repo_root, source_tus, source_count,
+        ok ? "feedback_ready" : fallback ? "fallback_ready" : "rejected",
+        ok ? "immediate_affected_proofs" :
+             fallback ? "conservative_proof_selected" : "affected_proofs",
+        platform_time_monotonic_us() - started, publish_mode, NULL, &proof,
+        &process, why, 0, proof.source_guard_captures, 0, 0, false,
+        0, 0, plan.closure_snapshot, false);
+    if (!emitted)
+        return ZCL_DEVLOOP_RESTART_EVENT_ERROR;
+    if (ok)
+        return ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING;
+    return fallback ? ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING
+                    : ZCL_DEVLOOP_RESTART_EVENT_FINAL;
 }

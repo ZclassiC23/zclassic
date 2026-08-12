@@ -161,3 +161,15 @@ HOTSWAP_SERVICE(
     "buyer-want-state+preview+fulfillment-readiness+next-action.v1",
     "0a9a13ce03b8588002b63e8553350a62cbe948bb7b79b8f1df83765943c5ea72",
     "app.shop.want.list")
+
+HOTSWAP_SERVICE(
+    "app.vault.intent.decision.v1",
+    "app/services/src/vault_intent_decision_service.c",
+    "-",
+    "app/services/include/services/vault_intent_decision_service.h",
+    "-",
+    "app.vault.intent.decision.abi.v1:immutable-snapshot",
+    "zcl.vault_intent_decision_story.v1",
+    "vault-plan-snapshot+proposal-only.v1",
+    "0fa5c1bb3a44554fcc56c759c8dd1ebbbe30af9f5f3762ee76ba843a0a6aa543",
+    "dev.test.story")

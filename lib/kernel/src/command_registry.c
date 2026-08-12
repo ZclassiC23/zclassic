@@ -978,6 +978,7 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                    strcmp(key, "confirm") == 0 ||
                    strcmp(key, "enabled") == 0 ||
                    strcmp(key, "relink_generation") == 0 ||
+                   strcmp(key, "wait_for_edit") == 0 ||
                    strcmp(key, "all") == 0 ||
                    strcmp(key, "allow_high_fees") == 0) {
             /* `all` is app.shop.want.list's "include expired and cancelled

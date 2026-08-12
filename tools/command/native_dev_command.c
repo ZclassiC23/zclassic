@@ -18,15 +18,18 @@
 
 #include "base/hex.h"
 #include "controllers/rpc_client.h"
+#include "crypto/sha3.h"
 #include "dev_activation.h"
 #include "dev_failure_store.h"
 #include "devloop.h"
 #include "test_group_catalog.h"
 #include "kernel/command_registry.h"
+#include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "services/zcode_lane_service.h"
+#include "services/vault_intent_decision_service.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_devloop.h"
 #include "vcs/vcs_devloop_mirror.h"
@@ -1565,51 +1568,105 @@ static bool dev_drive_wait_cycle(
     int64_t *epoch_out, struct zcl_command_reply *reply)
 {
     int64_t after = 0, timeout_ms = 30000;
+    const struct json_value *wait_v = request && request->input
+        ? json_get(request->input, "wait_for_edit") : NULL;
+    bool wait_for_edit = wait_v && wait_v->type == JSON_BOOL
+        ? json_get_bool(wait_v) : false;
     if (!dev_drive_input_int(request->input, "after_epoch", 0, &after) ||
         after < 0 ||
         !dev_drive_input_int(request->input, "timeout_ms", 30000,
                              &timeout_ms) ||
-        timeout_ms < 1 || timeout_ms > 300000) {
+        timeout_ms < 1 || timeout_ms > 300000 ||
+        (wait_v && wait_v->type != JSON_BOOL)) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
             "INVALID_DRIVE", "normalize", false, false,
-            "after_epoch must be nonnegative and timeout_ms 1..300000",
-            "after_epoch,timeout_ms");
+            "after_epoch must be nonnegative, timeout_ms 1..300000, and wait_for_edit boolean",
+            "after_epoch,timeout_ms,wait_for_edit");
         return false;
     }
     int64_t deadline_us = platform_time_monotonic_us() + timeout_ms * 1000;
-    int64_t current_epoch = 0;
+    int64_t current_epoch = after;
+    bool edit_seen = !wait_for_edit;
+    char target_edit_epoch[65] = {0};
     for (;;) {
+        int64_t remaining_us = deadline_us - platform_time_monotonic_us();
+        if (remaining_us <= 0)
+            break;
+        int64_t remaining_ms = (remaining_us + 999) / 1000;
         char body[16384], why[160] = {0};
         size_t body_len = 0;
-        enum zcl_devloop_state_lookup lookup = zcl_devloop_cycle_state_read(
-            dev_source_root(request), body, sizeof(body), &body_len,
-            &current_epoch, why, sizeof(why));
+        enum zcl_devloop_state_lookup lookup =
+            zcl_devloop_cycle_state_wait_after(
+                dev_source_root(request), current_epoch, (int)remaining_ms,
+                body, sizeof(body), &body_len, &current_epoch,
+                why, sizeof(why));
         if (lookup == ZCL_DEVLOOP_STATE_INVALID) {
             zcl_command_reply_fail(
                 reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
                 "DEV_CYCLE_STATE_INVALID", "read", false, false,
-                "workspace cycle state failed schema, SHA3, or inode validation",
+                "workspace cycle state failed schema, SHA3, inode, or event-watch validation",
                 why[0] ? why : "cycle_state_invalid");
             return false;
         }
-        if (lookup == ZCL_DEVLOOP_STATE_FOUND && current_epoch > after) {
-            if (!json_read(cycle, body, body_len) || cycle->type != JSON_OBJ) {
-                json_free(cycle);
-                zcl_command_reply_fail(
-                    reply, ZCL_COMMAND_STATUS_FAILED,
-                    ZCL_COMMAND_EXIT_INTERNAL, "DEV_CYCLE_STATE_INVALID",
-                    "decode", false, false,
-                    "workspace cycle state is not one canonical object",
-                    "cycle_state_decode_failed");
-                return false;
-            }
+        if (lookup != ZCL_DEVLOOP_STATE_FOUND)
+            break;
+        if (!json_read(cycle, body, body_len) || cycle->type != JSON_OBJ) {
+            json_free(cycle);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED,
+                ZCL_COMMAND_EXIT_INTERNAL, "DEV_CYCLE_STATE_INVALID",
+                "decode", false, false,
+                "workspace cycle state is not one canonical object",
+                "cycle_state_decode_failed");
+            return false;
+        }
+        const char *status = json_get_str(json_get(cycle, "status"));
+        const char *source = json_get_str(json_get(cycle, "source_tu"));
+        const char *event_edit_epoch =
+            json_get_str(json_get(cycle, "edit_epoch"));
+        if (!edit_seen) {
+            if (status && strcmp(status, "edit_seen") == 0)
+                edit_seen = true;
+            json_free(cycle);
+            json_init(cycle);
+            continue;
+        }
+        /* SUPERSEDED names work from the prior edit. It is part of the exact
+         * stream, but must never bind a new drive to that prior epoch or
+         * become the one-command result for the newer save. */
+        if (wait_for_edit && status && strcmp(status, "superseded") == 0) {
+            json_free(cycle);
+            json_init(cycle);
+            continue;
+        }
+        if (!target_edit_epoch[0] && event_edit_epoch &&
+            strlen(event_edit_epoch) == 64)
+            (void)snprintf(target_edit_epoch, sizeof(target_edit_epoch), "%s",
+                           event_edit_epoch);
+        if (target_edit_epoch[0] && event_edit_epoch &&
+            strcmp(target_edit_epoch, event_edit_epoch) != 0) {
+            json_free(cycle);
+            json_init(cycle);
+            continue;
+        }
+        bool prediagnostic = status &&
+            (strcmp(status, "edit_seen") == 0 ||
+             strcmp(status, "impact_ready") == 0);
+        bool decision_compile = status && source &&
+            strcmp(status, "reflex_ready") == 0 &&
+            strcmp(source,
+                   "app/services/src/vault_intent_decision_service.c") == 0;
+        if (!prediagnostic && !decision_compile) {
             *epoch_out = current_epoch;
             return true;
         }
-        if (platform_time_monotonic_us() >= deadline_us)
-            break;
-        usleep(25000);
+        /* `dev.loop.wait` exposes every stage. The normal one-command drive
+         * consumes acknowledgements internally and returns the first result
+         * that can change the next edit: a diagnostic, or this owner's exact
+         * HOT_SHADOW behavior story. */
+        json_free(cycle);
+        json_init(cycle);
     }
     char evidence[128];
     (void)snprintf(evidence, sizeof(evidence), "current_epoch=%lld",
@@ -1708,14 +1765,19 @@ void zcl_native_handle_dev_drive(
         cycle_status &&
             (strcmp(cycle_status, "edit_seen") == 0 ||
              strcmp(cycle_status, "impact_ready") == 0 ||
-             strcmp(cycle_status, "reflex_ready") == 0)
+             strcmp(cycle_status, "reflex_ready") == 0 ||
+             strcmp(cycle_status, "story_green") == 0 ||
+             strcmp(cycle_status, "story_red") == 0)
             ? "REFLEX" :
         cycle_status && strcmp(cycle_status, "fallback_ready") == 0
             ? "VERIFY" :
         action && strcmp(action, "restart") == 0 ? "FAST_RESTART" :
         "VERIFY");
     (void)dev_drive_copy(&cycle, &compact, "status", "status");
+    (void)dev_drive_copy(&cycle, &compact, "phase", "event");
+    (void)dev_drive_copy(&cycle, &compact, "edit_epoch", "edit_epoch");
     (void)dev_drive_copy(&cycle, &compact, "action", "action");
+    (void)dev_drive_copy(&cycle, &compact, "elapsed_us", "feedback_us");
     (void)dev_drive_copy(&cycle, &compact, "elapsed_ms", "feedback_ms");
     (void)dev_drive_copy(&cycle, &compact, "impact_us", "impact_us");
     (void)dev_drive_copy(&cycle, &compact, "closure_us", "closure_us");
@@ -1757,8 +1819,13 @@ void zcl_native_handle_dev_drive(
         bool edit_seen = status && strcmp(status, "edit_seen") == 0;
         bool impact_ready = status && strcmp(status, "impact_ready") == 0;
         bool reflex_ready = status && strcmp(status, "reflex_ready") == 0;
+        bool story_green = status && strcmp(status, "story_green") == 0;
+        bool story_red = status && strcmp(status, "story_red") == 0;
+        bool explicit_proof_pending =
+            status && strcmp(status, "proof_pending") == 0;
         bool reactor_pending = edit_seen || impact_ready;
-        bool proof_pending = reflex_ready ||
+        bool proof_pending = explicit_proof_pending || reflex_ready ||
+            story_green ||
             (status &&
              ((strcmp(status, "feedback_ready") == 0 &&
                json_get_bool(json_get(&cycle,
@@ -1770,13 +1837,14 @@ void zcl_native_handle_dev_drive(
         (void)json_push_kv_str(
             &compact, "publication_stage",
             reactor_pending ? "REFLEX" :
-            reflex_ready ? "ASYNC_PROOF" :
+            (reflex_ready || story_green) ? "ASYNC_PROOF" :
             proof_pending ? "PROOF_PENDING" : "NOT_QUEUED");
         (void)json_push_kv_str(
             &compact, "blocker",
             edit_seen ? "impact_analysis_running" :
             impact_ready ? "candidate_diagnostics_running" :
-            reflex_ready ? "affected_proof_running" :
+            (reflex_ready || story_green) ? "affected_proof_running" :
+            story_red ? "behavior_story_failed" :
             proof_pending ? "integration_proof_pending" :
             proof_complete ? "publication_job_missing" :
             passed ? "complete_reusable_proof_required" : "proof_failed");
@@ -2316,9 +2384,19 @@ void zcl_native_handle_dev_begin(
         json_get_str(json_get(&reply->data, "agent_next_action"));
     if (action && action[0])
         (void)json_push_kv_str(&reply->data, "next_action", action);
-    (void)json_push_kv_str(
-        &reply->data, "next_command",
-        "edit source, then run zclassic23-dev dev drive");
+    char next[192] = "zclassic23-dev dev drive";
+    const struct json_value *epoch_v = json_get(&reply->data, "epoch");
+    if (epoch_v && epoch_v->type == JSON_INT) {
+        int n = snprintf(
+            next, sizeof(next),
+            "edit source, then run zclassic23-dev dev drive --input='"
+            "{\"after_epoch\":%lld,\"wait_for_edit\":true}'",
+            (long long)json_get_int(epoch_v));
+        if (n <= 0 || (size_t)n >= sizeof(next))
+            (void)snprintf(next, sizeof(next), "%s",
+                           "zclassic23-dev dev drive");
+    }
+    (void)json_push_kv_str(&reply->data, "next_command", next);
 }
 
 void zcl_native_handle_dev_loop_ensure(
@@ -2468,33 +2546,37 @@ void zcl_native_handle_dev_loop_wait(
                                "after_epoch,timeout_ms");
         return;
     }
-    int64_t deadline_us = platform_time_monotonic_us() + timeout_ms * 1000;
     const char *repo_root = dev_source_root(request);
     int64_t current_epoch = 0;
-    for (;;) {
+    char body[16384], why[160] = {0};
+    size_t body_len = 0;
+    enum zcl_devloop_state_lookup lookup =
+        zcl_devloop_cycle_state_wait_after(
+            repo_root, after, (int)timeout_ms, body, sizeof(body), &body_len,
+            &current_epoch, why, sizeof(why));
+    if (lookup == ZCL_DEVLOOP_STATE_INVALID) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "DEV_CYCLE_STATE_INVALID", "read", false, false,
+            "workspace cycle state failed schema, SHA3, inode, or event-watch validation",
+            why[0] ? why : "cycle_state_invalid");
+        return;
+    }
+    if (lookup == ZCL_DEVLOOP_STATE_FOUND && current_epoch > after) {
         struct json_value cycle;
-        char why[160] = {0};
-        int64_t epoch = 0;
-        enum zcl_devloop_state_lookup lookup =
-            dev_read_cycle(repo_root, &cycle, &epoch, why, sizeof(why));
-        current_epoch = epoch;
-        if (lookup == ZCL_DEVLOOP_STATE_INVALID) {
+        json_init(&cycle);
+        if (!json_read(&cycle, body, body_len) || cycle.type != JSON_OBJ) {
+            json_free(&cycle);
             zcl_command_reply_fail(
                 reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
-                "DEV_CYCLE_STATE_INVALID", "read", false, false,
-                "workspace cycle state failed schema, SHA3, or inode validation",
-                why[0] ? why : "cycle_state_invalid");
+                "DEV_CYCLE_STATE_INVALID", "decode", false, false,
+                "workspace cycle state is not one canonical object",
+                "cycle_state_decode_failed");
             return;
         }
-        if (lookup == ZCL_DEVLOOP_STATE_FOUND && epoch > after) {
-            dev_emit_cycle_verdict(reply, &cycle, epoch);
-            json_free(&cycle);
-            return;
-        }
+        dev_emit_cycle_verdict(reply, &cycle, current_epoch);
         json_free(&cycle);
-        if (platform_time_monotonic_us() >= deadline_us)
-            break;
-        usleep(25000);
+        return;
     }
     char evidence[128];
     (void)snprintf(evidence, sizeof(evidence), "current_epoch=%lld",
@@ -2758,6 +2840,237 @@ void zcl_native_handle_dev_test_run(
                                "prove", true, false,
                                "focused test group failed", full_group);
     }
+}
+
+struct dev_vault_story_case {
+    const char *name;
+    struct vault_intent_plan_snapshot snapshot;
+    enum vault_intent_decision_code expected_code;
+    int64_t expected_reservation;
+    int64_t expected_spendable;
+};
+
+static const struct dev_vault_story_case k_dev_vault_story_cases[] = {
+    {
+        .name = "allow",
+        .snapshot = {
+            .money_result_ok = true, .money_complete = true,
+            .money_current = true, .development_scope = true,
+            .target_zat = 150000000, .fee_zat = 10000,
+            .confirmed_zat = 500000000,
+            .already_reserved_zat = 100000000,
+            .agent_available_zat = 200000000,
+        },
+        .expected_code = VAULT_INTENT_DECISION_ALLOW,
+        .expected_reservation = 150010000,
+        .expected_spendable = 400000000,
+    },
+    {
+        .name = "dev_cap",
+        .snapshot = {
+            .money_result_ok = true, .money_complete = true,
+            .money_current = true, .development_scope = true,
+            .target_zat = 150000000, .fee_zat = 10000,
+            .confirmed_zat = 500000000,
+            .already_reserved_zat = 100000000,
+            .agent_available_zat = 150000000,
+        },
+        .expected_code = VAULT_INTENT_DECISION_DEVELOPMENT_CAP,
+        .expected_reservation = 150010000,
+        .expected_spendable = 400000000,
+    },
+    {
+        .name = "stale",
+        .snapshot = {
+            .money_result_ok = true, .money_complete = true,
+            .money_current = false, .development_scope = true,
+            .target_zat = 150000000, .fee_zat = 10000,
+            .confirmed_zat = 500000000,
+            .already_reserved_zat = 100000000,
+            .agent_available_zat = 200000000,
+        },
+        .expected_code = VAULT_INTENT_DECISION_MONEY_NOT_CURRENT,
+        .expected_reservation = 150010000,
+        .expected_spendable = 0,
+    },
+    {
+        .name = "prod_insufficient",
+        .snapshot = {
+            .money_result_ok = true, .money_complete = true,
+            .money_current = true, .development_scope = false,
+            .target_zat = 150000000, .fee_zat = 10000,
+            .confirmed_zat = 100000000, .already_reserved_zat = 0,
+            .agent_available_zat = 0,
+        },
+        .expected_code = VAULT_INTENT_DECISION_INSUFFICIENT_FUNDS,
+        .expected_reservation = 150010000,
+        .expected_spendable = 100000000,
+    },
+    {
+        .name = "overflow",
+        .snapshot = {
+            .money_result_ok = true, .money_complete = true,
+            .money_current = true, .development_scope = false,
+            .target_zat = INT64_MAX, .fee_zat = 1,
+            .confirmed_zat = INT64_MAX, .already_reserved_zat = 0,
+            .agent_available_zat = 0,
+        },
+        .expected_code = VAULT_INTENT_DECISION_FEE_INVALID,
+        .expected_reservation = 0,
+        .expected_spendable = 0,
+    },
+};
+
+static bool dev_vault_story_run(
+    const struct vault_intent_decision_service_v1 *service,
+    struct json_value *case_rows, char digest_hex[65],
+    char *why, size_t why_size)
+{
+    if (!service || !service->decide || !service->code_name || !digest_hex) {
+        if (why && why_size)
+            (void)snprintf(why, why_size, "%s", "decision vtable incomplete");
+        return false;
+    }
+    struct sha3_256_ctx sha;
+    uint8_t digest[32];
+    sha3_256_init(&sha);
+    for (size_t i = 0;
+         i < sizeof(k_dev_vault_story_cases) /
+                 sizeof(k_dev_vault_story_cases[0]); i++) {
+        const struct dev_vault_story_case *test = &k_dev_vault_story_cases[i];
+        struct vault_intent_plan_decision decision;
+        if (!service->decide(&test->snapshot, &decision)) {
+            if (why && why_size)
+                (void)snprintf(why, why_size, "%s: decision refused input",
+                               test->name);
+            return false;
+        }
+        const char *code = service->code_name(decision.code);
+        if (decision.code != test->expected_code ||
+            decision.reservation_zat != test->expected_reservation ||
+            decision.spendable_after_reservations_zat !=
+                test->expected_spendable) {
+            if (why && why_size)
+                (void)snprintf(why, why_size,
+                               "%s: expected decision vector changed",
+                               test->name);
+            return false;
+        }
+        char row[256];
+        int n = snprintf(row, sizeof(row), "%s|%s|%lld|%lld\n",
+                         test->name, code,
+                         (long long)decision.reservation_zat,
+                         (long long)decision.spendable_after_reservations_zat);
+        if (n <= 0 || (size_t)n >= sizeof(row)) {
+            if (why && why_size)
+                (void)snprintf(why, why_size, "%s", "story row overflow");
+            return false;
+        }
+        sha3_256_write(&sha, (const uint8_t *)row, (size_t)n);
+        if (case_rows) {
+            struct json_value item;
+            json_init(&item); json_set_object(&item);
+            bool pushed = json_push_kv_str(&item, "case", test->name) &&
+                json_push_kv_str(&item, "decision", code) &&
+                json_push_kv_int(&item, "reservation_zat",
+                                 decision.reservation_zat) &&
+                json_push_kv_int(&item, "spendable_zat",
+                    decision.spendable_after_reservations_zat) &&
+                json_push_back(case_rows, &item);
+            json_free(&item);
+            if (!pushed) {
+                if (why && why_size)
+                    (void)snprintf(why, why_size, "%s",
+                                   "story result exceeded JSON bound");
+                return false;
+            }
+        }
+    }
+    sha3_256_finalize(&sha, digest);
+    zcl_hex_encode(digest, sizeof(digest), digest_hex);
+    if (strcmp(digest_hex, VAULT_INTENT_DECISION_KAT) != 0) {
+        if (why && why_size)
+            (void)snprintf(why, why_size,
+                           "story KAT mismatch: got %.64s", digest_hex);
+        return false;
+    }
+    return true;
+}
+
+static bool dev_vault_story_frozen_kat(const void *vtable,
+                                       char *why, size_t why_size)
+{
+    char digest[65];
+    return dev_vault_story_run(vtable, NULL, digest, why, why_size);
+}
+
+static const struct zcl_hotswap_service_contract k_vault_story_contract = {
+    .service_id = VAULT_INTENT_DECISION_SERVICE_ID,
+    .source_tu = "app/services/src/vault_intent_decision_service.c",
+    .abi_version = ZCL_HOTSWAP_SERVICE_ABI_V1,
+    .vtable_size = sizeof(struct vault_intent_decision_service_v1),
+    .abi_fingerprint = VAULT_INTENT_DECISION_ABI,
+    .schema_fingerprint = VAULT_INTENT_DECISION_SCHEMA,
+    .wire_fingerprint = VAULT_INTENT_DECISION_WIRE,
+    .kat_fingerprint = VAULT_INTENT_DECISION_KAT,
+    .frozen_kat = dev_vault_story_frozen_kat,
+};
+
+const struct zcl_hotswap_service_contract *
+zcl_native_vault_intent_decision_service_contract(void)
+{
+    return &k_vault_story_contract;
+}
+
+void zcl_native_handle_dev_test_story(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    const struct json_value *owner_v = request && request->input
+        ? json_get(request->input, "owner") : NULL;
+    const char *owner = owner_v && owner_v->type == JSON_STR
+        ? json_get_str(owner_v) : NULL;
+    if (!request || !request->input || request->input->type != JSON_OBJ ||
+        request->input->num_children != 1 || !owner ||
+        strcmp(owner, "transaction_intent") != 0) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "STORY_OWNER_INVALID", "validate", false, false,
+            "owner must be exactly transaction_intent", "owner");
+        return;
+    }
+    struct json_value cases, capabilities;
+    json_init(&cases); json_set_array(&cases);
+    char digest[65] = {0}, why[192] = {0};
+    bool ok = dev_vault_story_run(vault_intent_decision_service_builtin(),
+                                  &cases, digest, why, sizeof(why));
+    (void)json_push_kv_str(&reply->data, "schema",
+                           VAULT_INTENT_DECISION_SCHEMA);
+    (void)json_push_kv_str(&reply->data, "owner", owner);
+    (void)json_push_kv_str(&reply->data, "mode", "HOT_SHADOW");
+    (void)json_push_kv_str(&reply->data, "status", ok ? "green" : "red");
+    (void)json_push_kv_int(&reply->data, "case_count",
+        (int64_t)(sizeof(k_dev_vault_story_cases) /
+                  sizeof(k_dev_vault_story_cases[0])));
+    (void)json_push_kv_str(&reply->data, "kat_sha3", digest);
+    (void)json_push_kv_str(&reply->data, "kat_expected",
+                           VAULT_INTENT_DECISION_KAT);
+    (void)json_push_kv_str(&reply->data, "authority_shell",
+                           "app/controllers/src/vault_intent_controller.c");
+    (void)json_push_kv_str(&reply->data, "decision_core",
+                           "app/services/src/vault_intent_decision_service.c");
+    (void)json_push_kv_str(&reply->data, "authority", "proposal_only");
+    (void)json_push_kv_bool(&reply->data, "forbidden_effects_absent", true);
+    json_init(&capabilities); json_set_array(&capabilities);
+    (void)json_push_kv(&reply->data, "effect_capabilities", &capabilities);
+    json_free(&capabilities);
+    (void)json_push_kv(&reply->data, "cases", &cases);
+    json_free(&cases);
+    if (!ok)
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "STORY_RED", "shadow", false, false,
+            why[0] ? why : "vault intent behavior story failed",
+            "transaction_intent");
 }
 
 void zcl_native_handle_dev_test_sim(

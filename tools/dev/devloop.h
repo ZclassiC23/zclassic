@@ -107,6 +107,17 @@ struct zcl_devloop_selection {
 /* Stable names for the JSON surface and for report text. */
 const char *zcl_devloop_dim_name(enum zcl_devloop_dim dim);
 const char *zcl_devloop_dim_status_name(enum zcl_devloop_dim_status status);
+/* Stable progressive reactor vocabulary. `detail` retains the legacy
+ * compiler/probe/proof substage; the return value is the event humans and
+ * agents schedule against. */
+const char *zcl_devloop_progress_phase(const char *status,
+                                       const char *detail);
+
+/* Bind downstream resident receipts to the immutable edit epoch currently
+ * owned by the watcher thread. Empty clears the context; standalone callers
+ * naturally emit no edit_epoch field. */
+bool zcl_devloop_event_edit_epoch_set(const char *edit_epoch);
+const char *zcl_devloop_event_edit_epoch(void);
 
 enum zcl_devloop_state_lookup {
     ZCL_DEVLOOP_STATE_INVALID = -1,
@@ -307,6 +318,8 @@ struct zcl_devloop_restart_proof_receipt {
     char groups_sha256[65];
     char deferred_groups[4096];
     char deferred_groups_sha256[65];
+    char priority_group[128];
+    char priority_reason[64];
     int64_t selection_us;
     int64_t compile_us;
     int64_t compile_startup_us;
@@ -317,6 +330,7 @@ struct zcl_devloop_restart_proof_receipt {
     int64_t test_us;
     int64_t test_startup_us;
     int64_t test_body_us;
+    int64_t priority_test_us;
     int64_t total_us;
     uint32_t group_count;
     uint32_t deferred_group_count;
@@ -377,6 +391,14 @@ int zcl_devloop_restart_event(const char *repo_root,
                               const char *const *source_tus,
                               size_t source_count,
                               enum zcl_devloop_publish_mode publish_mode);
+
+/* Continue a green owner-bound story into exact affected proof without
+ * rebuilding or re-probing the runtime candidate. This is deliberately an
+ * asynchronous post-reflex lane: STORY_GREEN is already observable before
+ * this function compiles/links the isolated test candidate. */
+int zcl_devloop_restart_story_prove_event(
+    const char *repo_root, const char *const *source_tus,
+    size_t source_count, enum zcl_devloop_publish_mode publish_mode);
 
 /* Try the resident fast lane for one watcher epoch. Returns 0 when the file
  * is not a hot-swap island (caller must use the conservative path), 1 when a
@@ -627,9 +649,46 @@ bool zcl_devloop_workspace_state_dir(const char *repo_root,
 bool zcl_devloop_cycle_state_write(const char *repo_root,
                                    const char *cycle_json, size_t cycle_len,
                                    char *why, size_t why_len);
+/* Volatile bounded reflex stream. The watcher resets it from the durable
+ * journal's latest epoch, publishes without fsync/storage acknowledgement,
+ * then persists the same reserved epoch asynchronously. It is an observation
+ * cache only; the sealed append-only journal remains evidence authority. */
+bool zcl_devloop_cycle_stream_reset(const char *repo_root,
+                                    int64_t durable_epoch,
+                                    char *why, size_t why_len);
+bool zcl_devloop_cycle_stream_publish(const char *repo_root,
+                                      const char *cycle_json,
+                                      size_t cycle_len, int64_t *epoch_out,
+                                      char *why, size_t why_len);
+/* Seal every volatile event through `through_epoch` in epoch order. Producers
+ * call this only after the action-changing event is visible; storage latency
+ * therefore cannot delay reflex feedback. */
+bool zcl_devloop_cycle_stream_flush_through(const char *repo_root,
+                                            int64_t through_epoch,
+                                            char *why, size_t why_len);
+bool zcl_devloop_cycle_state_write_epoch(const char *repo_root,
+                                         int64_t reserved_epoch,
+                                         const char *cycle_json,
+                                         size_t cycle_len,
+                                         char *why, size_t why_len);
 enum zcl_devloop_state_lookup zcl_devloop_cycle_state_read(
     const char *repo_root, char *out, size_t out_len, size_t *len_out,
     int64_t *epoch_out, char *why, size_t why_len);
+/* Read the first sealed event strictly newer than after_epoch. Unlike the
+ * latest-value compatibility surface above, this never skips an available
+ * intermediate event. A missing link in an otherwise newer journal is
+ * INVALID, not permission to jump ahead. */
+enum zcl_devloop_state_lookup zcl_devloop_cycle_state_read_after(
+    const char *repo_root, int64_t after_epoch, char *out, size_t out_len,
+    size_t *len_out, int64_t *epoch_out, char *why, size_t why_len);
+
+/* Wait for the first exact event after `after_epoch`. The directory watch is
+ * armed before the first read, closing the check/sleep race; producers wake it
+ * through the bounded volatile ring. No polling sleep is used. */
+enum zcl_devloop_state_lookup zcl_devloop_cycle_state_wait_after(
+    const char *repo_root, int64_t after_epoch, int timeout_ms,
+    char *out, size_t out_len, size_t *len_out, int64_t *epoch_out,
+    char *why, size_t why_len);
 int zcl_devloop_watch(const char *repo_root);
 int zcl_devloop_watch_mode(const char *repo_root,
                            enum zcl_devloop_publish_mode publish_mode);

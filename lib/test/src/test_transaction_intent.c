@@ -19,6 +19,7 @@
 #include "primitives/block.h"
 #include "services/overlay_transaction_intent_service.h"
 #include "services/vault_intent_async_service.h"
+#include "services/vault_intent_decision_service.h"
 #include "services/znam_transaction_intent_service.h"
 #include "services/zslp_transaction_intent_service.h"
 #include "storage/disk_block_io.h"
@@ -1280,6 +1281,40 @@ int test_transaction_intent(void)
                       &ndb, "test", identity.wallet_instance_id), 21000);
         node_db_close(&ndb);
         test_rm_rf(dir);
+        PASS();
+    }
+
+    TEST("vault intent decision core is proposal-only and fail-closed") {
+        struct vault_intent_plan_snapshot snapshot = {
+            .money_result_ok = true,
+            .money_complete = true,
+            .money_current = true,
+            .development_scope = true,
+            .target_zat = 150000000,
+            .fee_zat = 10000,
+            .confirmed_zat = 500000000,
+            .already_reserved_zat = 100000000,
+            .agent_available_zat = 200000000,
+        };
+        struct vault_intent_plan_decision decision;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_ALLOW);
+        ASSERT_EQ(decision.reservation_zat, 150010000);
+        ASSERT_EQ(decision.spendable_after_reservations_zat, 400000000);
+        snapshot.agent_available_zat = 150000000;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_DEVELOPMENT_CAP);
+        snapshot.money_current = false;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_MONEY_NOT_CURRENT);
+        snapshot.money_current = true;
+        snapshot.development_scope = false;
+        snapshot.target_zat = INT64_MAX;
+        snapshot.fee_zat = 1;
+        ASSERT(vault_intent_plan_decide(&snapshot, &decision));
+        ASSERT_EQ(decision.code, VAULT_INTENT_DECISION_FEE_INVALID);
+        ASSERT(!vault_intent_plan_decide(NULL, &decision));
+        ASSERT(!vault_intent_plan_decide(&snapshot, NULL));
         PASS();
     }
 

@@ -74,17 +74,17 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 686 |
+| Registry entries (branches + leaves) | 687 |
 | Top-level roots | 11 |
 | Branches | 161 |
-| Leaves (dispatchable command paths) | 525 |
+| Leaves (dispatchable command paths) | 526 |
 | … `ready` (live handler in this build) | 472 |
-| … `compat` (metadata only, names a fallback) | 23 |
+| … `compat` (metadata only, names a fallback) | 24 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 30 |
-| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 22 |
+| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 23 |
 | Leaves with `effect=mutate` | 174 |
 | Leaves with `effect=destructive` | 4 |
-| Leaves requiring **owner** authority | 111 |
+| Leaves requiring **owner** authority | 112 |
 
 Per source file:
 
@@ -96,7 +96,7 @@ Per source file:
 | `config/commands/app_features.def` | 61 | 18 | 43 |
 | `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
-| `config/commands/dev.def` | 54 | 13 | 41 |
+| `config/commands/dev.def` | 55 | 13 | 42 |
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
@@ -621,7 +621,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `dev status` | ready | read / read / operator · instant/low | none | `zcl.dev_cycle.v1` | `zclassic23 dev status` | Read the latest native cycle verdict |
 | `dev begin` | compat 🔧 → `zclassic23-dev dev begin` | mutate / dev-mutation / **owner** · fast/low | `root`, `mode` | `zcl.dev_begin.v1` | `zclassic23-dev dev begin` | Start or reattach to the warm C23 development service — *warm watcher ownership requires the dev-only executor* |
-| `dev drive` | compat 🔧 → `zclassic23-dev dev drive` | read / read / operator · persistent/low | `after_epoch`, `timeout_ms` | `zcl.dev_drive.v1` | `zclassic23-dev dev drive` | Wait for feedback and return one compact next action — *bounded warm-service driving requires the dev binary* |
+| `dev drive` | compat 🔧 → `zclassic23-dev dev drive` | read / read / operator · persistent/low | `after_epoch`, `timeout_ms`, `wait_for_edit` | `zcl.dev_drive.v1` | `zclassic23-dev dev drive` | Wait for feedback and return one compact next action — *bounded warm-service driving requires the dev binary* |
 | `dev ff` | ready | read / read / operator · instant/low | none | `zcl.dev_ff.v1` | `zclassic23 dev ff` | Fail-fast ladder: compile, test, lint |
 | `dev verify-change` | compat 🔧 → `make dev-bin, then zclassic23-dev dev verify-change` | read / read / **owner** · background/high | none | `zcl.dev_verify_change.v1` | `zclassic23-dev dev verify-change` | Compile affected code and run mapped focused proofs with compact output — *changed-scope verification requires the dev-only process executor* |
 
@@ -681,6 +681,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `dev test plan` | ready | read / read / operator · instant/tiny | `files` | `zcl.dev_test_plan.v1` | `zclassic23 dev test plan --input='{"files":[]}'` | Map changed files to mandatory proof groups |
 | `dev test run` (aliases: `dev.test.focused`) | compat 🔧 → `zclassic23-dev dev test focused` | read / read / **owner** · background/high | **`group`** | `zcl.dev_focused_test.v1` | `zclassic23 dev test run hotswap_simnet` | Run one exact prebuilt focused test group — *focused tests require the dev-only process executor* |
+| `dev test story` | compat 🔧 → `zclassic23-dev dev test story` | read / read / **owner** · instant/tiny | **`owner`** | `zcl.vault_intent_decision_story.v1` | `zclassic23-dev dev test story --input='{"owner":"transaction_intent"}'` | Run one exact owner-bound fail-fast behavior story — *behavior stories require the dev-only frozen fixture registry* |
 | `dev test sim` | compat 🔧 → `zclassic23-dev dev test sim` | read / read / **owner** · fast/moderate | `app_id` | `zcl.dev_sim.v1` | `zclassic23 dev test sim` | Run the generic hot-swap network proof — *the simulation runner requires the dev-only process executor* |
 | `dev test replay` | planned | read / read / **owner** · foreground/moderate | **`seed`**, `scenario` | `zcl.dev_test_replay.v1` | `zclassic23 dev test replay 1234` | Replay one deterministic failure seed — *generic seed replay registry is not implemented* |
 

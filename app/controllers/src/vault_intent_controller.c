@@ -25,6 +25,7 @@
 #include "primitives/transaction.h"
 #include "rpc/server.h"
 #include "services/wallet_backup_service.h"
+#include "services/vault_intent_decision_service.h"
 #include "services/wallet_money_service.h"
 #include "support/cleanse.h"
 #include "util/log_macros.h"
@@ -334,25 +335,37 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
     struct wallet_money_snapshot money;
     struct zcl_result money_result = wallet_money_snapshot_build(
         ctx->node_db, ctx->main_state, wallet_scope, &money);
-    if (!money_result.ok || !money.complete ||
-        strcmp(money.status, "CURRENT") != 0) {
+    struct vault_intent_plan_snapshot decision_snapshot = {
+        .money_result_ok = money_result.ok,
+        .money_complete = money_result.ok && money.complete,
+        .money_current = money_result.ok && money.complete &&
+            strcmp(money.status, "CURRENT") == 0,
+        .development_scope = strcmp(wallet_scope, "dev") == 0,
+        .target_zat = target,
+        .fee_zat = p.fee,
+        .confirmed_zat = money_result.ok ? money.confirmed_zat : 0,
+        .already_reserved_zat = money_result.ok
+            ? money.intent_reserved_zat : 0,
+        .agent_available_zat = money_result.ok
+            ? money.agent_available_zat : 0,
+    };
+    struct vault_intent_plan_decision decision;
+    if (!vault_intent_plan_decide(&decision_snapshot, &decision)) {
+        vi_error(result, "DECISION_CORE_INVALID",
+                 "immutable planning snapshot was invalid");
+        return true;
+    }
+    if (decision.code == VAULT_INTENT_DECISION_MONEY_NOT_CURRENT) {
         vi_error(result, "MONEY_STATE_NOT_CURRENT",
                  money_result.ok ? money.reason : money_result.message);
         return true;
     }
-    int64_t reservation = target + p.fee;
-    int64_t spendable_after_reservations =
-        money.confirmed_zat - money.intent_reserved_zat;
-    if (reservation > spendable_after_reservations ||
-        (strcmp(wallet_scope, "dev") == 0 &&
-         reservation > money.agent_available_zat)) {
-        vi_error(result,
-                 strcmp(wallet_scope, "dev") == 0
-                     ? "DEVELOPMENT_RESERVE_OR_LAB_CAP"
-                     : "INSUFFICIENT_CONFIRMED_FUNDS",
+    if (decision.code != VAULT_INTENT_DECISION_ALLOW) {
+        vi_error(result, vault_intent_decision_code_name(decision.code),
                  "recipient value plus maximum fee exceeds current custody allocation");
         return true;
     }
+    int64_t reservation = decision.reservation_zat;
     struct coin_entry *avail = zcl_malloc(4096 * sizeof(*avail),
                                            "intent_available_coins");
     struct coin_entry chosen[VI_INPUTS_MAX];

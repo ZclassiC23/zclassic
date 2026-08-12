@@ -3,7 +3,10 @@
 #define _GNU_SOURCE
 #include "devloop.h"
 
+#include "base/serialize_le.h"
+#include "codeindex/codeindex.h"
 #include "codeindex/codeindex_merkle.h"
+#include "crypto/sha3.h"
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
@@ -25,12 +28,52 @@
 #ifdef ZCL_DEV_BUILD
 
 #define DEVLOOP_MAX_WATCHES 512
+#define DEVLOOP_EDIT_EPOCH_MAX_FILES 16
+#define DEVLOOP_EDIT_QUIET_US 1000
 #define DEVLOOP_MUTATION_MASK                                                \
     (IN_CLOSE_WRITE | IN_MOVED_TO | IN_MOVED_FROM | IN_CREATE | IN_DELETE)
 
 struct watched_dir {
     int wd;
     char rel[ZCL_DEVLOOP_PATH_MAX];
+};
+
+struct watch_blob_state {
+    char path[256];
+    struct zcl_sha3_digest digest;
+    uint64_t size;
+    bool present;
+};
+
+struct watch_edit_blob {
+    char path[256];
+    struct zcl_sha3_digest previous_digest;
+    struct zcl_sha3_digest new_digest;
+    uint64_t previous_size;
+    uint64_t new_size;
+    bool previous_present;
+    bool previous_known;
+    bool new_present;
+};
+
+struct watch_edit_epoch {
+    uint64_t sequence;
+    int64_t seen_us;
+    int64_t impact_ready_us;
+    char id[65];
+    char parent[65];
+    char dependency_generation[65];
+    char dependency_generation_kind[32];
+    char owner[ZCL_DEVLOOP_GROUP_MAX];
+    char component[128];
+    size_t blob_count;
+    struct watch_edit_blob blobs[DEVLOOP_EDIT_EPOCH_MAX_FILES];
+};
+
+struct watch_pending_event {
+    int64_t epoch;
+    size_t len;
+    char body[ZCL_DEVLOOP_CYCLE_JSON_MAX];
 };
 
 struct watch_context {
@@ -43,6 +86,23 @@ struct watch_context {
     struct zcl_devloop_restart_source_set restart_sources;
     bool force_full_source_rescan;
     uint64_t mutation_sequence;
+    int64_t first_mutation_us;
+    bool edit_seen_emitted;
+    struct ci_merkle *verified_tree;
+    char verified_root[65];
+    char dependency_generation[65];
+    char dependency_generation_kind[32];
+    char parent_edit_epoch[65];
+    uint64_t edit_epoch_sequence;
+    bool snapshot_raced;
+    bool snapshot_exact;
+    struct watch_blob_state overlay[ZCL_DEVLOOP_MAX_FILES];
+    size_t overlay_count;
+    struct watch_pending_event pending[4];
+    size_t pending_count;
+    struct watch_edit_epoch prepared_epoch;
+    bool prepared_epoch_ready;
+    bool prepared_full_rescan;
 };
 
 static volatile sig_atomic_t g_watch_stop;
@@ -143,7 +203,230 @@ static void print_json_string(FILE *stream, const char *value)
     (void)fputc('"', stream);
 }
 
-static bool watch_emit_edit_seen(const struct watch_context *ctx)
+static void watch_hash_cstr(struct sha3_256_ctx *sha, const char *value)
+{
+    const char *text = value ? value : "";
+    sha3_256_write(sha, (const unsigned char *)text, strlen(text) + 1);
+}
+
+static void watch_hash_bool(struct sha3_256_ctx *sha, bool value)
+{
+    const unsigned char byte = value ? 1 : 0;
+    sha3_256_write(sha, &byte, 1);
+}
+
+static void watch_hash_u64(struct sha3_256_ctx *sha, uint64_t value)
+{
+    unsigned char bytes[8];
+    zcl_write_u64_le(bytes, value);
+    sha3_256_write(sha, bytes, sizeof(bytes));
+}
+
+static void watch_digest_hex(struct sha3_256_ctx *sha, char out[65])
+{
+    struct zcl_sha3_digest digest;
+    sha3_256_finalize(sha, digest.bytes);
+    ci_merkle_hex(&digest, out);
+}
+
+static struct watch_blob_state *watch_overlay_find(
+    struct watch_context *ctx, const char *path)
+{
+    for (size_t i = 0; i < ctx->overlay_count; i++)
+        if (strcmp(ctx->overlay[i].path, path) == 0)
+            return &ctx->overlay[i];
+    return NULL;
+}
+
+static bool watch_previous_blob(struct watch_context *ctx, const char *path,
+                                struct watch_edit_blob *blob)
+{
+    struct watch_blob_state *overlay = watch_overlay_find(ctx, path);
+    if (overlay) {
+        blob->previous_digest = overlay->digest;
+        blob->previous_size = overlay->size;
+        blob->previous_present = overlay->present;
+        blob->previous_known = true;
+        return true;
+    }
+    struct ci_merkle_leaf base;
+    bool found = false;
+    if (!ctx->verified_tree ||
+        !ci_merkle_leaf(ctx->verified_tree, path, &base, &found))
+        return false;
+    if (found) {
+        blob->previous_digest = base.digest;
+        blob->previous_size = base.size;
+        blob->previous_present = true;
+    }
+    /* Exact absence is knowledge too. A newly-created path has no prior blob,
+     * but the reconciled inventory proves that absence just as strongly as it
+     * proves a present leaf's digest. */
+    blob->previous_known = ctx->snapshot_exact && !ctx->snapshot_raced;
+    return true;
+}
+
+static void watch_component_for_files(const char *const *files, size_t count,
+                                      char out[128])
+{
+    out[0] = 0;
+    for (size_t i = 0; i < count; i++) {
+        char component[128];
+        const char *first = strchr(files[i], '/');
+        const char *second = first ? strchr(first + 1, '/') : NULL;
+        size_t len = second ? (size_t)(second - files[i]) : strlen(files[i]);
+        if (len >= sizeof(component))
+            len = sizeof(component) - 1;
+        memcpy(component, files[i], len);
+        component[len] = 0;
+        if (i == 0)
+            (void)snprintf(out, 128, "%s", component);
+        else if (strcmp(out, component) != 0) {
+            (void)snprintf(out, 128, "%s", "mixed");
+            return;
+        }
+    }
+}
+
+static bool watch_build_edit_epoch(struct watch_context *ctx,
+                                   const char *const *files, size_t count,
+                                   int64_t seen_us,
+                                   struct watch_edit_epoch *epoch)
+{
+    if (!ctx || !files || count == 0 ||
+        count > DEVLOOP_EDIT_EPOCH_MAX_FILES || !epoch)
+        return false;
+    memset(epoch, 0, sizeof(*epoch));
+    epoch->sequence = ctx->edit_epoch_sequence + 1;
+    epoch->seen_us = seen_us;
+    epoch->blob_count = count;
+    (void)snprintf(epoch->parent, sizeof(epoch->parent), "%s",
+                   ctx->parent_edit_epoch);
+    (void)snprintf(epoch->dependency_generation,
+                   sizeof(epoch->dependency_generation), "%s",
+                   ctx->dependency_generation);
+    (void)snprintf(epoch->dependency_generation_kind,
+                   sizeof(epoch->dependency_generation_kind), "%s",
+                   ctx->dependency_generation_kind);
+
+    struct zcl_devloop_plan plan;
+    if (!zcl_devloop_plan_files(files, count, &plan))
+        return false;
+    (void)snprintf(epoch->owner, sizeof(epoch->owner), "%s",
+                   plan.proof_group ? plan.proof_group : "make_lint_gates");
+    watch_component_for_files(files, count, epoch->component);
+
+    size_t new_overlay_slots = 0;
+    for (size_t i = 0; i < count; i++) {
+        struct watch_edit_blob *blob = &epoch->blobs[i];
+        if (strlen(files[i]) >= sizeof(blob->path))
+            return false;
+        (void)snprintf(blob->path, sizeof(blob->path), "%s", files[i]);
+        if (!watch_previous_blob(ctx, files[i], blob))
+            return false;
+        struct ci_merkle_leaf current;
+        bool found = false;
+        if (!ci_merkle_hash_changed_leaf(ctx->root, files[i], &current,
+                                         &found))
+            return false;
+        blob->new_present = found;
+        if (found) {
+            blob->new_digest = current.digest;
+            blob->new_size = current.size;
+        }
+        if (!watch_overlay_find(ctx, files[i]))
+            new_overlay_slots++;
+    }
+    if (new_overlay_slots > ZCL_DEVLOOP_MAX_FILES - ctx->overlay_count)
+        return false;
+
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    static const char domain[] = "zcl.dev_edit_epoch.v1";
+    watch_hash_cstr(&sha, domain);
+    watch_hash_u64(&sha, epoch->sequence);
+    watch_hash_cstr(&sha, epoch->parent);
+    watch_hash_cstr(&sha, epoch->dependency_generation);
+    watch_hash_cstr(&sha, epoch->owner);
+    watch_hash_cstr(&sha, epoch->component);
+    watch_hash_u64(&sha, epoch->blob_count);
+    for (size_t i = 0; i < count; i++) {
+        const struct watch_edit_blob *blob = &epoch->blobs[i];
+        watch_hash_cstr(&sha, blob->path);
+        watch_hash_bool(&sha, blob->previous_known);
+        watch_hash_bool(&sha, blob->previous_present);
+        sha3_256_write(&sha, blob->previous_digest.bytes, 32);
+        watch_hash_u64(&sha, blob->previous_size);
+        watch_hash_bool(&sha, blob->new_present);
+        sha3_256_write(&sha, blob->new_digest.bytes, 32);
+        watch_hash_u64(&sha, blob->new_size);
+    }
+    watch_digest_hex(&sha, epoch->id);
+    epoch->impact_ready_us = platform_time_monotonic_us();
+
+    /* Commit the already-complete immutable epoch to the resident overlay.
+     * No repository discovery occurs here: one slot per known changed path. */
+    for (size_t i = 0; i < count; i++) {
+        const struct watch_edit_blob *blob = &epoch->blobs[i];
+        struct watch_blob_state *state = watch_overlay_find(ctx, blob->path);
+        if (!state) {
+            state = &ctx->overlay[ctx->overlay_count++];
+            memset(state, 0, sizeof(*state));
+            (void)snprintf(state->path, sizeof(state->path), "%s",
+                           blob->path);
+        }
+        state->digest = blob->new_digest;
+        state->size = blob->new_size;
+        state->present = blob->new_present;
+    }
+    ctx->edit_epoch_sequence = epoch->sequence;
+    (void)snprintf(ctx->parent_edit_epoch, sizeof(ctx->parent_edit_epoch),
+                   "%s", epoch->id);
+    ctx->snapshot_raced = false;
+    return true;
+}
+
+static bool watch_stream_enqueue(struct watch_context *ctx, const char *body,
+                                 size_t len)
+{
+    if (!ctx || !body || len == 0 || len >= ZCL_DEVLOOP_CYCLE_JSON_MAX ||
+        ctx->pending_count >= sizeof(ctx->pending) / sizeof(ctx->pending[0]))
+        return false;
+    struct watch_pending_event *event = &ctx->pending[ctx->pending_count];
+    char why[160] = {0};
+    if (!zcl_devloop_cycle_stream_publish(ctx->root, body, len,
+                                          &event->epoch, why, sizeof(why))) {
+        fprintf(stderr, "[devloop] volatile event publication failed: %s\n",
+                why[0] ? why : "unknown");
+        return false;
+    }
+    memcpy(event->body, body, len);
+    event->body[len] = 0;
+    event->len = len;
+    ctx->pending_count++;
+    return true;
+}
+
+static bool watch_stream_flush(struct watch_context *ctx)
+{
+    if (!ctx)
+        return false;
+    if (ctx->pending_count == 0)
+        return true;
+    int64_t through = ctx->pending[ctx->pending_count - 1].epoch;
+    char why[160] = {0};
+    if (!zcl_devloop_cycle_stream_flush_through(
+            ctx->root, through, why, sizeof(why))) {
+        fprintf(stderr,
+                "[devloop] async event journal flush failed through=%lld: %s\n",
+                (long long)through, why[0] ? why : "unknown");
+        return false;
+    }
+    ctx->pending_count = 0;
+    return true;
+}
+
+static bool watch_emit_edit_seen(struct watch_context *ctx)
 {
     if (!ctx || ctx->changed_count == 0)
         return false;
@@ -158,7 +441,10 @@ static bool watch_emit_edit_seen(const struct watch_context *ctx)
         json_push_kv_str(&doc, "phase", "EDIT_SEEN") &&
         json_push_kv_bool(&doc, "runtime_published", false) &&
         json_push_kv_bool(&doc, "proof_complete", false) &&
-        json_push_kv_int(&doc, "elapsed_us", 0) &&
+        json_push_kv_int(
+            &doc, "elapsed_us",
+            ctx->first_mutation_us > 0
+                ? platform_time_monotonic_us() - ctx->first_mutation_us : 0) &&
         json_push_kv_int(&doc, "file_count",
                          (int64_t)ctx->changed_count);
     for (size_t i = 0; ok && i < ctx->changed_count; i++) {
@@ -177,13 +463,184 @@ static bool watch_emit_edit_seen(const struct watch_context *ctx)
     if (!n)
         return false;
     body[n] = 0;
-    char why[160] = {0};
-    if (!zcl_devloop_cycle_state_write(ctx->root, body, n, why,
-                                       sizeof(why))) {
-        fprintf(stderr, "[devloop] EDIT_SEEN persistence failed: %s\n",
-                why[0] ? why : "unknown");
+    if (!watch_stream_enqueue(ctx, body, n)) {
+        fprintf(stderr, "[devloop] EDIT_SEEN stream publication failed\n");
         return false;
     }
+    (void)fwrite(body, 1, n, stdout);
+    (void)fputc('\n', stdout);
+    (void)fflush(stdout);
+    ctx->edit_seen_emitted = true;
+    return true;
+}
+
+static bool watch_emit_impact_ready(struct watch_context *ctx,
+                                    const struct watch_edit_epoch *epoch)
+{
+    if (!ctx || !epoch || epoch->blob_count == 0)
+        return false;
+    struct json_value doc, files, blobs;
+    json_init(&doc); json_set_object(&doc);
+    json_init(&files); json_set_array(&files);
+    json_init(&blobs); json_set_array(&blobs);
+    bool ok = json_push_kv_str(&doc, "schema", "zcl.dev_cycle.v1") &&
+        json_push_kv_str(&doc, "producer", "reflex-reactor") &&
+        json_push_kv_str(&doc, "status", "impact_ready") &&
+        json_push_kv_str(&doc, "action", "reflex") &&
+        json_push_kv_str(&doc, "reason", "immutable_edit_epoch") &&
+        json_push_kv_str(&doc, "phase", "IMPACT_READY") &&
+        json_push_kv_bool(&doc, "runtime_published", false) &&
+        json_push_kv_bool(&doc, "proof_complete", false) &&
+        json_push_kv_int(&doc, "elapsed_us",
+                         epoch->impact_ready_us - epoch->seen_us) &&
+        json_push_kv_int(&doc, "file_count", (int64_t)epoch->blob_count) &&
+        json_push_kv_str(&doc, "edit_epoch", epoch->id) &&
+        json_push_kv_str(&doc, "parent_epoch", epoch->parent) &&
+        json_push_kv_str(&doc, "dependency_generation",
+                         epoch->dependency_generation) &&
+        json_push_kv_str(&doc, "dependency_generation_kind",
+                         epoch->dependency_generation_kind) &&
+        json_push_kv_str(&doc, "affected_owner", epoch->owner) &&
+        json_push_kv_str(&doc, "affected_component", epoch->component) &&
+        json_push_kv_int(&doc, "make_processes", 0) &&
+        json_push_kv_int(&doc, "shell_processes", 0) &&
+        json_push_kv_int(&doc, "git_operations", 0) &&
+        json_push_kv_int(&doc, "publication_operations", 0) &&
+        json_push_kv_int(&doc, "remote_operations", 0) &&
+        json_push_kv_int(&doc, "storage_ack_waits", 0) &&
+        json_push_kv_int(&doc, "full_program_links", 0) &&
+        json_push_kv_int(&doc, "network_operations", 0) &&
+        json_push_kv_int(&doc, "sqlite_operations", 0) &&
+        json_push_kv_int(&doc, "full_tree_scans", 0);
+    for (size_t i = 0; ok && i < epoch->blob_count; i++) {
+        const struct watch_edit_blob *blob = &epoch->blobs[i];
+        char previous_hex[65] = {0}, new_hex[65] = {0};
+        if (blob->previous_present)
+            ci_merkle_hex(&blob->previous_digest, previous_hex);
+        if (blob->new_present)
+            ci_merkle_hex(&blob->new_digest, new_hex);
+        struct json_value file, item;
+        json_init(&file); json_set_str(&file, blob->path);
+        ok = json_push_back(&files, &file);
+        json_free(&file);
+        json_init(&item); json_set_object(&item);
+        ok = ok && json_push_kv_str(&item, "path", blob->path) &&
+            json_push_kv_bool(&item, "previous_known",
+                              blob->previous_known) &&
+            json_push_kv_bool(&item, "previous_present",
+                              blob->previous_present) &&
+            json_push_kv_str(&item, "previous_blob_sha3", previous_hex) &&
+            json_push_kv_int(&item, "previous_size",
+                             (int64_t)blob->previous_size) &&
+            json_push_kv_bool(&item, "new_present", blob->new_present) &&
+            json_push_kv_str(&item, "new_blob_sha3", new_hex) &&
+            json_push_kv_int(&item, "new_size", (int64_t)blob->new_size) &&
+            json_push_back(&blobs, &item);
+        json_free(&item);
+    }
+    ok = ok && json_push_kv(&doc, "files", &files) &&
+        json_push_kv(&doc, "blobs", &blobs) &&
+        json_push_kv_str(&doc, "agent_next_action",
+                         "compile diagnostics are running in the resident reactor");
+    json_free(&files);
+    json_free(&blobs);
+    char body[ZCL_DEVLOOP_CYCLE_JSON_MAX];
+    size_t n = ok ? json_write(&doc, body, sizeof(body) - 1) : 0;
+    json_free(&doc);
+    if (!n)
+        return false;
+    body[n] = 0;
+    if (!watch_stream_enqueue(ctx, body, n)) {
+        fprintf(stderr, "[devloop] IMPACT_READY stream publication failed\n");
+        return false;
+    }
+    (void)fwrite(body, 1, n, stdout);
+    (void)fputc('\n', stdout);
+    (void)fflush(stdout);
+    return true;
+}
+
+static bool watch_emit_proof_pending(struct watch_context *ctx,
+                                     const char *const *files, size_t count)
+{
+    if (!ctx || !files || count == 0)
+        return false;
+    struct json_value doc, paths;
+    json_init(&doc); json_set_object(&doc);
+    json_init(&paths); json_set_array(&paths);
+    bool ok = json_push_kv_str(&doc, "schema", "zcl.dev_cycle.v1") &&
+        json_push_kv_str(&doc, "producer", "reflex-reactor") &&
+        json_push_kv_str(&doc, "status", "proof_pending") &&
+        json_push_kv_str(&doc, "action", "verify") &&
+        json_push_kv_str(&doc, "reason", "integration_proof_deferred") &&
+        json_push_kv_str(&doc, "phase", "PROOF_PENDING") &&
+        json_push_kv_bool(&doc, "runtime_published", false) &&
+        json_push_kv_bool(&doc, "proof_complete", false) &&
+        json_push_kv_str(&doc, "edit_epoch",
+                         zcl_devloop_event_edit_epoch()) &&
+        json_push_kv_int(&doc, "file_count", (int64_t)count);
+    for (size_t i = 0; ok && i < count; i++) {
+        struct json_value item;
+        json_init(&item); json_set_str(&item, files[i]);
+        ok = json_push_back(&paths, &item);
+        json_free(&item);
+    }
+    ok = ok && json_push_kv(&doc, "files", &paths) &&
+        json_push_kv_str(&doc, "agent_next_action",
+                         "keep editing; complete reusable proof is running asynchronously");
+    json_free(&paths);
+    char body[ZCL_DEVLOOP_CYCLE_JSON_MAX];
+    size_t n = ok ? json_write(&doc, body, sizeof(body) - 1) : 0;
+    json_free(&doc);
+    if (!n)
+        return false;
+    body[n] = 0;
+    if (!watch_stream_enqueue(ctx, body, n))
+        return false;
+    (void)fwrite(body, 1, n, stdout);
+    (void)fputc('\n', stdout);
+    (void)fflush(stdout);
+    return watch_stream_flush(ctx);
+}
+
+static bool watch_emit_superseded(struct watch_context *ctx)
+{
+    if (!ctx || ctx->changed_count == 0)
+        return false;
+    struct json_value doc, paths;
+    json_init(&doc); json_set_object(&doc);
+    json_init(&paths); json_set_array(&paths);
+    bool ok = json_push_kv_str(&doc, "schema", "zcl.dev_cycle.v1") &&
+        json_push_kv_str(&doc, "producer", "reflex-reactor") &&
+        json_push_kv_str(&doc, "status", "superseded") &&
+        json_push_kv_str(&doc, "action", "cancel") &&
+        json_push_kv_str(&doc, "reason", "newer_edit_epoch") &&
+        json_push_kv_str(&doc, "phase", "SUPERSEDED") &&
+        json_push_kv_bool(&doc, "runtime_published", false) &&
+        json_push_kv_bool(&doc, "proof_complete", false) &&
+        json_push_kv_int(&doc, "queued_file_count",
+                         (int64_t)ctx->changed_count);
+    if (ok && zcl_devloop_event_edit_epoch()[0])
+        ok = json_push_kv_str(&doc, "edit_epoch",
+                              zcl_devloop_event_edit_epoch());
+    for (size_t i = 0; ok && i < ctx->changed_count; i++) {
+        struct json_value item;
+        json_init(&item); json_set_str(&item, ctx->changed[i]);
+        ok = json_push_back(&paths, &item);
+        json_free(&item);
+    }
+    ok = ok && json_push_kv(&doc, "queued_files", &paths) &&
+        json_push_kv_str(&doc, "agent_next_action",
+                         "ignore obsolete foreground work; latest edit starts next");
+    json_free(&paths);
+    char body[ZCL_DEVLOOP_CYCLE_JSON_MAX];
+    size_t n = ok ? json_write(&doc, body, sizeof(body) - 1) : 0;
+    json_free(&doc);
+    if (!n)
+        return false;
+    body[n] = 0;
+    if (!watch_stream_enqueue(ctx, body, n))
+        return false;
     (void)fwrite(body, 1, n, stdout);
     (void)fputc('\n', stdout);
     (void)fflush(stdout);
@@ -294,6 +751,8 @@ static void add_changed(struct watch_context *ctx, const char *path)
         snprintf(ctx->changed[0], sizeof(ctx->changed[0]), "%s", "Makefile");
         return;
     }
+    if (ctx->changed_count == 0)
+        ctx->first_mutation_us = platform_time_monotonic_us();
     snprintf(ctx->changed[ctx->changed_count],
              sizeof(ctx->changed[ctx->changed_count]), "%s", path);
     ctx->changed_count++;
@@ -387,11 +846,48 @@ static bool prime_source_snapshot(struct watch_context *ctx)
     char root_hex[65] = {0};
     if (ok)
         ci_merkle_hex(&root.digest, root_hex);
-    ci_merkle_free(tree);
+    if (!ok)
+        ci_merkle_free(tree);
     if (!ok)
         return false;
 
+    struct zcl_sha3_digest dependency_digest;
+    bool have_dependency_generation = false;
+    struct codeindex *dependency_index = codeindex_open_existing(ctx->root);
+    if (dependency_index) {
+        have_dependency_generation = codeindex_source_root_sha3(
+            dependency_index, dependency_digest.bytes);
+        codeindex_close(dependency_index);
+    }
+    if (have_dependency_generation) {
+        ci_merkle_hex(&dependency_digest, ctx->dependency_generation);
+        (void)snprintf(ctx->dependency_generation_kind,
+                       sizeof(ctx->dependency_generation_kind), "%s",
+                       "codeindex_source_root");
+    } else {
+        (void)snprintf(ctx->dependency_generation,
+                       sizeof(ctx->dependency_generation), "%s", root_hex);
+        (void)snprintf(ctx->dependency_generation_kind,
+                       sizeof(ctx->dependency_generation_kind), "%s",
+                       "source_merkle_fallback");
+    }
+    if (ctx->verified_tree)
+        ci_merkle_free(ctx->verified_tree);
+    ctx->verified_tree = tree;
+    ctx->snapshot_exact = true;
+    (void)snprintf(ctx->verified_root, sizeof(ctx->verified_root), "%s",
+                   root_hex);
+    if (ctx->edit_epoch_sequence == 0) {
+        struct sha3_256_ctx parent_sha;
+        sha3_256_init(&parent_sha);
+        watch_hash_cstr(&parent_sha, "zcl.dev_edit_epoch.base.v1");
+        watch_hash_cstr(&parent_sha, ctx->verified_root);
+        watch_hash_cstr(&parent_sha, ctx->dependency_generation);
+        watch_digest_hex(&parent_sha, ctx->parent_edit_epoch);
+    }
+
     (void)collect_events(ctx);
+    ctx->snapshot_raced = ctx->changed_count > 0;
     int64_t elapsed_us = platform_time_monotonic_us() - started_us;
     printf("{\"schema\":\"zcl.dev_source_snapshot.v1\","
            "\"status\":\"reconciled\",\"inotify_armed\":true,"
@@ -418,7 +914,63 @@ static bool watch_cancel_poll(void *opaque)
     struct watch_context *ctx = opaque;
     if (g_watch_stop)
         return true;
-    return collect_events(ctx) && ctx->changed_count > 0;
+    bool changed = collect_events(ctx) && ctx->changed_count > 0;
+    if (changed && !ctx->edit_seen_emitted && !watch_emit_edit_seen(ctx)) {
+        g_watch_stop = 1;
+        return true;
+    }
+    if (changed && !ctx->prepared_epoch_ready) {
+        const char *files[ZCL_DEVLOOP_MAX_FILES];
+        size_t count = ctx->changed_count;
+        int64_t seen_us = ctx->first_mutation_us > 0
+            ? ctx->first_mutation_us : platform_time_monotonic_us();
+        for (size_t i = 0; i < count; i++)
+            files[i] = ctx->changed[i];
+        struct watch_edit_epoch epoch;
+        if (watch_build_edit_epoch(ctx, files, count, seen_us, &epoch)) {
+            /* This event names the old foreground epoch. The new immutable
+             * epoch becomes current only after obsolete work is visibly
+             * superseded, so a drive consumer cannot confuse the two. */
+            if (!watch_emit_superseded(ctx) ||
+                !zcl_devloop_event_edit_epoch_set(epoch.id) ||
+                !watch_emit_impact_ready(ctx, &epoch)) {
+                g_watch_stop = 1;
+                return true;
+            }
+            ctx->prepared_epoch = epoch;
+            ctx->prepared_epoch_ready = true;
+            ctx->prepared_full_rescan = ctx->force_full_source_rescan;
+            ctx->changed_count = 0;
+            ctx->first_mutation_us = 0;
+            ctx->edit_seen_emitted = false;
+            ctx->force_full_source_rescan = false;
+        }
+    }
+    return changed;
+}
+
+static bool watch_start_event_stream(struct watch_context *ctx)
+{
+    char latest[ZCL_DEVLOOP_CYCLE_JSON_MAX], why[160] = {0};
+    size_t latest_len = 0;
+    int64_t durable_epoch = 0;
+    enum zcl_devloop_state_lookup state = zcl_devloop_cycle_state_read(
+        ctx->root, latest, sizeof(latest), &latest_len, &durable_epoch,
+        why, sizeof(why));
+    if (state == ZCL_DEVLOOP_STATE_INVALID) {
+        fprintf(stderr, "[devloop] event stream anchor invalid: %s\n",
+                why[0] ? why : "unknown");
+        return false;
+    }
+    if (state == ZCL_DEVLOOP_STATE_ABSENT)
+        durable_epoch = 0;
+    if (!zcl_devloop_cycle_stream_reset(ctx->root, durable_epoch,
+                                        why, sizeof(why))) {
+        fprintf(stderr, "[devloop] event stream reset failed: %s\n",
+                why[0] ? why : "unknown");
+        return false;
+    }
+    return true;
 }
 
 static int open_singleton_lock(const char *repo_root,
@@ -495,6 +1047,14 @@ int zcl_devloop_watch_mode(const char *repo_root,
         close(lock_fd);
         return 1;
     }
+    if (!watch_start_event_stream(&ctx)) {
+        fprintf(stderr,
+                "[devloop] watch: bounded local event stream unavailable\n");
+        ci_merkle_free(ctx.verified_tree);
+        close(ctx.fd);
+        close(lock_fd);
+        return 1;
+    }
     if (!mark_singleton_ready(lock_fd, publish_mode)) {
         fprintf(stderr,
                 "[devloop] watch: could not publish ready ownership\n");
@@ -518,7 +1078,7 @@ int zcl_devloop_watch_mode(const char *repo_root,
     fflush(stdout);
 
     while (!g_watch_stop) {
-        if (ctx.changed_count == 0) {
+        if (ctx.changed_count == 0 && !ctx.prepared_epoch_ready) {
             struct pollfd pfd = { .fd = ctx.fd, .events = POLLIN };
             int prc = poll(&pfd, 1, 1000);
             if (prc < 0 && errno == EINTR)
@@ -534,37 +1094,82 @@ int zcl_devloop_watch_mode(const char *repo_root,
                 continue;
         }
 
-        if (!watch_emit_edit_seen(&ctx))
-            break;
-
-        /* Coalesce editor temp-file renames and multi-file saves into one
-         * source epoch. Each newly observed event extends the quiet window. */
-        int64_t quiet_until = platform_time_monotonic_us() + 15000;
-        while (!g_watch_stop) {
-            int64_t remain_us = quiet_until - platform_time_monotonic_us();
-            if (remain_us <= 0)
-                break;
-            int wait_ms = (int)((remain_us + 999) / 1000);
-            struct pollfd debounce = { .fd = ctx.fd, .events = POLLIN };
-            int drc = poll(&debounce, 1, wait_ms);
-            if (drc > 0 && collect_events(&ctx))
-                quiet_until = platform_time_monotonic_us() + 15000;
-            else if (drc < 0 && errno != EINTR)
-                break;
-        }
-
         char epoch_changed[ZCL_DEVLOOP_MAX_FILES][ZCL_DEVLOOP_PATH_MAX];
         const char *files[ZCL_DEVLOOP_MAX_FILES];
-        size_t epoch_count = ctx.changed_count;
-        for (size_t i = 0; i < epoch_count; i++) {
-            snprintf(epoch_changed[i], sizeof(epoch_changed[i]), "%s",
-                     ctx.changed[i]);
-            files[i] = epoch_changed[i];
+        struct watch_edit_epoch edit_epoch;
+        bool impact_already_emitted = ctx.prepared_epoch_ready;
+        bool full_rescan = false;
+        size_t epoch_count = 0;
+        bool edit_epoch_ready = false;
+        if (ctx.prepared_epoch_ready) {
+            edit_epoch = ctx.prepared_epoch;
+            epoch_count = edit_epoch.blob_count;
+            full_rescan = ctx.prepared_full_rescan;
+            for (size_t i = 0; i < epoch_count; i++) {
+                snprintf(epoch_changed[i], sizeof(epoch_changed[i]), "%s",
+                         edit_epoch.blobs[i].path);
+                files[i] = epoch_changed[i];
+            }
+            ctx.prepared_epoch_ready = false;
+            ctx.prepared_full_rescan = false;
+            edit_epoch_ready = true;
+        } else {
+            if (!ctx.edit_seen_emitted && !watch_emit_edit_seen(&ctx))
+                break;
+
+            /* Coalesce one editor's temp-file events into one save epoch.
+             * Separate saves may remain separate; supersession makes that
+             * cheaper and more exact than delaying their first impact. */
+            int64_t quiet_until =
+                platform_time_monotonic_us() + DEVLOOP_EDIT_QUIET_US;
+            while (!g_watch_stop) {
+                int64_t remain_us =
+                    quiet_until - platform_time_monotonic_us();
+                if (remain_us <= 0)
+                    break;
+                int wait_ms = (int)((remain_us + 999) / 1000);
+                struct pollfd debounce = { .fd = ctx.fd, .events = POLLIN };
+                int drc = poll(&debounce, 1, wait_ms);
+                if (drc > 0 && collect_events(&ctx))
+                    quiet_until = platform_time_monotonic_us() +
+                        DEVLOOP_EDIT_QUIET_US;
+                else if (drc < 0 && errno != EINTR)
+                    break;
+            }
+
+            epoch_count = ctx.changed_count;
+            int64_t epoch_seen_us = ctx.first_mutation_us > 0
+                ? ctx.first_mutation_us : platform_time_monotonic_us();
+            for (size_t i = 0; i < epoch_count; i++) {
+                snprintf(epoch_changed[i], sizeof(epoch_changed[i]), "%s",
+                         ctx.changed[i]);
+                files[i] = epoch_changed[i];
+            }
+            ctx.changed_count = 0;
+            ctx.first_mutation_us = 0;
+            ctx.edit_seen_emitted = false;
+            full_rescan = ctx.force_full_source_rescan;
+            ctx.force_full_source_rescan = false;
+            edit_epoch_ready = watch_build_edit_epoch(
+                &ctx, files, epoch_count, epoch_seen_us, &edit_epoch);
         }
-        ctx.changed_count = 0;
-        bool full_rescan = ctx.force_full_source_rescan;
-        ctx.force_full_source_rescan = false;
+        if (edit_epoch_ready) {
+            if (!zcl_devloop_event_edit_epoch_set(edit_epoch.id))
+                break;
+            if (!impact_already_emitted &&
+                !watch_emit_impact_ready(&ctx, &edit_epoch))
+                break;
+        } else {
+            (void)zcl_devloop_event_edit_epoch_set("");
+            fprintf(stderr,
+                    "[devloop] immutable edit epoch deferred; conservative "
+                    "source reconciliation required\n");
+        }
+        /* The volatile events are now sufficient to start the reflex. Their
+         * ordered sealed copies are flushed only after useful feedback is
+         * visible, so storage acknowledgement is not a candidate prerequisite. */
         if (full_rescan) {
+            ctx.snapshot_exact = false;
             (void)ci_merkle_forget(ctx.root);
         }
         printf("{\"schema\":\"zcl.dev_source_epoch.v1\","
@@ -578,38 +1183,58 @@ int zcl_devloop_watch_mode(const char *repo_root,
         zcl_devloop_process_cancel_poll_set(watch_cancel_poll, &ctx);
         bool restart_union_ok = zcl_devloop_restart_source_set_add(
             &ctx.restart_sources, files, epoch_count);
+        const char *restart_files[ZCL_DEVLOOP_RESTART_SOURCE_MAX];
+        const char *const *proof_files = files;
+        size_t proof_count = epoch_count;
         int fast = zcl_devloop_hotswap_batch_event(
             ctx.root, files, epoch_count, publish_mode);
         if (fast == 0)
             fast = service_contract_restart_event(ctx.root, files,
                                                   epoch_count);
         if (fast == 0) {
-            const char *restart_files[ZCL_DEVLOOP_RESTART_SOURCE_MAX];
-            const char *const *selected_files = files;
-            size_t selected_count = epoch_count;
             if (restart_union_ok && watch_epoch_all_c(files, epoch_count) &&
                 ctx.restart_sources.count > 0) {
-                selected_count = ctx.restart_sources.count;
-                for (size_t i = 0; i < selected_count; i++)
+                proof_count = ctx.restart_sources.count;
+                for (size_t i = 0; i < proof_count; i++)
                     restart_files[i] = ctx.restart_sources.sources[i];
-                selected_files = restart_files;
+                proof_files = restart_files;
             }
             fast = zcl_devloop_restart_event(
-                ctx.root, selected_files, selected_count, publish_mode);
-            /* A green resident restart event is intentionally only the
-             * low-latency affected-test receipt.  Keep the same warm owner
-             * moving through the conservative complete proof so a stable
-             * edit reaches ZVCS/publication without requiring the operator
-             * to notice the deferred flag and launch a second command.
-             * New filesystem activity cancels this proof through the poll
-             * callback already armed above; stale epochs never anchor. */
-            if (fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING ||
-                fast == ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING) {
+                ctx.root, proof_files, proof_count, publish_mode);
+        }
+        /* Candidate emitters seal through their already-visible terminal
+         * reflex event. Retire the watcher's matching queue entries now so a
+         * save during asynchronous proof has the full bounded queue. */
+        if (fast != 0 && !watch_stream_flush(&ctx)) {
+            g_watch_stop = 1;
+            fast = ZCL_DEVLOOP_RESTART_EVENT_FINAL;
+        }
+        /* A green HOT_SHADOW story is already useful foreground knowledge.
+         * Only after publishing it do we build/run the exact affected proof.
+         * The ordinary restart lane reaches this same state after its focused
+         * receipt, so both converge here without duplicating scheduling. */
+        if (fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING &&
+            epoch_count == 1 &&
+            strcmp(files[0],
+                   "app/services/src/vault_intent_decision_service.c") == 0) {
+            fast = zcl_devloop_restart_story_prove_event(
+                ctx.root, files, epoch_count, publish_mode);
+        }
+        /* Keep the same warm owner moving through conservative complete proof
+         * after focused feedback. New filesystem activity cancels this work;
+         * stale epochs never anchor. */
+        if (fast == ZCL_DEVLOOP_RESTART_EVENT_PROOF_PENDING ||
+            fast == ZCL_DEVLOOP_RESTART_EVENT_FALLBACK_PENDING) {
+            if (!watch_emit_proof_pending(&ctx, proof_files, proof_count)) {
+                fprintf(stderr,
+                        "[devloop] PROOF_PENDING event publication failed\n");
+                g_watch_stop = 1;
+            } else {
                 (void)zcl_devloop_run_cycle_mode(
-                    ctx.root, selected_files, selected_count,
+                    ctx.root, proof_files, proof_count,
                     ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY);
-                fast = ZCL_DEVLOOP_RESTART_EVENT_FINAL;
             }
+            fast = ZCL_DEVLOOP_RESTART_EVENT_FINAL;
         }
         if (fast == 0) {
             /* APPLY authority is intentionally narrower than the generic
@@ -626,6 +1251,11 @@ int zcl_devloop_watch_mode(const char *repo_root,
         bool superseded = ctx.changed_count > 0;
         zcl_devloop_process_cancel_clear();
         if (superseded) {
+            if (!watch_emit_superseded(&ctx) || !watch_stream_flush(&ctx)) {
+                fprintf(stderr,
+                        "[devloop] SUPERSEDED event publication failed\n");
+                break;
+            }
             printf("{\"schema\":\"zcl.dev_source_epoch.v1\","
                    "\"status\":\"superseded\","
                    "\"queued_paths\":%zu,\"first_queued_path\":",
@@ -641,6 +1271,7 @@ int zcl_devloop_watch_mode(const char *repo_root,
            "\"status\":\"stopped\",\"pid\":%ld}\n", (long)getpid());
     close(ctx.fd);
     close(lock_fd);
+    ci_merkle_free(ctx.verified_tree);
     return 0;
 }
 

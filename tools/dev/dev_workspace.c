@@ -4,16 +4,20 @@
 #define _GNU_SOURCE
 #include "devloop.h"
 
+#include "base/serialize_le.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
+#include "platform/time_compat.h"
 
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/file.h>
+#include <sys/inotify.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -24,6 +28,23 @@
 
 #define CYCLE_CANONICAL_MAX ZCL_DEVLOOP_CYCLE_JSON_MAX
 #define CYCLE_RECORD_MAX (ZCL_DEVLOOP_CYCLE_JSON_MAX + 4096)
+#define CYCLE_EVENTS_DIR "cycle-events"
+#define CYCLE_EVENTS_ABSENT (-1)
+#define CYCLE_EVENTS_INVALID (-2)
+#define CYCLE_STREAM_NAME "native-events.ring"
+#define CYCLE_STREAM_HEADER_SIZE 136u
+#define CYCLE_STREAM_SLOT_COUNT 64u
+#define CYCLE_STREAM_BODY_MAX CYCLE_CANONICAL_MAX
+#define CYCLE_STREAM_SLOT_SIZE (44u + CYCLE_STREAM_BODY_MAX)
+#define CYCLE_STREAM_FILE_SIZE                                           \
+    (CYCLE_STREAM_HEADER_SIZE +                                         \
+     CYCLE_STREAM_SLOT_COUNT * CYCLE_STREAM_SLOT_SIZE)
+
+static const unsigned char cycle_stream_magic[16] = {
+    'Z', 'C', 'L', 'D', 'E', 'V', 'S', 'T', 'R', 'E', 'A', 'M', '1', 0, 0, 0
+};
+
+static _Thread_local char g_event_edit_epoch[65];
 
 static void set_why(char *why, size_t why_len, const char *value)
 {
@@ -59,6 +80,24 @@ static bool valid_hex64(const char *value)
     if (!value || strlen(value) != 64)
         return false;
     return strspn(value, "0123456789abcdef") == 64;
+}
+
+bool zcl_devloop_event_edit_epoch_set(const char *edit_epoch)
+{
+    if (!edit_epoch || !edit_epoch[0]) {
+        g_event_edit_epoch[0] = 0;
+        return true;
+    }
+    if (!valid_hex64(edit_epoch))
+        return false;
+    (void)snprintf(g_event_edit_epoch, sizeof(g_event_edit_epoch), "%s",
+                   edit_epoch);
+    return true;
+}
+
+const char *zcl_devloop_event_edit_epoch(void)
+{
+    return g_event_edit_epoch;
 }
 
 static bool workspace_identity(const char *repo_root, char out[65])
@@ -203,11 +242,337 @@ static bool cycle_canonicalize(const struct json_value *cycle,
     return true;
 }
 
-static enum zcl_devloop_state_lookup cycle_record_read_at(
-    int dirfd, const char *workspace, char *out, size_t out_len,
-    size_t *len_out, int64_t *epoch_out)
+static bool pwrite_all(int fd, const void *body, size_t len, off_t offset)
 {
-    int fd = openat(dirfd, "native-cycle.json",
+    const unsigned char *bytes = body;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = pwrite(fd, bytes + off, len - off,
+                           offset + (off_t)off);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return false;
+        off += (size_t)n;
+    }
+    return true;
+}
+
+static bool pread_all(int fd, void *body, size_t len, off_t offset)
+{
+    unsigned char *bytes = body;
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = pread(fd, bytes + off, len - off,
+                          offset + (off_t)off);
+        if (n < 0 && errno == EINTR)
+            continue;
+        if (n <= 0)
+            return false;
+        off += (size_t)n;
+    }
+    return true;
+}
+
+static void cycle_stream_header_seal(const unsigned char header[96],
+                                     unsigned char out[32])
+{
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    static const char domain[] = "zcl.dev_cycle_stream.header.v1";
+    hash_field(&sha, "domain", domain);
+    sha3_256_write(&sha, header, 80);
+    sha3_256_write(&sha, header + 88, 8);
+    sha3_256_finalize(&sha, out);
+}
+
+static void cycle_stream_event_digest(const char *workspace, int64_t epoch,
+                                      const char *canonical, size_t len,
+                                      unsigned char out[32])
+{
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    hash_field(&sha, "domain", "zcl.dev_cycle_stream.event.v1");
+    hash_field(&sha, "workspace_id", workspace);
+    unsigned char encoded[8];
+    zcl_write_u64_le(encoded, (uint64_t)epoch);
+    sha3_256_write(&sha, encoded, sizeof(encoded));
+    sha3_256_write(&sha, (const unsigned char *)canonical, len);
+    sha3_256_finalize(&sha, out);
+}
+
+static bool cycle_stream_header_valid(const unsigned char header[136],
+                                      const char *workspace)
+{
+    unsigned char seal[32];
+    cycle_stream_header_seal(header, seal);
+    return memcmp(header, cycle_stream_magic, sizeof(cycle_stream_magic)) == 0 &&
+           memcmp(header + 16, workspace, 64) == 0 &&
+           zcl_read_u32_le(header + 88) == CYCLE_STREAM_SLOT_COUNT &&
+           zcl_read_u32_le(header + 92) == CYCLE_STREAM_BODY_MAX &&
+           memcmp(header + 96, seal, sizeof(seal)) == 0;
+}
+
+static int cycle_stream_open_at(int dirfd, const char *workspace,
+                                unsigned char header[136])
+{
+    int fd = openat(dirfd, CYCLE_STREAM_NAME,
+                    O_RDWR | O_CLOEXEC | O_NOFOLLOW);
+    struct stat st;
+    if (!private_regular_fd(fd, &st) ||
+        st.st_size != (off_t)CYCLE_STREAM_FILE_SIZE ||
+        !pread_all(fd, header, CYCLE_STREAM_HEADER_SIZE, 0) ||
+        !cycle_stream_header_valid(header, workspace)) {
+        if (fd >= 0)
+            close(fd);
+        return -1;
+    }
+    return fd;
+}
+
+bool zcl_devloop_cycle_stream_reset(const char *repo_root,
+                                    int64_t durable_epoch,
+                                    char *why, size_t why_len)
+{
+    if (why && why_len)
+        why[0] = 0;
+    char dir[PATH_MAX], workspace[65];
+    if (durable_epoch < 0 ||
+        !zcl_devloop_workspace_resolve(repo_root, workspace, dir,
+                                       sizeof(dir)) ||
+        !mkdirs(dir)) {
+        set_why(why, why_len, "cycle_stream_workspace_unavailable");
+        return false;
+    }
+    int dirfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (!private_dir_fd(dirfd)) {
+        if (dirfd >= 0)
+            close(dirfd);
+        set_why(why, why_len, "cycle_stream_directory_invalid");
+        return false;
+    }
+    int fd = openat(dirfd, CYCLE_STREAM_NAME,
+                    O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    /* Reset is a new volatile generation. Shrinking first is load-bearing:
+     * ftruncate to an unchanged size leaves old ring slots intact, and a
+     * reader could otherwise mistake an old durable_epoch+1 slot for a new
+     * event before the watcher publishes anything. Startup is outside the
+     * reflex path, so clearing the bounded image costs no edit latency. */
+    bool ok = private_regular_fd(fd, NULL) && ftruncate(fd, 0) == 0 &&
+              ftruncate(fd, (off_t)CYCLE_STREAM_FILE_SIZE) == 0;
+    unsigned char header[CYCLE_STREAM_HEADER_SIZE] = {0};
+    if (ok) {
+        memcpy(header, cycle_stream_magic, sizeof(cycle_stream_magic));
+        memcpy(header + 16, workspace, 64);
+        header[80] = 0;
+        zcl_write_u64_le(header + 80, (uint64_t)durable_epoch);
+        zcl_write_u32_le(header + 88, CYCLE_STREAM_SLOT_COUNT);
+        zcl_write_u32_le(header + 92, CYCLE_STREAM_BODY_MAX);
+        cycle_stream_header_seal(header, header + 96);
+        zcl_write_u64_le(header + 128, (uint64_t)durable_epoch);
+        ok = pwrite_all(fd, header, sizeof(header), 0);
+    }
+    if (fd >= 0 && close(fd) != 0)
+        ok = false;
+    close(dirfd);
+    if (!ok)
+        set_why(why, why_len, "cycle_stream_reset_failed");
+    return ok;
+}
+
+static bool cycle_stream_publish_at(const char *repo_root, int64_t epoch,
+                                    const char *canonical, size_t len,
+                                    bool require_next, char *why,
+                                    size_t why_len)
+{
+    char dir[PATH_MAX], workspace[65];
+    if (epoch <= 0 || !canonical || len == 0 ||
+        len >= CYCLE_STREAM_BODY_MAX ||
+        !zcl_devloop_workspace_resolve(repo_root, workspace, dir,
+                                       sizeof(dir))) {
+        set_why(why, why_len, "cycle_stream_event_invalid");
+        return false;
+    }
+    int dirfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (!private_dir_fd(dirfd)) {
+        if (dirfd >= 0)
+            close(dirfd);
+        set_why(why, why_len, "cycle_stream_directory_invalid");
+        return false;
+    }
+    unsigned char header[CYCLE_STREAM_HEADER_SIZE];
+    int fd = cycle_stream_open_at(dirfd, workspace, header);
+    close(dirfd);
+    if (fd < 0) {
+        set_why(why, why_len, "cycle_stream_unavailable");
+        return false;
+    }
+    uint64_t latest = zcl_read_u64_le(header + 80);
+    if ((require_next && (latest == INT64_MAX || epoch != (int64_t)latest + 1)) ||
+        (!require_next && epoch > (int64_t)latest + 1)) {
+        close(fd);
+        set_why(why, why_len, "cycle_stream_epoch_mismatch");
+        return false;
+    }
+    unsigned char slot[CYCLE_STREAM_SLOT_SIZE];
+    memset(slot, 0, sizeof(slot));
+    zcl_write_u64_le(slot, (uint64_t)epoch);
+    zcl_write_u32_le(slot + 8, (uint32_t)len);
+    cycle_stream_event_digest(workspace, epoch, canonical, len, slot + 12);
+    memcpy(slot + 44, canonical, len);
+    off_t offset = (off_t)CYCLE_STREAM_HEADER_SIZE +
+        (off_t)(((uint64_t)epoch - 1) % CYCLE_STREAM_SLOT_COUNT) *
+            (off_t)CYCLE_STREAM_SLOT_SIZE;
+    bool ok = pwrite_all(fd, slot, sizeof(slot), offset);
+    unsigned char encoded[8];
+    zcl_write_u64_le(encoded, (uint64_t)epoch);
+    if (ok)
+        ok = pwrite_all(fd, encoded, sizeof(encoded), 80);
+    if (close(fd) != 0)
+        ok = false;
+    if (!ok)
+        set_why(why, why_len, "cycle_stream_publish_failed");
+    return ok;
+}
+
+static bool cycle_stream_mark_durable(const char *repo_root, int64_t epoch)
+{
+    char dir[PATH_MAX], workspace[65];
+    if (epoch < 0 ||
+        !zcl_devloop_workspace_resolve(repo_root, workspace, dir,
+                                       sizeof(dir)))
+        return false;
+    int dirfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    unsigned char header[CYCLE_STREAM_HEADER_SIZE];
+    int fd = private_dir_fd(dirfd)
+        ? cycle_stream_open_at(dirfd, workspace, header) : -1;
+    if (dirfd >= 0)
+        close(dirfd);
+    if (fd < 0)
+        return false;
+    uint64_t latest = zcl_read_u64_le(header + 80);
+    uint64_t durable = zcl_read_u64_le(header + 128);
+    bool ok = (uint64_t)epoch <= latest && (uint64_t)epoch >= durable;
+    unsigned char encoded[8];
+    zcl_write_u64_le(encoded, (uint64_t)epoch);
+    if (ok)
+        ok = pwrite_all(fd, encoded, sizeof(encoded), 128);
+    if (close(fd) != 0)
+        ok = false;
+    return ok;
+}
+
+bool zcl_devloop_cycle_stream_publish(const char *repo_root,
+                                      const char *cycle_json,
+                                      size_t cycle_len, int64_t *epoch_out,
+                                      char *why, size_t why_len)
+{
+    if (why && why_len)
+        why[0] = 0;
+    if (epoch_out)
+        *epoch_out = 0;
+    struct json_value cycle;
+    json_init(&cycle);
+    char canonical[CYCLE_CANONICAL_MAX];
+    size_t canonical_len = 0;
+    bool ok = cycle_json && cycle_len > 0 &&
+        json_read(&cycle, cycle_json, cycle_len) &&
+        cycle_canonicalize(&cycle, canonical, &canonical_len);
+    json_free(&cycle);
+    if (!ok) {
+        set_why(why, why_len, "cycle_stream_input_invalid");
+        return false;
+    }
+    char dir[PATH_MAX], workspace[65];
+    if (!zcl_devloop_workspace_resolve(repo_root, workspace, dir,
+                                       sizeof(dir))) {
+        set_why(why, why_len, "cycle_stream_workspace_unavailable");
+        return false;
+    }
+    int dirfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    unsigned char header[CYCLE_STREAM_HEADER_SIZE];
+    int fd = private_dir_fd(dirfd)
+        ? cycle_stream_open_at(dirfd, workspace, header) : -1;
+    if (dirfd >= 0)
+        close(dirfd);
+    if (fd < 0) {
+        set_why(why, why_len, "cycle_stream_unavailable");
+        return false;
+    }
+    uint64_t latest = zcl_read_u64_le(header + 80);
+    close(fd);
+    if (latest >= INT64_MAX) {
+        set_why(why, why_len, "cycle_stream_epoch_exhausted");
+        return false;
+    }
+    int64_t epoch = (int64_t)latest + 1;
+    ok = cycle_stream_publish_at(repo_root, epoch, canonical, canonical_len,
+                                 true, why, why_len);
+    if (ok && epoch_out)
+        *epoch_out = epoch;
+    return ok;
+}
+
+static enum zcl_devloop_state_lookup cycle_stream_read_after(
+    int dirfd, const char *workspace, int64_t after_epoch, char *out,
+    size_t out_len, size_t *len_out, int64_t *epoch_out)
+{
+    unsigned char header[CYCLE_STREAM_HEADER_SIZE];
+    int fd = cycle_stream_open_at(dirfd, workspace, header);
+    if (fd < 0)
+        return ZCL_DEVLOOP_STATE_ABSENT;
+    int64_t wanted = after_epoch + 1;
+    if ((uint64_t)wanted <= zcl_read_u64_le(header + 128)) {
+        close(fd);
+        return ZCL_DEVLOOP_STATE_ABSENT;
+    }
+    off_t offset = (off_t)CYCLE_STREAM_HEADER_SIZE +
+        (off_t)(((uint64_t)wanted - 1) % CYCLE_STREAM_SLOT_COUNT) *
+            (off_t)CYCLE_STREAM_SLOT_SIZE;
+    unsigned char slot[CYCLE_STREAM_SLOT_SIZE];
+    bool read_ok = pread_all(fd, slot, sizeof(slot), offset);
+    close(fd);
+    if (!read_ok || zcl_read_u64_le(slot) != (uint64_t)wanted)
+        return ZCL_DEVLOOP_STATE_ABSENT;
+    uint32_t len = zcl_read_u32_le(slot + 8);
+    if (len == 0 || len >= CYCLE_STREAM_BODY_MAX || len >= out_len)
+        return ZCL_DEVLOOP_STATE_ABSENT;
+    unsigned char digest[32];
+    cycle_stream_event_digest(workspace, wanted, (const char *)slot + 44,
+                              len, digest);
+    if (memcmp(digest, slot + 12, sizeof(digest)) != 0)
+        return ZCL_DEVLOOP_STATE_ABSENT;
+    struct json_value cycle;
+    json_init(&cycle);
+    char canonical[CYCLE_CANONICAL_MAX];
+    size_t canonical_len = 0;
+    bool valid = json_read(&cycle, (const char *)slot + 44, len) &&
+                 cycle_canonicalize(&cycle, canonical, &canonical_len) &&
+                 canonical_len == len &&
+                 memcmp(canonical, slot + 44, len) == 0;
+    json_free(&cycle);
+    if (!valid)
+        return ZCL_DEVLOOP_STATE_ABSENT;
+    memcpy(out, canonical, len + 1);
+    *len_out = len;
+    if (epoch_out)
+        *epoch_out = wanted;
+    return ZCL_DEVLOOP_STATE_FOUND;
+}
+
+static bool cycle_event_name(int64_t epoch, char out[32])
+{
+    if (epoch <= 0)
+        return false;
+    int n = snprintf(out, 32, "%020lld.json", (long long)epoch);
+    return n == 25;
+}
+
+static enum zcl_devloop_state_lookup cycle_record_read_named(
+    int dirfd, const char *name, const char *workspace, char *out,
+    size_t out_len, size_t *len_out, int64_t *epoch_out)
+{
+    int fd = openat(dirfd, name,
                     O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
     if (fd < 0 && errno == ENOENT)
         return ZCL_DEVLOOP_STATE_ABSENT;
@@ -269,8 +634,92 @@ static enum zcl_devloop_state_lookup cycle_record_read_at(
     return ok ? ZCL_DEVLOOP_STATE_FOUND : ZCL_DEVLOOP_STATE_INVALID;
 }
 
-bool zcl_devloop_cycle_state_write(const char *repo_root,
+static enum zcl_devloop_state_lookup cycle_record_read_at(
+    int dirfd, const char *workspace, char *out, size_t out_len,
+    size_t *len_out, int64_t *epoch_out)
+{
+    return cycle_record_read_named(dirfd, "native-cycle.json", workspace,
+                                   out, out_len, len_out, epoch_out);
+}
+
+static int cycle_events_open(int dirfd, bool create)
+{
+    if (create && mkdirat(dirfd, CYCLE_EVENTS_DIR, 0700) != 0 &&
+        errno != EEXIST)
+        return CYCLE_EVENTS_INVALID;
+    int fd = openat(dirfd, CYCLE_EVENTS_DIR,
+                    O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0 && errno == ENOENT && !create)
+        return CYCLE_EVENTS_ABSENT;
+    if (!private_dir_fd(fd)) {
+        if (fd >= 0)
+            close(fd);
+        return CYCLE_EVENTS_INVALID;
+    }
+    return fd;
+}
+
+static enum zcl_devloop_state_lookup cycle_event_read_at(
+    int events_fd, int64_t wanted_epoch, const char *workspace, char *out,
+    size_t out_len, size_t *len_out, int64_t *epoch_out)
+{
+    char name[32];
+    if (!cycle_event_name(wanted_epoch, name))
+        return ZCL_DEVLOOP_STATE_INVALID;
+    int64_t actual_epoch = 0;
+    enum zcl_devloop_state_lookup result = cycle_record_read_named(
+        events_fd, name, workspace, out, out_len, len_out, &actual_epoch);
+    if (result == ZCL_DEVLOOP_STATE_FOUND && actual_epoch != wanted_epoch)
+        return ZCL_DEVLOOP_STATE_INVALID;
+    if (result == ZCL_DEVLOOP_STATE_FOUND && epoch_out)
+        *epoch_out = actual_epoch;
+    return result;
+}
+
+static bool cycle_record_publish_named(int dirfd, const char *name,
+                                       const char *body, size_t body_len,
+                                       bool replace)
+{
+    char temp[96] = {0};
+    int fd = -1;
+    if (!replace) {
+        fd = openat(dirfd, name,
+                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                    0600);
+        bool ok = private_regular_fd(fd, NULL) &&
+                  write_all(fd, body, body_len) && fsync(fd) == 0;
+        if (fd >= 0 && close(fd) != 0)
+            ok = false;
+        if (!ok)
+            (void)unlinkat(dirfd, name, 0);
+        return ok;
+    }
+    for (unsigned attempt = 0; attempt < 100; attempt++) {
+        int n = snprintf(temp, sizeof(temp), ".cycle.%ld.%u.tmp",
+                         (long)getpid(), attempt);
+        if (n <= 0 || (size_t)n >= sizeof(temp))
+            break;
+        fd = openat(dirfd, temp,
+                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
+                    0600);
+        if (fd >= 0 || errno != EEXIST)
+            break;
+    }
+    bool ok = private_regular_fd(fd, NULL) && write_all(fd, body, body_len) &&
+              fsync(fd) == 0;
+    if (fd >= 0 && close(fd) != 0)
+        ok = false;
+    if (ok)
+        ok = renameat(dirfd, temp, dirfd, name) == 0;
+    if (!ok)
+        (void)unlinkat(dirfd, temp, 0);
+    return ok;
+}
+
+static bool cycle_state_write_impl(const char *repo_root,
+                                   int64_t reserved_epoch,
                                    const char *cycle_json, size_t cycle_len,
+                                   bool mirror_stream,
                                    char *why, size_t why_len)
 {
     if (why && why_len)
@@ -327,8 +776,56 @@ bool zcl_devloop_cycle_state_write(const char *repo_root,
                           : "cycle_state_epoch_exhausted");
         return false;
     }
-    int64_t epoch = current == ZCL_DEVLOOP_STATE_FOUND
-                        ? previous_epoch + 1 : 1;
+    int events_fd = cycle_events_open(dirfd, true);
+    if (events_fd < 0) {
+        close(lock_fd);
+        close(dirfd);
+        json_free(&cycle);
+        set_why(why, why_len, "cycle_event_directory_invalid");
+        return false;
+    }
+    /* Normally the latest pointer and journal tail agree, making this one
+     * failed open. If a process died after sealing an event but before moving
+     * the compatibility pointer, recover monotonically instead of reusing or
+     * overwriting that epoch. */
+    int64_t tail_epoch = current == ZCL_DEVLOOP_STATE_FOUND
+                             ? previous_epoch : 0;
+    while (tail_epoch < INT64_MAX) {
+        char recovered[CYCLE_CANONICAL_MAX];
+        size_t recovered_len = 0;
+        int64_t recovered_epoch = 0;
+        enum zcl_devloop_state_lookup tail = cycle_event_read_at(
+            events_fd, tail_epoch + 1, workspace, recovered,
+            sizeof(recovered), &recovered_len, &recovered_epoch);
+        if (tail == ZCL_DEVLOOP_STATE_ABSENT)
+            break;
+        if (tail != ZCL_DEVLOOP_STATE_FOUND) {
+            close(events_fd);
+            close(lock_fd);
+            close(dirfd);
+            json_free(&cycle);
+            set_why(why, why_len, "cycle_event_integrity_invalid");
+            return false;
+        }
+        tail_epoch = recovered_epoch;
+    }
+    if (tail_epoch == INT64_MAX) {
+        close(events_fd);
+        close(lock_fd);
+        close(dirfd);
+        json_free(&cycle);
+        set_why(why, why_len, "cycle_state_epoch_exhausted");
+        return false;
+    }
+    int64_t epoch = tail_epoch + 1;
+    if (reserved_epoch > 0 && reserved_epoch != epoch) {
+        close(events_fd);
+        close(lock_fd);
+        close(dirfd);
+        json_free(&cycle);
+        set_why(why, why_len, "cycle_state_reserved_epoch_mismatch");
+        return false;
+    }
     char digest[65];
     ok = cycle_digest(workspace, epoch, canonical, digest);
     struct json_value record;
@@ -352,33 +849,56 @@ bool zcl_devloop_cycle_state_write(const char *repo_root,
     }
     body[body_len++] = '\n';
 
-    char temp[96] = {0};
-    int fd = -1;
-    for (unsigned attempt = 0; attempt < 100; attempt++) {
-        int n = snprintf(temp, sizeof(temp), ".cycle.%ld.%u.tmp",
-                         (long)getpid(), attempt);
-        if (n <= 0 || (size_t)n >= sizeof(temp))
-            break;
-        fd = openat(dirfd, temp,
-                    O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC | O_NOFOLLOW,
-                    0600);
-        if (fd >= 0 || errno != EEXIST)
-            break;
+    char event_name[32];
+    ok = cycle_event_name(epoch, event_name) &&
+         cycle_record_publish_named(events_fd, event_name, body, body_len,
+                                    false) &&
+         fsync(events_fd) == 0 &&
+         cycle_record_publish_named(dirfd, "native-cycle.json", body,
+                                    body_len, true) &&
+         fsync(dirfd) == 0;
+    close(events_fd);
+    if (ok && mirror_stream) {
+        char stream_why[96] = {0};
+        bool mirrored = cycle_stream_publish_at(
+            repo_root, epoch, canonical, canonical_len, true, stream_why,
+            sizeof(stream_why));
+        if (mirrored)
+            (void)cycle_stream_mark_durable(repo_root, epoch);
+    } else if (ok && reserved_epoch > 0) {
+        /* The sealed append-only journal is authority. Advancing the volatile
+         * watermark is only a read optimization: the same canonical event is
+         * already in both places, so its failure must not turn a completed
+         * durable write into a false-negative retry with an epoch collision. */
+        (void)cycle_stream_mark_durable(repo_root, epoch);
     }
-    ok = private_regular_fd(fd, NULL) && write_all(fd, body, body_len) &&
-         fsync(fd) == 0;
-    if (fd >= 0 && close(fd) != 0)
-        ok = false;
-    if (ok)
-        ok = renameat(dirfd, temp, dirfd, "native-cycle.json") == 0 &&
-             fsync(dirfd) == 0;
-    if (!ok)
-        (void)unlinkat(dirfd, temp, 0);
     close(lock_fd);
     close(dirfd);
     if (!ok)
         set_why(why, why_len, "cycle_state_publication_failed");
     return ok;
+}
+
+bool zcl_devloop_cycle_state_write(const char *repo_root,
+                                   const char *cycle_json, size_t cycle_len,
+                                   char *why, size_t why_len)
+{
+    return cycle_state_write_impl(repo_root, 0, cycle_json, cycle_len, true,
+                                  why, why_len);
+}
+
+bool zcl_devloop_cycle_state_write_epoch(const char *repo_root,
+                                         int64_t reserved_epoch,
+                                         const char *cycle_json,
+                                         size_t cycle_len,
+                                         char *why, size_t why_len)
+{
+    if (reserved_epoch <= 0) {
+        set_why(why, why_len, "cycle_state_reserved_epoch_invalid");
+        return false;
+    }
+    return cycle_state_write_impl(repo_root, reserved_epoch, cycle_json,
+                                  cycle_len, false, why, why_len);
 }
 
 enum zcl_devloop_state_lookup zcl_devloop_cycle_state_read(
@@ -440,5 +960,210 @@ enum zcl_devloop_state_lookup zcl_devloop_cycle_state_read(
     } else if (result == ZCL_DEVLOOP_STATE_FOUND && epoch_out) {
         *epoch_out = epoch;
     }
+    return result;
+}
+
+enum zcl_devloop_state_lookup zcl_devloop_cycle_state_read_after(
+    const char *repo_root, int64_t after_epoch, char *out, size_t out_len,
+    size_t *len_out, int64_t *epoch_out, char *why, size_t why_len)
+{
+    if (why && why_len)
+        why[0] = 0;
+    if (after_epoch < 0 || after_epoch == INT64_MAX || !out || out_len < 2 ||
+        !len_out) {
+        set_why(why, why_len, "cycle_event_request_invalid");
+        return ZCL_DEVLOOP_STATE_INVALID;
+    }
+    *len_out = 0;
+    if (epoch_out)
+        *epoch_out = 0;
+    char dir[PATH_MAX], workspace[65];
+    if (!zcl_devloop_workspace_resolve(repo_root, workspace, dir,
+                                       sizeof(dir))) {
+        set_why(why, why_len, "cycle_state_workspace_unavailable");
+        return ZCL_DEVLOOP_STATE_INVALID;
+    }
+    int dirfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+    if (dirfd < 0 && errno == ENOENT)
+        return ZCL_DEVLOOP_STATE_ABSENT;
+    if (!private_dir_fd(dirfd)) {
+        if (dirfd >= 0)
+            close(dirfd);
+        set_why(why, why_len, "cycle_state_directory_invalid");
+        return ZCL_DEVLOOP_STATE_INVALID;
+    }
+    enum zcl_devloop_state_lookup volatile_event = cycle_stream_read_after(
+        dirfd, workspace, after_epoch, out, out_len, len_out, epoch_out);
+    if (volatile_event == ZCL_DEVLOOP_STATE_FOUND) {
+        close(dirfd);
+        return volatile_event;
+    }
+    int lock_fd = cycle_lock_open(dirfd, false, LOCK_SH);
+    if (lock_fd < 0) {
+        close(dirfd);
+        set_why(why, why_len, "cycle_state_lock_missing_or_invalid");
+        return ZCL_DEVLOOP_STATE_INVALID;
+    }
+    char latest[CYCLE_CANONICAL_MAX];
+    size_t latest_len = 0;
+    int64_t latest_epoch = 0;
+    enum zcl_devloop_state_lookup current = cycle_record_read_at(
+        dirfd, workspace, latest, sizeof(latest), &latest_len,
+        &latest_epoch);
+    if (current == ZCL_DEVLOOP_STATE_INVALID) {
+        close(lock_fd);
+        close(dirfd);
+        set_why(why, why_len, "cycle_state_integrity_invalid");
+        return current;
+    }
+
+    int events_fd = cycle_events_open(dirfd, false);
+    if (events_fd == CYCLE_EVENTS_INVALID) {
+        close(lock_fd);
+        close(dirfd);
+        set_why(why, why_len, "cycle_event_directory_invalid");
+        return ZCL_DEVLOOP_STATE_INVALID;
+    }
+    enum zcl_devloop_state_lookup event = ZCL_DEVLOOP_STATE_ABSENT;
+    if (events_fd >= 0) {
+        event = cycle_event_read_at(events_fd, after_epoch + 1, workspace,
+                                    out, out_len, len_out, epoch_out);
+        close(events_fd);
+    }
+    if (event == ZCL_DEVLOOP_STATE_FOUND) {
+        close(lock_fd);
+        close(dirfd);
+        return event;
+    }
+    if (event == ZCL_DEVLOOP_STATE_INVALID) {
+        close(lock_fd);
+        close(dirfd);
+        set_why(why, why_len, "cycle_event_integrity_invalid");
+        return event;
+    }
+
+    if (current == ZCL_DEVLOOP_STATE_FOUND && latest_epoch > after_epoch) {
+        /* Migration compatibility: a workspace may have a pre-journal latest
+         * record. Only an unanchored initial read may take that snapshot;
+         * anchored readers fail closed rather than skip an event. */
+        if (after_epoch == 0 && latest_len < out_len) {
+            memcpy(out, latest, latest_len + 1);
+            *len_out = latest_len;
+            if (epoch_out)
+                *epoch_out = latest_epoch;
+            current = ZCL_DEVLOOP_STATE_FOUND;
+        } else {
+            current = ZCL_DEVLOOP_STATE_INVALID;
+            set_why(why, why_len, "cycle_event_gap");
+        }
+    } else if (current == ZCL_DEVLOOP_STATE_FOUND) {
+        current = ZCL_DEVLOOP_STATE_ABSENT;
+    }
+    close(lock_fd);
+    close(dirfd);
+    if (current == ZCL_DEVLOOP_STATE_INVALID && (!why || !why[0]))
+        set_why(why, why_len, "cycle_state_integrity_invalid");
+    return current;
+}
+
+bool zcl_devloop_cycle_stream_flush_through(const char *repo_root,
+                                            int64_t through_epoch,
+                                            char *why, size_t why_len)
+{
+    if (why && why_len)
+        why[0] = 0;
+    if (!repo_root || !repo_root[0] || through_epoch <= 0) {
+        set_why(why, why_len, "cycle_stream_flush_request_invalid");
+        return false;
+    }
+    char body[CYCLE_CANONICAL_MAX];
+    size_t body_len = 0;
+    int64_t durable_epoch = 0;
+    enum zcl_devloop_state_lookup latest = zcl_devloop_cycle_state_read(
+        repo_root, body, sizeof(body), &body_len, &durable_epoch,
+        why, why_len);
+    if (latest == ZCL_DEVLOOP_STATE_INVALID)
+        return false;
+    if (latest == ZCL_DEVLOOP_STATE_ABSENT)
+        durable_epoch = 0;
+    if (durable_epoch >= through_epoch)
+        return true;
+    if (through_epoch - durable_epoch > CYCLE_STREAM_SLOT_COUNT) {
+        set_why(why, why_len, "cycle_stream_flush_range_evicted");
+        return false;
+    }
+    while (durable_epoch < through_epoch) {
+        int64_t event_epoch = 0;
+        enum zcl_devloop_state_lookup event =
+            zcl_devloop_cycle_state_read_after(
+                repo_root, durable_epoch, body, sizeof(body), &body_len,
+                &event_epoch, why, why_len);
+        if (event != ZCL_DEVLOOP_STATE_FOUND ||
+            event_epoch != durable_epoch + 1) {
+            if (!why || !why[0])
+                set_why(why, why_len, "cycle_stream_flush_event_missing");
+            return false;
+        }
+        if (!zcl_devloop_cycle_state_write_epoch(
+                repo_root, event_epoch, body, body_len, why, why_len))
+            return false;
+        durable_epoch = event_epoch;
+    }
+    return true;
+}
+
+enum zcl_devloop_state_lookup zcl_devloop_cycle_state_wait_after(
+    const char *repo_root, int64_t after_epoch, int timeout_ms,
+    char *out, size_t out_len, size_t *len_out, int64_t *epoch_out,
+    char *why, size_t why_len)
+{
+    if (timeout_ms < 1 || timeout_ms > 300000) {
+        set_why(why, why_len, "cycle_event_wait_invalid");
+        return ZCL_DEVLOOP_STATE_INVALID;
+    }
+    char dir[PATH_MAX], workspace[65];
+    if (!zcl_devloop_workspace_resolve(repo_root, workspace, dir,
+                                       sizeof(dir))) {
+        set_why(why, why_len, "cycle_state_workspace_unavailable");
+        return ZCL_DEVLOOP_STATE_INVALID;
+    }
+    (void)workspace;
+    int notify_fd = inotify_init1(IN_CLOEXEC | IN_NONBLOCK);
+    int watch = notify_fd >= 0
+        ? inotify_add_watch(notify_fd, dir,
+            IN_CREATE | IN_MOVED_TO | IN_CLOSE_WRITE | IN_MODIFY |
+            IN_DELETE_SELF | IN_MOVE_SELF)
+        : -1;
+    if (watch < 0) {
+        if (notify_fd >= 0)
+            close(notify_fd);
+        set_why(why, why_len, "cycle_event_watch_unavailable");
+        return ZCL_DEVLOOP_STATE_INVALID;
+    }
+
+    int64_t deadline = platform_time_monotonic_us() +
+        (int64_t)timeout_ms * 1000;
+    enum zcl_devloop_state_lookup result;
+    for (;;) {
+        result = zcl_devloop_cycle_state_read_after(
+            repo_root, after_epoch, out, out_len, len_out, epoch_out,
+            why, why_len);
+        if (result != ZCL_DEVLOOP_STATE_ABSENT)
+            break;
+        int64_t remaining = deadline - platform_time_monotonic_us();
+        if (remaining <= 0)
+            break;
+        int wait_ms = (int)((remaining + 999) / 1000);
+        struct pollfd pfd = {.fd = notify_fd, .events = POLLIN};
+        int ready = poll(&pfd, 1, wait_ms);
+        if (ready < 0 && errno == EINTR)
+            continue;
+        if (ready <= 0)
+            break;
+        char events[4096];
+        while (read(notify_fd, events, sizeof(events)) > 0) {}
+    }
+    (void)inotify_rm_watch(notify_fd, watch);
+    close(notify_fd);
     return result;
 }

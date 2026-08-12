@@ -909,6 +909,8 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
                         int64_t started_us, const char *capsule,
                         const char *repo_root, const char *generation_hex)
 {
+    const char *event_phase = strcmp(status, "superseded") == 0
+        ? zcl_devloop_progress_phase(status, phase) : phase;
     /* A watcher saw a newer source epoch while this synchronous cycle was in
      * flight. It owns the replacement batch; never publish this stale result
      * or anchor its superseded bytes. */
@@ -1027,7 +1029,7 @@ static int finish_cycle(const struct zcl_devloop_plan *plan,
     (void)generation_hex;
 #endif
 
-    size_t len = cycle_json(plan, files, file_count, status, phase,
+    size_t len = cycle_json(plan, files, file_count, status, event_phase,
                             elapsed_ms, capsule, &vcsf, body,
                             sizeof(body) - 2);
     if (len == 0) {

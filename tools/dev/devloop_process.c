@@ -327,7 +327,10 @@ static bool process_run_impl(const char *cwd, int exec_fd,
                     finished = true;
                     break;
                 }
-                usleep(10000);
+                struct pollfd exit_event = {
+                    .fd = fds[0], .events = POLLIN | POLLHUP
+                };
+                (void)poll(&exit_event, 1, 1);
             }
             if (!finished) {
                 terminate_child_session(pid, SIGKILL);
@@ -337,12 +340,11 @@ static bool process_run_impl(const char *cwd, int exec_fd,
             break;
         }
         struct pollfd pfd = { .fd = fds[0], .events = POLLIN };
-        (void)poll(&pfd, 1, 25);
+        (void)poll(&pfd, 1, 5);
     }
     /* A bounded command may not daemonize work past its receipt. Reap any
      * descendant process group that stayed in the command's private session. */
     signal_session_members(pid, SIGTERM);
-    usleep(10000);
     signal_session_members(pid, SIGKILL);
     size_t output_before = out->output_len;
     drain_output(fds[0], out);

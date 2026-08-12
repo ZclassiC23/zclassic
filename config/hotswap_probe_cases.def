@@ -66,3 +66,6 @@ HOTSWAP_PROBE_CASE("service.shop.status.default.v1", "service",
     "app.shop.status", "{}", "zcl.shop_status.v1", 16384)
 HOTSWAP_PROBE_CASE("service.shop.want.list.default.v1", "service",
     "app.shop.want.list", "{}", "zcl.shop_want_list.v1", 8192)
+HOTSWAP_PROBE_CASE("service.vault.intent.decision.story.v1", "service",
+    "dev.test.story", "{\"owner\":\"transaction_intent\"}",
+    "zcl.vault_intent_decision_story.v1", 2048)

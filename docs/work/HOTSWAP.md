@@ -111,7 +111,7 @@ against another island's ABI or fall through to the command-module loader.
 `check-hotswap-service-islands` rejects mutable file-scope state, TLS,
 constructors/destructors, filesystem/SQLite/socket/clock/RNG/process calls,
 wallet/node-global/consensus/raw-storage access, and project calls outside the
-manifest's stable-import list. A 15 ms debounced batch publishes live only when
+manifest's stable-import list. A 1 ms coalescing window publishes live only when
 every changed `.c` and private header resolves to one exact island owner. The
 owner and its compiler-reported dependency closure compile once, then one
 module and one registry generation publish; receipts bind the changed-path
@@ -255,7 +255,7 @@ build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
   dev loop ensure --input='{"mode":"auto"}'
 ```
 
-For a single changed owner or island member, inotify waits for a 15 ms quiet
+For a single changed owner or island member, inotify waits for a 1 ms quiet
 window and calls the resident action executor directly. The action plan is
 loaded from `build/hotswap/fast/flags.env` and invalidated by the Makefile,
 owner manifest, or island manifest. The executor snapshots the existing

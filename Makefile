@@ -2321,7 +2321,7 @@ fast-changed-compile:
 # import unrelated compiler depfiles.
 watcher-safety-gates: check-core-seal check-consensus-parity check-dev-loop-profiles
 
-.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest dev-loop-history-replay dev-loop-history-replay-selftest
+.PHONY: check-dev-loop-profiles dev-loop-profile-flags dev-loop-history-bench dev-loop-history-bench-selftest dev-loop-history-replay dev-loop-history-replay-selftest reflex-reactor-bench
 dev-loop-profile-flags:
 	@printf 'DEV_LIVE\t%s\t%s\n' '$(DEV_LIVE_CFLAGS)' '$(HOTSWAP_MODULE_LDFLAGS)'
 	@printf 'DEV_RESTART\t%s\t%s\n' '$(DEV_RESTART_CFLAGS)' '$(DEV_RESTART_LDFLAGS)'
@@ -2344,6 +2344,9 @@ dev-loop-active-bench:
 
 dev-loop-active-bench-selftest:
 	@tools/dev/dev-loop-active-bench.sh --self-test
+
+reflex-reactor-bench: dev-bin
+	@tools/dev/reflex-reactor-bench.sh
 
 dev-linker-shootout:
 	@tools/dev/dev-linker-shootout.sh run

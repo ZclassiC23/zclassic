@@ -1916,6 +1916,9 @@ void zcl_native_handle_dev_loop_stop(
 void zcl_native_handle_dev_test_run(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_dev_test_story(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_dev_test_sim(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
