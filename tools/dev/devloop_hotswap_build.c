@@ -1632,6 +1632,7 @@ static int hs_hotfork_unity_source(
             " HF_CHECK(zcl_test_group_catalog_contains(\"test_dev_platform\")"
             " && !zcl_test_group_catalog_contains(\"dev_platform\"));"
             " HF_CHECK(zcl_test_group_requires_exclusive_run(\"test_command_registry_latency\")"
+            " && zcl_test_group_requires_exclusive_run(\"test_validate_parallel_determinism\")"
             " && !zcl_test_group_requires_exclusive_run(\"test_dev_platform\"));"
             " HF_CHECK(zcl_test_group_source_is_semantic_leaf("
             "\"lib/test/src/test_stage_repair_coin_backfill.c\")"
