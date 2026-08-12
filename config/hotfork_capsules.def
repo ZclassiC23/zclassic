@@ -205,6 +205,17 @@ HOTFORK_CAPSULE(
     "shw_hex32+shw_build_want")
 
 HOTFORK_CAPSULE(
+    "kernel.command-input-validation-core.v1",
+    "HOT_FORK",
+    "lib/kernel/src/command_registry.c",
+    "command-registry-input-validation-core.v1",
+    "command-registry-input-validation-core.v1",
+    "command-registry-input-validation-core.v1",
+    1000,
+    "git|github|make|shell|sqlite|dht|network|publication|full_link|full_suite",
+    "zcl_command_registry_input_validate+zcl_command_registry_input_str_max+zcl_command_registry_input_budget_bytes")
+
+HOTFORK_CAPSULE(
     "zcode.package-view-contract.v1",
     "HOT_FORK",
     "tools/command/native_zcode_package_view_command.c",
