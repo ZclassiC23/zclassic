@@ -212,8 +212,9 @@ enum vcs_swarm_fetch_result {
 const char *vcs_swarm_fetch_result_string(enum vcs_swarm_fetch_result r);
 
 /* Fetch a package by root from the swarm (idempotent: an active download
- * for the same root reports OK). Persists the resumable record FIRST,
- * then schedules the manifest WANT (issued on the next tick/drain). */
+ * for the same root reports OK). Persists the resumable record FIRST;
+ * the caller may schedule immediately with vcs_swarm_engine_schedule_ready()
+ * or let the periodic tick do so. */
 enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     int64_t day, uint64_t now);
@@ -246,6 +247,13 @@ bool vcs_swarm_engine_cancel(struct vcs_swarm_engine *engine,
  * deadlines and windows are in the caller's tick units. */
 void vcs_swarm_engine_tick(struct vcs_swarm_engine *engine, int64_t day,
                            uint64_t now);
+
+/* Event-driven scheduler edge. Issues assignments that are ready from facts
+ * already held by the engine, but deliberately does NOT advance timeouts,
+ * windows, or any lifecycle clock. Safe to call after a fetch registration or
+ * verified DATA frame; repeated calls deduplicate against in-flight requests. */
+void vcs_swarm_engine_schedule_ready(struct vcs_swarm_engine *engine,
+                                     int64_t day, uint64_t now);
 
 /* Pop one queued outbound frame (ANNOUNCE/WANT/CANCEL, bounded
  * VCS_SWARM_OUTBOUND_FRAME_MAX). peer_filter != 0 pops only frames for

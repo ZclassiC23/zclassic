@@ -228,9 +228,10 @@ static void *bf_worker_loop(void *arg)
             ? claimed_us - action.created_at * INT64_C(1000000) : 0;
         LOG_INFO("zcode.proof_perf",
                  "schema=zcl.async_proof_perf.v1 action=%s "
-                 "stage=worker_lease claim_us=%lld queue_us=%lld "
+                 "stage=worker_lease at_unix_us=%lld claim_us=%lld "
+                 "queue_us=%lld "
                  "attempt=%lld",
-                 action.action_id,
+                 action.action_id, (long long)claimed_us,
                  (long long)(platform_time_monotonic_us() - claim_started_us),
                  (long long)(queue_us < 0 ? 0 : queue_us),
                  (long long)action.attempt_count);

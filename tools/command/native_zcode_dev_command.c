@@ -1473,6 +1473,16 @@ void zcl_native_handle_zcode_improve(
                   !submitted.ok ? submitted.message : proof_requested.message);
         return;
     }
+    LOG_INFO("zcode.proof_perf",
+             "schema=zcl.async_proof_perf.v1 action=%s "
+             "stage=foreground_return at_unix_us=%lld "
+             "request_creation_us=%lld durable_lookup_dedup_us=%lld "
+             "local_submit_us=%lld dedup_hit=%d",
+             action.action_id, (long long)platform_time_realtime_us(),
+             (long long)(request_creation_us < 0 ? 0 : request_creation_us),
+             (long long)(ledger_us < 0 ? 0 : ledger_us),
+             (long long)(local_submit_us < 0 ? 0 : local_submit_us),
+             proof_request_created ? 0 : 1);
     zdev_push_root(&reply->data, "task_root", task_root);
     zdev_push_root(&reply->data, "candidate_root", candidate_root);
     zdev_push_root(&reply->data, "candidate_source_root",

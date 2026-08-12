@@ -454,4 +454,11 @@ zap_assert_same_action_identity "$ZAP_B" "$ZAP_C" "$FINAL_ACTION"
 zap_assert_evidence "$ZAP_B" "$FINAL_ACTION"
 zap_assert_receipt_bindings "$ZAP_B" "$ZAP_C" "$FINAL_ACTION"
 
+"$SCRIPT_DIR/zcode_async_proof_perf_report.sh" "$DHT_WORK" \
+    >"$DHT_WORK/async-proof-performance-report.txt" ||
+    dht_die "async proof performance report was incomplete"
+grep -q '^background_total_precise_us n=4 ' \
+    "$DHT_WORK/async-proof-performance-report.txt" ||
+    dht_die "performance report did not cover all four immutable actions"
+
 dht_note "async proof PASS: actions=$FIRST_ACTION,$SECOND_ACTION,$RETRY_ACTION,$FINAL_ACTION foreground_ms=$FIRST_MS,$SECOND_MS,$RETRY_MS,$FINAL_MS github_contacted=false equal_full_nodes=true"

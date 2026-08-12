@@ -461,11 +461,13 @@ static void async_dispatch(
         };
         LOG_INFO("zcode.proof_perf",
                  "schema=zcl.async_proof_perf.v1 action=%s "
-                 "stage=requester_dispatch context_prepare_us=%lld "
+                 "stage=requester_dispatch at_unix_us=%lld "
+                 "context_prepare_us=%lld "
                  "context_bytes=%llu context_cache_hit=%d "
                  "peer_selection_us=%lld request_submit_us=%lld "
                  "request_wire_bytes=%zu retry=%d",
-                 action.action_id, (long long)(context_us < 0 ? 0 : context_us),
+                 action.action_id, (long long)platform_time_realtime_us(),
+                 (long long)(context_us < 0 ? 0 : context_us),
                  (unsigned long long)context_bytes, context_cache_hit ? 1 : 0,
                  (long long)(selection_us < 0 ? 0 : selection_us),
                  (long long)(submit_us < 0 ? 0 : submit_us),
@@ -610,9 +612,10 @@ static void async_reproduce(
     }
     LOG_INFO("zcode.proof_perf",
              "schema=zcl.async_proof_perf.v1 action=%s "
-             "stage=acceptance_ready local_verification_us=%lld "
+             "stage=acceptance_ready at_unix_us=%lld "
+             "local_verification_us=%lld "
              "projection_us=%lld total_background_us=%lld",
-             event->action_id,
+             event->action_id, (long long)platform_time_realtime_us(),
              (long long)(evaluation_us < 0 ? 0 : evaluation_us),
              (long long)(projection_us < 0 ? 0 : projection_us),
              (long long)total_us);

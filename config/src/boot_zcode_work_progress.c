@@ -46,6 +46,21 @@ static void work_progress_publish(
     }
     enum vcs_zcode_work_node_result result =
         vcs_zcode_work_node_publish_progress(work, peer, &progress);
+    if (result == VCS_ZCODE_WORK_NODE_OK) {
+        char action_id[65];
+        zcl_hex_encode(request->action_root, 32, action_id);
+        struct vcs_zcode_work_swarm_message message = {
+            .type = VCS_ZCODE_WORK_SWARM_PROGRESS,
+            .body.progress = progress,
+        };
+        LOG_INFO("zcode.proof_perf",
+                 "schema=zcl.async_proof_perf.v1 action=%s "
+                 "stage=worker_progress_publish progress_stage=%u "
+                 "at_unix_us=%lld progress_wire_bytes=%zu",
+                 action_id, (unsigned)stage,
+                 (long long)platform_time_realtime_us(),
+                 vcs_zcode_work_swarm_wire_size(&message));
+    }
     if (result != VCS_ZCODE_WORK_NODE_OK &&
         result != VCS_ZCODE_WORK_NODE_REPLAY)
         LOG_WARN("net.zcode_swarm", "progress %u: %s", stage,
@@ -92,6 +107,14 @@ void boot_zcode_work_progress_observe(
                      (unsigned long long)progress.request_id);
             continue;
         }
+        char action_id[65];
+        zcl_hex_encode(request.action_root, 32, action_id);
+        LOG_INFO("zcode.proof_perf",
+                 "schema=zcl.async_proof_perf.v1 action=%s "
+                 "stage=requester_progress_observe progress_stage=%u "
+                 "at_unix_us=%lld",
+                 action_id, (unsigned)progress.stage,
+                 (long long)platform_time_realtime_us());
     }
 }
 
@@ -126,10 +149,12 @@ bool boot_zcode_work_result_observe(
             ? (now - result->receipt.finished_unix) * INT64_C(1000000) : 0;
         LOG_INFO("zcode.proof_perf",
                  "schema=zcl.async_proof_perf.v1 action=%s "
-                 "stage=requester_result result_transport_us=%lld "
+                 "stage=requester_result at_unix_us=%lld "
+                 "result_transport_us=%lld "
                  "receipt_verification_us=%lld projection_us=%lld "
                  "result_wire_bytes=%zu",
-                 action_id, (long long)transport_us,
+                 action_id, (long long)platform_time_realtime_us(),
+                 (long long)transport_us,
                  (long long)(elapsed < 0 ? 0 : elapsed),
                  (long long)(projection_us < 0 ? 0 : projection_us),
                  vcs_zcode_work_swarm_wire_size(&message));
