@@ -10,6 +10,23 @@ command -v readelf >/dev/null 2>&1 || {
     echo "c23-node: readelf is required for the release dependency audit" >&2
     exit 1
 }
+command -v objdump >/dev/null 2>&1 || {
+    echo "c23-node: objdump is required for the release ABI audit" >&2
+    exit 1
+}
+
+# Ubuntu 22.04's glibc 2.35 is older than this ceiling, while the project's
+# established portable-release contract permits symbols through GLIBC_2.38.
+# The ceiling is about symbols the executable REQUIRES, not the libc version
+# installed on the build machine.  A developer may build on a newer distro,
+# but publication must fail if that silently raises the deploy ABI.  Override
+# only for an explicit cross-platform audit; the release recipe uses the
+# fail-closed default.
+max_glibc_allowed="${ZCL_C23_MAX_GLIBC:-GLIBC_2.38}"
+case "$max_glibc_allowed" in
+    GLIBC_[0-9]*.[0-9]*) ;;
+    *) echo "c23-node: invalid ZCL_C23_MAX_GLIBC: $max_glibc_allowed" >&2; exit 1 ;;
+esac
 
 bad=0
 while IFS= read -r dep; do
@@ -24,5 +41,17 @@ if readelf -Ws "$bin" | grep -Eq 'GLIBCXX_|CXXABI_|__cxa_|_Z(nw|dl|da|na)'; then
     bad=1
 fi
 
+max_glibc="$(objdump -T "$bin" 2>/dev/null |
+    grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -V | tail -1 || true)"
+if [[ -z "$max_glibc" ]]; then
+    echo "c23-node: no required GLIBC symbol versions found (unparseable artifact)" >&2
+    bad=1
+elif [[ "$(printf '%s\n%s\n' "$max_glibc" "$max_glibc_allowed" |
+        sort -V | tail -1)" != "$max_glibc_allowed" ]]; then
+    echo "c23-node: required ABI $max_glibc exceeds supported ceiling $max_glibc_allowed" >&2
+    echo "c23-node: build the release on the oldest supported toolchain/sysroot" >&2
+    bad=1
+fi
+
 test "$bad" -eq 0 || exit 1
-echo "c23-node: PASS (C23 sources; pinned static project dependencies; libc/libm ABI only)"
+echo "c23-node: PASS (C23 sources; pinned static project dependencies; libc/libm ABI only; max $max_glibc)"

@@ -539,7 +539,11 @@ The release link runs `tools/scripts/check_c23_node_binary.sh` before atomic
 publication. The gate rejects GTK/WebKit, `libstdc++`, C++ ABI symbols, and any
 other unexpected dynamic dependency. On Linux the published executable may
 use only the libc/libm ABI and the ELF loader; all project dependencies are
-pinned static archives. `tools/ldb_verify_c23.c` deliberately keeps linking
+pinned static archives. It also rejects any required symbol newer than
+`GLIBC_2.38`, so building on a newer developer workstation cannot silently
+produce an artifact that fails on supported deployment hosts. Build releases
+with the oldest supported toolchain/sysroot; never raise the ceiling merely to
+make a red build green. `tools/ldb_verify_c23.c` deliberately keeps linking
 both readers: an independent oracle you delete cannot catch a native-reader
 regression.
 

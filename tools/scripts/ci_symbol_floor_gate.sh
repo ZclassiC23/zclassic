@@ -4,17 +4,15 @@
 # ci_symbol_floor_gate.sh — the hermetic MVP C1 portability-floor gate.
 #
 # MVP criterion #1 ("single-binary install on clean Ubuntu/Debian") rests on
-# the headline claim that the ~15 MB binary is self-contained — it runs on a
-# clean OS with no extra install. That is true only up to a SYMBOL-VERSION
-# FLOOR: the binary dynamically links libc, libstdc++ and libgcc_s, so its real
-# floor is a TRIPLE, not glibc alone:
+# the headline claim that the node binary is self-contained — it runs on a
+# clean OS with no project-library install. That is true only up to a libc
+# SYMBOL-VERSION FLOOR. The shipped C23 node deliberately does not link a C++
+# runtime or C++ ABI:
 #
 #     GLIBC   <= 2.38      (libc.so.6)
-#     GLIBCXX <= 3.4.30    (libstdc++.so.6 — the C++ runtime, e.g. LevelDB)
-#     CXXABI  <= 1.3.9     (libstdc++.so.6 — the C++ ABI)
 #
-# A clean Ubuntu 24.04 (glibc 2.39 / GLIBCXX 3.4.33) satisfies all three; an
-# Ubuntu 20.04 (GLIBCXX 3.4.28) would NOT. This gate is the regression guard:
+# A clean Ubuntu 24.04 (glibc 2.39) satisfies that floor. This gate is the
+# regression guard:
 # it inspects the ALREADY-BUILT artifact with `objdump -T` + `ldd` only (no
 # node, no network, no params, no docker, no wall-clock — pure static
 # inspection), so unlike ci-install / ci-install-container it CAN live inside
@@ -45,8 +43,6 @@ command -v ldd     >/dev/null 2>&1 || gate_skip "ldd absent"
 
 # ── The documented portability floor (raise only on purpose) ────────
 FLOOR_GLIBC="GLIBC_2.38"
-FLOOR_GLIBCXX="GLIBCXX_3.4.30"
-FLOOR_CXXABI="CXXABI_1.3.9"
 
 # ── (1) Every shared-lib dependency must resolve ────────────────────
 # A "=> not found" means the binary cannot start on this host at all.
@@ -87,8 +83,11 @@ check_family() {
 [ -n "$(family_max "GLIBC_")" ] || gate_die "no GLIBC symbols found in $BIN — not a parseable dynamically-linked ELF (refusing to PASS a garbage artifact)"
 
 check_family "GLIBC"   "GLIBC_"   "$FLOOR_GLIBC"
-check_family "GLIBCXX" "GLIBCXX_" "$FLOOR_GLIBCXX"
-check_family "CXXABI"  "CXXABI_"  "$FLOOR_CXXABI"
+for forbidden_family in GLIBCXX_ CXXABI_; do
+    forbidden_max="$(family_max "$forbidden_family")"
+    [ -z "$forbidden_max" ] ||
+        gate_die "forbidden C++ ABI family required by C23 node: $forbidden_max"
+done
 
-echo "=== ci-symbol-floor: PASSED (triple floor $FLOOR_GLIBC / $FLOOR_GLIBCXX / $FLOOR_CXXABI honored; all deps resolve) ==="
+echo "=== ci-symbol-floor: PASSED ($FLOOR_GLIBC honored; no C++ ABI; all deps resolve) ==="
 exit 0
