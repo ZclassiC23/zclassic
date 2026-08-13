@@ -5,6 +5,7 @@
 
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "vcs/package_content.h"
 #include "vcs/package_publish.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
@@ -28,35 +29,6 @@ static bool transport_copy(uint8_t **out, size_t *out_len,
     *out = copy;
     *out_len = wire_len;
     return true;
-}
-
-static bool transport_add_bytes(struct vcs_package_manifest *manifest,
-                                const char *path, const uint8_t *bytes,
-                                size_t len)
-{
-    uint64_t count64 = len == 0 ? 0 :
-        1u + ((uint64_t)len - 1u) / VCS_PACKAGE_CHUNK_BYTES;
-    if (!manifest || !path || (!bytes && len != 0) || count64 > UINT32_MAX)
-        return false;
-    uint32_t count = (uint32_t)count64;
-    uint8_t *hashes = count == 0 ? NULL :
-        zcl_malloc((size_t)count * 32u, "vcs.package.transport.hashes");
-    if (count != 0 && !hashes)
-        return false;
-    bool ok = true;
-    for (uint32_t i = 0; ok && i < count; i++) {
-        size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
-        size_t take = len - off;
-        if (take > VCS_PACKAGE_CHUNK_BYTES)
-            take = VCS_PACKAGE_CHUNK_BYTES;
-        ok = vcs_package_chunk_hash(bytes + off, take,
-                                    hashes + (size_t)i * 32u);
-    }
-    ok = ok && vcs_package_manifest_add(manifest, path,
-                                        VCS_PACKAGE_MODE_FILE, len,
-                                        hashes, count);
-    free(hashes);
-    return ok;
 }
 
 static bool transport_source_path(const char *path, char out[256])
@@ -192,16 +164,16 @@ enum vcs_package_transport_result vcs_package_transport_build(
         LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_ALLOC,
                    "vcs.package.transport", "carrier wire allocation");
 
-    if (!transport_add_bytes(&out->transport_manifest,
-                             VCS_PACKAGE_TRANSPORT_RELEASE_PATH,
-                             release_wire, release_wire_len) ||
-        !transport_add_bytes(&out->transport_manifest,
-                             VCS_PACKAGE_TRANSPORT_RECIPE_PATH,
-                             recipe_wire, recipe_wire_len) ||
-        !transport_add_bytes(&out->transport_manifest,
-                             VCS_PACKAGE_TRANSPORT_MANIFEST_PATH,
-                             package_manifest_wire,
-                             package_manifest_wire_len))
+    if (!vcs_package_content_add_file(
+            &out->transport_manifest, VCS_PACKAGE_TRANSPORT_RELEASE_PATH,
+            VCS_PACKAGE_MODE_FILE, release_wire, release_wire_len) ||
+        !vcs_package_content_add_file(
+            &out->transport_manifest, VCS_PACKAGE_TRANSPORT_RECIPE_PATH,
+            VCS_PACKAGE_MODE_FILE, recipe_wire, recipe_wire_len) ||
+        !vcs_package_content_add_file(
+            &out->transport_manifest, VCS_PACKAGE_TRANSPORT_MANIFEST_PATH,
+            VCS_PACKAGE_MODE_FILE, package_manifest_wire,
+            package_manifest_wire_len))
         LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_MANIFEST,
                    "vcs.package.transport", "carrier metadata manifest");
     if (!transport_add_sources(&out->transport_manifest,
@@ -215,24 +187,6 @@ enum vcs_package_transport_result vcs_package_transport_build(
                                    out->transport_root))
         LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_MANIFEST,
                    "vcs.package.transport", "carrier manifest root");
-    return VCS_PACKAGE_TRANSPORT_OK;
-}
-
-static enum vcs_package_transport_result transport_store_bytes(
-    struct vcs_package_store *store, const uint8_t root[32],
-    const char *path, const uint8_t *bytes, size_t len)
-{
-    uint32_t chunk = 0;
-    for (size_t off = 0; off < len; chunk++) {
-        size_t take = len - off;
-        if (take > VCS_PACKAGE_CHUNK_BYTES)
-            take = VCS_PACKAGE_CHUNK_BYTES;
-        if (vcs_package_store_put_chunk(store, root, path, chunk,
-                                        bytes + off, take) !=
-            VCS_PACKAGE_STORE_OK)
-            return VCS_PACKAGE_TRANSPORT_ERR_STORE;
-        off += take;
-    }
     return VCS_PACKAGE_TRANSPORT_OK;
 }
 
@@ -252,18 +206,25 @@ enum vcs_package_transport_result vcs_package_transport_store(
         memcmp(root, transport->transport_root, 32) != 0)
         LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_STORE,
                    "vcs.package.transport", "store carrier manifest");
-    enum vcs_package_transport_result result = transport_store_bytes(
-        store, root, VCS_PACKAGE_TRANSPORT_RELEASE_PATH,
-        transport->release_wire, transport->release_wire_len);
+    enum vcs_package_transport_result result =
+        vcs_package_content_put_file(
+            store, root, VCS_PACKAGE_TRANSPORT_RELEASE_PATH,
+            transport->release_wire, transport->release_wire_len) ==
+                VCS_PACKAGE_STORE_OK
+            ? VCS_PACKAGE_TRANSPORT_OK : VCS_PACKAGE_TRANSPORT_ERR_STORE;
     if (result == VCS_PACKAGE_TRANSPORT_OK)
-        result = transport_store_bytes(
-            store, root, VCS_PACKAGE_TRANSPORT_RECIPE_PATH,
-            transport->recipe_wire, transport->recipe_wire_len);
+        result = vcs_package_content_put_file(
+                     store, root, VCS_PACKAGE_TRANSPORT_RECIPE_PATH,
+                     transport->recipe_wire, transport->recipe_wire_len) ==
+                         VCS_PACKAGE_STORE_OK
+            ? VCS_PACKAGE_TRANSPORT_OK : VCS_PACKAGE_TRANSPORT_ERR_STORE;
     if (result == VCS_PACKAGE_TRANSPORT_OK)
-        result = transport_store_bytes(
-            store, root, VCS_PACKAGE_TRANSPORT_MANIFEST_PATH,
-            transport->package_manifest_wire,
-            transport->package_manifest_wire_len);
+        result = vcs_package_content_put_file(
+                     store, root, VCS_PACKAGE_TRANSPORT_MANIFEST_PATH,
+                     transport->package_manifest_wire,
+                     transport->package_manifest_wire_len) ==
+                         VCS_PACKAGE_STORE_OK
+            ? VCS_PACKAGE_TRANSPORT_OK : VCS_PACKAGE_TRANSPORT_ERR_STORE;
     uint8_t *buffer = NULL;
     if (result == VCS_PACKAGE_TRANSPORT_OK &&
         transport->source_manifest.count != 0) {
@@ -322,38 +283,10 @@ static bool transport_read_file(struct vcs_package_store *store,
     while (index < manifest->count &&
            strcmp(manifest->files[index].path, path) != 0)
         index++;
-    if (index == manifest->count ||
-        manifest->files[index].size > SIZE_MAX)
-        return false;
-    const struct vcs_package_file *file = &manifest->files[index];
-    size_t len = (size_t)file->size;
-    uint8_t *bytes = zcl_malloc(len == 0 ? 1u : len,
-                                "vcs.package.transport.read");
-    if (!bytes)
-        return false;
-    size_t off = 0;
-    bool ok = true;
-    for (uint32_t chunk = 0; ok && chunk < file->chunk_count; chunk++) {
-        uint8_t *part = NULL;
-        size_t part_len = 0;
-        ok = vcs_package_store_get_chunk_at(
-                 store, root, (uint32_t)index, chunk, &part, &part_len) ==
-                 VCS_PACKAGE_STORE_OK &&
-             part_len <= len - off &&
-             vcs_package_verify_chunk(file, chunk, part, part_len);
-        if (ok) {
-            memcpy(bytes + off, part, part_len);
-            off += part_len;
-        }
-        free(part);
-    }
-    if (!ok || off != len) {
-        free(bytes);
-        return false;
-    }
-    *bytes_out = bytes;
-    *len_out = len;
-    return true;
+    return index < manifest->count &&
+        vcs_package_content_get_file_at(
+            store, root, manifest, (uint32_t)index, bytes_out, len_out) ==
+                VCS_PACKAGE_STORE_OK;
 }
 
 enum vcs_package_transport_result vcs_package_transport_import(

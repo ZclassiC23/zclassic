@@ -58,6 +58,7 @@
 #include "validation/txmempool.h"
 #include "vcs/package_build.h"
 #include "vcs/package_checkout.h"
+#include "vcs/package_content.h"
 #include "vcs/package_service.h"
 #include "vcs/package_mapping.h"
 #include "vcs/package_prepare.h"
@@ -326,17 +327,9 @@ static bool zwn_store_source_transport(
         if (!vcs_source_package_transport_file_at(
                 transport, i, &path, &bytes, &len))
             return false;
-        uint32_t chunk = 0;
-        for (size_t off = 0; off < len; chunk++) {
-            size_t take = len - off;
-            if (take > VCS_PACKAGE_CHUNK_BYTES)
-                take = VCS_PACKAGE_CHUNK_BYTES;
-            if (vcs_package_store_put_chunk(
-                    store, root, path, chunk, bytes + off, take) !=
-                VCS_PACKAGE_STORE_OK)
-                return false;
-            off += take;
-        }
+        if (vcs_package_content_put_file(
+                store, root, path, bytes, len) != VCS_PACKAGE_STORE_OK)
+            return false;
     }
     struct vcs_package_store_status status;
     return vcs_package_store_package_status(store, root, &status) &&

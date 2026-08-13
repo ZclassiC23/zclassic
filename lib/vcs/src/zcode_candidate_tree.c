@@ -6,6 +6,7 @@
 #include "vcs_priv.h"
 
 #include "util/safe_alloc.h"
+#include "vcs/package_content.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
 #include "vcs/vcs.h"
@@ -82,26 +83,11 @@ static enum vcs_zcode_candidate_tree_result candidate_tree_add_entry(
     enum vcs_zcode_candidate_tree_result result = candidate_tree_load_blob(
         repo_root, entry, &bytes, &len);
     if (result != VCS_ZCODE_CANDIDATE_TREE_OK) return result;
-    uint32_t chunks = (uint32_t)((len + VCS_PACKAGE_CHUNK_BYTES - 1u) /
-                                 VCS_PACKAGE_CHUNK_BYTES);
-    uint8_t *hashes = chunks > 0
-        ? zcl_malloc((size_t)chunks * 32u, "zcode.candidate_tree.hashes")
-        : NULL;
-    if (chunks > 0 && !hashes) result = VCS_ZCODE_CANDIDATE_TREE_ALLOC;
-    for (uint32_t i = 0; result == VCS_ZCODE_CANDIDATE_TREE_OK &&
-                         i < chunks; i++) {
-        size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
-        size_t take = len - off;
-        if (take > VCS_PACKAGE_CHUNK_BYTES) take = VCS_PACKAGE_CHUNK_BYTES;
-        if (!vcs_package_chunk_hash(bytes + off, take, hashes + i * 32u))
-            result = VCS_ZCODE_CANDIDATE_TREE_SHAPE;
-    }
     if (result == VCS_ZCODE_CANDIDATE_TREE_OK &&
-        !vcs_package_manifest_add(manifest, path,
-                                  candidate_tree_mode(entry->mode),
-                                  entry->size, hashes, chunks))
+        !vcs_package_content_add_file(
+            manifest, path, candidate_tree_mode(entry->mode), bytes, len))
         result = VCS_ZCODE_CANDIDATE_TREE_SHAPE;
-    free(hashes); free(bytes);
+    free(bytes);
     return result;
 }
 
@@ -149,18 +135,10 @@ static enum vcs_zcode_candidate_tree_result candidate_tree_put_blob(
         return VCS_ZCODE_CANDIDATE_TREE_SHAPE;
     enum vcs_zcode_candidate_tree_result result = candidate_tree_load_blob(
         repo_root, entry, &bytes, &len);
-    uint32_t chunks = (uint32_t)((len + VCS_PACKAGE_CHUNK_BYTES - 1u) /
-                                 VCS_PACKAGE_CHUNK_BYTES);
-    for (uint32_t i = 0; result == VCS_ZCODE_CANDIDATE_TREE_OK &&
-                         i < chunks; i++) {
-        size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
-        size_t take = len - off;
-        if (take > VCS_PACKAGE_CHUNK_BYTES) take = VCS_PACKAGE_CHUNK_BYTES;
-        if (vcs_package_store_put_chunk(store, package_root, path, i,
-                                        bytes + off, take) !=
-            VCS_PACKAGE_STORE_OK)
-            result = VCS_ZCODE_CANDIDATE_TREE_STORE;
-    }
+    if (result == VCS_ZCODE_CANDIDATE_TREE_OK &&
+        vcs_package_content_put_file(
+            store, package_root, path, bytes, len) != VCS_PACKAGE_STORE_OK)
+        result = VCS_ZCODE_CANDIDATE_TREE_STORE;
     free(bytes);
     return result;
 }

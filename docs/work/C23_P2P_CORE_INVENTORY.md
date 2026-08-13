@@ -38,6 +38,13 @@ datadir, deployment authority, or command ownership.
 | Scheduling | Build-fabric worker queue for executable actions; package possession scheduler for bounded scrub work | async proof; storage ACK renewal | Execution ownership and incremental possession verification have different state transitions. Both need bounded budgets and fair wakeups, but neither is a generic authority. | Extract a caller-driven bounded-work cursor only after two consumers can delete their loops and keep domain state canonical. |
 | Receipts / projections | Canonical signed receipt objects in VCS/CAS; build-fabric and discovery tables as rebuildable projections | proof acceptance, lanes, score, replication, reproduction | Receipt payloads are intentionally domain-specific. REQUESTED/RUNNING/READY-style rows must remain projections of task/action/receipt facts. | Share signed evidence mechanics; remove projection-only lifecycle facts that cannot be rebuilt from canonical objects. |
 
+`vcs/package_content.h` is the common in-memory edge of the existing
+content.v2 machinery. Package carriers, accepted-source carriers, proof
+contexts, candidate trees, and proof outputs use it for canonical chunk
+hashing plus coordinate-checked CAS admission/reconstruction. It owns no wire,
+retry, scheduler, completion flag, or policy; missing-object transfer and all
+retry state remain exclusively in `package_swarm`.
+
 ## First rule-of-two consolidation
 
 `vcs/signed_evidence.h` is stateless and has three operations: derive a root
@@ -68,8 +75,10 @@ or public domain API changed.
    remains fail-closed.
 2. Isolate signer-keyed slot accounting from transport sessions and prove a
    second scheduler can reuse it while deleting its local counter state.
-3. Remove caller-local missing-object and retry loops where the package swarm
-   already provides the same bounded transfer state.
+3. Keep removing caller-local missing-object and retry loops where the package
+   swarm already provides the same bounded transfer state. The carrier-local
+   byte/chunk/store loops are consolidated; network retries remain solely in
+   the swarm engine.
 4. Compare build-fabric, possession, and DHT maintenance wake/budget loops for
    a small caller-driven work cursor; extract it only when two loops disappear.
 5. Inventory the remaining direct-preimage records by signer policy and extract

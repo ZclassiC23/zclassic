@@ -3,7 +3,7 @@
 
 #include "vcs/zcode_work_output.h"
 
-#include "util/safe_alloc.h"
+#include "vcs/package_content.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
 
@@ -27,46 +27,6 @@ const char *vcs_zcode_work_output_result_string(
     return "unknown";
 }
 
-static bool work_output_add_file(struct vcs_package_manifest *manifest,
-                                 const char *path, const uint8_t *bytes,
-                                 size_t len)
-{
-    uint32_t count = (uint32_t)((len + VCS_PACKAGE_CHUNK_BYTES - 1u) /
-                                VCS_PACKAGE_CHUNK_BYTES);
-    uint8_t *hashes = zcl_malloc((size_t)count * 32u,
-                                 "zcode.work_output.hashes");
-    if (!hashes) return false;
-    bool ok = true;
-    for (uint32_t i = 0; ok && i < count; i++) {
-        size_t offset = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
-        size_t take = len - offset;
-        if (take > VCS_PACKAGE_CHUNK_BYTES) take = VCS_PACKAGE_CHUNK_BYTES;
-        ok = vcs_package_chunk_hash(bytes + offset, take, hashes + i * 32u);
-    }
-    ok = ok && vcs_package_manifest_add(
-        manifest, path, VCS_PACKAGE_MODE_FILE, len, hashes, count);
-    free(hashes);
-    return ok;
-}
-
-static bool work_output_put_file(struct vcs_package_store *store,
-                                 const uint8_t root[32], const char *path,
-                                 const uint8_t *bytes, size_t len)
-{
-    uint32_t count = (uint32_t)((len + VCS_PACKAGE_CHUNK_BYTES - 1u) /
-                                VCS_PACKAGE_CHUNK_BYTES);
-    for (uint32_t i = 0; i < count; i++) {
-        size_t offset = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
-        size_t take = len - offset;
-        if (take > VCS_PACKAGE_CHUNK_BYTES) take = VCS_PACKAGE_CHUNK_BYTES;
-        if (vcs_package_store_put_chunk(
-                store, root, path, i, bytes + offset, take) !=
-            VCS_PACKAGE_STORE_OK)
-            return false;
-    }
-    return true;
-}
-
 enum vcs_zcode_work_output_result vcs_zcode_work_output_put(
     struct vcs_package_store *store, const uint8_t action_root[32],
     const uint8_t *bytes, size_t len, uint8_t package_root[32])
@@ -78,10 +38,12 @@ enum vcs_zcode_work_output_result vcs_zcode_work_output_put(
         return VCS_ZCODE_WORK_OUTPUT_LIMIT;
     struct vcs_package_manifest manifest;
     vcs_package_manifest_init(&manifest);
-    bool built = work_output_add_file(
-            &manifest, VCS_ZCODE_WORK_OUTPUT_ACTION_PATH, action_root, 32) &&
-        work_output_add_file(
-            &manifest, VCS_ZCODE_WORK_OUTPUT_BYTES_PATH, bytes, len);
+    bool built = vcs_package_content_add_file(
+            &manifest, VCS_ZCODE_WORK_OUTPUT_ACTION_PATH,
+            VCS_PACKAGE_MODE_FILE, action_root, 32) &&
+        vcs_package_content_add_file(
+            &manifest, VCS_ZCODE_WORK_OUTPUT_BYTES_PATH,
+            VCS_PACKAGE_MODE_FILE, bytes, len);
     uint8_t *wire = NULL;
     size_t wire_len = 0;
     built = built && vcs_package_manifest_root(&manifest, package_root) &&
@@ -98,11 +60,12 @@ enum vcs_zcode_work_output_result vcs_zcode_work_output_put(
     if (stored != VCS_PACKAGE_STORE_OK ||
         memcmp(admitted, package_root, 32) != 0)
         return VCS_ZCODE_WORK_OUTPUT_STORE;
-    if (!work_output_put_file(
+    if (vcs_package_content_put_file(
             store, package_root, VCS_ZCODE_WORK_OUTPUT_ACTION_PATH,
-            action_root, 32) ||
-        !work_output_put_file(
-            store, package_root, VCS_ZCODE_WORK_OUTPUT_BYTES_PATH, bytes, len))
+            action_root, 32) != VCS_PACKAGE_STORE_OK ||
+        vcs_package_content_put_file(
+            store, package_root, VCS_ZCODE_WORK_OUTPUT_BYTES_PATH,
+            bytes, len) != VCS_PACKAGE_STORE_OK)
         return VCS_ZCODE_WORK_OUTPUT_STORE;
     return VCS_ZCODE_WORK_OUTPUT_OK;
 }
@@ -119,36 +82,15 @@ static bool work_output_file_shape(const struct vcs_package_file *file,
 
 static enum vcs_zcode_work_output_result work_output_read_file(
     struct vcs_package_store *store, const uint8_t root[32],
-    uint32_t file_index, const struct vcs_package_file *file, uint8_t **out,
-    size_t *out_len)
+    const struct vcs_package_manifest *manifest, uint32_t file_index,
+    uint8_t **out, size_t *out_len)
 {
-    size_t len = (size_t)file->size;
-    uint8_t *bytes = zcl_malloc(len, "zcode.work_output.bytes");
-    if (!bytes) return VCS_ZCODE_WORK_OUTPUT_ALLOC;
-    size_t offset = 0;
-    for (uint32_t i = 0; i < file->chunk_count; i++) {
-        uint8_t *chunk = NULL;
-        size_t chunk_len = 0;
-        if (vcs_package_store_get_chunk_at(
-                store, root, file_index, i, &chunk, &chunk_len) !=
-                VCS_PACKAGE_STORE_OK ||
-            !vcs_package_verify_chunk(file, i, chunk, chunk_len) ||
-            chunk_len > len - offset) {
-            free(chunk);
-            free(bytes);
-            return VCS_ZCODE_WORK_OUTPUT_CORRUPT;
-        }
-        memcpy(bytes + offset, chunk, chunk_len);
-        offset += chunk_len;
-        free(chunk);
-    }
-    if (offset != len) {
-        free(bytes);
-        return VCS_ZCODE_WORK_OUTPUT_CORRUPT;
-    }
-    *out = bytes;
-    *out_len = len;
-    return VCS_ZCODE_WORK_OUTPUT_OK;
+    enum vcs_package_store_result got = vcs_package_content_get_file_at(
+        store, root, manifest, file_index, out, out_len);
+    if (got == VCS_PACKAGE_STORE_ERR_ALLOC)
+        return VCS_ZCODE_WORK_OUTPUT_ALLOC;
+    return got == VCS_PACKAGE_STORE_OK ? VCS_ZCODE_WORK_OUTPUT_OK
+                                       : VCS_ZCODE_WORK_OUTPUT_CORRUPT;
 }
 
 enum vcs_zcode_work_output_result vcs_zcode_work_output_get(
@@ -188,7 +130,7 @@ enum vcs_zcode_work_output_result vcs_zcode_work_output_get(
     uint8_t *action = NULL;
     size_t action_len = 0;
     enum vcs_zcode_work_output_result result = work_output_read_file(
-        store, package_root, 0u, &manifest.files[0], &action, &action_len);
+        store, package_root, &manifest, 0u, &action, &action_len);
     if (result == VCS_ZCODE_WORK_OUTPUT_OK &&
         (action_len != 32u ||
          memcmp(action, expected_action_root, 32) != 0))
@@ -196,7 +138,7 @@ enum vcs_zcode_work_output_result vcs_zcode_work_output_get(
     free(action);
     if (result == VCS_ZCODE_WORK_OUTPUT_OK)
         result = work_output_read_file(
-            store, package_root, 1u, &manifest.files[1], out, out_len);
+            store, package_root, &manifest, 1u, out, out_len);
     vcs_package_manifest_free(&manifest);
     return result;
 }

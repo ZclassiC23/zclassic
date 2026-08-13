@@ -9,6 +9,7 @@
 #include "crypto/sha3.h"
 #include "util/safe_alloc.h"
 #include "vcs/build_action.h"
+#include "vcs/package_content.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_store.h"
 #include "vcs/zcode_action_input.h"
@@ -341,46 +342,6 @@ reject:
     return VCS_ZCODE_WORK_CONTEXT_SHAPE;
 }
 
-static bool context_manifest_add_bytes(
-    struct vcs_package_manifest *manifest, const char *path,
-    const uint8_t *bytes, size_t len)
-{
-    uint32_t chunks = (uint32_t)((len + VCS_PACKAGE_CHUNK_BYTES - 1u) /
-                                 VCS_PACKAGE_CHUNK_BYTES);
-    uint8_t *hashes = zcl_malloc((size_t)chunks * 32u,
-                                 "zcode.work_context.hashes");
-    if (!hashes) return false;
-    bool ok = true;
-    for (uint32_t i = 0; ok && i < chunks; i++) {
-        size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
-        size_t take = len - off;
-        if (take > VCS_PACKAGE_CHUNK_BYTES) take = VCS_PACKAGE_CHUNK_BYTES;
-        ok = vcs_package_chunk_hash(bytes + off, take, hashes + i * 32u);
-    }
-    ok = ok && vcs_package_manifest_add(
-        manifest, path, VCS_PACKAGE_MODE_FILE, len, hashes, chunks);
-    free(hashes);
-    return ok;
-}
-
-static enum vcs_zcode_work_context_result context_put_chunks(
-    struct vcs_package_store *store, const uint8_t package_root[32],
-    const char *path, const uint8_t *bytes, size_t len)
-{
-    uint32_t chunks = (uint32_t)((len + VCS_PACKAGE_CHUNK_BYTES - 1u) /
-                                 VCS_PACKAGE_CHUNK_BYTES);
-    for (uint32_t i = 0; i < chunks; i++) {
-        size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
-        size_t take = len - off;
-        if (take > VCS_PACKAGE_CHUNK_BYTES) take = VCS_PACKAGE_CHUNK_BYTES;
-        if (vcs_package_store_put_chunk(
-                store, package_root, path, i, bytes + off, take) !=
-            VCS_PACKAGE_STORE_OK)
-            return VCS_ZCODE_WORK_CONTEXT_STORE;
-    }
-    return VCS_ZCODE_WORK_CONTEXT_OK;
-}
-
 static enum vcs_zcode_work_context_result context_put_for_kind(
     struct vcs_package_store *store,
     const struct vcs_zcode_work_context_v1 *context, const char *kind,
@@ -400,15 +361,18 @@ static enum vcs_zcode_work_context_result context_put_for_kind(
     if (result != VCS_ZCODE_WORK_CONTEXT_OK) return result;
     struct vcs_package_manifest manifest;
     vcs_package_manifest_init(&manifest);
-    bool built = context_manifest_add_bytes(
-        &manifest, VCS_ZCODE_WORK_CONTEXT_PATH, wire, wire_len);
+    bool built = vcs_package_content_add_file(
+        &manifest, VCS_ZCODE_WORK_CONTEXT_PATH, VCS_PACKAGE_MODE_FILE,
+        wire, wire_len);
     if (built && context->candidate_authority_len > 0)
-        built = context_manifest_add_bytes(
+        built = vcs_package_content_add_file(
             &manifest, VCS_ZCODE_CANDIDATE_BUNDLE_PATH,
+            VCS_PACKAGE_MODE_FILE,
             context->candidate_authority, context->candidate_authority_len);
     if (built && context->task_authority_len > 0)
-        built = context_manifest_add_bytes(
+        built = vcs_package_content_add_file(
             &manifest, VCS_ZCODE_TASK_AUTHORITY_BUNDLE_PATH,
+            VCS_PACKAGE_MODE_FILE,
             context->task_authority, context->task_authority_len);
     enum vcs_zcode_candidate_tree_result tree_result =
         VCS_ZCODE_CANDIDATE_TREE_OK;
@@ -445,18 +409,26 @@ static enum vcs_zcode_work_context_result context_put_for_kind(
         memcmp(admitted, package_root, 32) != 0) {
         free(wire); return VCS_ZCODE_WORK_CONTEXT_STORE;
     }
-    result = context_put_chunks(store, package_root,
-                                VCS_ZCODE_WORK_CONTEXT_PATH, wire, wire_len);
+    result = vcs_package_content_put_file(
+                 store, package_root, VCS_ZCODE_WORK_CONTEXT_PATH,
+                 wire, wire_len) == VCS_PACKAGE_STORE_OK
+        ? VCS_ZCODE_WORK_CONTEXT_OK : VCS_ZCODE_WORK_CONTEXT_STORE;
     if (result == VCS_ZCODE_WORK_CONTEXT_OK &&
         context->candidate_authority_len > 0)
-        result = context_put_chunks(
-            store, package_root, VCS_ZCODE_CANDIDATE_BUNDLE_PATH,
-            context->candidate_authority, context->candidate_authority_len);
+        result = vcs_package_content_put_file(
+                     store, package_root, VCS_ZCODE_CANDIDATE_BUNDLE_PATH,
+                     context->candidate_authority,
+                     context->candidate_authority_len) ==
+                         VCS_PACKAGE_STORE_OK
+            ? VCS_ZCODE_WORK_CONTEXT_OK : VCS_ZCODE_WORK_CONTEXT_STORE;
     if (result == VCS_ZCODE_WORK_CONTEXT_OK &&
         context->task_authority_len > 0)
-        result = context_put_chunks(
-            store, package_root, VCS_ZCODE_TASK_AUTHORITY_BUNDLE_PATH,
-            context->task_authority, context->task_authority_len);
+        result = vcs_package_content_put_file(
+                     store, package_root,
+                     VCS_ZCODE_TASK_AUTHORITY_BUNDLE_PATH,
+                     context->task_authority,
+                     context->task_authority_len) == VCS_PACKAGE_STORE_OK
+            ? VCS_ZCODE_WORK_CONTEXT_OK : VCS_ZCODE_WORK_CONTEXT_STORE;
     if (result == VCS_ZCODE_WORK_CONTEXT_OK && repo_root &&
         vcs_zcode_candidate_tree_put_chunks(
             store, package_root, repo_root, &context->candidate) !=
@@ -527,28 +499,12 @@ static enum vcs_zcode_work_context_result context_get_file(
     if (file->mode != VCS_PACKAGE_MODE_FILE || file->size == 0 ||
         file->size > VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES)
         return VCS_ZCODE_WORK_CONTEXT_CORRUPT;
-    size_t len = (size_t)file->size;
-    uint8_t *wire = zcl_malloc(len, "zcode.work_context.package");
-    if (!wire) return VCS_ZCODE_WORK_CONTEXT_ALLOC;
-    size_t written = 0;
-    for (uint32_t i = 0; i < file->chunk_count; i++) {
-        uint8_t *chunk = NULL; size_t chunk_len = 0;
-        enum vcs_package_store_result got = vcs_package_store_get_chunk_at(
-            store, package_root, file_index, i, &chunk, &chunk_len);
-        if (got != VCS_PACKAGE_STORE_OK ||
-            !vcs_package_verify_chunk(file, i, chunk, chunk_len) ||
-            chunk_len > len - written) {
-            free(chunk); free(wire);
-            return VCS_ZCODE_WORK_CONTEXT_CORRUPT;
-        }
-        memcpy(wire + written, chunk, chunk_len);
-        written += chunk_len; free(chunk);
-    }
-    if (written != len) {
-        free(wire); return VCS_ZCODE_WORK_CONTEXT_CORRUPT;
-    }
-    *out = wire; *out_len = len;
-    return VCS_ZCODE_WORK_CONTEXT_OK;
+    enum vcs_package_store_result got = vcs_package_content_get_file_at(
+        store, package_root, manifest, (uint32_t)file_index, out, out_len);
+    if (got == VCS_PACKAGE_STORE_ERR_ALLOC)
+        return VCS_ZCODE_WORK_CONTEXT_ALLOC;
+    return got == VCS_PACKAGE_STORE_OK ? VCS_ZCODE_WORK_CONTEXT_OK
+                                       : VCS_ZCODE_WORK_CONTEXT_CORRUPT;
 }
 
 enum vcs_zcode_work_context_result vcs_zcode_work_context_get(

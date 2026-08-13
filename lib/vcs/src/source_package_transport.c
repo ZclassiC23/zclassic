@@ -5,6 +5,7 @@
 
 #include "util/safe_alloc.h"
 #include "vcs/package_manifest.h"
+#include "vcs/package_content.h"
 #include "vcs/package_recipe.h"
 #include "vcs/package_store.h"
 #include "vcs/vcs.h"
@@ -155,31 +156,6 @@ bool vcs_source_package_transport_file_at(
     return true;
 }
 
-static bool source_package_add(struct vcs_package_manifest *manifest,
-                               const char *path, const uint8_t *bytes,
-                               size_t len)
-{
-    uint64_t chunk_count64 = len == 0 ? 0 :
-        1u + ((uint64_t)len - 1u) / VCS_PACKAGE_CHUNK_BYTES;
-    if (chunk_count64 > UINT32_MAX) return false;
-    uint32_t chunk_count = (uint32_t)chunk_count64;
-    uint8_t *hashes = chunk_count > 0
-        ? zcl_malloc((size_t)chunk_count * 32u,
-                     "vcs.source_package.hashes") : NULL;
-    if (chunk_count > 0 && !hashes) return false;
-    bool ok = true;
-    for (uint32_t i = 0; ok && i < chunk_count; i++) {
-        size_t off = (size_t)i * VCS_PACKAGE_CHUNK_BYTES;
-        size_t take = len - off;
-        if (take > VCS_PACKAGE_CHUNK_BYTES) take = VCS_PACKAGE_CHUNK_BYTES;
-        ok = vcs_package_chunk_hash(bytes + off, take, hashes + i * 32u);
-    }
-    ok = ok && vcs_package_manifest_add(
-        manifest, path, VCS_PACKAGE_MODE_FILE, len, hashes, chunk_count);
-    free(hashes);
-    return ok;
-}
-
 static bool source_package_load_license(
     const char *workspace, const struct vcs_manifest *tree,
     uint8_t **bytes_out, size_t *len_out)
@@ -304,7 +280,8 @@ static bool source_package_manifest_build(
             transport, i, &path, &bytes, &len) &&
             UINT64_MAX - total >= len;
         if (ok) total += len;
-        if (ok) ok = source_package_add(&manifest, path, bytes, len);
+        if (ok) ok = vcs_package_content_add_file(
+            &manifest, path, VCS_PACKAGE_MODE_FILE, bytes, len);
     }
     ok = ok && total <= VCS_PACKAGE_STORE_MAX_PACKAGE_BYTES &&
         vcs_package_manifest_root(&manifest, transport->package_root) &&
