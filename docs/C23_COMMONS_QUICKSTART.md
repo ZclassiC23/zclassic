@@ -15,13 +15,18 @@ only who made one release statement; a provider record says only where bytes
 are claimed to be available; a build receipt says only what one exact build
 observed. None proves general safety, usefulness, or human acceptance.
 
+The copyable package-store commands below use `/tmp/zclassic23-commons` so an
+experiment cannot fall back to the operator's live node datadir. Keep an
+isolated datadir, or deliberately replace it with the intended package-host
+datadir after completing the preflight.
+
 ## One-time node preflight
 
 The network path requires a running full node started with `-packagehost=1`.
 Inspect its live state first:
 
 ```bash
-zclassic23 zcode network status
+zclassic23 zcode network status --datadir=/tmp/zclassic23-commons
 ```
 
 If the DHT is disabled, `zcode network delegate` names the required active,
@@ -31,9 +36,9 @@ and inspect this once, commit the exact returned token, then restart so the
 running DHT loads the policy:
 
 ```bash
-zclassic23 zcode network policy mutate \
+zclassic23 zcode network policy mutate --datadir=/tmp/zclassic23-commons \
   --input='{"mode":"plan","operation":"add","source":"local","effect":"allow","scope":"service_type","action_mask":63,"value":"zclassic23.package"}'
-zclassic23 zcode network policy mutate \
+zclassic23 zcode network policy mutate --datadir=/tmp/zclassic23-commons \
   --input='{"mode":"commit","operation":"add","source":"local","effect":"allow","scope":"service_type","action_mask":63,"value":"zclassic23.package","plan_token":"<returned token>"}'
 ```
 
@@ -54,7 +59,7 @@ directory outside ZClassic23. Declare every dependency by its exact
    without writing to the node:
 
    ```bash
-   zclassic23 zcode package dev prepare \
+   zclassic23 zcode package dev prepare --datadir=/tmp/zclassic23-commons \
      --input='{"dir":"/absolute/path/to/package","publisher_pubkey":"<66hex>","publisher_sequence":1}'
    ```
 
@@ -66,7 +71,7 @@ directory outside ZClassic23. Declare every dependency by its exact
    zclassic23-package-sign --sign-digest <64hex-digest> --key-fd 7
    exec 7<&-
 
-   zclassic23 zcode package dev seal \
+   zclassic23 zcode package dev seal --datadir=/tmp/zclassic23-commons \
      --input='{"release_body_hex":"<prepare value>","signature_hex":"<128hex signature>"}'
    ```
 
@@ -76,8 +81,8 @@ directory outside ZClassic23. Declare every dependency by its exact
    `package_root` and transport `transport_root`.
 
    ```bash
-   zclassic23 zcode create --input='{"mode":"plan","release_hex":"<hex>","manifest_hex":"<hex>","recipe_hex":"<hex>","dir":"/absolute/path/to/package"}'
-   zclassic23 zcode create --input='{"mode":"commit","release_hex":"<same>","manifest_hex":"<same>","recipe_hex":"<same>","dir":"/absolute/path/to/package"}'
+   zclassic23 zcode create --input='{"mode":"plan","release_hex":"<hex>","manifest_hex":"<hex>","recipe_hex":"<hex>","dir":"/absolute/path/to/package","datadir":"/tmp/zclassic23-commons"}'
+   zclassic23 zcode create --input='{"mode":"commit","release_hex":"<same>","manifest_hex":"<same>","recipe_hex":"<same>","dir":"/absolute/path/to/package","datadir":"/tmp/zclassic23-commons"}'
    ```
 
 5. On the running package-hosting node, publish a POINTER binding
@@ -87,14 +92,14 @@ directory outside ZClassic23. Declare every dependency by its exact
    signed availability evidence, not correctness evidence.
 
    ```bash
-   zclassic23 zcode network publish \
+   zclassic23 zcode network publish --datadir=/tmp/zclassic23-commons \
      --input='{"mode":"plan","kind":"pointer","namespace":"zclassic23.package","semantic_root":"<package_root>","transport_root":"<transport_root>","sequence":1,"not_before":<unix>,"expiry":<unix>}'
-   zclassic23 zcode network publish \
+   zclassic23 zcode network publish --datadir=/tmp/zclassic23-commons \
      --input='{"mode":"commit","kind":"pointer","namespace":"zclassic23.package","semantic_root":"<same package_root>","transport_root":"<same transport_root>","sequence":1,"not_before":<same>,"expiry":<same>,"plan_token":"<returned token>"}'
 
-   zclassic23 zcode network publish \
+   zclassic23 zcode network publish --datadir=/tmp/zclassic23-commons \
      --input='{"mode":"plan","kind":"provider","namespace":"zclassic23.package","transport_root":"<transport_root>","sequence":1,"not_before":<unix>,"expiry":<unix>}'
-   zclassic23 zcode network publish \
+   zclassic23 zcode network publish --datadir=/tmp/zclassic23-commons \
      --input='{"mode":"commit","kind":"provider","namespace":"zclassic23.package","transport_root":"<same transport_root>","sequence":1,"not_before":<same>,"expiry":<same>,"plan_token":"<returned token>"}'
    ```
 
@@ -110,10 +115,10 @@ central technical truth.
    execute downloaded code.
 
    ```bash
-   zclassic23 zcode network records \
+   zclassic23 zcode network records --datadir=/tmp/zclassic23-commons \
      --input='{"kind":"pointer","namespace":"zclassic23.package","semantic_root":"<package_root>","include_evidence_wires":true}'
 
-   zclassic23 zcode package fetch \
+   zclassic23 zcode package fetch --datadir=/tmp/zclassic23-commons \
      --input='{"root":"<transport_root>","namespace":"zclassic23.package","maximum_bytes":268435456}'
    ```
 
@@ -124,15 +129,16 @@ central technical truth.
 2. Inspect the imported release and its exact dependencies:
 
    ```bash
-   zclassic23 zcode package show --input='{"root":"<package_root>"}'
+   zclassic23 zcode package show --datadir=/tmp/zclassic23-commons \
+     --input='{"root":"<package_root>"}'
    ```
 
 3. Build and test only after local approval. First inspect the exact lock and
    build order, then commit the returned `plan_id`:
 
    ```bash
-   zclassic23 zcode use --input='{"name_or_root":"<package_root>"}'
-   zclassic23 zcode use --input='{"plan_id":"<plan_id>"}'
+   zclassic23 zcode use --input='{"name_or_root":"<package_root>","datadir":"/tmp/zclassic23-commons"}'
+   zclassic23 zcode use --input='{"plan_id":"<plan_id>","datadir":"/tmp/zclassic23-commons"}'
    ```
 
 The installed result is public headers plus a static archive. ZClassic23 does
@@ -147,7 +153,7 @@ target/profile, build receipt, and every artifact root. Then inspect locally
 filed observations:
 
 ```bash
-zclassic23 zcode package verify --input='{"root":"<package_root>"}'
+zclassic23 zcode package verify --input='{"root":"<package_root>","datadir":"/tmp/zclassic23-commons"}'
 ```
 
 A mismatch is evidence and must remain visible; never pick one result because
