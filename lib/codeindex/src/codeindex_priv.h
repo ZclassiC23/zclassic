@@ -70,6 +70,7 @@ void             ci_store_unlock(struct ci_store *s);
 /* Lazy-open refresh: coalesces concurrent stale opens under the cross-process
  * rebuild lock. Public codeindex_rebuild() remains a forced recompute. */
 bool ci_codeindex_refresh(struct codeindex *ci);
+bool ci_codeindex_source_view_is_stale(struct codeindex *ci, bool *stale);
 
 /* single-writer transaction control */
 bool ci_store_begin(struct ci_store *s);

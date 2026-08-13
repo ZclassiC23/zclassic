@@ -105,6 +105,12 @@ struct ci_search_hit {
  * missing or the source tree's staleness stamp no longer matches, this
  * rebuilds it before returning. NULL on hard failure. */
 struct codeindex *codeindex_open(const char *root);
+/* Open with exact SOURCE freshness but without treating compiler depfile
+ * movement as staleness. This is only for queries whose answer is derived
+ * entirely from source rows (for example code.group); include/dependency
+ * queries must use codeindex_open(). A missing store or any source/schema
+ * change still triggers the normal deterministic full rebuild. */
+struct codeindex *codeindex_open_source_view(const char *root);
 /* Open only an already-built, verify-on-read store. This never rebuilds and
  * therefore may describe the immediately preceding source generation. It is
  * for bounded resident overlay queries which scan changed files themselves;

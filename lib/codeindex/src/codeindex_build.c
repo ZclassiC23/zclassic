@@ -386,65 +386,6 @@ bool ci_source_stat_root_sha3(const char *root, uint8_t out[32])
     return true;
 }
 
-static bool store_is_stale(const char *root, struct ci_store *store,
-                           bool *stale)
-{
-    if (stale) *stale = true;
-    if (!root || !store) LOG_FAIL("codeindex", "null arg to is_stale");
-    /* The exact content roots are derived and sealed during rebuild. A warm
-     * open validates their metadata cache keys only: inode/size/mtime/ctime
-     * changes on every local content replacement, including a same-size edit
-     * whose mtime is restored. This keeps the common path O(files), not
-     * O(source + every depfile byte). */
-    uint8_t cur_stats[32], cur_dep_stats[32];
-    if (!ci_source_stat_root_sha3(root, cur_stats))
-        LOG_FAIL("codeindex", "compute source_stat_root_sha3");
-    if (!ci_deps_stat_root_sha3(root, cur_dep_stats))
-        LOG_FAIL("codeindex", "compute dep_stat_root_sha3");
-    uint8_t stored_stats[32], stored_dep_stats[32];
-    char stored_format[64];
-    char stored_schema[64];
-    size_t stat_len = 0, dep_stat_len = 0, format_len = 0, schema_len = 0;
-    bool stat_found = false, dep_stat_found = false, format_found = false;
-    bool schema_found = false;
-    if (!ci_store_meta_get(store, "source_stat_root_sha3", stored_stats,
-                           sizeof(stored_stats), &stat_len, &stat_found))
-        LOG_FAIL("codeindex", "meta_get source_stat_root_sha3");
-    if (!ci_store_meta_get(store, "dep_stat_root_sha3", stored_dep_stats,
-                           sizeof(stored_dep_stats), &dep_stat_len,
-                           &dep_stat_found))
-        LOG_FAIL("codeindex", "meta_get dep_stat_root_sha3");
-    if (!ci_store_meta_get(store, "store_format", stored_format,
-                           sizeof(stored_format), &format_len, &format_found))
-        LOG_FAIL("codeindex", "meta_get store_format");
-    /* The derived-schema generation gate. A store whose ci_schema_version is
-     * absent (an older generation, or a hand-cleared key) or mismatched is
-     * stale and gets a full recompute on open — never an in-place repair. */
-    if (!ci_store_meta_get(store, "ci_schema_version", stored_schema,
-                           sizeof(stored_schema), &schema_len, &schema_found))
-        LOG_FAIL("codeindex", "meta_get ci_schema_version");
-    if (stale)
-        *stale = !(stat_found && stat_len == 32 &&
-                   memcmp(cur_stats, stored_stats, 32) == 0 &&
-                   dep_stat_found && dep_stat_len == 32 &&
-                   memcmp(cur_dep_stats, stored_dep_stats, 32) == 0 &&
-                   format_found &&
-                   format_len == sizeof(ci_store_format) - 1 &&
-                   memcmp(stored_format, ci_store_format,
-                          sizeof(ci_store_format) - 1) == 0 &&
-                   schema_found &&
-                   schema_len == sizeof(CI_SCHEMA_VERSION) - 1 &&
-                   memcmp(stored_schema, CI_SCHEMA_VERSION,
-                          sizeof(CI_SCHEMA_VERSION) - 1) == 0);
-    return true;
-}
-
-bool codeindex_is_stale(struct codeindex *ci, bool *stale)
-{
-    if (!ci || !ci->store) LOG_FAIL("codeindex", "null arg to is_stale");
-    return store_is_stale(ci->root, ci->store, stale);
-}
-
 /* ── rebuild ────────────────────────────────────────────────────────── */
 
 /* path → file_id map (sorted, bsearch) */
@@ -824,7 +765,10 @@ static bool codeindex_rebuild_internal(struct codeindex *ci,
         struct ci_store *fresh = ci_store_open(ci->root);
         if (fresh) {
             bool stale = true;
-            bool checked = store_is_stale(ci->root, fresh, &stale);
+            struct codeindex fresh_view = {.store = fresh};
+            (void)snprintf(fresh_view.root, sizeof(fresh_view.root), "%s",
+                           ci->root);
+            bool checked = codeindex_is_stale(&fresh_view, &stale);
             if (checked && !stale) {
                 struct ci_store *old = ci->store;
                 ci->store = fresh;

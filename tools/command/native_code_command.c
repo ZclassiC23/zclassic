@@ -108,6 +108,24 @@ static struct codeindex *code_open(const struct zcl_command_request *request,
     return ci;
 }
 
+/* code.group consumes only source-derived file/group rows. Compiler depfile
+ * epochs affect include edges, not this answer, so do not put their post-build
+ * writeback on the command's warm latency path. */
+static struct codeindex *code_open_source_view(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply)
+{
+    struct codeindex *ci =
+        codeindex_open_source_view(code_source_root(request));
+    if (!ci) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "CODEINDEX_OPEN",
+                               "dispatch", true, false,
+                               "could not open or rebuild the source index",
+                               code_source_root(request));
+    }
+    return ci;
+}
+
 /* Positional/typed string input for `key` (NULL when absent/empty). */
 static const char *code_str(const struct zcl_command_request *request,
                             const char *key)
@@ -264,7 +282,7 @@ static int code_commands_for_symbol(const char *symbol_name,
 void zcl_native_handle_code_group(const struct zcl_command_request *request,
                                   struct zcl_command_reply *reply)
 {
-    struct codeindex *ci = code_open(request, reply);
+    struct codeindex *ci = code_open_source_view(request, reply);
     if (!ci) return;
 
     const char *arg = code_str(request, "group");

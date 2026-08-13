@@ -66,6 +66,26 @@ struct codeindex *codeindex_open(const char *root)
     return ci;
 }
 
+struct codeindex *codeindex_open_source_view(const char *root)
+{
+    struct codeindex *ci = codeindex_alloc(root);
+    if (!ci) return NULL;
+    bool stale = true;
+    ci->store = ci_store_open(root);
+    if (ci->store && !ci_codeindex_source_view_is_stale(ci, &stale)) {
+        ci_store_close(ci->store);
+        ci->store = NULL;
+        stale = true;
+    }
+    if (!ci->store || stale) {
+        if (!ci_codeindex_refresh(ci)) {
+            codeindex_close(ci);
+            LOG_NULL("codeindex", "source-view rebuild failed");
+        }
+    }
+    return ci;
+}
+
 void codeindex_close(struct codeindex *ci)
 {
     if (!ci) return;

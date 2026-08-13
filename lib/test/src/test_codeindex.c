@@ -978,6 +978,14 @@ int test_codeindex(void)
     CI_CHECK("same-size depfile edit restores exact previous mtime",
              dep_mtime);
     if (ci) { codeindex_close(ci); ci = NULL; }
+    ci = codeindex_open_source_view(FIX);
+    memset(includes, 0, sizeof(includes));
+    nincludes = ci ? codeindex_includes_of_file(
+        ci, "lib/net/src/foo.c", includes, 8) : -1;
+    CI_CHECK("source-only view ignores depfile-only churn",
+             ci && nincludes == 1 &&
+             strcmp(includes[0], "lib/net/include/net/foo.h") == 0);
+    if (ci) { codeindex_close(ci); ci = NULL; }
     ci = codeindex_open(FIX);
     memset(includes, 0, sizeof(includes));
     nincludes = ci ? codeindex_includes_of_file(
@@ -1018,13 +1026,13 @@ int test_codeindex(void)
     bool same_mtime = same_stat && same_write &&
         utimensat(AT_FDCWD, FIX "/lib/net/src/foo.c", same_times, 0) == 0;
     CI_CHECK("same-size edit restores the exact previous mtime", same_mtime);
-    ci = codeindex_open(FIX);
+    ci = codeindex_open_source_view(FIX);
     bool found_new = false, found_old = true;
     if (ci) {
         codeindex_symbol(ci, "ci_same_bbbb", &s, &found_new);
         codeindex_symbol(ci, "ci_same_aaaa", &s, &found_old);
     }
-    CI_CHECK("content digest rejects same-size/same-mtime stale index",
+    CI_CHECK("source-only view rejects same-size/same-mtime stale index",
              ci && found_new && !found_old);
 
     /* ── 9b: publication is rename-over, not unlink-then-rename. A reader
