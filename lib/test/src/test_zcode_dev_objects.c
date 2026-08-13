@@ -1697,6 +1697,32 @@ static int test_zd_work_node_atomic_admission(void)
         ASSERT_EQ(received.request_id, qa.request_id);
         ASSERT(vcs_zcode_work_node_next_result(c, &peer, &received));
         ASSERT_EQ(received.request_id, attached.request_id);
+
+        /* Slot release is a capacity transition, not a timer event. The
+         * worker publishes a strictly newer signed capability immediately;
+         * that fact clears C's earlier BUSY observation and makes a distinct
+         * immutable action admissible without waiting for expiry. */
+        cap.expires_unix++;
+        ASSERT(vcs_zcode_work_capability_seal(&cap, b_secret, b_key));
+        ASSERT(vcs_zcode_work_node_set_local_capability(b, &cap));
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            b, 22, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            c, 12, frame, frame_len, 1002), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_peer_capability(
+            c, 12, 1002, &observed_capability));
+        ASSERT_EQ(observed_capability.queue_headroom, 1);
+        ASSERT_EQ(vcs_zcode_work_node_submit(c, 12, &qbusy, 1002),
+                  VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            c, 12, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            b, 22, frame, frame_len, 1002), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            b, 22, &peer, frame, &frame_len));
+        ASSERT(vcs_zcode_work_swarm_parse(frame, frame_len, &parsed));
+        ASSERT_EQ(parsed.body.admission.disposition,
+                  VCS_ZCODE_WORK_ADMISSION_GRANTED);
         vcs_zcode_work_node_free(a);
         vcs_zcode_work_node_free(b);
         vcs_zcode_work_node_free(c);

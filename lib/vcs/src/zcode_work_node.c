@@ -30,6 +30,7 @@ struct work_track {
     uint8_t admission_disposition;
     uint16_t worker_slot;
     uint64_t lease_generation;
+    int64_t worker_capability_expires;
     struct vcs_zcode_work_request_v1 request;
 };
 
@@ -543,16 +544,28 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_submit(
     else if (!node->peers[peer_at].has_capability ||
              now >= node->peers[peer_at].capability.expires_unix)
         result = VCS_ZCODE_WORK_NODE_CAPABILITY_STALE;
-    else if (!work_find_track(node, peer, request->request_id, false)) {
+    struct work_track *existing = peer_at >= 0
+        ? work_find_track(node, peer, request->request_id, false) : NULL;
+    bool capacity_retry = existing && existing->finished &&
+        existing->admission_disposition == VCS_ZCODE_WORK_ADMISSION_BUSY &&
+        node->peers[peer_at].capability.expires_unix >
+            existing->worker_capability_expires;
+    if (result == VCS_ZCODE_WORK_NODE_OK && !existing) {
         struct vcs_zcode_work_capability_v1 effective =
             work_effective_capability(node, peer_at);
         if (!work_capability_allows(&effective, request, now))
             result = VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH;
     }
-    else
+    else if (result == VCS_ZCODE_WORK_NODE_OK && capacity_retry) {
+        struct vcs_zcode_work_capability_v1 effective =
+            work_effective_capability(node, peer_at);
+        if (!work_capability_allows(&effective, request, now))
+            result = VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH;
+    }
+    else if (result == VCS_ZCODE_WORK_NODE_OK)
         result = VCS_ZCODE_WORK_NODE_REPLAY;
     struct work_track *track = result == VCS_ZCODE_WORK_NODE_OK
-                                   ? work_add_track(node) : NULL;
+        ? (capacity_retry ? existing : work_add_track(node)) : NULL;
     if (result == VCS_ZCODE_WORK_NODE_OK && !track)
         result = VCS_ZCODE_WORK_NODE_FULL;
     if (result == VCS_ZCODE_WORK_NODE_OK) {
@@ -566,6 +579,8 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_submit(
             track->used = true; track->peer = peer; track->request = *request;
             memcpy(track->worker_signer,
                    node->peers[peer_at].capability.signer_pubkey, 32);
+            track->worker_capability_expires =
+                node->peers[peer_at].capability.expires_unix;
         }
     }
     pthread_mutex_unlock(&node->lock);

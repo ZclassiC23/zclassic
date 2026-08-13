@@ -10,10 +10,39 @@ unset ZAP_HELPERS_ONLY
 
 ZAPS_ROOT="$DHT_WORK/async-proof-scale-projects"
 ZAPS_SUMMARY="$DHT_WORK/async-proof-scaling.csv"
+ZAPS_RESPONSIVENESS="$DHT_WORK/async-proof-responsiveness.csv"
 mkdir -p "$ZAPS_ROOT"
 printf '%s\n' \
     'campaign,slot,requester,executor,action,foreground_ms,background_ms,requester_cpu_ms' \
     >"$ZAPS_SUMMARY"
+printf '%s\n' 'phase,surface,node,elapsed_ms,ok' \
+    >"$ZAPS_RESPONSIVENESS"
+
+zaps_probe_one() {
+    local phase="$1" surface="$2" node="$3" started_ns response ok elapsed_ms
+    shift 3
+    started_ns="$(date +%s%N)"
+    response="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" "$@" || true)"
+    elapsed_ms=$((($(date +%s%N)-started_ns)/1000000))
+    ok="$(printf '%s' "$response" | zap_field 'd.get("ok",False)' \
+        2>/dev/null || true)"
+    printf '%s,%s,%s,%s,%s\n' \
+        "$phase" "$surface" "$node" "$elapsed_ms" "$ok" \
+        >>"$ZAPS_RESPONSIVENESS"
+}
+
+zaps_probe_rounds() {
+    local phase="$1" rounds="$2" round node
+    for ((round=0; round<rounds; round++)); do
+        for node in "$ZAP_A" "$ZAP_B" "$ZAP_C"; do
+            zaps_probe_one "$phase" chain "$node" core status
+            zaps_probe_one "$phase" peer "$node" core network peers list
+            zaps_probe_one "$phase" sync "$node" core sync status
+            zaps_probe_one "$phase" command "$node" \
+                ops state --subsystem=supervisor
+        done
+    done
+}
 
 zaps_proc_cpu_ticks() {
     local node="$1"
@@ -141,6 +170,11 @@ zap_connect "$ZAP_A" "$ZAP_C"
 zap_connect "$ZAP_B" "$ZAP_C"
 DHT_EXTRA_PGIDS=("${PIDS[@]}")
 
+# Establish each read surface's same-process idle distribution before proof
+# traffic. The loaded phase below runs the identical probes while three
+# independent contexts transfer and three confined builds execute.
+zaps_probe_rounds idle 3
+
 dht_note "async proof scaling: one requester, one immutable action"
 zaps_prepare one one-1 "$ZAP_A" 11
 zaps_run_parallel one-1
@@ -154,7 +188,9 @@ dht_note "async proof scaling: three simultaneous requesters/actions"
 zaps_prepare three three-a "$ZAP_A" 31
 zaps_prepare three three-b "$ZAP_B" 32
 zaps_prepare three three-c "$ZAP_C" 33
+zaps_probe_rounds loaded 6 & ZAPS_PROBE_PID="$!"
 zaps_run_parallel three-a three-b three-c
+wait "$ZAPS_PROBE_PID" || dht_die "loaded responsiveness probes failed"
 
 # Exact reuse stays a projection of the first canonical task/action/receipt.
 mapfile -t one_meta <"$DHT_WORK/scale-one-1.meta"
@@ -179,4 +215,39 @@ assert all(int(r["foreground_ms"]) < 30000 for r in rows)
 assert all(r["requester"] != r["executor"] for r in rows)
 PY
 
-dht_note "async proof scaling PASS: campaigns=1,2,3 simultaneous_actions=6 duplicate_avoided=1 equal_full_nodes=true"
+python3 - "$ZAPS_RESPONSIVENESS" <<'PY' \
+    >"$DHT_WORK/async-proof-responsiveness-report.json" || \
+    dht_die "background proof responsiveness contract failed"
+import csv,json,math,sys
+rows=list(csv.DictReader(open(sys.argv[1], encoding="utf-8")))
+surfaces=("chain","peer","sync","command")
+def percentile(values, pct):
+    values=sorted(values)
+    return values[max(0, math.ceil(len(values)*pct)-1)]
+report={"schema":"zcl.async_proof_responsiveness.v1",
+        "probe_client_processes":len(rows),"surfaces":{}}
+assert rows and all(r["ok"]=="True" for r in rows), rows
+for surface in surfaces:
+    idle=[int(r["elapsed_ms"]) for r in rows
+          if r["phase"]=="idle" and r["surface"]==surface]
+    loaded=[int(r["elapsed_ms"]) for r in rows
+            if r["phase"]=="loaded" and r["surface"]==surface]
+    assert len(idle)==9 and len(loaded)==18, (surface,len(idle),len(loaded))
+    idle_p50,idle_p95=percentile(idle,.50),percentile(idle,.95)
+    loaded_p50,loaded_p95=percentile(loaded,.50),percentile(loaded,.95)
+    # One-CPU/one-slot proof workers may consume background time, but every
+    # public-node read surface retains a tight absolute and relative bound.
+    assert loaded_p95 < 1000, (surface,loaded_p95)
+    assert loaded_p95 <= idle_p95 + 500, (surface,idle_p95,loaded_p95)
+    report["surfaces"][surface]={
+        "idle_samples":len(idle),"loaded_samples":len(loaded),
+        "idle_p50_ms":idle_p50,"idle_p95_ms":idle_p95,
+        "loaded_p50_ms":loaded_p50,"loaded_p95_ms":loaded_p95,
+        "p95_added_ms":loaded_p95-idle_p95}
+report.update({"simultaneous_requesters":3,"simultaneous_actions":3,
+               "worker_slots_per_node":1,"action_cpu_slots":1,
+               "blockchain_priority_preserved":True,"verdict":"PASS"})
+print(json.dumps(report,separators=(",",":")))
+PY
+
+dht_note "async proof scaling PASS: campaigns=1,2,3 simultaneous_actions=6 duplicate_avoided=1 equal_full_nodes=true blockchain_priority_preserved=true"

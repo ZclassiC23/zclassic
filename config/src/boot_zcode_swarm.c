@@ -54,6 +54,7 @@ static int64_t s_last_tick;
 static uint8_t s_work_secret[32];
 static uint8_t s_work_pubkey[32];
 static bool s_work_key_ready;
+static int64_t s_work_capability_expires;
 static char s_work_workspace[4096];
 static struct boot_svc_ctx *s_svc;          /* borrowed; set by wire() */
 static struct liveness_contract s_timer_contract;
@@ -63,6 +64,7 @@ static uint64_t s_frames_sent;              /* supervisor progress marker */
 static size_t boot_zcode_swarm_drain_node(
     struct msg_processor *mp, struct vcs_swarm_engine *engine,
     struct p2p_node *node);
+static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall);
 static bool boot_zcode_work_workspace(void)
 {
     if (s_work_workspace[0]) return true;
@@ -356,6 +358,13 @@ static void boot_zcode_work_publish_results(int64_t now)
                          "result_wire_bytes=%zu",
                          action_id, (long long)platform_time_realtime_us(),
                          vcs_zcode_work_swarm_wire_size(&message));
+                /* publish_result released the physical worker slot. A
+                 * requester that observed signed BUSY must see a strictly
+                 * newer signed capacity fact now; waiting for the periodic
+                 * refresh can strand work beyond its immutable deadline. */
+                if (!boot_zcode_work_refresh(s_svc, now))
+                    LOG_WARN("net.zcode_swarm",
+                             "released worker slot was not advertised");
             }
             if (published != VCS_ZCODE_WORK_NODE_OK)
                 LOG_WARN("net.zcode_swarm", "result %llu: %s",
@@ -431,12 +440,15 @@ static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
     capability.slots = 1;
     capability.queue_headroom = 1;
     capability.expires_unix = wall + 600;
+    if (capability.expires_unix <= s_work_capability_expires)
+        capability.expires_unix = s_work_capability_expires + 1;
     if (!vcs_zcode_work_capability_seal(
             &capability, s_work_secret, s_work_pubkey) ||
         !vcs_zcode_work_node_set_local_signer(
             s_work, s_work_secret, s_work_pubkey) ||
         !vcs_zcode_work_node_set_local_capability(s_work, &capability))
         LOG_FAIL("net.zcode_swarm", "work capability signing failed");
+    s_work_capability_expires = capability.expires_unix;
     return true;
 }
 static void boot_zcode_swarm_lock(void)
@@ -893,6 +905,7 @@ void boot_zcode_swarm_shutdown(void)
     memset(s_work_secret, 0, sizeof(s_work_secret));
     memset(s_work_pubkey, 0, sizeof(s_work_pubkey));
     s_work_key_ready = false;
+    s_work_capability_expires = 0;
     memset(s_work_workspace, 0, sizeof(s_work_workspace));
     zcl_mutex_unlock(&s_lock);
 }
