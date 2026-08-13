@@ -20,6 +20,7 @@
 
 #define RECORD_STORE_VERSION 1u
 #define RECORD_STORE_DIGEST_DOMAIN "zcl.zcode.dht.record-store.v1"
+#define RECORD_STREAM_DIGEST_DOMAIN "zcl.zcode.dht.record-stream.v1"
 
 static const uint8_t record_store_magic[8] = {'Z', 'C', 'D', 'H',
                                               'T', 'S', 0x0d, 0x0a};
@@ -293,6 +294,34 @@ void vcs_zcode_dht_record_store_digest(
   memset(out, 0, 32);
   if (store)
     digest_entries(store, out);
+}
+
+void vcs_zcode_dht_record_store_stream_digest(
+    const struct vcs_zcode_dht_record_store *store,
+    const struct vcs_zcode_dht_record *record, uint8_t out[32])
+{
+  if (!out)
+    return;
+  memset(out, 0, 32);
+  if (!store || !record)
+    return;
+  uint32_t count = 0;
+  for (size_t i = 0; i < store->count; i++)
+    if (record_stream_equal(&store->entries[i].record, record))
+      count++;
+  struct sha3_256_ctx sha;
+  sha3_256_init(&sha);
+  sha3_256_write(&sha, (const uint8_t *)RECORD_STREAM_DIGEST_DOMAIN,
+                 sizeof(RECORD_STREAM_DIGEST_DOMAIN));
+  uint8_t count_wire[4];
+  zcl_write_u32_le(count_wire, count);
+  sha3_256_write(&sha, count_wire, sizeof(count_wire));
+  /* entries is globally wire-sorted, so filtering preserves canonical order. */
+  for (size_t i = 0; i < store->count; i++)
+    if (record_stream_equal(&store->entries[i].record, record))
+      sha3_256_write(&sha, store->entries[i].wire,
+                     VCS_ZCODE_DHT_RECORD_WIRE_BYTES);
+  sha3_256_finalize(&sha, out);
 }
 
 static bool store_paths(const char *datadir, char directory[1400],

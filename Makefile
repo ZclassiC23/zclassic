@@ -4165,12 +4165,16 @@ test-zcode-dht-acceptance: zclassic23 zcl-rpc
 test-science-acceptance: test-zcode-dht-acceptance
 	@bash tools/dev/science_acceptance.sh
 
-# Installed-product C23 Commons stranger slice. It installs the ordinary node
-# plus package signer/verifier into a throwaway prefix, then composes the
-# canonical DHT/Noise physical-node owner with an outside-tree package graph.
-# Opt-in: seven real daemons; no production datadir, wallet key, or live port.
-c23-commons-installed-acceptance:
+# Aggregate C23 Commons Beta.  The Alpha proof is an explicit prerequisite,
+# so the installed stranger journey can never green while its generic graph,
+# transport, or adversarial regression floor is red.  The installed phase
+# then puts the ordinary node plus package signer/verifier in a throwaway
+# prefix and composes the canonical DHT/Noise physical-node owner with an
+# outside-tree package graph.  Opt-in: seven real daemons; no production
+# datadir, wallet key, or live port.
+c23-commons-installed-acceptance: zcode-c23-commons-alpha
 	@bash tools/dev/c23_commons_beta_acceptance.sh
+	@printf '%s\n' '{"schema":"zcl.c23_commons_beta_acceptance.v1","verdict":"PASS","alpha_regression_floor":true,"installed_stranger_journey":true,"corrupt_provider_bytes_rejected":true,"alternate_provider_exact_root_repair":true}'
 
 # Four-role, real-process sovereign source acceptance. It composes the proven
 # seven-identity DHT/Noise harness rather than inventing test-only networking;

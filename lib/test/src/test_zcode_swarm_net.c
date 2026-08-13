@@ -25,12 +25,14 @@
  *   2. Malicious server (wrong-hash chunks): PEER_OFFENCE_INVALID_CHUNK
  *      misbehavior on the real peer object, no credit, nothing stored,
  *      download ends in a NAMED failure.
- *   3. Unrequested DATA: PEER_OFFENCE_UNREQUESTED, no credit.
- *   4. Restart mid-download: engine freed and recreated over the same
+ *   3. Corrupt-provider repair: exact-root bytes rejected from one server,
+ *      then the same download completes from an honest alternate provider.
+ *   4. Unrequested DATA: PEER_OFFENCE_UNREQUESTED, no credit.
+ *   5. Restart mid-download: engine freed and recreated over the same
  *      datadir; the persisted record resumes and the download completes.
- *   5. Disconnect requeue: one of two servers drops mid-download; the
+ *   6. Disconnect requeue: one of two servers drops mid-download; the
  *      in-flight work moves to the survivor and the download completes.
- *   6. Sovereign source: one signed workspace-head lookup fetches a bundled
+ *   7. Sovereign source: one signed workspace-head lookup fetches a bundled
  *      content.v2 evidence closure, then accepted source rebuilds Git-free. */
 
 #include "test/test_core.h"
@@ -207,6 +209,7 @@ static void zwn_print_sovereign_receipt(void)
            ",\"storage_ack_status\":\"2/2\""
            ",\"reproduced\":true,\"provider_failover\":true"
            ",\"corrupt_chunk_recovery\":true"
+           ",\"corrupt_provider_repair\":true"
            ",\"previous_release_fetchable\":true"
            ",\"publication_job\":\"storage_acknowledged\""
            ",\"github_mirror\":\"not_applicable_fixture\"}\n",
@@ -3473,6 +3476,100 @@ static int zwn_t_malicious(const struct chain_params *params)
     return failures;
 }
 
+/* A bad provider is a bad route to immutable bytes, not evidence that the
+ * package root itself is bad.  Keep the download identity live, reject every
+ * address-mismatched DATA body before CAS admission, and let an independently
+ * connected provider satisfy the same exact root. */
+static int zwn_t_corrupt_provider_repair(const struct chain_params *params)
+{
+    int failures = 0;
+    struct zwn_fixture fixture = {0};
+    TEST("corrupt provider: rejected bytes never enter CAS and the same "
+         "exact-root download repairs from an honest alternate") {
+        struct zwn_pkg pkg;
+        ASSERT(zwn_make_package(&pkg, 6, 0x27));
+
+        struct zwn_node bad, good, consumer;
+        const struct zwn_node_spec nodes[] = {
+            {&bad, "cpr-bad"}, {&good, "cpr-good"},
+            {&consumer, "cpr-consumer"},
+        };
+        ASSERT(zwn_fixture_nodes(&fixture, params, nodes,
+                                 sizeof(nodes) / sizeof(nodes[0])));
+        ASSERT(zwn_store_package(bad.store, &pkg));
+        ASSERT(zwn_store_package(good.store, &pkg));
+        bad.tamper_chunks = true;
+
+        struct zwn_link bad_c, c_bad, good_c, c_good;
+        const struct zwn_link_spec links[] = {
+            {&bad, &bad_c, {10, 3, 0, 1}, "consumer"},
+            {&consumer, &c_bad, {10, 3, 0, 2}, "bad-provider"},
+            {&good, &good_c, {10, 3, 0, 3}, "consumer"},
+            {&consumer, &c_good, {10, 3, 0, 4}, "good-provider"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, links,
+                                 sizeof(links) / sizeof(links[0])));
+
+        /* Admit only the bad route first so the proof cannot accidentally
+         * pass by selecting the honest provider before corrupt DATA arrives. */
+        ASSERT(zwn_meet_side(&bad, &bad_c));
+        ASSERT(zwn_meet_side(&consumer, &c_bad));
+        ASSERT(vcs_swarm_engine_fetch(consumer.engine, pkg.root, ZWN_DAY,
+                                      ++consumer.now) ==
+               VCS_SWARM_FETCH_OK);
+
+        bool saw_bad_data = false;
+        bool terminal = false;
+        enum vcs_swarm_download_state state = VCS_SWARM_DL_INACTIVE;
+        for (size_t round = 0; round < 100u && !saw_bad_data; round++) {
+            ASSERT(zwn_round(&bad_c, &c_bad, params->pchMessageStart));
+            saw_bad_data = c_bad.node->misbehavior >=
+                peer_offence_weight(PEER_OFFENCE_INVALID_CHUNK);
+            terminal = zwn_download_done(&consumer, pkg.root, &state);
+        }
+        ASSERT(saw_bad_data);
+        ASSERT(!terminal);
+        for (size_t i = 0; i < pkg.count; i++)
+            ASSERT(!vcs_package_store_chunk_present(
+                consumer.store, pkg.root, (uint32_t)i, 0));
+        {
+            uint8_t key[33];
+            struct vcs_service_key_totals totals;
+            ASSERT(zwn_peer_key(c_bad.node, key));
+            ASSERT(vcs_service_key_totals(consumer.book, key, ZWN_DAY,
+                                          &totals));
+            ASSERT(totals.no_credit_bytes > 0);
+            ASSERT(totals.offence_total > 0);
+        }
+
+        /* Remove only the corrupt route.  The operation/root is unchanged;
+         * a newly announced honest holder must resume its outstanding work. */
+        atomic_store(&c_bad.node->disconnect, true);
+        zwn_drain_quiet(&bad_c);
+        zwn_drain_quiet(&c_bad);
+        vcs_swarm_engine_peer_drop(consumer.engine,
+                                   (uint64_t)c_bad.node->id);
+        ASSERT(zwn_meet_side(&good, &good_c));
+        ASSERT(zwn_meet_side(&consumer, &c_good));
+
+        terminal = false;
+        state = VCS_SWARM_DL_INACTIVE;
+        for (size_t round = 0; round < 600u && !terminal; round++) {
+            ASSERT(zwn_round(&good_c, &c_good, params->pchMessageStart));
+            terminal = zwn_download_done(&consumer, pkg.root, &state);
+        }
+        ASSERT(terminal && state == VCS_SWARM_DL_COMPLETE);
+        ASSERT(zwn_store_matches(consumer.store, &pkg));
+        ASSERT(c_good.node->misbehavior == 0);
+
+        zwn_fixture_cleanup(&fixture);
+        zwn_free_package(&pkg);
+        PASS();
+    } _test_next:
+    zwn_fixture_cleanup(&fixture);
+    return failures;
+}
+
 /* A completed download is only a cache of verified possession. If a later
  * read quarantines one address-mismatched CAS object, a retry must re-open
  * the completed engine slot and obtain the exact chunk from a surviving
@@ -3655,6 +3752,7 @@ int test_zcode_swarm_net(void)
     failures += zwn_t_package_lifecycle(params);
     failures += zwn_t_sovereign_source_build(params);
     failures += zwn_t_malicious(params);
+    failures += zwn_t_corrupt_provider_repair(params);
     failures += zwn_t_corrupt_local_repair(params);
     failures += zwn_t_unrequested(params);
     if (failures == 0 && g_zwn_sovereign_receipt.ready)

@@ -76,16 +76,19 @@ static bool publication_build(
   if (vcs_zcode_dht_record_sign(record, service->online_seed) !=
       VCS_ZCODE_DHT_RECORD_OK)
     return false;
-  uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES], store_digest[32];
+  uint8_t wire[VCS_ZCODE_DHT_RECORD_WIRE_BYTES], stream_digest[32];
   if (vcs_zcode_dht_record_encode(record, wire) !=
       VCS_ZCODE_DHT_RECORD_OK)
     return false;
-  vcs_zcode_dht_record_store_digest(service->record_store, store_digest);
+  /* A plan governs one signed publication stream. Hashing the entire record
+   * store made unrelated incoming gossip race every local plan/commit pair. */
+  vcs_zcode_dht_record_store_stream_digest(
+      service->record_store, record, stream_digest);
   struct sha3_256_ctx sha;
   sha3_256_init(&sha);
   sha3_256_write(&sha, (const uint8_t *)"zcl.dht.publish.plan.v1", 23);
   sha3_256_write(&sha, service->genesis, 32);
-  sha3_256_write(&sha, store_digest, 32);
+  sha3_256_write(&sha, stream_digest, 32);
   sha3_256_write(&sha, wire, sizeof(wire));
   sha3_256_finalize(&sha, token);
   return true;

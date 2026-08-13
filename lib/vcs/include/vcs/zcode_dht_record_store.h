@@ -62,6 +62,14 @@ size_t vcs_zcode_dht_record_store_query(
 void vcs_zcode_dht_record_store_digest(
     const struct vcs_zcode_dht_record_store *store, uint8_t out[32]);
 
+/* Hash only records that can supersede/conflict with `record`. Publication
+ * plan tokens use this narrower snapshot: unrelated DHT gossip must not
+ * invalidate an operator's plan, while a concurrent change to the same
+ * kind/namespace/root/master/provider stream still does. */
+void vcs_zcode_dht_record_store_stream_digest(
+    const struct vcs_zcode_dht_record_store *store,
+    const struct vcs_zcode_dht_record *record, uint8_t out[32]);
+
 /* Save is temp + file fsync + rename + directory fsync, mode 0600. Load
  * verifies the complete image into a temporary store before replacing the
  * destination, so malformed/cross-network/torn images leave memory intact. */

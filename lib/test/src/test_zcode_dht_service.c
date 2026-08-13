@@ -1404,6 +1404,15 @@ static int test_record_transport_and_restart(void) {
     struct vcs_zcode_dht_record published_record;
     ASSERT(vcs_zcode_dht_service_record_publish_plan(
         a, &publish, plan_token, &published_record));
+
+    /* Unrelated authenticated gossip may arrive between the two operator
+     * calls. It changes the global store, but not the intended publication
+     * stream, so it must not manufacture a load-sensitive STALE_PLAN. */
+    struct vcs_zcode_dht_record unrelated;
+    ASSERT(fixture_pointer_record(adir, genesis, 0x62, 0x72, &unrelated));
+    ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                  a, &unrelated, test_time(1002)),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
     ASSERT_EQ(vcs_zcode_dht_service_record_publish_commit(
                   a, &publish, plan_token, test_time(1002), &published_record),
               VCS_ZCODE_DHT_RECORD_STORE_ADDED);
