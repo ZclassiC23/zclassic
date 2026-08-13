@@ -425,6 +425,20 @@ int t_dev_lane_deploy_contract(void)
                                         "1") == 0);
         ASSERT(strstr(live_unit, "-operator-lane=canonical") != NULL);
         ASSERT(strstr(live_unit, "TimeoutStartSec=14400") != NULL);
+        ASSERT(strstr(live_unit,
+                      "Environment=\"ZCL_EXTERNALIP_FLAG=\"") != NULL);
+        ASSERT(strstr(live_unit,
+                      "Environment=\"ZCL_ADDNODE_FLAGS=\"") != NULL);
+        const char *bundle_default =
+            strstr(live_unit,
+                   "Environment=\"ZCL_CHECKPOINT_BUNDLE_SOURCE=\"");
+        const char *operator_env =
+            strstr(live_unit,
+                   "EnvironmentFile=-%h/.config/zclassic23/env");
+        ASSERT(bundle_default != NULL);
+        ASSERT(operator_env != NULL);
+        ASSERT(bundle_default != NULL && operator_env != NULL
+               && bundle_default < operator_env);
         ASSERT(strstr(soak_unit, "-operator-lane=soak") != NULL);
         ASSERT(strstr(dev_unit, "-operator-lane=dev") != NULL);
         ASSERT(strstr(soak_unit, "$ZCL_LANE_SNAPSHOT_LOADER_FLAG") != NULL);

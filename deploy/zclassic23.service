@@ -54,6 +54,13 @@ NotifyAccess=main
 # optional: a fresh clone without the env file still starts cleanly
 # and falls back to DNS seeds + addrman for peer discovery. See
 # deploy/zclassic23.env.example for the expected variable shape.
+# Explicit empty defaults keep the optional-file path genuinely silent: a
+# braced ${ZCL_CHECKPOINT_BUNDLE_SOURCE} in ExecStartPre otherwise makes
+# systemd warn on every ordinary boot where no local bundle is configured.
+# EnvironmentFile is deliberately later so operator values override these.
+Environment="ZCL_EXTERNALIP_FLAG="
+Environment="ZCL_ADDNODE_FLAGS="
+Environment="ZCL_CHECKPOINT_BUNDLE_SOURCE="
 EnvironmentFile=-%h/.config/zclassic23/env
 
 # Bundle bootstrap (deploy/zclassic23-bundle-bootstrap.sh, docs/ROM_DELIVERY.md
