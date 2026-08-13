@@ -3035,13 +3035,18 @@ static int test_resident_process_supersession(void)
         ASSERT(!result.timed_out);
         ASSERT(result.elapsed_ms < 1000);
 
-        char pid_path[PATH_MAX], script[PATH_MAX + 160];
+        char pid_path[PATH_MAX], pid_tmp_path[PATH_MAX];
+        char script[PATH_MAX * 3 + 160];
         ASSERT(snprintf(pid_path, sizeof(pid_path),
                         "test-tmp/devloop_nested_%ld.pid", (long)getpid()) > 0);
-        ASSERT(snprintf(script, sizeof(script),
-                        "timeout 30 sh -c 'echo $$ > %s; sleep 30'",
+        ASSERT(snprintf(pid_tmp_path, sizeof(pid_tmp_path), "%s.tmp",
                         pid_path) > 0);
+        ASSERT(snprintf(script, sizeof(script),
+                        "timeout 30 sh -c 'echo $$ > %s && mv %s %s && "
+                        "sleep 30'",
+                        pid_tmp_path, pid_tmp_path, pid_path) > 0);
         (void)unlink(pid_path);
+        (void)unlink(pid_tmp_path);
         fixture.calls = 0;
         fixture.cancel_after = 1;
         fixture.ready_path = pid_path;
