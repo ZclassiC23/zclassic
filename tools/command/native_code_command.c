@@ -108,9 +108,9 @@ static struct codeindex *code_open(const struct zcl_command_request *request,
     return ci;
 }
 
-/* code.group consumes only source-derived file/group rows. Compiler depfile
- * epochs affect include edges, not this answer, so do not put their post-build
- * writeback on the command's warm latency path. */
+/* code.group and code.map consume only source-derived file/group rows.
+ * Compiler depfile epochs affect include edges, not these answers, so do not
+ * put their post-build writeback on either command's warm latency path. */
 static struct codeindex *code_open_source_view(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -1034,7 +1034,7 @@ void zcl_native_handle_code_find(const struct zcl_command_request *request,
 void zcl_native_handle_code_map(const struct zcl_command_request *request,
                                 struct zcl_command_reply *reply)
 {
-    struct codeindex *ci = code_open(request, reply);
+    struct codeindex *ci = code_open_source_view(request, reply);
     if (!ci) return;
 
     static struct ci_group groups[512];
