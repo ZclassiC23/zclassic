@@ -29,7 +29,8 @@
  *      then the same download completes from an honest alternate provider.
  *   4. Unrequested DATA: PEER_OFFENCE_UNREQUESTED, no credit.
  *   5. Restart mid-download: engine freed and recreated over the same
- *      datadir; the persisted record resumes and the download completes.
+ *      datadir; exact verified objects survive, are reported as reused,
+ *      are never requested/transmitted again, and the graph completes.
  *   6. Disconnect requeue: one of two servers drops mid-download; the
  *      in-flight work moves to the survivor and the download completes.
  *   7. Sovereign source: one signed workspace-head lookup fetches a bundled
@@ -619,6 +620,7 @@ struct zwn_node {
     struct vcs_swarm_engine *engine;
     uint64_t now;
     bool tamper_chunks; /* corrupt DATA replies carrying chunk objects */
+    uint32_t chunk_data_replies[ZWN_MAX_FILES];
 };
 
 struct zwn_link {
@@ -1125,13 +1127,19 @@ static bool zwn_frame(struct msg_processor *mp, struct p2p_node *node,
         peer_scoring_record(mp->net_mgr, node, zwn_offence(ev.penalty),
                             "zcode swarm test");
     if (ev.reply) {
-        if (z->tamper_chunks && ev.reply_len > 0) {
+        struct vcs_package_swarm_message msg;
+        bool parsed = ev.reply_len > 0 &&
+            vcs_package_swarm_parse(ev.reply, ev.reply_len, &msg);
+        if (parsed && msg.type == VCS_PACKAGE_SWARM_DATA &&
+            msg.body.data.object.object_kind ==
+                VCS_PACKAGE_SWARM_OBJECT_CHUNK &&
+            msg.body.data.object.file_index < ZWN_MAX_FILES)
+            z->chunk_data_replies[msg.body.data.object.file_index]++;
+        if (z->tamper_chunks && parsed) {
             /* Corrupt only CHUNK data replies: the manifest still
              * verifies, so the download reaches the chunk stage and the
              * bad-hash path is what gets exercised. */
-            struct vcs_package_swarm_message msg;
-            if (vcs_package_swarm_parse(ev.reply, ev.reply_len, &msg) &&
-                msg.type == VCS_PACKAGE_SWARM_DATA &&
+            if (msg.type == VCS_PACKAGE_SWARM_DATA &&
                 msg.body.data.object.object_kind ==
                     VCS_PACKAGE_SWARM_OBJECT_CHUNK)
                 ev.reply[ev.reply_len - 1] ^= 0xff;
@@ -1842,6 +1850,10 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
         bool restarted = false;
         bool dropped = false;
         bool saw_partial = mode != ZWN_GOLDEN_PLAIN ? false : true;
+        bool restart_present[ZWN_MAX_FILES] = {0};
+        uint32_t restart_replies[ZWN_MAX_FILES] = {0};
+        uint32_t restart_present_chunks = 0;
+        uint64_t restart_present_bytes = 0;
         enum vcs_swarm_download_state state = VCS_SWARM_DL_INACTIVE;
         bool terminal = false;
         for (int i = 0; i < 400 && !terminal; i++) {
@@ -1859,6 +1871,22 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
                     st.present_chunks < st.total_chunks) {
                     saw_partial = true;
                     restarted = true;
+                    restart_present_chunks = st.present_chunks;
+                    restart_present_bytes = st.present_bytes;
+                    uint32_t probed_chunks = 0;
+                    uint64_t probed_bytes = 0;
+                    for (size_t f = 0; f < pkg.count; f++) {
+                        restart_present[f] =
+                            vcs_package_store_chunk_present(
+                                b.store, pkg.root, (uint32_t)f, 0);
+                        restart_replies[f] = a.chunk_data_replies[f];
+                        if (restart_present[f]) {
+                            probed_chunks++;
+                            probed_bytes += pkg.lens[f];
+                        }
+                    }
+                    ASSERT(probed_chunks == restart_present_chunks);
+                    ASSERT(probed_bytes == restart_present_bytes);
                     /* A real restart kills the sockets with their queued
                      * bytes: drop both queues first, or the new engine
                      * would read the pre-restart DATAs as unrequested
@@ -1866,6 +1894,17 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
                     zwn_drain_quiet(&a_b);
                     zwn_drain_quiet(&b_a);
                     ASSERT(zwn_node_restart_engine(&b));
+                    struct vcs_swarm_download_status resumed;
+                    memset(&resumed, 0, sizeof(resumed));
+                    ASSERT(vcs_swarm_engine_download_status(
+                        b.engine, pkg.root, &resumed));
+                    ASSERT(resumed.state == VCS_SWARM_DL_CHUNKS);
+                    ASSERT(resumed.present_chunks == restart_present_chunks);
+                    ASSERT(resumed.present_bytes == restart_present_bytes);
+                    ASSERT(resumed.reused_objects == restart_present_chunks);
+                    ASSERT(resumed.reused_bytes == restart_present_bytes);
+                    ASSERT(resumed.requested_objects == 0);
+                    ASSERT(resumed.transferred_objects == 0);
                     /* The restart forgets session peers AND their
                      * advertisements (transport state, never persisted).
                      * A real restart also drops the connections: emulate
@@ -1911,6 +1950,41 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
         ASSERT(terminal);
         ASSERT(state == VCS_SWARM_DL_COMPLETE);
         ASSERT(zwn_store_matches(b.store, &pkg));
+        if (mode == ZWN_GOLDEN_RESTART) {
+            struct vcs_swarm_download_status resumed;
+            memset(&resumed, 0, sizeof(resumed));
+            ASSERT(vcs_swarm_engine_download_status(b.engine, pkg.root,
+                                                    &resumed));
+            ASSERT(resumed.reused_objects == restart_present_chunks);
+            ASSERT(resumed.reused_bytes == restart_present_bytes);
+            ASSERT(resumed.requested_objects ==
+                   pkg.count - restart_present_chunks);
+            ASSERT(resumed.transferred_objects ==
+                   pkg.count - restart_present_chunks);
+            ASSERT(resumed.requested_bytes ==
+                   pkg.total_bytes - restart_present_bytes);
+            ASSERT(resumed.transferred_bytes ==
+                   pkg.total_bytes - restart_present_bytes);
+            for (size_t f = 0; f < pkg.count; f++)
+                if (restart_present[f])
+                    ASSERT(a.chunk_data_replies[f] == restart_replies[f]);
+            char root_hex[65];
+            zcl_hex_encode(pkg.root, 32, root_hex);
+            printf("{\"schema\":\"zcl.swarm_restart_resume.v1\","
+                   "\"package_root\":\"%s\",\"verdict\":\"PASS\","
+                   "\"verified_objects_before_interrupt\":%u,"
+                   "\"verified_bytes_before_interrupt\":%" PRIu64 ","
+                   "\"objects_reused_after_restart\":%u,"
+                   "\"bytes_reused_after_restart\":%" PRIu64 ","
+                   "\"remaining_objects_requested\":%u,"
+                   "\"remaining_objects_transferred\":%u,"
+                   "\"verified_objects_retransmitted\":0,"
+                   "\"same_graph\":true}\n",
+                   root_hex, restart_present_chunks,
+                   restart_present_bytes, resumed.reused_objects,
+                   resumed.reused_bytes, resumed.requested_objects,
+                   resumed.transferred_objects);
+        }
         ASSERT(b_a.node->misbehavior == 0);
         if (!dropped)
             ASSERT(a_b.node->misbehavior == 0);

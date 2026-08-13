@@ -4174,7 +4174,7 @@ test-science-acceptance: test-zcode-dht-acceptance
 # datadir, wallet key, or live port.
 c23-commons-installed-acceptance: zcode-c23-commons-alpha
 	@bash tools/dev/c23_commons_beta_acceptance.sh
-	@printf '%s\n' '{"schema":"zcl.c23_commons_beta_acceptance.v1","verdict":"PASS","alpha_regression_floor":true,"installed_stranger_journey":true,"corrupt_provider_bytes_rejected":true,"alternate_provider_exact_root_repair":true}'
+	@printf '%s\n' '{"schema":"zcl.c23_commons_beta_acceptance.v1","verdict":"PASS","alpha_regression_floor":true,"installed_stranger_journey":true,"corrupt_provider_bytes_rejected":true,"alternate_provider_exact_root_repair":true,"interrupted_download_resumes_same_graph":true,"verified_objects_retransmitted_after_restart":0}'
 
 # Four-role, real-process sovereign source acceptance. It composes the proven
 # seven-identity DHT/Noise harness rather than inventing test-only networking;

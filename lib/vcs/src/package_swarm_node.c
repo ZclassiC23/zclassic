@@ -436,6 +436,7 @@ static void record_delete(struct vcs_swarm_engine *engine,
 static void req_finish(struct vcs_swarm_engine *engine,
                        struct swarm_download *dl, struct swarm_req *req,
                        bool tombstone, bool fulfilled);
+static uint64_t chunk_len_of(const struct swarm_download *dl, uint32_t g);
 
 static void dl_fail(struct vcs_swarm_engine *engine,
                     struct swarm_download *dl, const char *rule)
@@ -493,6 +494,14 @@ static bool dl_load_manifest_from_store(struct vcs_swarm_engine *engine,
         return false;
     }
     dl_rebuild_have(engine, dl);
+    /* A persisted/staged manifest is a resume boundary.  Report the exact
+     * verified CAS objects this engine incarnation inherited so callers can
+     * distinguish resuming the graph from starting it over. */
+    dl->reused_objects = dl->have_count;
+    dl->reused_bytes = 0;
+    for (uint32_t g = 0; g < dl->total_chunks; g++)
+        if (bitmap_get(dl->have, g))
+            dl->reused_bytes += chunk_len_of(dl, g);
     return true;
 }
 
@@ -516,8 +525,6 @@ static struct swarm_req *req_alloc(struct swarm_download *dl)
             return &dl->reqs[i];
     return NULL;
 }
-
-static uint64_t chunk_len_of(const struct swarm_download *dl, uint32_t g);
 
 /* Issue one WANT to `peer`. The request records the exact outstanding
  * object the eventual DATA must reproduce. */
