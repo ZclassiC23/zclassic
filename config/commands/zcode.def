@@ -3788,6 +3788,30 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zendp_list)
 
+ZCL_COMMAND_READY_COMMAND(
+    "zcode.package.checkout", "zcode.package", "",
+    "Reconstruct one verified package tree without executing it",
+    "Reads one complete ordinary content.v2 package from the local CAS by "
+    "immutable `root`, rederives the manifest root, re-verifies every chunk "
+    "at its exact coordinate, and atomically reconstructs the canonical "
+    "paths and modes beneath an absent `destination`. The checkout is inert: "
+    "it never builds, tests, loads, links, or executes downloaded bytes; "
+    "those remain separate explicit local policy steps.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,package,checkout,reconstruct,content-v2,verified,no-exec",
+    "zcl.zcode_package_checkout.input.v1",
+    "zcl.zcode_package_checkout.v1",
+    "root,destination,datadir", "root,destination",
+    "zclassic23 zcode package checkout --input='{\"root\":\"<64hex>\",\"destination\":\"/tmp/package-source\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_zcode_package_checkout)
+
 /* ── the install lifecycle (add plan / add commit / rollback) ──────────
  *
  * Phase 1: the package must already be in the local content-addressed

@@ -19,6 +19,8 @@
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "services/package_lifecycle.h"
+#include "vcs/package_checkout.h"
+#include "vcs/package_store.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -87,6 +89,67 @@ static void za_fail(struct zcl_command_reply *reply, const char *rule,
                            code[0] ? code : "ADD_REFUSED", "execute", false,
                            true, message && message[0] ? message : rule,
                            command);
+}
+
+/* ── zcode package checkout ─────────────────────────────────────────── */
+
+void zcl_native_handle_zcode_package_checkout(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *command = "zcode.package.checkout";
+    const char *datadir = za_datadir(request, reply, command);
+    if (!datadir)
+        return;
+    const char *root_hex = za_input_str(request->input, "root");
+    const char *destination = za_input_str(request->input, "destination");
+    uint8_t root[32];
+    if (!root_hex || !zcl_hex_decode_lower(root_hex, root, sizeof(root))) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
+                               "normalize", false, false,
+                               "root must be 64 lowercase hex chars",
+                               root_hex ? root_hex : "(missing)");
+        return;
+    }
+    if (!destination || !destination[0]) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID,
+                               "MISSING_DESTINATION", "normalize", false,
+                               false, "destination is required", command);
+        return;
+    }
+    struct vcs_package_store *store = vcs_package_store_open(
+        datadir, vcs_package_store_quota_bytes());
+    if (!store) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "NO_STORE",
+                               "execute", false, false,
+                               "the package store failed to open", datadir);
+        return;
+    }
+    struct vcs_package_checkout_metrics metrics;
+    enum vcs_package_checkout_result result = vcs_package_checkout(
+        store, root, destination, &metrics);
+    vcs_package_store_close(store);
+    if (result != VCS_PACKAGE_CHECKOUT_OK) {
+        za_fail(reply, vcs_package_checkout_result_string(result),
+                "package checkout refused; the root must be complete and "
+                "the destination must not already exist", command);
+        return;
+    }
+    (void)json_push_kv_str(&reply->data, "root", root_hex);
+    (void)json_push_kv_str(&reply->data, "destination", destination);
+    (void)json_push_kv_int(&reply->data, "files", metrics.files);
+    (void)json_push_kv_int(&reply->data, "chunks", metrics.chunks);
+    (void)json_push_kv_int(&reply->data, "bytes", (int64_t)metrics.bytes);
+    (void)json_push_kv_bool(&reply->data, "executed", false);
+    (void)json_push_kv_str(
+        &reply->data, "note",
+        "every byte was reverified against the immutable package root; "
+        "checkout is inert and build/test/run remain explicit local steps");
 }
 
 /* ── zcode package add plan ─────────────────────────────────────────── */

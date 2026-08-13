@@ -1059,6 +1059,9 @@ void zcl_native_handle_zcode_package_pin(
 void zcl_native_handle_zcode_package_unpin(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_checkout(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 
 /* zcode package add plan / add commit / rollback — the install lifecycle.
  * plan resolves a name-or-root, locks the dependency DAG to immutable

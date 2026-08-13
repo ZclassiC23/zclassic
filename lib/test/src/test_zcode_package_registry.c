@@ -5,7 +5,9 @@
 
 #include "base/hex.h"
 #include "services/package_lifecycle.h"
+#include "util/spawn.h"
 #include "vcs/package_build.h"
+#include "vcs/package_checkout.h"
 #include "vcs/package_publish.h"
 #include "vcs/package_prepare.h"
 #include "vcs/package_reproduce.h"
@@ -13,6 +15,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 struct registry_expected {
     const char *name;
@@ -153,6 +156,114 @@ static bool registry_build_one(const char *datadir, const char *root_hex,
     return true;
 }
 
+static const struct registry_expected *registry_named(const char *name)
+{
+    for (size_t i = 0;
+         i < sizeof(registry_packages) / sizeof(registry_packages[0]); i++)
+        if (strcmp(registry_packages[i].name, name) == 0)
+            return &registry_packages[i];
+    return NULL;
+}
+
+static bool registry_stranger_build(const char *datadir)
+{
+    const struct registry_expected *app =
+        registry_named("zclassic23/commons-demo");
+    const struct registry_expected *base = registry_named("zclassic23/base");
+    const struct registry_expected *codec =
+        registry_named("zclassic23/codec");
+    const struct registry_expected *json = registry_named("zclassic23/json");
+    if (!app || !base || !codec || !json)
+        return false;
+
+    struct vcs_package_store *store = vcs_package_store_open(
+        datadir, UINT64_C(256) * 1024u * 1024u);
+    uint8_t app_root[32];
+    if (!store || !zcl_hex_decode_lower(app->content_root, app_root,
+                                         sizeof(app_root))) {
+        vcs_package_store_close(store);
+        return false;
+    }
+    char checkout[1024];
+    int n = snprintf(checkout, sizeof(checkout), "%s/stranger-source",
+                     datadir);
+    struct vcs_package_checkout_metrics metrics;
+    enum vcs_package_checkout_result checked = n > 0 &&
+            (size_t)n < sizeof(checkout)
+        ? vcs_package_checkout(store, app_root, checkout, &metrics)
+        : VCS_PACKAGE_CHECKOUT_DESTINATION;
+    bool refused_existing = checked == VCS_PACKAGE_CHECKOUT_OK &&
+        vcs_package_checkout(store, app_root, checkout, NULL) ==
+            VCS_PACKAGE_CHECKOUT_DESTINATION;
+    vcs_package_store_close(store);
+    if (checked != VCS_PACKAGE_CHECKOUT_OK || !refused_existing ||
+        metrics.files != 6u || metrics.chunks != 6u || metrics.bytes == 0)
+        return false;
+
+    char source[1024], binary[1024];
+    char app_include[1024], base_include[1024], codec_include[1024];
+    char json_include[1024], app_archive[1024], base_archive[1024];
+    char codec_archive[1024], json_archive[1024];
+    if (snprintf(source, sizeof(source), "%s/app/main.c", checkout) <= 0 ||
+        snprintf(binary, sizeof(binary), "%s/commons-demo", datadir) <= 0 ||
+        snprintf(app_include, sizeof(app_include),
+                 "%s/zcode/installed/%s/include", datadir,
+                 app->content_root) <= 0 ||
+        snprintf(base_include, sizeof(base_include),
+                 "%s/zcode/installed/%s/include", datadir,
+                 base->content_root) <= 0 ||
+        snprintf(codec_include, sizeof(codec_include),
+                 "%s/zcode/installed/%s/include", datadir,
+                 codec->content_root) <= 0 ||
+        snprintf(json_include, sizeof(json_include),
+                 "%s/zcode/installed/%s/include", datadir,
+                 json->content_root) <= 0 ||
+        snprintf(app_archive, sizeof(app_archive),
+                 "%s/zcode/installed/%s/lib/libcommons-demo.a", datadir,
+                 app->content_root) <= 0 ||
+        snprintf(base_archive, sizeof(base_archive),
+                 "%s/zcode/installed/%s/lib/libbase.a", datadir,
+                 base->content_root) <= 0 ||
+        snprintf(codec_archive, sizeof(codec_archive),
+                 "%s/zcode/installed/%s/lib/libcodec.a", datadir,
+                 codec->content_root) <= 0 ||
+        snprintf(json_archive, sizeof(json_archive),
+                 "%s/zcode/installed/%s/lib/libjson.a", datadir,
+                 json->content_root) <= 0)
+        return false;
+    if (access(binary, F_OK) == 0)
+        return false;
+
+    char app_i[1100], base_i[1100], codec_i[1100], json_i[1100];
+    if (snprintf(app_i, sizeof(app_i), "-I%s", app_include) <= 0 ||
+        snprintf(base_i, sizeof(base_i), "-I%s", base_include) <= 0 ||
+        snprintf(codec_i, sizeof(codec_i), "-I%s", codec_include) <= 0 ||
+        snprintf(json_i, sizeof(json_i), "-I%s", json_include) <= 0)
+        return false;
+    const char *compile_argv[] = {
+        "cc", "-std=c23", "-O1", "-D_POSIX_C_SOURCE=200809L",
+        app_i, base_i, codec_i, json_i, source, app_archive, json_archive,
+        codec_archive, base_archive, "-o", binary, NULL,
+    };
+    char output[1024];
+    int compile_rc = zcl_spawn_capture(compile_argv, output, sizeof(output),
+                                       30000);
+    if (compile_rc != 0) {
+        printf("  zcode_package_registry: stranger compile failed rc=%d %s\n",
+               compile_rc, output);
+        return false;
+    }
+    const char *run_argv[] = {binary, NULL};
+    int run_rc = zcl_spawn_capture(run_argv, output, sizeof(output), 3000);
+    if (run_rc != 0 ||
+        strcmp(output, "commons|3|030000000700636f6d6d6f6e73\n") != 0) {
+        printf("  zcode_package_registry: stranger run failed rc=%d %s\n",
+               run_rc, output);
+        return false;
+    }
+    return true;
+}
+
 static bool registry_independent_reproduction(size_t *reproduced_out)
 {
     *reproduced_out = 0;
@@ -227,6 +338,8 @@ static bool registry_independent_reproduction(size_t *reproduced_out)
         if (ok)
             (*reproduced_out)++;
     }
+    if (ok)
+        ok = registry_stranger_build(builder_b);
     test_rm_rf(builder_a);
     test_rm_rf(builder_b);
     return ok;

@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 687 |
+| Registry entries (branches + leaves) | 688 |
 | Top-level roots | 11 |
 | Branches | 161 |
-| Leaves (dispatchable command paths) | 526 |
-| … `ready` (live handler in this build) | 472 |
+| Leaves (dispatchable command paths) | 527 |
+| … `ready` (live handler in this build) | 473 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 24 |
-| Leaves with `effect=mutate` | 174 |
+| Leaves with `effect=mutate` | 175 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 112 |
 
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 213 | 51 | 162 |
+| `config/commands/zcode.def` | 214 | 51 | 163 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -1246,6 +1246,7 @@ represented by its children's sections.
 | `zcode package peers` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_peers.v1` | `zclassic23 zcode package peers --input='{"root":"<64hex>"}'` | Live swarm peers advertising one package root |
 | `zcode package pin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_pin.v1` | `zclassic23 zcode package pin --input='{"root":"<64hex>","mode":"plan"}'` | Pin a tracked package (PINS pool, never evicted) |
 | `zcode package unpin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_unpin.v1` | `zclassic23 zcode package unpin --input='{"root":"<64hex>","mode":"plan"}'` | Release an operator pin |
+| `zcode package checkout` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, **`destination`**, `datadir` | `zcl.zcode_package_checkout.v1` | `zclassic23 zcode package checkout --input='{"root":"<64hex>","destination":"/tmp/package-source"}'` | Reconstruct one verified package tree without executing it |
 | `zcode package rollback` | ready | mutate / app-write / operator · fast/low | **`name`**, `now_unix`, `datadir` | `zcl.zcode_package_rollback.v1` | `zclassic23 zcode package rollback --input='{"name":"alice/ringbuffer"}'` | Re-activate the previous installed generation |
 
 #### `zcode.package.publish` — Publish a signed release into the store (plan, then commit)
