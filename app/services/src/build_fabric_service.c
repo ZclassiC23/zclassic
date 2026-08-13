@@ -238,6 +238,57 @@ struct zcl_result build_fabric_plan(struct node_db *ndb,
     return ZCL_OK;
 }
 
+struct zcl_result build_fabric_plan_reproduction(
+    struct node_db *ndb, const char *primary_action_id,
+    const char *reproduction_profile, int64_t now,
+    char out_action_id[BUILD_FABRIC_ID_HEX + 1],
+    char out_job_id[BUILD_FABRIC_ID_HEX + 1])
+{
+    if (out_action_id) out_action_id[0] = '\0';
+    if (out_job_id) out_job_id[0] = '\0';
+    if (!ndb || !ndb->open || !bf_lower_hex_id(primary_action_id) ||
+        !reproduction_profile || !reproduction_profile[0] ||
+        strlen(reproduction_profile) > BUILD_FABRIC_PROFILE_MAX ||
+        now <= 0 || !out_action_id || !out_job_id)
+        return ZCL_ERR(-1, "reproduction plan requires exact inputs");
+    struct db_build_action action;
+    struct db_build_job job;
+    if (!db_build_action_find(ndb, primary_action_id, &action) ||
+        !db_build_job_find(ndb, action.job_id, &job) ||
+        !bf_action_identity_current(&job, &action))
+        return ZCL_ERR(-1, "primary action is absent or noncanonical");
+    if (strcmp(job.profile, reproduction_profile) == 0)
+        return ZCL_ERR(-1, "reproduction profile must be distinct");
+
+    (void)snprintf(job.profile, sizeof(job.profile), "%s",
+                   reproduction_profile);
+    job.job_id[0] = '\0';
+    (void)snprintf(job.state, sizeof(job.state), "PLANNED");
+    job.outcome[0] = '\0';
+    job.cancel_requested = 0;
+    job.created_at = job.updated_at = now;
+    action.action_id[0] = '\0';
+    action.job_id[0] = '\0';
+    (void)snprintf(action.state, sizeof(action.state), "SNAPSHOTTED");
+    action.outcome[0] = '\0';
+    action.output_root_sha3[0] = '\0';
+    action.worker_id[0] = '\0';
+    action.lease_id[0] = '\0';
+    action.last_error[0] = '\0';
+    action.lease_expires_at = action.lease_heartbeat_at = 0;
+    action.attempt_count = action.claimed_at = action.started_at = 0;
+    action.finished_at = 0;
+    action.created_at = action.updated_at = now;
+    ZCL_CHECK(build_fabric_action_id(&job, &action, action.action_id));
+    ZCL_CHECK(build_fabric_job_id(&job, action.action_id, job.job_id));
+    (void)snprintf(action.job_id, sizeof(action.job_id), "%s", job.job_id);
+    ZCL_CHECK(build_fabric_plan(ndb, &job, &action));
+    (void)snprintf(out_action_id, BUILD_FABRIC_ID_HEX + 1u, "%s",
+                   action.action_id);
+    (void)snprintf(out_job_id, BUILD_FABRIC_ID_HEX + 1u, "%s", job.job_id);
+    return ZCL_OK;
+}
+
 static bool bf_terminal(const char *state)
 {
     return state && (strcmp(state, "ACCEPTED") == 0 ||

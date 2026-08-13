@@ -546,6 +546,77 @@ static int test_bf_service(void)
     return failures;
 }
 
+static int test_bf_reproduction_plan(void)
+{
+    int failures = 0;
+    TEST("build_fabric: reproduction plan copies identity and owns no lifecycle") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path),
+                       "reproduction-plan"));
+        struct db_build_job primary_job;
+        struct db_build_action primary_action;
+        bf_job(&primary_job);
+        bf_action(&primary_action);
+        ASSERT(bf_canonicalize(&primary_job, &primary_action));
+        ASSERT(build_fabric_plan(&ndb, &primary_job, &primary_action).ok);
+
+        char reproduction_action_id[BUILD_FABRIC_ID_HEX + 1];
+        char reproduction_job_id[BUILD_FABRIC_ID_HEX + 1];
+        ASSERT(build_fabric_plan_reproduction(
+            &ndb, primary_action.action_id,
+            VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1, 110,
+            reproduction_action_id, reproduction_job_id).ok);
+        ASSERT(strcmp(reproduction_action_id,
+                      primary_action.action_id) != 0);
+        ASSERT(strcmp(reproduction_job_id, primary_job.job_id) != 0);
+
+        struct db_build_job reproduction_job;
+        struct db_build_action reproduction_action;
+        ASSERT(db_build_job_find(
+            &ndb, reproduction_job_id, &reproduction_job));
+        ASSERT(db_build_action_find(
+            &ndb, reproduction_action_id, &reproduction_action));
+        ASSERT_STR_EQ(reproduction_job.profile,
+                      VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1);
+        ASSERT_STR_EQ(reproduction_job.state, "PLANNED");
+        ASSERT_STR_EQ(reproduction_action.state, "SNAPSHOTTED");
+        ASSERT_EQ(reproduction_action.attempt_count, 0);
+        ASSERT_EQ(reproduction_action.started_at, 0);
+        ASSERT_STR_EQ(reproduction_action.worker_id, "");
+        ASSERT_STR_EQ(reproduction_action.lease_id, "");
+        ASSERT_STR_EQ(reproduction_job.source_sha256,
+                      primary_job.source_sha256);
+        ASSERT_STR_EQ(reproduction_job.source_cas_sha3,
+                      primary_job.source_cas_sha3);
+        ASSERT_STR_EQ(reproduction_job.toolchain_sha3,
+                      primary_job.toolchain_sha3);
+        ASSERT_STR_EQ(reproduction_action.input_root_sha3,
+                      primary_action.input_root_sha3);
+        ASSERT_STR_EQ(reproduction_action.target, primary_action.target);
+        ASSERT_STR_EQ(reproduction_action.flags_sha3,
+                      primary_action.flags_sha3);
+        ASSERT_STR_EQ(reproduction_action.environment_sha3,
+                      primary_action.environment_sha3);
+
+        char repeated_action_id[BUILD_FABRIC_ID_HEX + 1];
+        char repeated_job_id[BUILD_FABRIC_ID_HEX + 1];
+        ASSERT(build_fabric_plan_reproduction(
+            &ndb, primary_action.action_id,
+            VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1, 111,
+            repeated_action_id, repeated_job_id).ok);
+        ASSERT_STR_EQ(repeated_action_id, reproduction_action_id);
+        ASSERT_STR_EQ(repeated_job_id, reproduction_job_id);
+        ASSERT(!build_fabric_plan_reproduction(
+            &ndb, primary_action.action_id, primary_job.profile, 112,
+            repeated_action_id, repeated_job_id).ok);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_leases(void)
 {
     int failures = 0;
@@ -1076,6 +1147,7 @@ int test_build_fabric(void)
     failures += test_bf_async_proof_events();
     failures += test_bf_validation();
     failures += test_bf_service();
+    failures += test_bf_reproduction_plan();
     failures += test_bf_leases();
     failures += test_bf_toolchain_capture_cache();
     failures += test_bf_confined_worker();

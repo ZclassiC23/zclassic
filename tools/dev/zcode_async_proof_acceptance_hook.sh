@@ -25,7 +25,11 @@ zap_write_source() {
         printf 'int x(void) { return %s; }\n' "$value"
         i=0
         while [ "$i" -lt 1800 ]; do
-            printf 'static int zap_%05d(int v) { return v + %d; }\n' "$i" "$i"
+            # External linkage keeps the deliberately large kill/retry
+            # fixture warning-clean under the standard profile's -Werror.
+            # Static unused functions would correctly make the independently
+            # reproduced build fail before the lease scenarios can run.
+            printf 'int zap_%05d(int v) { return v + %d; }\n' "$i" "$i"
             i=$((i + 1))
         done
     } >"$path"
@@ -39,10 +43,11 @@ zap_field() {
 
 zap_submit() {
     local node="$1" value="$2" goal="$3" max_cpu="${4:-600}"
+    local profile="${5:-quick}"
     local start handoff candidate result started_ms finished_ms elapsed_ms
-    local ok action submit_us feedback_us event request work
+    local ok action reproduction submit_us feedback_us event request work
     start="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work start \
-        --input="{\"workspace\":\"$ZAP_PROJECT\",\"goal\":\"$goal\",\"profile\":\"quick\",\"max_cpu_seconds\":$max_cpu}" || true)"
+        --input="{\"workspace\":\"$ZAP_PROJECT\",\"goal\":\"$goal\",\"profile\":\"$profile\",\"max_cpu_seconds\":$max_cpu}" || true)"
     ok="$(printf '%s' "$start" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
     [ "$ok" = True ] || dht_die "node $node could not start async work: $start"
     work="$(printf '%s' "$start" | zap_field 'd["data"]["work_id"]')"
@@ -61,6 +66,7 @@ zap_submit() {
     ok="$(printf '%s' "$result" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
     [ "$ok" = True ] || dht_die "node $node foreground admission failed: $result"
     action="$(printf '%s' "$result" | zap_field 'd["data"]["expert"]["action_id"]')"
+    reproduction="$(printf '%s' "$result" | zap_field 'd["data"].get("reproduction_action_id","")')"
     event="$(printf '%s' "$result" | zap_field 'd["data"]["async_proof_event_root"]')"
     request="$(printf '%s' "$result" | zap_field 'd["data"]["remote_request_id"]')"
     submit_us="$(printf '%s' "$result" | zap_field 'd["data"]["local_submit_us"]')"
@@ -74,8 +80,123 @@ zap_submit() {
     [ "$(zap_sql_count "$node" "SELECT count(*) FROM build_actions WHERE action_id='$action'")" -eq 1 ] &&
     [ "$(zap_sql_count "$node" "SELECT count(*) FROM build_proof_events WHERE action_id='$action' AND state='REQUESTED'")" -eq 1 ] ||
         dht_die "node $node returned action $action for $work without owning its exact action/proof rows"
+    if [ "$profile" = standard ]; then
+        [ "${#reproduction}" -eq 64 ] && [ "$reproduction" != "$action" ] &&
+        [ "$(zap_sql_count "$node" "SELECT count(*) FROM build_actions WHERE action_id='$reproduction'")" -eq 1 ] &&
+        [ "$(zap_sql_count "$node" "SELECT count(*) FROM build_proof_events WHERE action_id='$reproduction' AND state='REQUESTED'")" -eq 1 ] ||
+            dht_die "node $node did not own the standard reproduction action: $result"
+    fi
     ZAP_ACTION="$action"; ZAP_WORK="$work"; ZAP_FOREGROUND_MS="$elapsed_ms"
+    ZAP_REPRO_ACTION="$reproduction"
     ZAP_SUBMIT_US="$submit_us"; ZAP_FEEDBACK_US="$feedback_us"
+}
+
+zap_wait_context_root() {
+    local node="$1" action="$2" deadline root
+    deadline=$(( $(date +%s) + 90 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        root="$(zap_sql_value "$node" "SELECT context_root_sha3 FROM build_actions WHERE action_id='$action'")"
+        [ "${#root}" -eq 64 ] && { printf '%s' "$root"; return 0; }
+        sleep 1
+    done
+    return 1
+}
+
+zap_publish_context_provider() {
+    local node="$1" root="$2" now expiry common plan token commit
+    now="$(date +%s)"; expiry=$((now + 600))
+    common="\"kind\":\"provider\",\"namespace\":\"zclassic23.work\",\"transport_root\":\"$root\",\"sequence\":1,\"not_before\":$((now - 5)),\"expiry\":$expiry"
+    plan="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
+        zcode network publish --input="{\"mode\":\"plan\",$common}" || true)"
+    printf '%s\n' "$plan" >"$DHT_WORK/async-context-provider-plan.json"
+    [ "$(printf '%s' "$plan" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+        dht_die "node $node could not plan the work-context provider record: $plan"
+    token="$(printf '%s' "$plan" | zap_field 'd["data"]["plan_token"]')"
+    commit="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
+        zcode network publish --input="{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}" || true)"
+    printf '%s\n' "$commit" >"$DHT_WORK/async-context-provider-commit.json"
+    [ "$(printf '%s' "$commit" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+        dht_die "node $node could not publish the work-context provider record: $commit"
+}
+
+zap_allow_context_policy() {
+    local node="$1" common plan token commit
+    common='"operation":"add","source":"local","effect":"allow","scope":"service_type","action_mask":63,"value":"zclassic23.work"'
+    plan="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
+        zcode network policy mutate --input="{\"mode\":\"plan\",$common}" || true)"
+    [ "$(printf '%s' "$plan" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+        dht_die "node $node could not plan work-context policy: $plan"
+    token="$(printf '%s' "$plan" | zap_field 'd["data"]["plan_token"]')"
+    commit="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
+        zcode network policy mutate --input="{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}" || true)"
+    [ "$(printf '%s' "$commit" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+        dht_die "node $node could not commit work-context policy: $commit"
+}
+
+zap_fetch_inert_context() {
+    local node="$1" root="$2" action_a="$3" action_b="$4"
+    local result deadline complete next_resume
+    [ "$(zap_sql_count "$node" "SELECT count(*) FROM build_actions WHERE action_id IN ('$action_a','$action_b')")" -eq 0 ] ||
+        dht_die "inert importer $node already owned an execution action"
+    result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode package fetch \
+        --input="{\"root\":\"$root\",\"namespace\":\"zclassic23.work\",\"maximum_bytes\":67108864}" || true)"
+    [ "$(printf '%s' "$result" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+        dht_die "node $node could not fetch the inert work package: $result"
+    deadline=$(( $(date +%s) + 120 ))
+    next_resume=$(( $(date +%s) + 5 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode package pin \
+            --input="{\"root\":\"$root\",\"mode\":\"plan\"}" || true)"
+        complete="$(printf '%s' "$result" | zap_field 'd.get("data",{}).get("package",{}).get("complete",False)' 2>/dev/null || true)"
+        [ "$complete" = True ] && break
+        # A bounded provider/session I/O failure is a durable FAILED download
+        # record, not completion. Re-admitting the same exact root is the
+        # existing resumable-fetch operation: it reuses the failed slot and
+        # immutable package identity without copying bytes or executing them.
+        if [ "$(date +%s)" -ge "$next_resume" ]; then
+            result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
+                zcode package fetch \
+                --input="{\"root\":\"$root\",\"namespace\":\"zclassic23.work\",\"maximum_bytes\":67108864}" || true)"
+            [ "$(printf '%s' "$result" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+                dht_die "node $node could not resume the exact inert work package: $result"
+            next_resume=$(( $(date +%s) + 5 ))
+        fi
+        sleep 1
+    done
+    [ "$complete" = True ] ||
+        dht_die "node $node did not complete the inert work-package fetch"
+    [ "$(zap_sql_count "$node" "SELECT count(*) FROM build_actions WHERE action_id IN ('$action_a','$action_b')")" -eq 0 ] &&
+    [ "$(zap_sql_count "$node" "SELECT count(*) FROM build_receipts WHERE action_id IN ('$action_a','$action_b')")" -eq 0 ] ||
+        dht_die "fetch/import alone executed code or projected evidence on node $node"
+}
+
+zap_wait_reproduction_ready() {
+    local node="$1" action_a="$2" action_b="$3" deadline state_a state_b
+    deadline=$(( $(date +%s) + 300 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        zap_approve_action_receipt "$node" "$action_a" || true
+        zap_approve_action_receipt "$node" "$action_b" || true
+        state_a="$(zap_latest_state "$node" "$action_a")"
+        state_b="$(zap_latest_state "$node" "$action_b")"
+        if [ "$state_a" = READY_FOR_ACCEPTANCE ] ||
+           [ "$state_b" = READY_FOR_ACCEPTANCE ]; then
+            [ "$(zap_sql_count "$node" "SELECT count(*) FROM build_receipts WHERE action_id IN ('$action_a','$action_b') AND trust_state IN ('REMOTE_OBSERVED','QUORUM_MATCHED')")" -eq 2 ] ||
+                dht_die "standard readiness did not retain both reproduction receipts"
+            return 0
+        fi
+        zap_assert_responsive "$node" "pending-reproduction-$action_a"
+        sleep 1
+    done
+    return 1
+}
+
+zap_evidence_output() {
+    local node="$1" action="$2" evidence
+    evidence="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode evidence \
+        --input="{\"workspace\":\"$ZAP_PROJECT\",\"datadir\":\"${DDS[$node]}\",\"action_id\":\"$action\"}" || true)"
+    [ "$(printf '%s' "$evidence" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+        dht_die "node $node could not evaluate reproduction output: $evidence"
+    printf '%s' "$evidence" | zap_field 'd["data"]["output_root"]'
 }
 
 zap_sql_count() {
@@ -317,20 +438,104 @@ if [ "${ZAP_HELPERS_ONLY:-0}" = 1 ]; then
     return 0
 fi
 
-# Collapse the prior seven-node discovery fixture to three equal full-node
-# processes. No role-specific binary or configuration is introduced.
+# Collapse the prior discovery fixture to four full-node processes. B first
+# exercises package import with execution disabled by local policy; A, C and D
+# keep the same binary and C/D advertise the existing confined worker.
 ZAP_A="$ORIGIN"; ZAP_B="$NEXT"; ZAP_C="$TARGET"
+ZAP_D=""
+for i in 0 1 2 3 4 5 6; do
+    if [ "$i" != "$ZAP_A" ] && [ "$i" != "$ZAP_B" ] &&
+       [ "$i" != "$ZAP_C" ]; then
+        ZAP_D="$i"
+        break
+    fi
+done
+[ -n "$ZAP_D" ] || dht_die "async proof could not allocate a fourth identity"
+zap_allow_context_policy "$ZAP_A"
+zap_allow_context_policy "$ZAP_B"
 for i in 0 1 2 3 4 5 6; do
     dht_kill_group "${PIDS[$i]:-}"; PIDS[$i]=""
 done
 DHT_PGID_A=""; DHT_PGID_B=""
+
+SAVED_BUILDWORKERS="$DHT_BUILDWORKERS"
+DHT_BUILDWORKERS=0
+zap_start_node "$ZAP_B"
+DHT_BUILDWORKERS="$SAVED_BUILDWORKERS"
+zap_start_node "$ZAP_C"
+zap_start_node "$ZAP_D"
+zap_start_node "$ZAP_A" "$ZAP_C"
+zap_connect "$ZAP_A" "$ZAP_D"
+zap_connect "$ZAP_A" "$ZAP_B"
+A_ORIGINAL_PID="${PIDS[$ZAP_A]}"
+ZAP_A_DB_IDENTITIES="$(zap_db_identity "$ZAP_A" || true)"
+[ -n "$ZAP_A_DB_IDENTITIES" ] ||
+    dht_die "A did not expose stable node.db/WAL/SHM identities after boot"
+zap_assert_responsive "$ZAP_A" "before-standard-reproduction"
+
+dht_note "async proof: B imports inert bytes while C and D reproduce one standard candidate"
+zap_submit "$ZAP_A" 6 "Change x to six for independent reproduction" 600 standard
+STANDARD_ACTION="$ZAP_ACTION"; STANDARD_REPRO_ACTION="$ZAP_REPRO_ACTION"
+STANDARD_MS="$ZAP_FOREGROUND_MS"
+STANDARD_CONTEXT="$(zap_wait_context_root "$ZAP_A" "$STANDARD_ACTION")" ||
+    dht_die "standard action never bound its content carrier"
+zap_publish_context_provider "$ZAP_A" "$STANDARD_CONTEXT"
+zap_fetch_inert_context "$ZAP_B" "$STANDARD_CONTEXT" \
+    "$STANDARD_ACTION" "$STANDARD_REPRO_ACTION"
+zap_wait_reproduction_ready "$ZAP_A" "$STANDARD_ACTION" \
+    "$STANDARD_REPRO_ACTION" || {
+        zap_dump_failure "$ZAP_A" "$STANDARD_ACTION"
+        zap_dump_failure "$ZAP_A" "$STANDARD_REPRO_ACTION"
+        dht_die "C and D did not satisfy the standard reproduction policy"
+    }
+
+C_STANDARD_ACTION="$(zap_sql_value "$ZAP_C" "SELECT action_id FROM build_actions WHERE action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION') AND state IN ('ACCEPTED','CACHE_HIT')")"
+D_STANDARD_ACTION="$(zap_sql_value "$ZAP_D" "SELECT action_id FROM build_actions WHERE action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION') AND state IN ('ACCEPTED','CACHE_HIT')")"
+[ "${#C_STANDARD_ACTION}" -eq 64 ] && [ "${#D_STANDARD_ACTION}" -eq 64 ] &&
+[ "$C_STANDARD_ACTION" != "$D_STANDARD_ACTION" ] ||
+    dht_die "standard reproduction did not execute once each on C and D"
+[ "$(zap_sql_count "$ZAP_C" "SELECT count(*) FROM build_actions WHERE action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION') AND attempt_count=1")" -eq 1 ] &&
+[ "$(zap_sql_count "$ZAP_D" "SELECT count(*) FROM build_actions WHERE action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION') AND attempt_count=1")" -eq 1 ] ||
+    dht_die "C or D executed more than its one independent reproduction action"
+C_OUTPUT="$(zap_evidence_output "$ZAP_C" "$C_STANDARD_ACTION")"
+D_OUTPUT="$(zap_evidence_output "$ZAP_D" "$D_STANDARD_ACTION")"
+[ "${#C_OUTPUT}" -eq 64 ] && [ "$C_OUTPUT" = "$D_OUTPUT" ] ||
+    dht_die "C/D standard artifact roots disagree: C=$C_OUTPUT D=$D_OUTPUT"
+[ "$(zap_sql_count "$ZAP_A" "SELECT count(DISTINCT r.worker_id) FROM build_receipts r WHERE r.action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION')")" -eq 2 ] &&
+[ "$(zap_sql_count "$ZAP_A" "SELECT count(DISTINCT w.signer_pubkey) FROM build_receipts r JOIN build_workers w ON w.worker_id=r.worker_id WHERE r.action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION')")" -eq 2 ] ||
+    dht_die "standard reproduction evidence did not retain two independent signers"
+[ "$(zap_sql_count "$ZAP_B" "SELECT count(*) FROM build_actions WHERE action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION')")" -eq 0 ] &&
+[ "$(zap_sql_count "$ZAP_B" "SELECT count(*) FROM build_receipts WHERE action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION')")" -eq 0 ] ||
+    dht_die "B's inert package import acquired execution or evidence authority"
+cmp -s "${DDS[$ZAP_C]}/zcode/build-worker.ed25519" \
+       "${DDS[$ZAP_D]}/zcode/build-worker.ed25519" &&
+    dht_die "C and D unexpectedly shared a worker signing secret"
+for non_signer in "$ZAP_A" "$ZAP_B"; do
+    ! cmp -s "${DDS[$non_signer]}/zcode/build-worker.ed25519" \
+        "${DDS[$ZAP_C]}/zcode/build-worker.ed25519" &&
+    ! cmp -s "${DDS[$non_signer]}/zcode/build-worker.ed25519" \
+        "${DDS[$ZAP_D]}/zcode/build-worker.ed25519" ||
+        dht_die "A/B held a C/D reproduction signing secret"
+done
+zap_assert_same_action_identity "$ZAP_A" "$ZAP_C" "$C_STANDARD_ACTION"
+zap_assert_same_action_identity "$ZAP_A" "$ZAP_D" "$D_STANDARD_ACTION"
+zap_assert_receipt_bindings "$ZAP_A" "$ZAP_C" "$C_STANDARD_ACTION"
+zap_assert_receipt_bindings "$ZAP_A" "$ZAP_D" "$D_STANDARD_ACTION"
+zap_assert_requester_did_not_execute "$ZAP_A" "$STANDARD_ACTION"
+zap_assert_requester_did_not_execute "$ZAP_A" "$STANDARD_REPRO_ACTION"
+zap_assert_db_lifetime_clean "$ZAP_A" "four-node package reproduction"
+
+# Restart the original quick-profile sequence with every executor enabled.
+for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D"; do
+    dht_kill_group "${PIDS[$node]:-}"; PIDS[$node]=""
+done
 zap_start_node "$ZAP_B"
 zap_start_node "$ZAP_A" "$ZAP_B"
 zap_connect "$ZAP_A" "$ZAP_B"
 A_ORIGINAL_PID="${PIDS[$ZAP_A]}"
 ZAP_A_DB_IDENTITIES="$(zap_db_identity "$ZAP_A" || true)"
 [ -n "$ZAP_A_DB_IDENTITIES" ] ||
-    dht_die "A did not expose stable node.db/WAL/SHM identities after boot"
+    dht_die "A did not expose stable database identities after reproduction"
 zap_assert_responsive "$ZAP_A" "before-first-admission"
 
 dht_note "async proof: A stays live while B executes the first fixed action"
@@ -464,8 +669,8 @@ zap_assert_receipt_bindings "$ZAP_B" "$ZAP_C" "$FINAL_ACTION"
 "$SCRIPT_DIR/zcode_async_proof_perf_report.sh" "$DHT_WORK" \
     >"$DHT_WORK/async-proof-performance-report.txt" ||
     dht_die "async proof performance report was incomplete"
-grep -q '^background_total_precise_us n=4 ' \
+grep -q '^background_total_precise_us n=5 ' \
     "$DHT_WORK/async-proof-performance-report.txt" ||
-    dht_die "performance report did not cover all four immutable actions"
+    dht_die "performance report did not cover all five accepted candidates"
 
-dht_note "async proof PASS: actions=$FIRST_ACTION,$SECOND_ACTION,$RETRY_ACTION,$FINAL_ACTION foreground_ms=$FIRST_MS,$SECOND_MS,$RETRY_MS,$FINAL_MS github_contacted=false equal_full_nodes=true"
+dht_note "async proof PASS: standard_actions=$STANDARD_ACTION,$STANDARD_REPRO_ACTION quick_actions=$FIRST_ACTION,$SECOND_ACTION,$RETRY_ACTION,$FINAL_ACTION foreground_ms=$STANDARD_MS,$FIRST_MS,$SECOND_MS,$RETRY_MS,$FINAL_MS inert_fetch_node=$ZAP_B independent_reproducers=$ZAP_C,$ZAP_D github_contacted=false equal_full_nodes=true"

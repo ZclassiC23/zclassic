@@ -1428,11 +1428,22 @@ void zcl_native_handle_zcode_improve(
         return;
     }
     struct zcl_result planned = build_fabric_plan(ndb, &job, &action);
+    bool reproduction_needed = owned && package_action &&
+        (policy.minimum_compile_receipts >= 2u ||
+         policy.minimum_test_receipts >= 2u);
+    char reproduction_action_id[BUILD_FABRIC_ID_HEX + 1] = {0};
+    char reproduction_job_id[BUILD_FABRIC_ID_HEX + 1] = {0};
+    struct zcl_result reproduction_planned = planned;
+    if (planned.ok && reproduction_needed)
+        reproduction_planned = build_fabric_plan_reproduction(
+            ndb, action.action_id,
+            VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1, now,
+            reproduction_action_id, reproduction_job_id);
     struct zcode_lane_status frontier_status = {0};
     struct db_build_worker frontier_signer;
     uint8_t frontier_secret[32] = {0}, frontier_pubkey[32] = {0};
-    struct zcl_result admitted = planned;
-    if (planned.ok) {
+    struct zcl_result admitted = reproduction_planned;
+    if (reproduction_planned.ok) {
         admitted = build_fabric_worker_identity_load(
             datadir, &frontier_signer, frontier_secret, frontier_pubkey);
         if (admitted.ok)
@@ -1459,18 +1470,32 @@ void zcl_native_handle_zcode_improve(
               request_elapsed_us < 0 ? 0 : request_elapsed_us, now,
               &proof_request, &proof_request_created)
         : submitted;
+    struct db_build_proof_event reproduction_request = {0};
+    bool reproduction_request_created = false;
+    struct zcl_result reproduction_requested = proof_requested;
+    if (proof_requested.ok && reproduction_needed)
+        reproduction_requested = build_fabric_proof_request(
+            ndb, reproduction_action_id, workspace, 0,
+            request_elapsed_us < 0 ? 0 : request_elapsed_us, now,
+            &reproduction_request, &reproduction_request_created);
     int64_t local_submit_us = platform_time_monotonic_us() - submit_started_us;
     int64_t ledger_us = platform_time_monotonic_us() - ledger_started_us;
     if (!owned) node_db_close(ndb);
-    if (!planned.ok || !admitted.ok || !submitted.ok || !proof_requested.ok) {
+    if (!planned.ok || !reproduction_planned.ok || !admitted.ok ||
+        !submitted.ok || !proof_requested.ok || !reproduction_requested.ok) {
         const char *code = !planned.ok ? "ZBUILD_PLAN_FAILED" :
+            !reproduction_planned.ok ? "REPRODUCTION_PLAN_FAILED" :
             !admitted.ok ? "FRONTIER_ADMISSION_FAILED" :
             !submitted.ok ? "ZBUILD_SUBMIT_FAILED" :
-            "ASYNC_PROOF_REQUEST_FAILED";
+            !proof_requested.ok ? "ASYNC_PROOF_REQUEST_FAILED" :
+            "REPRODUCTION_REQUEST_FAILED";
         zdev_fail(reply, code,
                   !planned.ok ? planned.message :
+                  !reproduction_planned.ok ? reproduction_planned.message :
                   !admitted.ok ? admitted.message :
-                  !submitted.ok ? submitted.message : proof_requested.message);
+                  !submitted.ok ? submitted.message :
+                  !proof_requested.ok ? proof_requested.message :
+                  reproduction_requested.message);
         return;
     }
     LOG_INFO("zcode.proof_perf",
@@ -1528,6 +1553,21 @@ void zcl_native_handle_zcode_improve(
                            (int64_t)proof_request.request_id);
     (void)json_push_kv_bool(&reply->data, "request_deduplicated",
                             !proof_request_created);
+    if (reproduction_needed) {
+        (void)json_push_kv_str(&reply->data, "reproduction_action_id",
+                               reproduction_action_id);
+        (void)json_push_kv_str(&reply->data, "reproduction_job_id",
+                               reproduction_job_id);
+        (void)json_push_kv_str(
+            &reply->data, "reproduction_async_proof_event_root",
+            reproduction_request.event_root);
+        (void)json_push_kv_int(
+            &reply->data, "reproduction_remote_request_id",
+            (int64_t)reproduction_request.request_id);
+        (void)json_push_kv_bool(
+            &reply->data, "reproduction_request_deduplicated",
+            !reproduction_request_created);
+    }
     (void)json_push_kv_int(&reply->data, "foreground_request_creation_us",
                            request_creation_us < 0 ? 0 : request_creation_us);
     (void)json_push_kv_int(&reply->data,

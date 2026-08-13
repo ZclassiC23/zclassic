@@ -34,6 +34,16 @@ struct zcl_result build_fabric_plan(struct node_db *ndb,
                                     const struct db_build_job *job,
                                     const struct db_build_action *action);
 
+/* Plan a second immutable execution of an existing action under a distinct
+ * canonical profile.  The source, input, task, candidate, proof policy,
+ * target, toolchain, flags, environment and declared outputs are copied from
+ * the primary plan; no lifecycle or worker ownership is inherited. */
+struct zcl_result build_fabric_plan_reproduction(
+    struct node_db *ndb, const char *primary_action_id,
+    const char *reproduction_profile, int64_t now,
+    char out_action_id[BUILD_FABRIC_ID_HEX + 1],
+    char out_job_id[BUILD_FABRIC_ID_HEX + 1]);
+
 /* Advance PLANNED/SNAPSHOTTED work to QUEUED. */
 struct zcl_result build_fabric_submit(struct node_db *ndb,
                                       const char *job_id, int64_t now);

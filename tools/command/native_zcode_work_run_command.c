@@ -491,46 +491,12 @@ static struct zcl_result run_plan_standard_peer(
         !run_open_existing_ledger(
             &ndb, db_path, "zcode.work.run.standard_peer"))
         return ZCL_ERR(-1, "scratch ZBuild ledger could not be reopened");
-    struct db_build_action action;
-    struct db_build_job job;
-    bool found = db_build_action_find(&ndb, primary_action_id, &action) &&
-                 db_build_job_find(&ndb, action.job_id, &job);
-    if (!found) {
-        node_db_close(&ndb);
-        return ZCL_ERR(-1, "primary package action is absent");
-    }
     int64_t now = platform_time_wall_unix();
-    (void)snprintf(job.profile, sizeof(job.profile), "%s",
-                   VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1);
-    job.job_id[0] = '\0';
-    (void)snprintf(job.state, sizeof(job.state), "PLANNED");
-    job.outcome[0] = '\0';
-    job.cancel_requested = 0;
-    job.created_at = job.updated_at = now;
-    action.action_id[0] = '\0';
-    action.job_id[0] = '\0';
-    (void)snprintf(action.state, sizeof(action.state), "SNAPSHOTTED");
-    action.outcome[0] = '\0';
-    action.output_root_sha3[0] = '\0';
-    action.worker_id[0] = '\0';
-    action.lease_id[0] = '\0';
-    action.last_error[0] = '\0';
-    action.lease_expires_at = action.lease_heartbeat_at = 0;
-    action.attempt_count = action.claimed_at = action.started_at = 0;
-    action.finished_at = 0;
-    action.created_at = action.updated_at = now;
-    struct zcl_result result = build_fabric_action_id(
-        &job, &action, action.action_id);
-    if (result.ok)
-        result = build_fabric_job_id(&job, action.action_id, job.job_id);
-    if (result.ok)
-        (void)snprintf(action.job_id, sizeof(action.job_id), "%s",
-                       job.job_id);
-    if (result.ok) result = build_fabric_plan(&ndb, &job, &action);
-    if (result.ok) result = build_fabric_submit(&ndb, job.job_id, now);
-    if (result.ok)
-        (void)snprintf(peer_action_id, BUILD_FABRIC_ID_HEX + 1u, "%s",
-                       action.action_id);
+    char peer_job_id[BUILD_FABRIC_ID_HEX + 1];
+    struct zcl_result result = build_fabric_plan_reproduction(
+        &ndb, primary_action_id, VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1,
+        now, peer_action_id, peer_job_id);
+    if (result.ok) result = build_fabric_submit(&ndb, peer_job_id, now);
     node_db_close(&ndb);
     return result;
 }
@@ -653,6 +619,26 @@ static bool run_render_async_admission(
             ok = json_push_kv_int(&reply->data, metric_keys[i],
                                   json_get_int(value));
     }
+    static const char *const reproduction_string_keys[] = {
+        "reproduction_action_id",
+        "reproduction_job_id",
+        "reproduction_async_proof_event_root",
+    };
+    for (size_t i = 0; ok && i < sizeof(reproduction_string_keys) /
+                                      sizeof(reproduction_string_keys[0]);
+         i++) {
+        const struct json_value *value = json_get(
+            &inner->data, reproduction_string_keys[i]);
+        if (value && value->type == JSON_STR)
+            ok = json_push_kv_str(&reply->data, reproduction_string_keys[i],
+                                  json_get_str(value));
+    }
+    const struct json_value *reproduction_request = json_get(
+        &inner->data, "reproduction_remote_request_id");
+    if (ok && reproduction_request && reproduction_request->type == JSON_INT)
+        ok = json_push_kv_int(
+            &reply->data, "reproduction_remote_request_id",
+            json_get_int(reproduction_request));
     json_free(&expert);
     return ok;
 }
