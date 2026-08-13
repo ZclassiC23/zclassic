@@ -581,7 +581,7 @@ static int commons_mission_api_test(void)
                                       "portable_source_identity")));
         ASSERT(strcmp(json_get_str(json_get(&reply.data,
                                             "current_package_build_target")),
-                      "linux-x86_64-v3") == 0);
+                      "linux-x86_64") == 0);
         zcl_command_reply_free(&reply); json_free(&input);
         PASS();
     } _test_next:;

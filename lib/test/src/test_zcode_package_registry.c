@@ -4,6 +4,7 @@
 #include "test/test_core.h"
 
 #include "base/hex.h"
+#include "config/c23_commons_build_profile.h"
 #include "services/package_lifecycle.h"
 #include "util/spawn.h"
 #include "vcs/package_build.h"
@@ -425,7 +426,8 @@ static bool registry_dogfood_consumer(
              strcmp(repository.compiler_version,
                     decentralized.compiler_version) == 0 &&
              strcmp(repository.flags, decentralized.flags) == 0 &&
-             strcmp(repository.flags, VCS_PACKAGE_BUILD_FLAGS_QUICK_V1) == 0 &&
+             strcmp(repository.flags,
+                    ZCL_C23_COMMONS_BUILD_FLAGS_QUICK_V2) == 0 &&
              repository.isolation == decentralized.isolation &&
              repository.test_ran && decentralized.test_ran &&
              registry_archive_root(&repository, artifact_root);
@@ -567,8 +569,10 @@ static bool registry_independent_reproduction(size_t *reproduced_out)
             vcs_package_reproduce_compare(&a, &b, &verdict);
             ok = verdict.reproduced && a.output_count > 0 &&
                  b.output_count == a.output_count &&
-                 strcmp(a.flags, VCS_PACKAGE_BUILD_FLAGS_QUICK_V1) == 0 &&
-                 strcmp(b.flags, VCS_PACKAGE_BUILD_FLAGS_QUICK_V1) == 0 &&
+                 strcmp(a.flags,
+                        ZCL_C23_COMMONS_BUILD_FLAGS_QUICK_V2) == 0 &&
+                 strcmp(b.flags,
+                        ZCL_C23_COMMONS_BUILD_FLAGS_QUICK_V2) == 0 &&
                  a.test_ran && b.test_ran &&
                  a.result_class == VCS_PACKAGE_BUILD_RESULT_TEST_PASS &&
                  b.result_class == VCS_PACKAGE_BUILD_RESULT_TEST_PASS;

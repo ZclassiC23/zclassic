@@ -166,11 +166,13 @@ so rather than claiming it exists.
 ## Portability
 
 Package source identity is architecture-neutral. Build receipts deliberately
-bind their target and toolchain. The currently proven package target is
-`linux-x86_64-v3`; other targets must produce their own exact receipts and are
-not yet claimed. ZClassic23 itself also has a wider Linux x86-64 release path
-using ordinary GCC/Clang, a glibc 2.31 sysroot, and the original x86-64 CPU
-baseline. Zig is not required.
+bind their compiler, toolchain evidence, and the exact flags that establish
+the target. The currently proven package target is `linux-x86_64`: package
+objects force the original AMD64/SSE2 baseline with generic tuning, so AVX,
+AVX2, FMA, and BMI are not requirements. Other architectures must produce
+their own exact receipts and are not yet claimed. ZClassic23 itself has the
+same original-x86-64 CPU floor in its portable release path, built with
+ordinary GCC/Clang against a glibc 2.31 sysroot. Zig is not required.
 
 The permanent clean-prefix scenario reruns this lifecycle with installed
 binaries, four interchangeable full nodes, an outside-tree two-dependency

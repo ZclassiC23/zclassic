@@ -5,6 +5,7 @@
 
 #include "base/hex.h"
 #include "base/serialize_le.h"
+#include "config/c23_commons_build_profile.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -310,8 +311,8 @@ static bool bf_package_evidence_verify(
     bool standard = policy->minimum_compile_receipts >= 2u ||
                     policy->minimum_test_receipts >= 2u;
     const char *expected_flags = standard
-        ? VCS_PACKAGE_BUILD_FLAGS_STANDARD_V1
-        : VCS_PACKAGE_BUILD_FLAGS_QUICK_V1;
+        ? ZCL_C23_COMMONS_BUILD_FLAGS_STANDARD_V2
+        : ZCL_C23_COMMONS_BUILD_FLAGS_QUICK_V2;
     bool ok = vcs_package_build_parse(wire, wire_len, &package) ==
             VCS_PACKAGE_BUILD_OK &&
         memcmp(package.package_root, candidate->candidate_source_root, 32) == 0 &&

@@ -5,6 +5,7 @@
 
 #include "base/checked.h"
 #include "base/hex.h"
+#include "config/c23_commons_build_profile.h"
 #include "json/json.h"
 #include "vcs/build_action.h"
 #include "vcs/vcs_object.h"
@@ -170,7 +171,7 @@ void zcl_native_handle_zcode_guide(
         "verify exact roots and evidence locally; identity and reputation never replace proof");
     (void)json_push_kv_bool(&reply->data, "portable_source_identity", true);
     (void)json_push_kv_str(&reply->data, "current_package_build_target",
-                           VCS_BUILD_TARGET_V1);
+                           ZCL_C23_COMMONS_BUILD_TARGET_V2);
 }
 
 static const char *zcc_status_name(

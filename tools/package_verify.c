@@ -97,6 +97,7 @@
 #include "vcs/package_release.h"
 
 #include "base/hex.h"
+#include "config/c23_commons_build_profile.h"
 #include "base/serialize_le.h"
 #include "crypto/sha3.h"
 #include "platform/clock.h"
@@ -945,11 +946,15 @@ static size_t pv_compile_argv(struct pv_compile_args *store,
     store->argv[n++] = cc;
     store->argv[n++] = "-std=c23";
     store->argv[n++] = "-O1";
+    /* Package artifacts are the Commons' reusable boundary. Make their CPU
+     * floor explicit instead of inheriting a worker compiler's configured
+     * default: original AMD64/SSE2, with no AVX/AVX2/FMA/BMI requirement. */
+    store->argv[n++] = "-march=x86-64";
+    store->argv[n++] = "-mtune=generic";
     store->argv[n++] = "-fno-omit-frame-pointer";
-    /* The frozen package target is Linux x86-64-v3, and the monolith's C23
-     * profile already exposes POSIX.1-2008. Keep standalone package builds
-     * on that same declared API surface rather than accidentally compiling
-     * only packages that avoid gmtime_r/flockfile and similar interfaces. */
+    /* The frozen package API surface is Linux POSIX.1-2008. Keep standalone
+     * builds on that declared surface rather than accidentally compiling only
+     * packages that avoid gmtime_r/flockfile and similar interfaces. */
     store->argv[n++] = "-D_POSIX_C_SOURCE=200809L";
     /* Package source is materialized beneath a fresh work root. Normalize
      * that root before the compiler can embed it through __FILE__ (or
@@ -2611,8 +2616,8 @@ int main(int argc, char **argv)
         snprintf(rec.compiler_version, sizeof(rec.compiler_version), "%s",
                  compilers[pick].version);
         snprintf(rec.flags, sizeof(rec.flags), "%s",
-                 standard_profile ? VCS_PACKAGE_BUILD_FLAGS_STANDARD_V1
-                                  : VCS_PACKAGE_BUILD_FLAGS_QUICK_V1);
+                 standard_profile ? ZCL_C23_COMMONS_BUILD_FLAGS_STANDARD_V2
+                                  : ZCL_C23_COMMONS_BUILD_FLAGS_QUICK_V2);
         rec.isolation = landlock
                             ? (uint8_t)VCS_PACKAGE_BUILD_ISOLATION_FULL
                             : (uint8_t)VCS_PACKAGE_BUILD_ISOLATION_DEGRADED;

@@ -723,7 +723,7 @@ FIRST_SHARED_CHECKOUT="$(beta_native "$BETA_C" zcode package checkout \
     --input="{\"root\":\"$BETA_PACKAGE_ROOT\",\"destination\":\"$FIRST_SHARED_SOURCE\"}")"
 beta_ok "C inert first-package checkout" "$FIRST_SHARED_CHECKOUT"
 FIRST_SHARED_APP_BIN="$DHT_WORK/sha3-note-shared-base"
-cc -std=c23 -O2 -Wall -Wextra -Werror \
+cc -std=c23 -O2 -march=x86-64 -mtune=generic -Wall -Wextra -Werror \
     -I"${DDS[$BETA_C]}/zcode/installed/$BETA_PACKAGE_ROOT/include" \
     -I"${DDS[$BETA_C]}/zcode/installed/$BETA_BASE_ROOT/include" \
     -I"${DDS[$BETA_C]}/zcode/installed/$BETA_SHA3_ROOT/include" \
@@ -741,7 +741,7 @@ beta_ok "C inert second-package checkout" "$SECOND_CHECKOUT"
 [ ! -e "$SECOND_SOURCE/.git" ] ||
     beta_die "second checkout materialized Git metadata"
 SECOND_APP_BIN="$DHT_WORK/hex-frame"
-cc -std=c23 -O2 -Wall -Wextra -Werror \
+cc -std=c23 -O2 -march=x86-64 -mtune=generic -Wall -Wextra -Werror \
     -I"${DDS[$BETA_C]}/zcode/installed/$BETA_SECOND_ROOT/include" \
     -I"${DDS[$BETA_C]}/zcode/installed/$BETA_BASE_ROOT/include" \
     "$SECOND_SOURCE/app/main.c" "$SECOND_ARCHIVE" "$C_BASE_ARCHIVE" \
@@ -749,6 +749,14 @@ cc -std=c23 -O2 -Wall -Wextra -Werror \
 SECOND_APP_OUTPUT="$("$SECOND_APP_BIN")"
 [ "$SECOND_APP_OUTPUT" = '[c023]' ] ||
     beta_die "second standalone application output drifted"
+PACKAGE_CPU_RUNTIME_PROOF="compiler-baseline"
+if command -v qemu-x86_64 >/dev/null 2>&1; then
+    [ "$(qemu-x86_64 -cpu qemu64 "$FIRST_SHARED_APP_BIN" hello)" = \
+        "$BETA_EXPECTED_NOTE" ] &&
+    [ "$(qemu-x86_64 -cpu qemu64 "$SECOND_APP_BIN")" = '[c023]' ] ||
+        beta_die "installed package failed the qemu64 CPU-floor proof"
+    PACKAGE_CPU_RUNTIME_PROOF="qemu64"
+fi
 
 # C holds the independently verified second carrier, while D already holds the
 # original three-root graph. Restarting both ordinary package hosts gives B a
@@ -791,7 +799,7 @@ CHECKOUT="$(beta_native "$BETA_D" zcode package checkout \
 beta_ok "D inert package checkout" "$CHECKOUT"
 [ ! -e "$APP_SOURCE/.git" ] || beta_die "checkout materialized Git metadata"
 APP_BIN="$DHT_WORK/sha3-note"
-cc -std=c23 -O2 -Wall -Wextra -Werror \
+cc -std=c23 -O2 -march=x86-64 -mtune=generic -Wall -Wextra -Werror \
     -I"${DDS[$BETA_D]}/zcode/installed/$BETA_PACKAGE_ROOT/include" \
     -I"${DDS[$BETA_D]}/zcode/installed/$BETA_BASE_ROOT/include" \
     -I"${DDS[$BETA_D]}/zcode/installed/$BETA_SHA3_ROOT/include" \
@@ -1006,6 +1014,6 @@ D_SIGNER="$(zap_sql_value "$ZAP_D" "SELECT w.signer_pubkey FROM build_actions a 
 [ "$C_SIGNER" != "$D_SIGNER" ] ||
     beta_die "installed reproduction report lost its two distinct signers"
 
-printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_stretch.v1\",\"verdict\":\"PASS\",\"second_package_root\":\"$BETA_SECOND_ROOT\",\"second_transport_root\":\"$BETA_SECOND_TRANSPORT\",\"second_release_id\":\"$BETA_SECOND_RELEASE_ID\",\"second_recipe_root\":\"$BETA_SECOND_RECIPE_ROOT\",\"second_dependency_lock_root\":\"$BETA_SECOND_LOCK_ROOT\",\"second_api_capsule_root\":\"$BETA_SECOND_API_ROOT\",\"second_author_pubkey\":\"$SECOND_AUTHOR_PUB\",\"authors_distinct\":true,\"shared_dependency_root\":\"$BETA_BASE_ROOT\",\"shared_dependency_receipt\":\"$C_BASE_RECEIPT\",\"shared_dependency_artifact_root\":\"$C_BASE_ARTIFACT\",\"shared_dependency_physical_builds_on_consumer\":1,\"shared_dependency_receipt_reused\":true,\"downstream_applications\":2,\"first_standalone_output\":\"$FIRST_SHARED_APP_OUTPUT\",\"second_build_receipt_id\":\"$SECOND_RECEIPT\",\"second_artifact_root\":\"$SECOND_ARTIFACT\",\"second_objects_transferred\":$SECOND_TRANSFERRED_OBJECTS,\"second_bytes_transferred\":$SECOND_TRANSFERRED_BYTES,\"second_standalone_output\":\"$SECOND_APP_OUTPUT\",\"compiled_registry_admission\":false,\"second_publisher_store_removed\":true,\"alternate_provider_refetch\":true}"
+printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_stretch.v1\",\"verdict\":\"PASS\",\"second_package_root\":\"$BETA_SECOND_ROOT\",\"second_transport_root\":\"$BETA_SECOND_TRANSPORT\",\"second_release_id\":\"$BETA_SECOND_RELEASE_ID\",\"second_recipe_root\":\"$BETA_SECOND_RECIPE_ROOT\",\"second_dependency_lock_root\":\"$BETA_SECOND_LOCK_ROOT\",\"second_api_capsule_root\":\"$BETA_SECOND_API_ROOT\",\"second_author_pubkey\":\"$SECOND_AUTHOR_PUB\",\"authors_distinct\":true,\"shared_dependency_root\":\"$BETA_BASE_ROOT\",\"shared_dependency_receipt\":\"$C_BASE_RECEIPT\",\"shared_dependency_artifact_root\":\"$C_BASE_ARTIFACT\",\"shared_dependency_physical_builds_on_consumer\":1,\"shared_dependency_receipt_reused\":true,\"downstream_applications\":2,\"package_build_target\":\"linux-x86_64\",\"package_cpu_runtime_proof\":\"$PACKAGE_CPU_RUNTIME_PROOF\",\"first_standalone_output\":\"$FIRST_SHARED_APP_OUTPUT\",\"second_build_receipt_id\":\"$SECOND_RECEIPT\",\"second_artifact_root\":\"$SECOND_ARTIFACT\",\"second_objects_transferred\":$SECOND_TRANSFERRED_OBJECTS,\"second_bytes_transferred\":$SECOND_TRANSFERRED_BYTES,\"second_standalone_output\":\"$SECOND_APP_OUTPUT\",\"compiled_registry_admission\":false,\"second_publisher_store_removed\":true,\"alternate_provider_refetch\":true}"
 
 printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_installed.v1\",\"verdict\":\"PASS\",\"installed_binary\":\"$C23_BETA_INSTALL_BIN/zclassic23\",\"repository_source_used_by_consumers\":false,\"package_root\":\"$BETA_PACKAGE_ROOT\",\"dependency_roots\":[\"$BETA_BASE_ROOT\",\"$BETA_SHA3_ROOT\"],\"author_pubkey\":\"$AUTHOR_PUB\",\"build_receipt_id\":\"$C_RECEIPT\",\"artifact_root\":\"$C_ARTIFACT\",\"fetch_inert\":true,\"explicit_builds\":2,\"publisher_disappearance_survived\":true,\"standalone_output\":\"$APP_OUTPUT\",\"updates\":{\"v1\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"recipe_root\":\"$BETA_V1_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V1_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V1_API_ROOT\",\"artifact_root\":\"$C_ARTIFACT\"},\"v2\":{\"package_root\":\"$BETA_V2_ROOT\",\"transport_root\":\"$BETA_V2_TRANSPORT\",\"release_id\":\"$BETA_V2_RELEASE_ID\",\"recipe_root\":\"$BETA_V2_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V2_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V2_API_ROOT\",\"artifact_root\":\"$V2_ARTIFACT\",\"objects_requested\":$V2_REQUESTED_OBJECTS,\"objects_transferred\":$V2_TRANSFERRED_OBJECTS,\"objects_reused\":$V2_REUSED_OBJECTS,\"bytes_requested\":$V2_REQUESTED_BYTES,\"bytes_transferred\":$V2_TRANSFERRED_BYTES,\"bytes_reused\":$V2_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"v3\":{\"package_root\":\"$BETA_V3_ROOT\",\"transport_root\":\"$BETA_V3_TRANSPORT\",\"release_id\":\"$BETA_V3_RELEASE_ID\",\"recipe_root\":\"$BETA_V3_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V3_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V3_API_ROOT\",\"artifact_root\":\"$V3_ARTIFACT\",\"objects_requested\":$V3_REQUESTED_OBJECTS,\"objects_transferred\":$V3_TRANSFERRED_OBJECTS,\"objects_reused\":$V3_REUSED_OBJECTS,\"bytes_requested\":$V3_REQUESTED_BYTES,\"bytes_transferred\":$V3_TRANSFERRED_BYTES,\"bytes_reused\":$V3_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"revert\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"bytes_transferred\":0,\"packages_rebuilt\":0,\"packages_reused\":3,\"prior_evidence_reused\":3,\"build_receipt_id\":\"$REVERT_RECEIPT\"},\"v1_fetchable_after_v3\":true,\"author_sequence_is_advisory\":true,\"exact_root_local_policy\":true},\"signed_reproduction\":{\"actions\":[\"$C_STANDARD_ACTION\",\"$D_STANDARD_ACTION\"],\"output_root\":\"$C_OUTPUT\",\"signers\":[\"$C_SIGNER\",\"$D_SIGNER\"],\"distinct_signers\":2,\"requester_executed\":false}}"
