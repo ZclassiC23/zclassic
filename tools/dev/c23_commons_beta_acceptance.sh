@@ -54,7 +54,10 @@ export DHT_WORK_PARENT="$WORK_PARENT"
 # and avoids parsing a 50 MiB prover key independently in seven package nodes.
 export DHT_PARAMS_DIR="$PARAMS_DIR"
 export DHT_PACKAGEHOST=1
-export DHT_BUILDWORKERS=0
+# The composed proof phase uses the canonical signer-owned worker service. The
+# package-fetch assertions below still prove import is inert before any work
+# request exists; enabling a worker is capacity, never execution authority.
+export DHT_BUILDWORKERS=1
 export DHT_KEEP=1
 export DHT_AFTER_SPARSE_HOOK="$SCRIPT_DIR/c23_commons_beta_hook.sh"
 

@@ -492,4 +492,22 @@ cc -std=c23 -O2 -Wall -Wextra -Werror \
 APP_OUTPUT="$("$APP_BIN" hello)"
 [ "$APP_OUTPUT" = "$BETA_EXPECTED_NOTE" ] || beta_die "standalone app output drifted"
 
-printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_installed.v1\",\"verdict\":\"PASS\",\"installed_binary\":\"$C23_BETA_INSTALL_BIN/zclassic23\",\"repository_source_used_by_consumers\":false,\"package_root\":\"$BETA_PACKAGE_ROOT\",\"dependency_roots\":[\"$BETA_BASE_ROOT\",\"$BETA_SHA3_ROOT\"],\"author_pubkey\":\"$AUTHOR_PUB\",\"build_receipt_id\":\"$C_RECEIPT\",\"artifact_root\":\"$C_ARTIFACT\",\"fetch_inert\":true,\"explicit_builds\":2,\"publisher_disappearance_survived\":true,\"standalone_output\":\"$APP_OUTPUT\"}"
+# Continue in the SAME physical-node harness with the shared core lane's
+# signer-owned async proof machinery. This adds two independent reproduction
+# statements without introducing a product-local worker, scheduler, transport,
+# signer, or process topology. Its standard profile also proves an inert
+# importer cannot acquire execution/evidence authority merely by fetching.
+beta_note "installed nodes obtain two signer-owned reproduction receipts"
+source "$SCRIPT_DIR/zcode_async_proof_acceptance_hook.sh"
+
+# C remains live at the end of the shared hook. D is an interchangeable full
+# node and may have been stopped by later lease scenarios; restart it only to
+# inspect its own durable receipt projection through the typed SQL surface.
+[ -n "${PIDS[$ZAP_D]:-}" ] || zap_start_node "$ZAP_D"
+C_SIGNER="$(zap_sql_value "$ZAP_C" "SELECT w.signer_pubkey FROM build_actions a JOIN build_workers w ON w.worker_id=a.worker_id WHERE a.action_id='$C_STANDARD_ACTION'")"
+D_SIGNER="$(zap_sql_value "$ZAP_D" "SELECT w.signer_pubkey FROM build_actions a JOIN build_workers w ON w.worker_id=a.worker_id WHERE a.action_id='$D_STANDARD_ACTION'")"
+[ "${#C_SIGNER}" -eq 64 ] && [ "${#D_SIGNER}" -eq 64 ] &&
+[ "$C_SIGNER" != "$D_SIGNER" ] ||
+    beta_die "installed reproduction report lost its two distinct signers"
+
+printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_installed.v1\",\"verdict\":\"PASS\",\"installed_binary\":\"$C23_BETA_INSTALL_BIN/zclassic23\",\"repository_source_used_by_consumers\":false,\"package_root\":\"$BETA_PACKAGE_ROOT\",\"dependency_roots\":[\"$BETA_BASE_ROOT\",\"$BETA_SHA3_ROOT\"],\"author_pubkey\":\"$AUTHOR_PUB\",\"build_receipt_id\":\"$C_RECEIPT\",\"artifact_root\":\"$C_ARTIFACT\",\"fetch_inert\":true,\"explicit_builds\":2,\"publisher_disappearance_survived\":true,\"standalone_output\":\"$APP_OUTPUT\",\"signed_reproduction\":{\"actions\":[\"$C_STANDARD_ACTION\",\"$D_STANDARD_ACTION\"],\"output_root\":\"$C_OUTPUT\",\"signers\":[\"$C_SIGNER\",\"$D_SIGNER\"],\"distinct_signers\":2,\"requester_executed\":false}}"
