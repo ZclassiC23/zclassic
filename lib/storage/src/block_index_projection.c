@@ -80,6 +80,17 @@ static int64_t mono_now_ms(void)
     return (int64_t)ts.tv_sec * 1000 + (int64_t)ts.tv_nsec / 1000000;
 }
 
+static void checkpoint_wal(sqlite3 *db, const char *when)
+{
+    char *err = NULL;
+    if (sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE)",
+                     NULL, NULL, &err) != SQLITE_OK)
+        fprintf(stderr,  // obs-ok:block-index-projection-lifecycle
+                "[block_index_projection] checkpoint %s: %s\n",
+                when, err ? err : "(no message)");
+    if (err) sqlite3_free(err);
+}
+
 static bool apply_pragmas(sqlite3 *db)
 {
     static const char *const pragmas[] = {
@@ -251,14 +262,7 @@ void block_index_projection_close(block_index_projection_t *p)
     if (!p) return;
     pthread_mutex_lock(&p->mu);
     if (p->db) {
-        char *err = NULL;
-        if (sqlite3_exec(p->db, "PRAGMA wal_checkpoint(TRUNCATE)",
-                         NULL, NULL, &err) != SQLITE_OK) {
-            fprintf(stderr,  // obs-ok:block-index-projection-lifecycle
-                    "[block_index_projection] checkpoint on close: %s\n",
-                    err ? err : "(no message)");
-        }
-        if (err) sqlite3_free(err);
+        checkpoint_wal(p->db, "on close");
         int rc = sqlite3_close(p->db);
         if (rc != SQLITE_OK) {
             fprintf(stderr,  // obs-ok:block-index-projection-lifecycle
@@ -510,6 +514,12 @@ uint64_t block_index_projection_catch_up(block_index_projection_t *p)
         sqlite3_exec(p->db, "COMMIT", NULL, NULL, &err);
     }
     if (err) sqlite3_free(err);
+
+    /* A multi-million-header first catch-up can otherwise leave a WAL as
+     * large as the projection itself, making the next boot replay it before
+     * RPC can open. No projection statements or transaction remain here. */
+    if (rc >= 0 && !c.error && c.total_consumed > 0)
+        checkpoint_wal(p->db, "after catch-up");
 
     pthread_mutex_unlock(&p->mu);
 

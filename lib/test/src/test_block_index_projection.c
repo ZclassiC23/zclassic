@@ -63,6 +63,12 @@ static void bip_cleanup_dir(const char *dir)
     test_cleanup_tmpdir(dir);
 }
 
+static off_t bip_file_size(const char *path)
+{
+    struct stat st;
+    return stat(path, &st) == 0 ? st.st_size : (off_t)-1;
+}
+
 /* Build a synthetic ev_block_header. `seed` differentiates every field
  * so collisions are obvious. */
 static void make_header(struct ev_block_header *h, uint8_t *solution,
@@ -169,6 +175,9 @@ static int run_single_header_consumed(int *failures)
     uint64_t off = block_index_projection_catch_up(p);
     BIP_CHECK("single: catch_up returns non-zero", off > 0);
     BIP_CHECK("single: count=1", block_index_projection_count(p) == 1);
+    char wal_path[336]; snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+    BIP_CHECK("single: catch_up truncates committed WAL",
+              bip_file_size(wal_path) == 0);
 
     struct disk_block_index got;
     disk_block_index_init(&got);
