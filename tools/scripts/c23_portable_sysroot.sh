@@ -7,16 +7,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
-TOOLCHAIN_ROOT="$REPO_ROOT/build/toolchains/debian-bookworm-glibc-2.36-amd64"
+TOOLCHAIN_ROOT="$REPO_ROOT/build/toolchains/debian-bullseye-glibc-2.31-amd64"
 DOWNLOADS="$TOOLCHAIN_ROOT/downloads"
 SYSROOT="$TOOLCHAIN_ROOT/root"
 WRAPPER="$TOOLCHAIN_ROOT/cc"
 STAMP="$TOOLCHAIN_ROOT/inputs.sha256"
 PORTABLE_CC="${ZCL_PORTABLE_CC:-cc}"
+SYSROOT_LAYOUT_REV="absolute-glibc-links-v2"
 
 packages=(
-    "libc6_2.36-9+deb12u14_amd64.deb|ba4f88f73dbc3ae9055f3c20f4523bfdbaf1ad13ff95e258924f77d20b4fbedf|https://deb.debian.org/debian/pool/main/g/glibc/libc6_2.36-9+deb12u14_amd64.deb"
-    "libc6-dev_2.36-9+deb12u14_amd64.deb|0218fc2befcd784c1b0c6292c0a137ce89fad054efaa579ad083bee0f2c01aae|https://deb.debian.org/debian/pool/main/g/glibc/libc6-dev_2.36-9+deb12u14_amd64.deb"
+    "libc6_2.31-13+deb11u14_amd64.deb|718e3ed8c92207caf5b541e7332affad4f62501cbab3f0cffbe9e6db0b89eae9|https://snapshot.debian.org/archive/debian-security/20260608T043349Z/pool/updates/main/g/glibc/libc6_2.31-13%2Bdeb11u14_amd64.deb"
+    "libc6-dev_2.31-13+deb11u14_amd64.deb|7d4002192e09c3cc97f31dcc85ecd7741adbec9011abbdd14fb1790cab20bffa|https://snapshot.debian.org/archive/debian-security/20260608T043349Z/pool/updates/main/g/glibc/libc6-dev_2.31-13%2Bdeb11u14_amd64.deb"
     "linux-libc-dev_6.1.176-1_amd64.deb|8bb258735b9dffbb111da778ebdd024750878e435ffd9dfcadcb6762ede6b4cf|https://deb.debian.org/debian/pool/main/l/linux/linux-libc-dev_6.1.176-1_amd64.deb"
 )
 
@@ -24,7 +25,8 @@ die() { echo "c23-portable-sysroot: $*" >&2; exit 1; }
 need() { command -v "$1" >/dev/null 2>&1 || die "required tool not found: $1"; }
 
 inputs_digest() {
-    printf '%s\n' "${packages[@]}" | sha256sum | awk '{print $1}'
+    { printf '%s\n' "$SYSROOT_LAYOUT_REV"; printf '%s\n' "${packages[@]}"; } |
+        sha256sum | awk '{print $1}'
 }
 
 fetch_package() {
@@ -68,7 +70,7 @@ write_wrapper() {
 }
 
 prepare() {
-    local expected current entry name sha url stage loader
+    local expected current entry name sha url stage loader link target
     need ar; need tar; need xz; need sha256sum; need mktemp; need objdump
     [ "$(uname -m)" = x86_64 ] || die "the pinned release sysroot currently supports x86_64 only"
     mkdir -p "$DOWNLOADS"
@@ -94,6 +96,20 @@ prepare() {
         [ -L "$loader" ] || die "Debian sysroot is missing its ELF loader"
         unlink "$loader"
         ln -s ../lib/x86_64-linux-gnu/ld-linux-x86-64.so.2 "$loader"
+        # Pre-glibc-2.34 development packages also expose linker names as
+        # absolute symlinks into /lib. Those are correct after dpkg installs
+        # into /, but would escape this extracted sysroot and select host
+        # libraries (or fall back to stale static archives) during configure.
+        for link in "$stage/root/usr/lib/x86_64-linux-gnu/"*.so; do
+            [ -L "$link" ] || continue
+            target="$(readlink "$link")"
+            case "$target" in
+                /lib/x86_64-linux-gnu/*)
+                    unlink "$link"
+                    ln -s "../../../${target#/}" "$link"
+                    ;;
+            esac
+        done
         case "$SYSROOT" in "$TOOLCHAIN_ROOT/root") rm -rf "$SYSROOT" ;; *) die "unsafe sysroot path" ;; esac
         mv "$stage/root" "$SYSROOT"
         rmdir "$stage"
@@ -118,8 +134,8 @@ verify() {
         die "portable compiler wrapper leaked a post-x86-64-baseline ISA"
     fi
     max="$(objdump -T "$smoke" | grep -oE 'GLIBC_[0-9]+(\.[0-9]+)+' | sort -V | tail -1)"
-    [ "$(printf '%s\n%s\n' "$max" GLIBC_2.38 | sort -V | tail -1)" = GLIBC_2.38 ] ||
-        die "compiler support objects raised the ABI above GLIBC_2.38: $max"
+    [ "$(printf '%s\n%s\n' "$max" GLIBC_2.31 | sort -V | tail -1)" = GLIBC_2.31 ] ||
+        die "compiler support objects raised the ABI above GLIBC_2.31: $max"
     echo "c23-portable-sysroot: PASS compiler=$PORTABLE_CC cpu=x86-64 max_abi=$max sysroot=$SYSROOT" >&2
     unlink "$smoke"
     unlink "$smoke.c"
@@ -128,6 +144,7 @@ verify() {
 
 case "${1:-prepare}" in
     prepare|cc-path) prepare ;;
+    root-path) prepare >/dev/null; printf '%s\n' "$SYSROOT" ;;
     verify) verify ;;
-    *) die "usage: $0 [prepare|cc-path|verify]" ;;
+    *) die "usage: $0 [prepare|cc-path|root-path|verify]" ;;
 esac

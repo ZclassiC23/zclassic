@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# Fail closed unless the shipped node has only the C runtime ABI as a dynamic
-# dependency. Every project/third-party dependency must be linked from a pinned
-# static archive; GUI and C++ runtimes belong to separate developer tools.
+# Fail closed unless the shipped node has only the glibc runtime family as a
+# dynamic dependency. Before glibc 2.34, pthread and dl are separate DSOs;
+# newer glibc merges them into libc. Every project/third-party dependency must
+# still be linked from a pinned static archive; GUI and C++ runtimes belong to
+# separate developer tools.
 set -euo pipefail
 
 bin="${1:-build/bin/zclassic23}"
@@ -31,7 +33,7 @@ esac
 bad=0
 while IFS= read -r dep; do
     case "$dep" in
-        libc.so.6|libm.so.6) ;;
+        libc.so.6|libm.so.6|libpthread.so.0|libdl.so.2) ;;
         *) echo "c23-node: forbidden dynamic dependency: $dep" >&2; bad=1 ;;
     esac
 done < <(readelf -d "$bin" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')
@@ -62,4 +64,4 @@ elif [[ "$(printf '%s\n%s\n' "$max_glibc" "$max_glibc_allowed" |
 fi
 
 test "$bad" -eq 0 || exit 1
-echo "c23-node: PASS (C23 sources; pinned static project dependencies; libc/libm ABI only; max $max_glibc)"
+echo "c23-node: PASS (C23 sources; pinned static project dependencies; glibc runtime ABI only; max $max_glibc)"

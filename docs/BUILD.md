@@ -538,8 +538,10 @@ refused by name rather than answered wrongly.
 The release link runs `tools/scripts/check_c23_node_binary.sh` before atomic
 publication. The gate rejects GTK/WebKit, `libstdc++`, C++ ABI symbols, and any
 other unexpected dynamic dependency. On Linux the published executable may
-use only the libc/libm ABI and the ELF loader; all project dependencies are
-pinned static archives. It also rejects any required symbol newer than
+use only the glibc runtime family and the ELF loader: libc/libm, plus the
+separate libpthread/libdl DSOs required before those interfaces merged into
+libc in glibc 2.34. All project dependencies are pinned static archives. It
+also rejects any required symbol newer than
 `GLIBC_2.38`, so building on a newer developer workstation cannot silently
 produce an artifact that fails on supported deployment hosts. Build releases
 with the oldest supported toolchain/sysroot; never raise the ceiling merely to
@@ -556,11 +558,16 @@ make c23-portable-release
 make c23-portable-install PREFIX="$HOME/.local"
 ```
 
-It checksum-verifies three pinned Debian 12 packages from `deb.debian.org`,
-extracts a glibc 2.36 sysroot under ignored `build/toolchains/`, rebuilds every
+It checksum-verifies three pinned Debian packages (the glibc 2.31 pair comes
+from an immutable Debian snapshot), extracts the sysroot under ignored
+`build/toolchains/`, rebuilds every
 static archive linked by the node through the ordinary host C23 compiler, and
 then builds and audits the node, RPC client, offline package signer, and
-confined package verifier. It needs no container, root, Zig, or
+confined package verifier. The gate caps every product at GLIBC 2.31 and runs
+the node's typed command discovery through that exact old loader and libc. It
+also repeats that proof on QEMU's baseline `qemu64` CPU when `qemu-x86_64` is
+already installed; QEMU is optional and reported rather than downloaded. It
+needs no container, root, Zig, or
 alternate-language compiler. Unlike the faster default developer build, this
 release front door forces the original x86-64/SSE2 CPU baseline with generic
 tuning; AVX2, FMA, BMI2, and host-specific instructions are not installation
