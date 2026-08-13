@@ -1357,6 +1357,20 @@ struct vcs_swarm_engine *vcs_swarm_engine_create(
     return engine;
 }
 
+enum vcs_package_transport_result vcs_swarm_engine_import_transport(
+    struct vcs_swarm_engine *engine, const uint8_t transport_root[32],
+    struct vcs_package_transport_import *receipt)
+{
+    if (!engine || !transport_root || !receipt)
+        return VCS_PACKAGE_TRANSPORT_ERR_NULL;
+    pthread_mutex_lock(&engine->lock);
+    enum vcs_package_transport_result result = engine->store
+        ? vcs_package_transport_import(engine->store, transport_root, receipt)
+        : VCS_PACKAGE_TRANSPORT_ERR_STORE;
+    pthread_mutex_unlock(&engine->lock);
+    return result;
+}
+
 void vcs_swarm_engine_free(struct vcs_swarm_engine *engine)
 {
     if (!engine)

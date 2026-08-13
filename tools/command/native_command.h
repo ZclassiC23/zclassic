@@ -5,6 +5,7 @@
 
 #include "kernel/command_registry.h"
 #include "controllers/native_handler_body.h"
+#include "chain/chainparamsbase.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -24,7 +25,13 @@ bool zcl_native_command_is_root(const char *word);
  * datadir/rpc_port target the running node for READ-ONLY bridge leaves. */
 int zcl_native_command_main(const char *root_word,
                             const char *const *args, int nargs,
-                            const char *datadir, int rpc_port);
+                            const char *datadir, int rpc_port,
+                            enum chain_network network);
+
+/* Network selected by the current one-shot native invocation. Direct
+ * in-process callers default to mainnet until command_main selects another
+ * network. */
+enum chain_network zcl_native_command_network(void);
 
 /* Agent spend-policy presentation (docs/work/agent-spend-policy-design.md,
  * "Minting + presentation"): the value of ZCL_AGENT_SESSION when set and

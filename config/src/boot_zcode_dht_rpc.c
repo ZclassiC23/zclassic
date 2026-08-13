@@ -11,10 +11,8 @@
 #include "util/sync.h"
 #include "json/json.h"
 #include "vcs/package_swarm_node.h"
-
 #include <stdatomic.h>
 #include <string.h>
-
 #define DHT_PUBLIC_LOOKUPS_MAX 32u
 #define DHT_PUBLIC_TOKEN_BYTES 16u
 #define DHT_PUBLIC_ACTIVE_GRACE_S 5u
@@ -31,7 +29,6 @@ struct public_lookup {
 static zcl_mutex_t g_public_lock;
 static _Atomic int g_public_lock_state;
 static struct public_lookup g_public[DHT_PUBLIC_LOOKUPS_MAX];
-
 static struct vcs_zcode_dht_time public_now(void) {
   return (struct vcs_zcode_dht_time){
       .wall_unix = (uint64_t)platform_time_wall_time_t(),
@@ -779,6 +776,9 @@ static bool rpc_provider_route(const struct json_value *params, bool help,
               engine, selector.root, (int64_t)(now / 86400u), now,
               route.peer_ids, route.authenticated_count);
   provider_route_json(result, &route, fetched);
+  bool package_ns = strcmp(selector.namespace_name, "zclassic23.package") == 0;
+  boot_zcode_package_import_render(package_ns ? engine : NULL, selector.root,
+                                   fetched, result);
   return true;
 }
 

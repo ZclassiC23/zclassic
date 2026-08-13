@@ -90,6 +90,7 @@
 
 #include "vcs/package_policy.h"
 #include "vcs/package_swarm.h"
+#include "vcs/package_transport.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -139,6 +140,14 @@ void vcs_swarm_engine_free(struct vcs_swarm_engine *engine);
  * the accessor. */
 void vcs_swarm_engine_set_global(struct vcs_swarm_engine *engine);
 struct vcs_swarm_engine *vcs_swarm_engine_global(void);
+
+/* Import one already-complete signed package carrier while holding the
+ * engine's store-ownership lock. This is reconstruction only: it admits the
+ * inner release/recipe/manifest and reuses verified CAS objects; it never
+ * builds, installs, loads, or executes package code. */
+enum vcs_package_transport_result vcs_swarm_engine_import_transport(
+    struct vcs_swarm_engine *engine, const uint8_t transport_root[32],
+    struct vcs_package_transport_import *receipt);
 
 /* ── peer lifecycle (caller = transport glue) ───────────────────────── */
 

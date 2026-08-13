@@ -2333,13 +2333,10 @@ static int cli_run_static_agent_method(const char *method,
     json_free(&params);
     return exit_code;
 }
-
 enum { CLI_MAX_PARAMS = 128 };
-
 /* Forward decl: defined below alongside is_cli_mode (the pair is easiest to
  * read together); cli_main is defined above that point in the file. */
 static int cli_validate_client_argv(int argc, char **argv);
-
 int cli_main(int argc, char **argv)
 {
     /* Strict operator-target-flag validation FIRST — before datadir/home
@@ -2348,29 +2345,26 @@ int cli_main(int argc, char **argv)
     int argrc = cli_validate_client_argv(argc, argv);
     if (argrc >= 0)
         return argrc;
-
     const char *home = getenv("HOME");
     char datadir[512];
     if (home) snprintf(datadir, sizeof(datadir), "%s/.zclassic-c23", home);
     else      snprintf(datadir, sizeof(datadir), ".zclassic-c23");
-
     bool datadir_set = false;
     bool rpcport_set = false;
     bool p2pport_set = false;
     bool httpsport_set = false;
     bool fsport_set = false;
+    bool testnet_set = false, regtest_set = false;
     enum zcl_operator_lane operator_lane = ZCL_OPERATOR_LANE_UNKNOWN;
     enum zcl_runtime_profile runtime_profile = ZCL_RUNTIME_FULL;
     const char *method = NULL;
     const char *params_storage[CLI_MAX_PARAMS];
     int nparams = 0;
-
     const char *env_lane = getenv("ZCL_OPERATOR_LANE");
     if (env_lane && env_lane[0] &&
         !app_operator_lane_parse(env_lane, &operator_lane)) {
         fprintf(stderr, "Ignoring unknown ZCL_OPERATOR_LANE=%s\n", env_lane);
     }
-
     /* Operator target flags are accepted before or after the method so
      * `zclassic23 agent -datadir=... -rpcport=...` cannot accidentally query
      * the default service while an agent is trying to inspect a lane. */
@@ -2400,6 +2394,8 @@ int cli_main(int argc, char **argv)
                 fprintf(stderr, "Unknown runtime profile: %s\n", argv[i] + 9);
                 return 1;
             }
+        } else if (strcmp(argv[i], "-testnet") == 0) { testnet_set = true;
+        } else if (strcmp(argv[i], "-regtest") == 0) { regtest_set = true;
         } else if (!method) {
             method = argv[i];
         } else {
@@ -2411,7 +2407,6 @@ int cli_main(int argc, char **argv)
             params_storage[nparams++] = argv[i];
         }
     }
-
     /* ZCL_DATADIR / ZCL_RPCPORT env naming (the convention tools/zcl-rpc.c,
      * the soak harness, and the crash-recovery tests already pin): an
      * env-named target is an OPERATOR-named target — it sets the same
@@ -2448,12 +2443,15 @@ int cli_main(int argc, char **argv)
             }
         }
     }
-
     if (!method) {
         print_usage(argv[0]);
         return 1;
     }
-
+    if (testnet_set && regtest_set) {
+        fprintf(stderr, "error=CONFLICTING_NETWORK_FLAGS "
+                "detail=-testnet and -regtest cannot target one invocation\n");
+        return ZCL_COMMAND_EXIT_INVALID;
+    }
     /* E4 auth auto-discovery: `-rpcport=<N>` with no `-datadir=` names a
      * specific target instance, not "whatever the default systemd unit
      * runs" — scan sibling datadirs for the one recording port <N> BEFORE
@@ -2566,7 +2564,9 @@ int cli_main(int argc, char **argv)
     if (zcl_native_command_is_root(method))
         return zcl_native_command_main(method,
                                        (const char *const *)params_storage,
-                                       nparams, datadir, cli_port);
+                                       nparams, datadir, cli_port,
+                                       regtest_set ? CHAIN_REGTEST :
+                                       testnet_set ? CHAIN_TESTNET : CHAIN_MAIN);
 
     if (cli_static_agent_method(method)) {
         agent_runtime_availability_reset();

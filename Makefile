@@ -4103,6 +4103,7 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 # DELIBERATELY opt-in (NOT in `make ci`) — it spawns two real nodes and
 # depends on the host Landlock/seccomp sandbox for the confined executor.
 .PHONY: test-zcode-dht-acceptance test-science-acceptance \
+	c23-commons-installed-acceptance \
 	sovereign-source-network-acceptance \
 	test-market-acceptance test-market-onion-acceptance \
 	test-market-moderation-acceptance \
@@ -4112,6 +4113,14 @@ test-zcode-dht-acceptance: zclassic23 zcl-rpc
 
 test-science-acceptance: test-zcode-dht-acceptance
 	@bash tools/dev/science_acceptance.sh
+
+# Installed-product C23 Commons stranger slice. It installs the ordinary node
+# plus package signer/verifier into a throwaway prefix, then composes the
+# canonical DHT/Noise physical-node owner with an outside-tree package graph.
+# Opt-in: seven real daemons; no production datadir, wallet key, or live port.
+c23-commons-installed-acceptance: zclassic23 zcl-rpc \
+		zclassic23-package-sign zclassic23-package-verify
+	@bash tools/dev/c23_commons_beta_acceptance.sh
 
 # Four-role, real-process sovereign source acceptance. It composes the proven
 # seven-identity DHT/Noise harness rather than inventing test-only networking;

@@ -384,6 +384,7 @@ static char g_bridge_datadir[512];
 static int g_bridge_rpc_port;
 static bool g_bridge_rpc_ready;
 static bool g_native_input_from_stdin;
+static enum chain_network g_native_network = CHAIN_MAIN;
 
 bool zcl_native_input_was_stdin(void)
 {
@@ -398,6 +399,11 @@ const char *zcl_native_command_datadir(void)
 int zcl_native_command_rpc_port(void)
 {
     return g_bridge_rpc_port;
+}
+
+enum chain_network zcl_native_command_network(void)
+{
+    return g_native_network;
 }
 
 void zcl_native_bridge_bind_rpc(const char *datadir, int rpc_port)
@@ -417,7 +423,7 @@ static void bridge_ensure_rpc_client(void)
      * client (datadir cookie + port) and select mainnet chain params for any
      * body function that consults them. */
     node_rpc_client_init(g_bridge_datadir, g_bridge_rpc_port);
-    chain_params_select(CHAIN_MAIN);
+    chain_params_select(g_native_network);
     g_bridge_rpc_ready = true;
 }
 
@@ -3327,14 +3333,16 @@ const char *zcl_native_agent_session_env(void)
 }
 
 int zcl_native_command_main(const char *root_word, const char *const *args,
-                            int nargs, const char *datadir, int rpc_port)
+                            int nargs, const char *datadir, int rpc_port,
+                            enum chain_network network)
 {
     if (!root_word || !root_word[0])
         return ZCL_COMMAND_EXIT_INVALID;
-    /* This one-shot process never runs resident boot, but wallet handlers do
-     * local network-aware address validation after RPC. Native CLI targeting
-     * is mainnet-only today, matching the offline recovery leaves. */
-    chain_params_select(CHAIN_MAIN);
+    /* This one-shot process never runs resident boot, but package and wallet
+     * handlers perform node-bound validation locally. Keep their selected
+     * chain identical to the explicitly targeted resident. */
+    g_native_network = network;
+    chain_params_select(network);
     zcl_native_bridge_bind_rpc(datadir, rpc_port);
 
     const struct zcl_command_registry *reg = catalog();

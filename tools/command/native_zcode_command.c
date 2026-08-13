@@ -80,6 +80,7 @@
 #include "vcs/package_reward.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
+#include "vcs/package_transport.h"
 #include "vcs/package_verify_policy.h"
 
 #include <dirent.h>
@@ -279,7 +280,7 @@ static bool zc_validate(const struct zcl_command_request *request,
 
     /* Acceptance (rule 7): replay the persisted releases, then classify.
      * Node-bound: select a chain for the one-shot CLI process first. */
-    chain_params_select(CHAIN_MAIN);
+    chain_params_select(zcl_native_command_network());
     char zcode_dir[4400];
     int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
     if (n < 0 || (size_t)n >= sizeof(zcode_dir)) {
@@ -733,12 +734,47 @@ void zcl_native_handle_zcode_package_publish_commit(
         return;
     }
 
+    /* The network object is a closed ordinary content.v2 carrier containing
+     * the signed release, recipe, inner manifest, and exact source bytes.
+     * Persist it before naming the release locally so every searchable
+     * package is immediately publishable by one immutable transport root. */
+    struct vcs_package_transport transport;
+    vcs_package_transport_init(&transport);
+    uint8_t *release_wire = NULL;
+    size_t release_wire_len = 0;
+    enum vcs_package_transport_result transport_result =
+        vcs_package_release_serialize(&cand.release, &release_wire,
+                                      &release_wire_len) ==
+                VCS_PACKAGE_RELEASE_OK
+            ? vcs_package_transport_build(
+                  release_wire, release_wire_len, cand.recipe_wire,
+                  cand.recipe_wire_len, cand.manifest_wire,
+                  cand.manifest_wire_len, &transport)
+            : VCS_PACKAGE_TRANSPORT_ERR_RELEASE;
+    free(release_wire);
+    if (transport_result == VCS_PACKAGE_TRANSPORT_OK)
+        transport_result = vcs_package_transport_store(
+            store, &transport, dir);
+    if (transport_result != VCS_PACKAGE_TRANSPORT_OK) {
+        vcs_package_transport_free(&transport);
+        vcs_package_store_close(store);
+        vcs_service_book_free(book);
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+            "TRANSPORT_PERSIST", "persist", true, true,
+            "the signed package transport carrier could not be persisted",
+            vcs_package_transport_result_string(transport_result));
+        zc_candidate_free(&cand);
+        return;
+    }
+
     bool published = report.accept == VCS_PACKAGE_ACCEPT_OK;
     if (published) {
         enum vcs_package_accept_result ar;
         sres = vcs_package_store_put_release(store, &cand.release, &ar);
         if (sres != VCS_PACKAGE_STORE_OK) {
             vcs_package_store_close(store);
+            vcs_package_transport_free(&transport);
             vcs_service_book_free(book);
             zcl_command_reply_fail(
                 reply, ZCL_COMMAND_STATUS_FAILED,
@@ -781,6 +817,8 @@ void zcl_native_handle_zcode_package_publish_commit(
     (void)json_push_kv_str(&reply->data, "plan_token", hex);
     zcl_hex_encode(root, 32, hex);
     (void)json_push_kv_str(&reply->data, "package_root", hex);
+    zcl_hex_encode(transport.transport_root, 32, hex);
+    (void)json_push_kv_str(&reply->data, "transport_root", hex);
     (void)json_push_kv_str(&reply->data, "name", cand.release.name);
     (void)json_push_kv_int(&reply->data, "files",
                            (int64_t)report.file_count);
@@ -813,6 +851,7 @@ void zcl_native_handle_zcode_package_publish_commit(
         json_free(&pol);
     }
     reply->error.mutated = published;
+    vcs_package_transport_free(&transport);
     zc_candidate_free(&cand);
 }
 

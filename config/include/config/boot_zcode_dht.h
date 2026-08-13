@@ -16,6 +16,7 @@ struct msg_processor;
 struct p2p_node;
 struct rpc_table;
 struct block_index;
+struct vcs_swarm_engine;
 
 /* Lock order (outermost to innermost): public lookup lifecycle -> DHT service
  * -> chain-authorization/reachability caches.  No database, ancestry walk,
@@ -64,6 +65,10 @@ bool boot_zcode_dht_provider_route(
     uint64_t wall_now,
     const struct vcs_zcode_dht_record_selector *selector,
     struct vcs_zcode_dht_provider_route *out);
+void boot_zcode_package_import_render(struct vcs_swarm_engine *engine,
+                                      const uint8_t transport_root[32],
+                                      int fetch_result,
+                                      struct json_value *result);
 bool boot_zcode_dht_record_publish_plan(
     const struct vcs_zcode_dht_publish_spec *spec, uint8_t plan_token[32],
     struct vcs_zcode_dht_record *record_out);

@@ -178,7 +178,9 @@ void zcl_native_handle_zcode_package_fetch(
         }
         json_copy(&reply->data, &routed);
         json_free(&routed);
-        (void)json_push_kv_str(&reply->data, "package_root", root_hex);
+        (void)json_push_kv_str(&reply->data, "transport_root", root_hex);
+        if (strcmp(namespace_name, "zclassic23.package") != 0)
+            (void)json_push_kv_str(&reply->data, "package_root", root_hex);
         (void)json_push_kv_bool(&reply->data, "live", true);
         (void)json_push_kv_int(&reply->data, "provider_records", records);
         return;
@@ -253,6 +255,7 @@ void zcl_native_handle_zcode_package_fetch(
 
     char hex[65];
     zcl_hex_encode(root, 32, hex);
+    (void)json_push_kv_str(&reply->data, "transport_root", hex);
     (void)json_push_kv_str(&reply->data, "package_root", hex);
     (void)json_push_kv_bool(&reply->data, "live", live);
     (void)json_push_kv_bool(&reply->data, "already_complete",

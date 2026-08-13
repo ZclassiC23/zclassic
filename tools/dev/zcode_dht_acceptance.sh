@@ -24,6 +24,8 @@ DHT_WAIT="${DHT_WAIT:-90}"
 DHT_PACKAGEHOST="${DHT_PACKAGEHOST:-0}"
 DHT_BUILDWORKERS="${DHT_BUILDWORKERS:-0}"
 DHT_AFTER_SPARSE_HOOK="${DHT_AFTER_SPARSE_HOOK:-}"
+DHT_WORK_PARENT="${DHT_WORK_PARENT:-$REPO_ROOT/test-tmp}"
+DHT_PARAMS_DIR="${DHT_PARAMS_DIR:-}"
 DHT_WORK=""; DHT_DD_A=""; DHT_DD_B=""; DHT_PGID_A=""; DHT_PGID_B=""
 declare -A DHT_OWNED_PGIDS=()
 declare -A DHT_OWNED_START=()
@@ -43,6 +45,16 @@ dht_die() {
     exit 2
 }
 dht_note() { echo "zcode-dht-acceptance: $*"; }
+
+dht_make_work() {
+    local prefix="$1" parent
+    mkdir -p "$DHT_WORK_PARENT"
+    parent="$(cd "$DHT_WORK_PARENT" && pwd -P)"
+    [ "$parent" != / ] || dht_die "DHT_WORK_PARENT must not be /"
+    DHT_WORK_PARENT="$parent"
+    DHT_WORK="$(mktemp -d "$DHT_WORK_PARENT/$prefix-XXXXXX")" ||
+        dht_die "could not create isolated work directory under $parent"
+}
 
 dht_assert_port() {
     local p="$1" live owned
@@ -131,7 +143,8 @@ dht_cleanup() {
         dht_note "preserved acceptance artifacts: $DHT_WORK"
     elif [ -n "$DHT_WORK" ] && [ -d "$DHT_WORK" ]; then
         case "$DHT_WORK" in
-            "$REPO_ROOT"/test-tmp/zcl23-dhtacc-*|"$REPO_ROOT"/test-tmp/zcl23-dhtprobe-*)
+            "$DHT_WORK_PARENT"/zcl23-dhtacc-*|\
+            "$DHT_WORK_PARENT"/zcl23-dhtprobe-*)
                 rm -rf "$DHT_WORK"
                 ;;
             *) dht_note "WARN refusing to remove non-scratch $DHT_WORK" ;;
@@ -185,12 +198,13 @@ dht_spawn() {
     # writes at rest (WKS1); -operator-lane=dev arms the dev wallet scope.
     case "$DHT_PACKAGEHOST" in 0|1) ;; *) dht_die "DHT_PACKAGEHOST must be 0 or 1" ;; esac
     case "$DHT_BUILDWORKERS" in 0|1) ;; *) dht_die "DHT_BUILDWORKERS must be 0 or 1" ;; esac
-    local worker_args=()
+    local worker_args=() params_args=()
     [ "$DHT_BUILDWORKERS" = 1 ] && worker_args+=("-buildworker")
+    [ -z "$DHT_PARAMS_DIR" ] || params_args+=("-paramsdir=$DHT_PARAMS_DIR")
     setsid "$NODE_BIN" -datadir="$dd" -regtest -port="$p2p" \
         -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
         "${args[@]}" -packagehost="$DHT_PACKAGEHOST" -v2transport \
-        "${worker_args[@]}" \
+        "${worker_args[@]}" "${params_args[@]}" \
         -operator-lane=dev -wallet-no-phrase-backup \
         -nobgvalidation -nolegacyimport -showmetrics=0 \
         >>"$dd/node.log" 2>&1 &
@@ -248,8 +262,7 @@ dht_probe_read_report() {
 dht_lifecycle_probe_child() {
     local report="${DHT_PROBE_REPORT:?}" release="${DHT_PROBE_RELEASE:?}"
     local outcome="${DHT_PROBE_OUTCOME:?}" listener="" listener_port
-    mkdir -p "$REPO_ROOT/test-tmp"
-    DHT_WORK="$(mktemp -d "$REPO_ROOT/test-tmp/zcl23-dhtprobe-XXXXXX")"
+    dht_make_work zcl23-dhtprobe
     setsid python3 - "$report" >>"$DHT_WORK/listener.log" 2>&1 <<'PY' &
 import os,pathlib,signal,socket,sys
 s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
@@ -284,8 +297,7 @@ dht_lifecycle_selftest() {
     local one_shell two_shell three_shell signal_shell
     local one_pid one_port one_start two_pid two_port two_start
     local three_pid three_port three_start signal_pid signal_port signal_start
-    mkdir -p "$REPO_ROOT/test-tmp"
-    DHT_WORK="$(mktemp -d "$REPO_ROOT/test-tmp/zcl23-dhtprobe-XXXXXX")"
+    dht_make_work zcl23-dhtprobe
 
     dht_spawn_owned_command one_shell "$DHT_WORK/one.log" env \
         DHT_LIFECYCLE_MODE=probe DHT_PROBE_OUTCOME=success \
@@ -663,8 +675,7 @@ for port in $A_PORT $A_RPC $A_FS $A_HTTPS $B_PORT $B_RPC $B_FS $B_HTTPS; do
     dht_assert_port "$port"
 done
 [ -x "$NODE_BIN" ] && [ -x "$RPC_BIN" ] || dht_die "build node and RPC binaries first"
-mkdir -p "$REPO_ROOT/test-tmp"
-DHT_WORK="$(mktemp -d "$REPO_ROOT/test-tmp/zcl23-dhtacc-XXXXXX")"
+dht_make_work zcl23-dhtacc
 DHT_DD_A="$DHT_WORK/a"; DHT_DD_B="$DHT_WORK/b"
 mkdir -p "$DHT_DD_A" "$DHT_DD_B"
 dht_build_helper
