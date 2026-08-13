@@ -13,9 +13,13 @@
 #include "vcs/package_reproduce.h"
 #include "vcs/package_store.h"
 
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
+
+#define REGISTRY_PACKAGE_VERIFIER "build/bin/zclassic23-package-verify-dev"
+#define REGISTRY_DOGFOOD_MAX_DEPS 8u
 
 struct registry_expected {
     const char *name;
@@ -112,15 +116,10 @@ static bool registry_publish_scratch(
     return ok;
 }
 
-static bool registry_read_receipt(
-    const char *datadir, const char *root_hex,
+static bool registry_read_receipt_path(
+    const char *path,
     struct vcs_package_build_receipt *receipt)
 {
-    char path[1024];
-    int n = snprintf(path, sizeof(path), "%s/zcode/installed/%s/build-report",
-                     datadir, root_hex);
-    if (n <= 0 || (size_t)n >= sizeof(path))
-        return false;
     uint8_t wire[VCS_PACKAGE_BUILD_MAX_WIRE_BYTES];
     FILE *file = fopen(path, "rb");
     if (!file)
@@ -130,6 +129,29 @@ static bool registry_read_receipt(
     fclose(file);
     return ok && vcs_package_build_parse(wire, wire_len, receipt) ==
                      VCS_PACKAGE_BUILD_OK;
+}
+
+static bool registry_read_receipt(
+    const char *datadir, const char *root_hex,
+    struct vcs_package_build_receipt *receipt)
+{
+    char path[1024];
+    int n = snprintf(path, sizeof(path), "%s/zcode/installed/%s/build-report",
+                     datadir, root_hex);
+    return n > 0 && (size_t)n < sizeof(path) &&
+        registry_read_receipt_path(path, receipt);
+}
+
+static bool registry_write_bytes(const char *path, const uint8_t *bytes,
+                                 size_t len)
+{
+    FILE *file = fopen(path, "wb");
+    if (!file)
+        return false;
+    bool ok = fwrite(bytes, 1, len, file) == len && fflush(file) == 0;
+    if (fclose(file) != 0)
+        ok = false;
+    return ok;
 }
 
 static bool registry_build_one(const char *datadir, const char *root_hex,
@@ -264,6 +286,193 @@ static bool registry_stranger_build(const char *datadir)
     return true;
 }
 
+static bool registry_archive_root(
+    const struct vcs_package_build_receipt *receipt, char out[65])
+{
+    const uint8_t *root = NULL;
+    for (size_t i = 0; i < receipt->output_count; i++) {
+        const char *path = receipt->outputs[i].path;
+        size_t len = strlen(path);
+        if (strncmp(path, "lib/", 4) == 0 && len > 2u &&
+            strcmp(path + len - 2u, ".a") == 0) {
+            if (root)
+                return false;
+            root = receipt->outputs[i].sha3;
+        }
+    }
+    if (!root)
+        return false;
+    zcl_hex_encode(root, 32, out);
+    return true;
+}
+
+/* Build one real monolith-owned module straight from its ordinary repository
+ * source root, then compare that result with the independently materialized
+ * decentralized package build. Both consume the same canonical recipe,
+ * dependency lock, installed dependency roots, compiler and quick profile. */
+static bool registry_dogfood_consumer(
+    const char *datadir, const struct registry_expected *expected,
+    char artifact_root[65])
+{
+    struct vcs_package_prepared prepared;
+    if (!registry_prepare(expected, &prepared))
+        return false;
+    bool ok = prepared.lock.count > 0 &&
+        prepared.lock.count - 1u <= REGISTRY_DOGFOOD_MAX_DEPS &&
+        memcmp(prepared.lock.nodes[prepared.lock.count - 1u].root,
+               prepared.package_root, 32) == 0;
+    struct vcs_package_build_receipt decentralized;
+    if (ok)
+        ok = registry_read_receipt(datadir, expected->content_root,
+                                   &decentralized) &&
+             decentralized.dep_count == prepared.lock.count - 1u;
+    for (size_t i = 0; ok && i < decentralized.dep_count; i++)
+        ok = memcmp(decentralized.dep_roots[i], prepared.lock.nodes[i].root,
+                    32) == 0;
+
+    char scratch[256], scratch_abs[PATH_MAX], source_abs[PATH_MAX];
+    test_make_tmpdir(scratch, sizeof(scratch), "zcode_registry", "dogfood");
+    if (ok)
+        ok = realpath(scratch, scratch_abs) != NULL &&
+             realpath(expected->dir, source_abs) != NULL;
+    char recipe_path[PATH_MAX] = {0}, emit_dir[PATH_MAX] = {0};
+    if (ok) {
+        int rn = snprintf(recipe_path, sizeof(recipe_path), "%s/recipe.wire",
+                          scratch_abs);
+        int en = snprintf(emit_dir, sizeof(emit_dir), "%s/emit", scratch_abs);
+        ok = rn > 0 && (size_t)rn < sizeof(recipe_path) &&
+             en > 0 && (size_t)en < sizeof(emit_dir) &&
+             registry_write_bytes(recipe_path, prepared.recipe_wire,
+                                  prepared.recipe_wire_len);
+    }
+
+    char source_arg[PATH_MAX + 64u], recipe_arg[PATH_MAX + 64u];
+    char name_arg[VCS_PACKAGE_RELEASE_NAME_MAX + 64u];
+    char profile_arg[80], emit_arg[PATH_MAX + 32u], lock_arg[96];
+    char dep_args[REGISTRY_DOGFOOD_MAX_DEPS][PATH_MAX + 96u];
+    const char *argv[REGISTRY_DOGFOOD_MAX_DEPS + 12u];
+    size_t argc = 0;
+    if (ok) {
+        char lock_hex[65];
+        /* The installed receipt carries the lifecycle's fully resolved DAG
+         * lock. prepare() deliberately has only the package-local direct
+         * declarations available, so its projection lock is not the build
+         * closure when a dependency itself has dependencies. */
+        zcl_hex_encode(decentralized.lock_root, 32, lock_hex);
+        int sn = snprintf(source_arg, sizeof(source_arg),
+                          "--zbuild-package-source=%s", source_abs);
+        int rn = snprintf(recipe_arg, sizeof(recipe_arg),
+                          "--zbuild-package-recipe=%s", recipe_path);
+        int nn = snprintf(name_arg, sizeof(name_arg),
+                          "--zbuild-package-name=%s", expected->name);
+        int pn = snprintf(profile_arg, sizeof(profile_arg),
+                          "--zbuild-package-profile=quick");
+        int en = snprintf(emit_arg, sizeof(emit_arg), "--emit=%s", emit_dir);
+        int ln = snprintf(lock_arg, sizeof(lock_arg),
+                          "--lock-root=%s", lock_hex);
+        ok = sn > 0 && (size_t)sn < sizeof(source_arg) &&
+             rn > 0 && (size_t)rn < sizeof(recipe_arg) &&
+             nn > 0 && (size_t)nn < sizeof(name_arg) &&
+             pn > 0 && (size_t)pn < sizeof(profile_arg) &&
+             en > 0 && (size_t)en < sizeof(emit_arg) &&
+             ln > 0 && (size_t)ln < sizeof(lock_arg);
+    }
+    if (ok) {
+        argv[argc++] = REGISTRY_PACKAGE_VERIFIER;
+        argv[argc++] = expected->content_root;
+        argv[argc++] = source_arg;
+        argv[argc++] = recipe_arg;
+        argv[argc++] = name_arg;
+        argv[argc++] = profile_arg;
+        argv[argc++] = emit_arg;
+        argv[argc++] = lock_arg;
+        for (size_t i = 0; ok && i + 1u < prepared.lock.count; i++) {
+            char dep_hex[65], installed[PATH_MAX];
+            zcl_hex_encode(prepared.lock.nodes[i].root, 32, dep_hex);
+            int in = snprintf(installed, sizeof(installed),
+                              "%s/zcode/installed/%s", datadir, dep_hex);
+            int dn = in > 0 && (size_t)in < sizeof(installed)
+                ? snprintf(dep_args[i], sizeof(dep_args[i]),
+                           "--dep=%s,%s", dep_hex, installed) : -1;
+            ok = dn > 0 && (size_t)dn < sizeof(dep_args[i]);
+            if (ok)
+                argv[argc++] = dep_args[i];
+        }
+        argv[argc++] = "--require-full-isolation";
+        argv[argc] = NULL;
+    }
+
+    char output[4096];
+    int run_rc = ok ? zcl_spawn_capture(
+        argv, output, sizeof(output), 300000) : -1;
+    if (run_rc != 0) {
+        printf("  zcode_package_registry: repo-source build %s failed "
+               "rc=%d %s\n", expected->name, run_rc, ok ? output : "shape");
+        ok = false;
+    }
+    struct vcs_package_build_receipt repository;
+    char candidate_report[PATH_MAX];
+    int cn = snprintf(candidate_report, sizeof(candidate_report),
+                      "%s/build-report", emit_dir);
+    if (ok)
+        ok = cn > 0 && (size_t)cn < sizeof(candidate_report) &&
+             registry_read_receipt_path(candidate_report, &repository);
+    struct vcs_reproduce_verdict verdict;
+    if (ok) {
+        vcs_package_reproduce_compare(&repository, &decentralized, &verdict);
+        ok = verdict.reproduced &&
+             strcmp(repository.compiler_id, decentralized.compiler_id) == 0 &&
+             strcmp(repository.compiler_version,
+                    decentralized.compiler_version) == 0 &&
+             strcmp(repository.flags, decentralized.flags) == 0 &&
+             strcmp(repository.flags, VCS_PACKAGE_BUILD_FLAGS_QUICK_V1) == 0 &&
+             repository.isolation == decentralized.isolation &&
+             repository.test_ran && decentralized.test_ran &&
+             registry_archive_root(&repository, artifact_root);
+        if (!ok) {
+            char repo_lock[65], decentralized_lock[65], prepared_lock[65];
+            zcl_hex_encode(repository.lock_root, 32, repo_lock);
+            zcl_hex_encode(decentralized.lock_root, 32, decentralized_lock);
+            zcl_hex_encode(prepared.lock_root, 32, prepared_lock);
+            printf("  zcode_package_registry: dogfood %s diverged "
+                   "rule=%s detail=%s repository_lock=%s "
+                   "decentralized_lock=%s prepared_lock=%s\n",
+                   expected->name,
+                   vcs_reproduce_rule_string(
+                       (enum vcs_reproduce_rule)verdict.rule),
+                   verdict.detail, repo_lock, decentralized_lock,
+                   prepared_lock);
+        }
+    }
+    test_rm_rf(scratch);
+    vcs_package_prepared_free(&prepared);
+    return ok;
+}
+
+static bool registry_dogfood(const char *datadir)
+{
+    const struct registry_expected *package =
+        registry_named("zclassic23/package");
+    const struct registry_expected *demo =
+        registry_named("zclassic23/commons-demo");
+    char package_artifact[65], demo_artifact[65];
+    bool ok = package && demo &&
+        registry_dogfood_consumer(datadir, package, package_artifact) &&
+        registry_dogfood_consumer(datadir, demo, demo_artifact);
+    if (ok)
+        printf("{\"schema\":\"zcl.c23_commons_dogfood.v1\","
+               "\"consumer_count\":2,\"profile\":\"quick-v1\","
+               "\"repository_source_roots\":true,"
+               "\"decentralized_source_roots\":true,"
+               "\"compiler_identity_equal\":true,"
+               "\"artifact_roots_equal\":true,"
+               "\"consumers\":[{\"name\":\"%s\","
+               "\"archive_root\":\"%s\"},{\"name\":\"%s\","
+               "\"archive_root\":\"%s\"}]}\n",
+               package->name, package_artifact, demo->name, demo_artifact);
+    return ok;
+}
+
 static bool registry_independent_reproduction(size_t *reproduced_out)
 {
     *reproduced_out = 0;
@@ -338,6 +547,8 @@ static bool registry_independent_reproduction(size_t *reproduced_out)
         if (ok)
             (*reproduced_out)++;
     }
+    if (ok)
+        ok = registry_dogfood(builder_b);
     if (ok)
         ok = registry_stranger_build(builder_b);
     test_rm_rf(builder_a);
