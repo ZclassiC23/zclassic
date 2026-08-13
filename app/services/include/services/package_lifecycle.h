@@ -66,6 +66,7 @@ struct package_lifecycle_step {
     uint8_t state; /* enum vcs_package_lifecycle_state actually REACHED */
     bool already_installed;
     bool has_receipt;
+    bool receipt_reused; /* every bound input matches this exact plan */
     uint8_t receipt_id[32];
     char rule[PACKAGE_LIFECYCLE_RULE_MAX + 1u];       /* "" on success */
     char detail[PACKAGE_LIFECYCLE_DETAIL_MAX + 1u];

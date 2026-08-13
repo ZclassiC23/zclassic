@@ -119,6 +119,20 @@ static void zw_push_status(struct json_value *obj,
     (void)json_push_kv_int(obj, "present_bytes", (int64_t)st->present_bytes);
     (void)json_push_kv_int(obj, "total_bytes", (int64_t)st->total_bytes);
     (void)json_push_kv_int(obj, "fetched_bytes", (int64_t)st->fetched_bytes);
+    (void)json_push_kv_int(obj, "requested_bytes",
+                           (int64_t)st->requested_bytes);
+    (void)json_push_kv_int(obj, "transferred_bytes",
+                           (int64_t)st->transferred_bytes);
+    (void)json_push_kv_int(obj, "reused_bytes",
+                           (int64_t)st->reused_bytes);
+    (void)json_push_kv_int(obj, "requested_objects",
+                           (int64_t)st->requested_objects);
+    (void)json_push_kv_int(obj, "transferred_objects",
+                           (int64_t)st->transferred_objects);
+    (void)json_push_kv_int(obj, "reused_objects",
+                           (int64_t)st->reused_objects);
+    (void)json_push_kv_int(obj, "maximum_package_bytes",
+                           (int64_t)st->maximum_package_bytes);
 }
 
 /* ── zcode package fetch ────────────────────────────────────────────── */

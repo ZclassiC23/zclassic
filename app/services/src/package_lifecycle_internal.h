@@ -121,6 +121,17 @@ struct zcl_result pkgl_build_and_install(
     const uint8_t (*dep_roots)[32], size_t dep_count,
     struct package_lifecycle_step *step);
 
+/* Re-open an existing install's canonical receipt, verify its filed copy,
+ * every bound package/recipe/dependency input and every installed output.
+ * A receipt whose package-scoped lock root equals lock_root is marked reused;
+ * a valid legacy receipt carrying a different enclosing lock remains evidence
+ * of the installed artifact but is not represented as exact evidence reuse. */
+struct zcl_result pkgl_verify_installed_receipt(
+    const struct pkgl_ctx *ctx, const uint8_t root[32],
+    const struct vcs_package_release *release, const uint8_t lock_root[32],
+    const uint8_t (*dep_roots)[32], size_t dep_count,
+    struct package_lifecycle_step *step);
+
 /* Atomic, rename-based activation of <name> -> installed/<root-hex>, plus
  * the generation-log append. The previous generation stays on disk. */
 struct zcl_result pkgl_activate(const struct pkgl_ctx *ctx, const char *name,

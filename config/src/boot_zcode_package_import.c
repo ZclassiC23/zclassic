@@ -6,6 +6,44 @@
 #include "json/json.h"
 #include "vcs/package_swarm_node.h"
 
+static void package_download_render(
+    struct json_value *result,
+    const struct vcs_swarm_download_status *status)
+{
+    struct json_value download;
+    json_init(&download);
+    json_set_object(&download);
+    json_push_kv_str(&download, "state",
+                     vcs_swarm_download_state_string(status->state));
+    if (status->rule)
+        json_push_kv_str(&download, "rule", status->rule);
+    json_push_kv_int(&download, "advertisers", status->advertisers);
+    json_push_kv_int(&download, "inflight", status->inflight);
+    json_push_kv_int(&download, "present_chunks", status->present_chunks);
+    json_push_kv_int(&download, "total_chunks", status->total_chunks);
+    json_push_kv_int(&download, "present_bytes",
+                     (int64_t)status->present_bytes);
+    json_push_kv_int(&download, "total_bytes",
+                     (int64_t)status->total_bytes);
+    json_push_kv_int(&download, "fetched_bytes",
+                     (int64_t)status->fetched_bytes);
+    json_push_kv_int(&download, "requested_bytes",
+                     (int64_t)status->requested_bytes);
+    json_push_kv_int(&download, "transferred_bytes",
+                     (int64_t)status->transferred_bytes);
+    json_push_kv_int(&download, "reused_bytes",
+                     (int64_t)status->reused_bytes);
+    json_push_kv_int(&download, "requested_objects",
+                     status->requested_objects);
+    json_push_kv_int(&download, "transferred_objects",
+                     status->transferred_objects);
+    json_push_kv_int(&download, "reused_objects", status->reused_objects);
+    json_push_kv_int(&download, "maximum_package_bytes",
+                     (int64_t)status->maximum_package_bytes);
+    json_push_kv(result, "download", &download);
+    json_free(&download);
+}
+
 void boot_zcode_package_import_render(struct vcs_swarm_engine *engine,
                                       const uint8_t transport_root[32],
                                       int fetch_result,
@@ -14,6 +52,10 @@ void boot_zcode_package_import_render(struct vcs_swarm_engine *engine,
     char hex[65];
     zcl_hex_encode(transport_root, 32, hex);
     json_push_kv_str(result, "transport_root", hex);
+    struct vcs_swarm_download_status status;
+    if (engine && vcs_swarm_engine_download_status(
+                      engine, transport_root, &status))
+        package_download_render(result, &status);
     if (!engine || fetch_result != VCS_SWARM_FETCH_ALREADY_COMPLETE)
         return;
     struct vcs_package_transport_import imported;

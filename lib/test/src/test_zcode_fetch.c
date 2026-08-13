@@ -232,6 +232,12 @@ static int zf_t_fetch_one_shot(void)
             ASSERT(dl != NULL);
             const char *state = json_get_str(json_get(dl, "state"));
             ASSERT(state && strcmp(state, "want-manifest") == 0);
+            ASSERT_EQ(json_get_int(json_get(dl, "requested_bytes")), 0);
+            ASSERT_EQ(json_get_int(json_get(dl, "transferred_bytes")), 0);
+            ASSERT_EQ(json_get_int(json_get(dl, "reused_bytes")), 0);
+            ASSERT_EQ(json_get_int(json_get(dl, "requested_objects")), 0);
+            ASSERT_EQ(json_get_int(json_get(dl, "transferred_objects")), 0);
+            ASSERT_EQ(json_get_int(json_get(dl, "reused_objects")), 0);
         }
         zf_cmd_free(&c);
 

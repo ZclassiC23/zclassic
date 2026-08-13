@@ -696,6 +696,10 @@ static int t_e2e(void)
                   commit.steps[0].rule[0] != '\0'));
     ZA_CHECK("the install carries a build receipt id",
              commit.steps[0].has_receipt);
+    uint8_t ring_receipt[32];
+    memcpy(ring_receipt, commit.steps[0].receipt_id, sizeof(ring_receipt));
+    ZA_CHECK("a newly built package does not claim receipt reuse",
+             !commit.steps[0].receipt_reused);
 
     uint8_t active[32];
     size_t gens = 0;
@@ -704,6 +708,29 @@ static int t_e2e(void)
         package_lifecycle_active(base, "alice/ringbuffer", active, &gens,
                                  &present);
     ZA_CHECK("the installed root is the active generation",
+             ar.ok && present && gens == 1 &&
+                 memcmp(active, ring_root, 32) == 0);
+
+    /* Exact identity is the cache key: reopening an installed root must
+     * revalidate its receipt and outputs, then reuse that exact evidence
+     * without rebuilding or appending a fake generation. */
+    struct package_lifecycle_plan_report repeat_plan;
+    struct zcl_result repeat_planned =
+        package_lifecycle_plan(base, root_hex, t0 + 2, &repeat_plan);
+    struct package_lifecycle_commit_report repeat_commit;
+    struct zcl_result repeat_committed = package_lifecycle_commit(
+        base, repeat_plan.plan_id, t0 + 3, &repeat_commit);
+    ar = package_lifecycle_active(base, "alice/ringbuffer", active, &gens,
+                                  &present);
+    ZA_CHECK("an exact installed root reuses its verified build evidence",
+             repeat_planned.ok && repeat_committed.ok &&
+                 repeat_commit.step_count == 1 &&
+                 repeat_commit.steps[0].already_installed &&
+                 repeat_commit.steps[0].has_receipt &&
+                 repeat_commit.steps[0].receipt_reused &&
+                 memcmp(repeat_commit.steps[0].receipt_id, ring_receipt, 32) ==
+                     0);
+    ZA_CHECK("exact reuse does not append a generation",
              ar.ok && present && gens == 1 &&
                  memcmp(active, ring_root, 32) == 0);
 
@@ -810,7 +837,10 @@ static int t_e2e(void)
     snprintf(q_archive, sizeof(q_archive), "%s/lib/libqueue.a", q_installed);
     ZA_CHECK("the dependent builds AGAINST its locked dependency and installs",
              qcr.ok && qcommit.installed && za_exists(q_archive) &&
-                 qcommit.steps[0].already_installed);
+                 qcommit.steps[0].already_installed &&
+                 qcommit.steps[0].has_receipt &&
+                 qcommit.steps[0].receipt_reused &&
+                 memcmp(qcommit.steps[0].receipt_id, ring_receipt, 32) == 0);
 
     /* --- a tampered CAS object must never reach a build ----------------- */
     struct za_file evil_files[] = {
@@ -858,6 +888,20 @@ static int t_e2e(void)
         package_lifecycle_commit(base, bogus, t0 + 10, &bcommit);
     ZA_CHECK("an unknown plan_id is named, never guessed at",
              !bcr.ok && strcmp(bcommit.rule, "plan-unknown") == 0);
+
+    /* Installed status alone is not proof. Corrupting a declared output
+     * must invalidate the resident receipt before activation can succeed. */
+    bool damaged = za_write_file(archive, "corrupt", 7, 0600);
+    struct package_lifecycle_plan_report damaged_plan;
+    struct zcl_result damaged_planned =
+        package_lifecycle_plan(base, root_hex, t0 + 11, &damaged_plan);
+    struct package_lifecycle_commit_report damaged_commit;
+    struct zcl_result damaged_result = package_lifecycle_commit(
+        base, damaged_plan.plan_id, t0 + 12, &damaged_commit);
+    ZA_CHECK("an installed output that differs from its receipt is refused",
+             damaged && damaged_planned.ok && !damaged_result.ok &&
+                 strcmp(damaged_commit.rule,
+                        "installed-receipt-invalid") == 0);
 
     za_rm_rf(base);
     return failures;

@@ -137,28 +137,122 @@ static struct zcl_result pkgl_copy_hashed(const char *src, const char *dst,
 
 /* ── the receipt cross-check ────────────────────────────────────────── */
 
-static struct zcl_result pkgl_receipt_matches(
-    const struct vcs_package_build_receipt *r, const uint8_t root[32],
-    const struct vcs_package_release *release, const uint8_t lock_root[32],
+static struct zcl_result pkgl_receipt_inputs_match(
+    const struct vcs_package_build_receipt *receipt,
+    const uint8_t root[32], const struct vcs_package_release *release,
     const uint8_t (*dep_roots)[32], size_t dep_count)
 {
-    if (memcmp(r->package_root, root, 32) != 0)
+    if (memcmp(receipt->package_root, root, 32) != 0)
         return ZCL_ERR(-1, "receipt names a different package root");
-    if (memcmp(r->recipe_root, release->recipe_root, 32) != 0)
+    if (memcmp(receipt->recipe_root, release->recipe_root, 32) != 0)
         return ZCL_ERR(-1, "receipt names a different recipe root");
-    if (memcmp(r->lock_root, lock_root, 32) != 0)
-        return ZCL_ERR(-1, "receipt names a different dependency lock");
-    if (r->dep_count != dep_count)
-        return ZCL_ERR(-1, "receipt lists %zu dependencies, the lock has %zu",
-                       r->dep_count, dep_count);
-    /* Receipt deps are stored ascending; compare as sets by membership. */
+    if (receipt->dep_count != dep_count)
+        return ZCL_ERR(-1, "receipt lists %zu dependencies, package has %zu",
+                       receipt->dep_count, dep_count);
     for (size_t i = 0; i < dep_count; i++) {
         bool found = false;
-        for (size_t j = 0; j < r->dep_count && !found; j++)
-            found = memcmp(r->dep_roots[j], dep_roots[i], 32) == 0;
+        for (size_t j = 0; j < receipt->dep_count && !found; j++)
+            found = memcmp(receipt->dep_roots[j], dep_roots[i], 32) == 0;
         if (!found)
-            return ZCL_ERR(-1, "receipt omits a locked dependency root");
+            return ZCL_ERR(-1, "receipt omits an exact dependency root");
     }
+    return ZCL_OK;
+}
+
+static struct zcl_result pkgl_receipt_matches(
+    const struct vcs_package_build_receipt *receipt,
+    const uint8_t root[32], const struct vcs_package_release *release,
+    const uint8_t lock_root[32], const uint8_t (*dep_roots)[32],
+    size_t dep_count)
+{
+    ZCL_CHECK(pkgl_receipt_inputs_match(receipt, root, release, dep_roots,
+                                        dep_count));
+    if (memcmp(receipt->lock_root, lock_root, 32) != 0)
+        return ZCL_ERR(-1, "receipt names a different dependency lock");
+    return ZCL_OK;
+}
+
+static struct zcl_result pkgl_installed_outputs_match(
+    const char *installed, const struct vcs_package_build_receipt *receipt)
+{
+    for (size_t i = 0; i < receipt->output_count; i++) {
+        const struct vcs_package_build_output *output = &receipt->outputs[i];
+        char path[PKGL_PATH_MAX];
+        int n = snprintf(path, sizeof(path), "%s/%s", installed,
+                         output->path);
+        if (n <= 0 || (size_t)n >= sizeof(path))
+            return ZCL_ERR(-1, "installed output path is too long");
+        uint8_t digest[32];
+        uint64_t bytes = 0;
+        ZCL_CHECK(pkgl_sha3_file(path, digest, &bytes));
+        if (bytes != output->bytes || memcmp(digest, output->sha3, 32) != 0)
+            return ZCL_ERR(-1, "installed output %s does not match receipt",
+                           output->path);
+    }
+    return ZCL_OK;
+}
+
+struct zcl_result pkgl_verify_installed_receipt(
+    const struct pkgl_ctx *ctx, const uint8_t root[32],
+    const struct vcs_package_release *release, const uint8_t lock_root[32],
+    const uint8_t (*dep_roots)[32], size_t dep_count,
+    struct package_lifecycle_step *step)
+{
+    if (!ctx || !root || !release || !lock_root || !step)
+        return ZCL_ERR(-1, "null argument verifying installed evidence");
+    char installed[PKGL_PATH_MAX];
+    ZCL_CHECK(pkgl_installed_dir(ctx, root, installed, sizeof(installed)));
+    char report[PKGL_PATH_MAX];
+    int n = snprintf(report, sizeof(report), "%s/build-report", installed);
+    if (n <= 0 || (size_t)n >= sizeof(report))
+        return ZCL_ERR(-1, "installed receipt path is too long");
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    ZCL_CHECK(pkgl_read_file(report, VCS_PACKAGE_BUILD_MAX_WIRE_BYTES,
+                             &wire, &wire_len));
+    struct vcs_package_build_receipt receipt;
+    enum vcs_package_build_error parsed =
+        vcs_package_build_parse(wire, wire_len, &receipt);
+    if (parsed != VCS_PACKAGE_BUILD_OK) {
+        free(wire);
+        return ZCL_ERR(-1, "installed receipt: %s",
+                       vcs_package_build_error_string(parsed));
+    }
+    struct zcl_result matched = pkgl_receipt_inputs_match(
+        &receipt, root, release, dep_roots, dep_count);
+    if (!matched.ok || !vcs_package_build_installable(&receipt)) {
+        free(wire);
+        return matched.ok ? ZCL_ERR(-1, "installed receipt is not installable")
+                          : matched;
+    }
+    uint8_t receipt_id[32];
+    if (vcs_package_build_id(&receipt, receipt_id) != VCS_PACKAGE_BUILD_OK) {
+        free(wire);
+        return ZCL_ERR(-1, "installed receipt id cannot be rederived");
+    }
+    char id_hex[65], filed[PKGL_PATH_MAX];
+    zcl_hex_encode(receipt_id, 32, id_hex);
+    char relative[96];
+    n = snprintf(relative, sizeof(relative), "receipts/%s", id_hex);
+    struct zcl_result joined = n > 0 && (size_t)n < sizeof(relative)
+        ? pkgl_join(ctx, relative, filed, sizeof(filed))
+        : ZCL_ERR(-1, "filed receipt path is too long");
+    uint8_t *filed_wire = NULL;
+    size_t filed_len = 0;
+    if (joined.ok)
+        joined = pkgl_read_file(filed, VCS_PACKAGE_BUILD_MAX_WIRE_BYTES,
+                                &filed_wire, &filed_len);
+    bool filed_equal = joined.ok && filed_len == wire_len &&
+        memcmp(filed_wire, wire, wire_len) == 0;
+    free(filed_wire);
+    free(wire);
+    if (!filed_equal)
+        return joined.ok ? ZCL_ERR(-1, "filed receipt bytes do not match install")
+                         : joined;
+    ZCL_CHECK(pkgl_installed_outputs_match(installed, &receipt));
+    step->has_receipt = true;
+    step->receipt_reused = memcmp(receipt.lock_root, lock_root, 32) == 0;
+    memcpy(step->receipt_id, receipt_id, 32);
     return ZCL_OK;
 }
 

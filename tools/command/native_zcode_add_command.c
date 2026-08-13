@@ -278,6 +278,8 @@ void zcl_native_handle_zcode_package_add_commit(
                 (enum vcs_package_lifecycle_state)s->state));
         (void)json_push_kv_bool(&row, "already_installed",
                                 s->already_installed);
+        (void)json_push_kv_bool(&row, "receipt_reused",
+                                s->receipt_reused);
         if (s->has_receipt)
             za_push_hex(&row, "build_receipt_id", s->receipt_id);
         if (s->rule[0]) {

@@ -77,6 +77,20 @@ beta_restart() {
     beta_assert_installed_process "$role"
 }
 
+beta_reset_package_store() {
+    local role="$1" backup_name="$2" connect_role="$3" name
+    local backup="$DHT_WORK/$backup_name"
+    dht_kill_group "${PIDS[$role]:-}"
+    PIDS[$role]=""
+    mkdir -p "$backup"
+    for name in active addplans attestations badges cas downloads generations \
+            installed manifests pins receipts recipes releases staging; do
+        [ ! -e "${DDS[$role]}/zcode/$name" ] ||
+            mv "${DDS[$role]}/zcode/$name" "$backup/$name"
+    done
+    beta_restart "$role" "$connect_role"
+}
+
 beta_allow_package_policy() {
     local role="$1" common plan token commit
     common='"operation":"add","source":"local","effect":"allow","scope":"service_type","action_mask":63,"value":"'"$BETA_NAMESPACE"'"'
@@ -239,8 +253,8 @@ beta_prepare() {
 }
 
 beta_seal_publish() {
-    local label="$1" dir="$2" pubkey="$3" sequence="$4" signature="$5" day="$6"
-    local prep body manifest recipe seal release plan commit root transport
+    local role="$1" label="$2" dir="$3" pubkey="$4" sequence="$5" signature="$6" day="$7"
+    local prep body manifest recipe seal release release_id plan commit root transport
     prep="$(beta_prepare "$dir" "$pubkey" "$sequence")"
     beta_ok "$label prepare" "$prep"
     body="$(printf '%s' "$prep" | beta_jget 'd["data"]["release_body_hex"]')"
@@ -251,15 +265,35 @@ beta_seal_publish() {
         2>/dev/null | tail -1)"
     beta_ok "$label seal" "$seal"
     release="$(printf '%s' "$seal" | beta_jget 'd["data"]["release_hex"]')"
-    plan="$(beta_native "$BETA_A" zcode create \
+    release_id="$(printf '%s' "$seal" | beta_jget 'd["data"]["release_id"]')"
+    plan="$(beta_native "$role" zcode create \
         --input="{\"mode\":\"plan\",\"release_hex\":\"$release\",\"manifest_hex\":\"$manifest\",\"recipe_hex\":\"$recipe\",\"dir\":\"$dir\",\"day\":$day}")"
     beta_ok "$label create plan" "$plan"
-    commit="$(beta_native "$BETA_A" zcode create \
+    commit="$(beta_native "$role" zcode create \
         --input="{\"mode\":\"commit\",\"release_hex\":\"$release\",\"manifest_hex\":\"$manifest\",\"recipe_hex\":\"$recipe\",\"dir\":\"$dir\",\"day\":$day}")"
     beta_ok "$label create commit" "$commit"
     root="$(printf '%s' "$commit" | beta_jget 'd["data"]["package_root"]')"
     transport="$(printf '%s' "$commit" | beta_jget 'd["data"]["transport_root"]')"
-    printf '%s %s' "$root" "$transport"
+    printf '%s %s %s' "$root" "$transport" "$release_id"
+}
+
+beta_publish_version() {
+    local role="$1" label="$2" dir="$3" sequence="$4" day="$5"
+    local prep signature
+    prep="$(beta_prepare "$dir" "$AUTHOR_PUB" "$sequence")"
+    beta_ok "$label prepare" "$prep"
+    signature="$(beta_sign_package "$prep" "$AUTHOR_KEY" \
+        "$BETA_AUTHOR_ROOT/$label.digest" \
+        "$BETA_AUTHOR_ROOT/$label.signature")"
+    read -r BETA_VERSION_ROOT BETA_VERSION_TRANSPORT BETA_VERSION_RELEASE_ID \
+        <<<"$(beta_seal_publish "$role" "$label" "$dir" "$AUTHOR_PUB" \
+            "$sequence" "$signature" "$day")"
+    BETA_VERSION_RECIPE_ROOT="$(printf '%s' "$prep" | beta_jget \
+        'd["data"]["recipe_root"]')"
+    BETA_VERSION_LOCK_ROOT="$(printf '%s' "$prep" | beta_jget \
+        'd["data"]["dependency_lock_root"]')"
+    BETA_VERSION_API_ROOT="$(printf '%s' "$prep" | beta_jget \
+        'd["data"]["api_capsule_root"]')"
 }
 
 beta_sign_package() {
@@ -347,6 +381,14 @@ beta_fetch_pin() {
         beta_die "role $role did not reconstruct signed carrier $transport"
     [ "$(printf '%s' "$imported" | beta_jget 'd["data"]["package_root"]')" = "$root" ] ||
         beta_die "role $role carrier mapped to the wrong package root"
+    [ "$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["state"]')" = complete ] ||
+        beta_die "role $role omitted the completed download receipt"
+    BETA_FETCH_REQUESTED_OBJECTS="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["requested_objects"]')"
+    BETA_FETCH_TRANSFERRED_OBJECTS="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["transferred_objects"]')"
+    BETA_FETCH_REUSED_OBJECTS="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["reused_objects"]')"
+    BETA_FETCH_REQUESTED_BYTES="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["requested_bytes"]')"
+    BETA_FETCH_TRANSFERRED_BYTES="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["transferred_bytes"]')"
+    BETA_FETCH_REUSED_BYTES="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["reused_bytes"]')"
     beta_pin "$role" "$transport"
     beta_pin "$role" "$root"
 }
@@ -359,21 +401,34 @@ beta_fetch_graph() {
 }
 
 beta_build_graph() {
-    local role="$1" now plan plan_id commit receipt
+    local role="$1" root="${2:-$BETA_PACKAGE_ROOT}" now plan plan_id commit
     now="$(date +%s)"
     plan="$(beta_native "$role" zcode use \
-        --input="{\"name_or_root\":\"$BETA_PACKAGE_ROOT\",\"now_unix\":$now}")"
+        --input="{\"name_or_root\":\"$root\",\"now_unix\":$now}")"
     beta_ok "role $role use plan" "$plan"
     [ "$(printf '%s' "$plan" | beta_jget 'd["data"]["step_count"]')" -eq 3 ] ||
         beta_die "role $role did not resolve the exact three-package DAG"
+    [ "$(printf '%s' "$plan" | beta_jget \
+        'set(x["root"] for x in d["data"]["steps"])==set(["'"$BETA_BASE_ROOT"'","'"$BETA_SHA3_ROOT"'","'"$root"'"])')" = True ] ||
+        beta_die "role $role dependency plan substituted an unpinned root"
     plan_id="$(printf '%s' "$plan" | beta_jget 'd["data"]["plan_id"]')"
     commit="$(beta_native "$role" zcode use \
         --input="{\"plan_id\":\"$plan_id\",\"now_unix\":$((now + 1))}")"
     beta_ok "role $role use commit" "$commit"
-    receipt="$(printf '%s' "$commit" | beta_jget \
-        '[x["build_receipt_id"] for x in d["data"]["steps"] if x["root"]=="'"$BETA_PACKAGE_ROOT"'"][0]')"
-    [ "${#receipt}" -eq 64 ] || beta_die "role $role omitted target receipt"
-    printf '%s' "$receipt"
+    BETA_BUILD_RECEIPT="$(printf '%s' "$commit" | beta_jget \
+        '[x["build_receipt_id"] for x in d["data"]["steps"] if x["root"]=="'"$root"'"][0]')"
+    [ "${#BETA_BUILD_RECEIPT}" -eq 64 ] ||
+        beta_die "role $role omitted target receipt"
+    BETA_BUILD_REBUILT="$(printf '%s' "$commit" | beta_jget \
+        'sum(1 for x in d["data"]["steps"] if not x["already_installed"])')"
+    BETA_BUILD_REUSED="$(printf '%s' "$commit" | beta_jget \
+        'sum(1 for x in d["data"]["steps"] if x["already_installed"])')"
+    BETA_BUILD_EVIDENCE_REUSED="$(printf '%s' "$commit" | beta_jget \
+        'sum(1 for x in d["data"]["steps"] if x["receipt_reused"])')"
+    BETA_BUILD_ACTIVE_ROOT="$(printf '%s' "$commit" | beta_jget \
+        'd["data"]["active_root"]')"
+    [ "$BETA_BUILD_ACTIVE_ROOT" = "$root" ] ||
+        beta_die "role $role activated a root other than the exact request"
 }
 
 beta_note "installed roles: A=$BETA_A B=$BETA_B C=$BETA_C D=$BETA_D"
@@ -394,7 +449,7 @@ BASE_PREP="$(beta_prepare "$BETA_AUTHOR_ROOT/dependencies/base" "$AUTHOR_PUB" 1)
 beta_ok "base prepare for signature" "$BASE_PREP"
 BASE_SIGNATURE="$(beta_sign_package "$BASE_PREP" "$AUTHOR_KEY" \
     "$BETA_AUTHOR_ROOT/base.digest" "$BETA_AUTHOR_ROOT/base.signature")"
-read -r BASE_PUBLISHED BETA_BASE_TRANSPORT <<<"$(beta_seal_publish base "$BETA_AUTHOR_ROOT/dependencies/base" \
+read -r BASE_PUBLISHED BETA_BASE_TRANSPORT BASE_RELEASE_ID <<<"$(beta_seal_publish "$BETA_A" base "$BETA_AUTHOR_ROOT/dependencies/base" \
     "$AUTHOR_PUB" 1 "$BASE_SIGNATURE" 1)"
 [ "$BASE_PUBLISHED" = "$BETA_BASE_ROOT" ] || beta_die "base fixture root drifted"
 
@@ -402,15 +457,21 @@ SHA3_PREP="$(beta_prepare "$BETA_AUTHOR_ROOT/dependencies/sha3" "$AUTHOR_PUB" 2)
 beta_ok "sha3 prepare for signature" "$SHA3_PREP"
 SHA3_SIGNATURE="$(beta_sign_package "$SHA3_PREP" "$AUTHOR_KEY" \
     "$BETA_AUTHOR_ROOT/sha3.digest" "$BETA_AUTHOR_ROOT/sha3.signature")"
-read -r SHA3_PUBLISHED BETA_SHA3_TRANSPORT <<<"$(beta_seal_publish sha3 "$BETA_AUTHOR_ROOT/dependencies/sha3" \
+read -r SHA3_PUBLISHED BETA_SHA3_TRANSPORT SHA3_RELEASE_ID <<<"$(beta_seal_publish "$BETA_A" sha3 "$BETA_AUTHOR_ROOT/dependencies/sha3" \
     "$AUTHOR_PUB" 2 "$SHA3_SIGNATURE" 8)"
 [ "$SHA3_PUBLISHED" = "$BETA_SHA3_ROOT" ] || beta_die "sha3 fixture root drifted"
 
 PACKAGE_PREP="$(beta_prepare "$BETA_PACKAGE_DIR" "$AUTHOR_PUB" 3)"
 beta_ok "outside package prepare" "$PACKAGE_PREP"
+BETA_V1_RECIPE_ROOT="$(printf '%s' "$PACKAGE_PREP" | beta_jget \
+    'd["data"]["recipe_root"]')"
+BETA_V1_LOCK_ROOT="$(printf '%s' "$PACKAGE_PREP" | beta_jget \
+    'd["data"]["dependency_lock_root"]')"
+BETA_V1_API_ROOT="$(printf '%s' "$PACKAGE_PREP" | beta_jget \
+    'd["data"]["api_capsule_root"]')"
 PACKAGE_SIGNATURE="$(beta_sign_package "$PACKAGE_PREP" "$AUTHOR_KEY" \
     "$BETA_AUTHOR_ROOT/release.digest" "$BETA_AUTHOR_ROOT/release.signature")"
-read -r PACKAGE_PUBLISHED BETA_PACKAGE_TRANSPORT <<<"$(beta_seal_publish outside "$BETA_PACKAGE_DIR" \
+read -r PACKAGE_PUBLISHED BETA_PACKAGE_TRANSPORT PACKAGE_RELEASE_ID <<<"$(beta_seal_publish "$BETA_A" outside "$BETA_PACKAGE_DIR" \
     "$AUTHOR_PUB" 3 "$PACKAGE_SIGNATURE" 15)"
 [ "$PACKAGE_PUBLISHED" = "$BETA_PACKAGE_ROOT" ] ||
     beta_die "outside package root drifted: $PACKAGE_PUBLISHED"
@@ -436,9 +497,19 @@ beta_ok "B local verified-package search" "$B_SEARCH"
 
 beta_note "C and D explicitly build/test the same exact graph"
 beta_fetch_graph "$BETA_C"
+C_V1_TRANSFERRED_OBJECTS="$BETA_FETCH_TRANSFERRED_OBJECTS"
+C_V1_TRANSFERRED_BYTES="$BETA_FETCH_TRANSFERRED_BYTES"
 beta_fetch_graph "$BETA_D"
-C_RECEIPT="$(beta_build_graph "$BETA_C")"
-D_RECEIPT="$(beta_build_graph "$BETA_D")"
+beta_build_graph "$BETA_C"
+C_RECEIPT="$BETA_BUILD_RECEIPT"
+[ "$BETA_BUILD_REBUILT" -eq 3 ] && [ "$BETA_BUILD_REUSED" -eq 0 ] &&
+[ "$BETA_BUILD_EVIDENCE_REUSED" -eq 0 ] ||
+    beta_die "C's cold graph build did not execute exactly three packages"
+beta_build_graph "$BETA_D"
+D_RECEIPT="$BETA_BUILD_RECEIPT"
+[ "$BETA_BUILD_REBUILT" -eq 3 ] && [ "$BETA_BUILD_REUSED" -eq 0 ] &&
+[ "$BETA_BUILD_EVIDENCE_REUSED" -eq 0 ] ||
+    beta_die "D's cold graph build did not execute exactly three packages"
 [ "$C_RECEIPT" = "$D_RECEIPT" ] ||
     beta_die "independent deterministic build receipts disagree"
 C_ARCHIVE="${DDS[$BETA_C]}/zcode/installed/$BETA_PACKAGE_ROOT/lib/libsha3-note.a"
@@ -456,15 +527,8 @@ dht_kill_group "${PIDS[$BETA_A]}"; PIDS[$BETA_A]=""
 # Remove only B's temporary package-store projections, preserving its DHT
 # identity and common chain. The move is recoverable inside this run and makes
 # the next fetch prove D serves onward after A has disappeared.
-dht_kill_group "${PIDS[$BETA_B]}"; PIDS[$BETA_B]=""
-B_BACKUP="$DHT_WORK/b-pre-disappearance-package-store"
-mkdir -p "$B_BACKUP"
-for name in active addplans attestations badges cas downloads generations \
-        installed manifests pins receipts recipes releases staging; do
-    [ ! -e "${DDS[$BETA_B]}/zcode/$name" ] ||
-        mv "${DDS[$BETA_B]}/zcode/$name" "$B_BACKUP/$name"
-done
-beta_restart "$BETA_B" "$BETA_D"
+beta_reset_package_store "$BETA_B" \
+    b-pre-disappearance-package-store "$BETA_D"
 beta_fetch_graph "$BETA_B"
 B_AFTER="$(beta_native "$BETA_B" zcode package search \
     --input='{"name_prefix":"stranger/sha3-note","limit":4}')"
@@ -492,6 +556,189 @@ cc -std=c23 -O2 -Wall -Wextra -Werror \
 APP_OUTPUT="$("$APP_BIN" hello)"
 [ "$APP_OUTPUT" = "$BETA_EXPECTED_NOTE" ] || beta_die "standalone app output drifted"
 
+beta_note "v2 source edit transfers and rebuilds only the changed package"
+V1_NOTE_BACKUP="$DHT_WORK/v1-note.c"
+V1_HEADER_BACKUP="$DHT_WORK/v1-note.h"
+cp "$APP_SOURCE/src/note.c" "$V1_NOTE_BACKUP"
+cp "$APP_SOURCE/include/stranger/note.h" "$V1_HEADER_BACKUP"
+python3 - "$APP_SOURCE/src/note.c" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "    if (!text || !out)\n        return false;"
+new = "    if (!text || !out || text[0] == '\\0')\n        return false;"
+if text.count(old) != 1:
+    raise SystemExit("v2 edit target is not exact")
+path.write_text(text.replace(old, new))
+PY
+beta_publish_version "$BETA_D" v2 "$APP_SOURCE" 4 22
+BETA_V2_ROOT="$BETA_VERSION_ROOT"
+BETA_V2_TRANSPORT="$BETA_VERSION_TRANSPORT"
+BETA_V2_RELEASE_ID="$BETA_VERSION_RELEASE_ID"
+BETA_V2_RECIPE_ROOT="$BETA_VERSION_RECIPE_ROOT"
+BETA_V2_LOCK_ROOT="$BETA_VERSION_LOCK_ROOT"
+BETA_V2_API_ROOT="$BETA_VERSION_API_ROOT"
+[ "$BETA_V2_ROOT" != "$BETA_PACKAGE_ROOT" ] &&
+[ "$BETA_V2_RELEASE_ID" != "$PACKAGE_RELEASE_ID" ] ||
+    beta_die "v2 source bytes did not produce distinct exact identities"
+[ "$BETA_V2_RECIPE_ROOT" = "$BETA_V1_RECIPE_ROOT" ] &&
+[ "$BETA_V2_LOCK_ROOT" != "$BETA_V1_LOCK_ROOT" ] &&
+[ "$BETA_V2_API_ROOT" = "$BETA_V1_API_ROOT" ] ||
+    beta_die "v2 did not isolate source identity from recipe and public API"
+beta_restart "$BETA_D" "$BETA_C"
+beta_publish_package "$BETA_D" "$BETA_V2_ROOT" "$BETA_V2_TRANSPORT" 2
+beta_fetch_pin "$BETA_C" "$BETA_V2_ROOT" "$BETA_V2_TRANSPORT"
+V2_REQUESTED_OBJECTS="$BETA_FETCH_REQUESTED_OBJECTS"
+V2_TRANSFERRED_OBJECTS="$BETA_FETCH_TRANSFERRED_OBJECTS"
+V2_REUSED_OBJECTS="$BETA_FETCH_REUSED_OBJECTS"
+V2_REQUESTED_BYTES="$BETA_FETCH_REQUESTED_BYTES"
+V2_TRANSFERRED_BYTES="$BETA_FETCH_TRANSFERRED_BYTES"
+V2_REUSED_BYTES="$BETA_FETCH_REUSED_BYTES"
+[ "$V2_REQUESTED_OBJECTS" -eq "$V2_TRANSFERRED_OBJECTS" ] &&
+[ "$V2_TRANSFERRED_OBJECTS" -gt 0 ] && [ "$V2_REUSED_OBJECTS" -gt 0 ] &&
+[ "$V2_REQUESTED_BYTES" -eq "$V2_TRANSFERRED_BYTES" ] &&
+[ "$V2_TRANSFERRED_BYTES" -gt 0 ] && [ "$V2_REUSED_BYTES" -gt 0 ] &&
+[ "$V2_TRANSFERRED_BYTES" -lt "$C_V1_TRANSFERRED_BYTES" ] ||
+    beta_die "v2 did not reuse unchanged v1 carrier objects"
+beta_build_graph "$BETA_C" "$BETA_V2_ROOT"
+V2_RECEIPT="$BETA_BUILD_RECEIPT"
+[ "$BETA_BUILD_REBUILT" -eq 1 ] && [ "$BETA_BUILD_REUSED" -eq 2 ] &&
+[ "$BETA_BUILD_EVIDENCE_REUSED" -eq 2 ] &&
+[ "$V2_RECEIPT" != "$C_RECEIPT" ] ||
+    beta_die "v2 did not rebuild only its exact changed package"
+V2_ARCHIVE="${DDS[$BETA_C]}/zcode/installed/$BETA_V2_ROOT/lib/libsha3-note.a"
+[ -f "$V2_ARCHIVE" ] || beta_die "v2 archive missing"
+V2_ARTIFACT="$(openssl dgst -sha3-256 "$V2_ARCHIVE" | awk '{print $NF}')"
+[ "$V2_ARTIFACT" != "$C_ARTIFACT" ] ||
+    beta_die "v2 semantic implementation edit did not change its archive"
+
+beta_note "v3 moves the same offline author identity to interchangeable C"
+python3 - "$APP_SOURCE/include/stranger/note.h" <<'PY'
+import pathlib, sys
+path = pathlib.Path(sys.argv[1])
+text = path.read_text()
+old = "\n#endif\n"
+new = "\n#define STRANGER_NOTE_API_VERSION 3u\n\n#endif\n"
+if text.count(old) != 1:
+    raise SystemExit("v3 edit target is not exact")
+path.write_text(text.replace(old, new))
+PY
+beta_publish_version "$BETA_C" v3 "$APP_SOURCE" 5 29
+BETA_V3_ROOT="$BETA_VERSION_ROOT"
+BETA_V3_TRANSPORT="$BETA_VERSION_TRANSPORT"
+BETA_V3_RELEASE_ID="$BETA_VERSION_RELEASE_ID"
+BETA_V3_RECIPE_ROOT="$BETA_VERSION_RECIPE_ROOT"
+BETA_V3_LOCK_ROOT="$BETA_VERSION_LOCK_ROOT"
+BETA_V3_API_ROOT="$BETA_VERSION_API_ROOT"
+[ "$BETA_V3_ROOT" != "$BETA_PACKAGE_ROOT" ] &&
+[ "$BETA_V3_ROOT" != "$BETA_V2_ROOT" ] &&
+[ "$BETA_V3_RELEASE_ID" != "$BETA_V2_RELEASE_ID" ] ||
+    beta_die "v3 header bytes did not produce a third exact identity"
+[ "$BETA_V3_RECIPE_ROOT" = "$BETA_V1_RECIPE_ROOT" ] &&
+[ "$BETA_V3_LOCK_ROOT" != "$BETA_V1_LOCK_ROOT" ] &&
+[ "$BETA_V3_LOCK_ROOT" != "$BETA_V2_LOCK_ROOT" ] &&
+[ "$BETA_V3_API_ROOT" != "$BETA_V2_API_ROOT" ] ||
+    beta_die "v3 did not isolate its public API capsule change"
+beta_restart "$BETA_C" "$BETA_D"
+beta_publish_package "$BETA_C" "$BETA_V3_ROOT" "$BETA_V3_TRANSPORT" 1
+beta_fetch_pin "$BETA_D" "$BETA_V3_ROOT" "$BETA_V3_TRANSPORT"
+V3_REQUESTED_OBJECTS="$BETA_FETCH_REQUESTED_OBJECTS"
+V3_TRANSFERRED_OBJECTS="$BETA_FETCH_TRANSFERRED_OBJECTS"
+V3_REUSED_OBJECTS="$BETA_FETCH_REUSED_OBJECTS"
+V3_REQUESTED_BYTES="$BETA_FETCH_REQUESTED_BYTES"
+V3_TRANSFERRED_BYTES="$BETA_FETCH_TRANSFERRED_BYTES"
+V3_REUSED_BYTES="$BETA_FETCH_REUSED_BYTES"
+[ "$V3_REQUESTED_OBJECTS" -eq "$V3_TRANSFERRED_OBJECTS" ] &&
+[ "$V3_TRANSFERRED_OBJECTS" -gt 0 ] && [ "$V3_REUSED_OBJECTS" -gt 0 ] &&
+[ "$V3_REQUESTED_BYTES" -eq "$V3_TRANSFERRED_BYTES" ] &&
+[ "$V3_TRANSFERRED_BYTES" -gt 0 ] && [ "$V3_REUSED_BYTES" -gt 0 ] &&
+[ "$V3_TRANSFERRED_BYTES" -lt "$C_V1_TRANSFERRED_BYTES" ] ||
+    beta_die "v3 did not reuse unchanged package and dependency objects"
+beta_build_graph "$BETA_D" "$BETA_V3_ROOT"
+V3_RECEIPT="$BETA_BUILD_RECEIPT"
+[ "$BETA_BUILD_REBUILT" -eq 1 ] && [ "$BETA_BUILD_REUSED" -eq 2 ] &&
+[ "$BETA_BUILD_EVIDENCE_REUSED" -eq 2 ] &&
+[ "$V3_RECEIPT" != "$V2_RECEIPT" ] ||
+    beta_die "v3 did not rebuild only the exact header-change closure"
+V3_ARCHIVE="${DDS[$BETA_D]}/zcode/installed/$BETA_V3_ROOT/lib/libsha3-note.a"
+[ -f "$V3_ARCHIVE" ] || beta_die "v3 archive missing"
+V3_ARTIFACT="$(openssl dgst -sha3-256 "$V3_ARCHIVE" | awk '{print $NF}')"
+
+# All three signed author statements coexist. A higher sequence is evidence
+# of what this author said later, never permission to replace an exact root.
+VERSION_SEARCH="$(beta_native "$BETA_C" zcode package search \
+    --input='{"name_prefix":"stranger/sha3-note","limit":8}')"
+beta_ok "C version search" "$VERSION_SEARCH"
+[ "$(printf '%s' "$VERSION_SEARCH" | beta_jget \
+    'set(x["package_root"] for x in d["data"]["results"])==set(["'"$BETA_PACKAGE_ROOT"'","'"$BETA_V2_ROOT"'","'"$BETA_V3_ROOT"'"])')" = True ] &&
+[ "$(printf '%s' "$VERSION_SEARCH" | beta_jget \
+    'set(x["publisher_sequence"] for x in d["data"]["results"])==set([3,4,5])')" = True ] &&
+[ "$(printf '%s' "$VERSION_SEARCH" | beta_jget \
+    'len(set(x["publisher"] for x in d["data"]["results"]))')" -eq 1 ] ||
+    beta_die "signed package history did not preserve v1/v2/v3 distinctly"
+
+# A fresh B store asks for v1 by exact root after v2 and v3 exist. D must
+# serve v1 rather than silently substituting the highest author sequence.
+beta_reset_package_store "$BETA_B" b-after-v3-package-store "$BETA_D"
+beta_fetch_graph "$BETA_B"
+B_V1_SHOW="$(beta_native "$BETA_B" zcode package show \
+    --input="{\"root\":\"$BETA_PACKAGE_ROOT\"}")"
+beta_ok "B exact v1 after v3" "$B_V1_SHOW"
+[ "$(printf '%s' "$B_V1_SHOW" | beta_jget 'd["data"]["package_root"]')" = "$BETA_PACKAGE_ROOT" ] ||
+    beta_die "B silently substituted a successor for pinned v1"
+
+beta_note "exact byte revert recreates v1 identities and reuses all evidence"
+cp "$V1_NOTE_BACKUP" "$APP_SOURCE/src/note.c"
+cp "$V1_HEADER_BACKUP" "$APP_SOURCE/include/stranger/note.h"
+cmp -s "$APP_SOURCE/src/note.c" "$BETA_PACKAGE_DIR/src/note.c" &&
+cmp -s "$APP_SOURCE/include/stranger/note.h" \
+    "$BETA_PACKAGE_DIR/include/stranger/note.h" ||
+    beta_die "revert did not restore exact v1 source bytes"
+REVERT_PREP="$(beta_prepare "$APP_SOURCE" "$AUTHOR_PUB" 3)"
+beta_ok "exact revert prepare" "$REVERT_PREP"
+[ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["package_root"]')" = "$BETA_PACKAGE_ROOT" ] &&
+[ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["recipe_root"]')" = "$BETA_V1_RECIPE_ROOT" ] &&
+[ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["dependency_lock_root"]')" = "$BETA_V1_LOCK_ROOT" ] &&
+[ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["api_capsule_root"]')" = "$BETA_V1_API_ROOT" ] ||
+    beta_die "exact revert did not recreate all v1 semantic roots"
+REVERT_SIGNATURE="$(beta_sign_package "$REVERT_PREP" "$AUTHOR_KEY" \
+    "$BETA_AUTHOR_ROOT/revert.digest" "$BETA_AUTHOR_ROOT/revert.signature")"
+REVERT_SEAL="$("$NODE_BIN" zcode package dev seal \
+    --input="{\"release_body_hex\":\"$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["release_body_hex"]')\",\"signature_hex\":\"$REVERT_SIGNATURE\"}" \
+    2>/dev/null | tail -1)"
+beta_ok "exact revert seal" "$REVERT_SEAL"
+[ "$(printf '%s' "$REVERT_SEAL" | beta_jget 'd["data"]["release_id"]')" = "$PACKAGE_RELEASE_ID" ] ||
+    beta_die "exact revert did not recreate the original signed release"
+REVERT_STORE="$DHT_WORK/revert-identity-store"
+mkdir -p "$REVERT_STORE"
+REVERT_RELEASE="$(printf '%s' "$REVERT_SEAL" | beta_jget \
+    'd["data"]["release_hex"]')"
+REVERT_MANIFEST="$(printf '%s' "$REVERT_PREP" | beta_jget \
+    'd["data"]["manifest_hex"]')"
+REVERT_RECIPE="$(printf '%s' "$REVERT_PREP" | beta_jget \
+    'd["data"]["recipe_hex"]')"
+REVERT_PLAN="$("$NODE_BIN" -regtest zcode create \
+    --input="{\"mode\":\"plan\",\"release_hex\":\"$REVERT_RELEASE\",\"manifest_hex\":\"$REVERT_MANIFEST\",\"recipe_hex\":\"$REVERT_RECIPE\",\"dir\":\"$APP_SOURCE\",\"day\":15,\"datadir\":\"$REVERT_STORE\"}" \
+    2>/dev/null | tail -1)"
+beta_ok "exact revert carrier plan" "$REVERT_PLAN"
+REVERT_COMMIT="$("$NODE_BIN" -regtest zcode create \
+    --input="{\"mode\":\"commit\",\"release_hex\":\"$REVERT_RELEASE\",\"manifest_hex\":\"$REVERT_MANIFEST\",\"recipe_hex\":\"$REVERT_RECIPE\",\"dir\":\"$APP_SOURCE\",\"day\":15,\"datadir\":\"$REVERT_STORE\"}" \
+    2>/dev/null | tail -1)"
+beta_ok "exact revert carrier commit" "$REVERT_COMMIT"
+[ "$(printf '%s' "$REVERT_COMMIT" | beta_jget 'd["data"]["transport_root"]')" = "$BETA_PACKAGE_TRANSPORT" ] ||
+    beta_die "exact revert did not recreate the original carrier root"
+REVERT_FETCH="$(beta_native "$BETA_C" zcode package fetch \
+    --input="{\"root\":\"$BETA_PACKAGE_TRANSPORT\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}")"
+beta_ok "C exact revert fetch" "$REVERT_FETCH"
+[ "$(printf '%s' "$REVERT_FETCH" | beta_jget 'd["data"]["fetch_result"]')" = already-complete ] ||
+    beta_die "exact revert transferred bytes instead of using local v1"
+beta_build_graph "$BETA_C" "$BETA_PACKAGE_ROOT"
+REVERT_RECEIPT="$BETA_BUILD_RECEIPT"
+[ "$BETA_BUILD_REBUILT" -eq 0 ] && [ "$BETA_BUILD_REUSED" -eq 3 ] &&
+[ "$BETA_BUILD_EVIDENCE_REUSED" -eq 3 ] &&
+[ "$REVERT_RECEIPT" = "$C_RECEIPT" ] ||
+    beta_die "exact revert did not reuse the original bound build evidence"
+
 # Continue in the SAME physical-node harness with the shared core lane's
 # signer-owned async proof machinery. This adds two independent reproduction
 # statements without introducing a product-local worker, scheduler, transport,
@@ -510,4 +757,4 @@ D_SIGNER="$(zap_sql_value "$ZAP_D" "SELECT w.signer_pubkey FROM build_actions a 
 [ "$C_SIGNER" != "$D_SIGNER" ] ||
     beta_die "installed reproduction report lost its two distinct signers"
 
-printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_installed.v1\",\"verdict\":\"PASS\",\"installed_binary\":\"$C23_BETA_INSTALL_BIN/zclassic23\",\"repository_source_used_by_consumers\":false,\"package_root\":\"$BETA_PACKAGE_ROOT\",\"dependency_roots\":[\"$BETA_BASE_ROOT\",\"$BETA_SHA3_ROOT\"],\"author_pubkey\":\"$AUTHOR_PUB\",\"build_receipt_id\":\"$C_RECEIPT\",\"artifact_root\":\"$C_ARTIFACT\",\"fetch_inert\":true,\"explicit_builds\":2,\"publisher_disappearance_survived\":true,\"standalone_output\":\"$APP_OUTPUT\",\"signed_reproduction\":{\"actions\":[\"$C_STANDARD_ACTION\",\"$D_STANDARD_ACTION\"],\"output_root\":\"$C_OUTPUT\",\"signers\":[\"$C_SIGNER\",\"$D_SIGNER\"],\"distinct_signers\":2,\"requester_executed\":false}}"
+printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_installed.v1\",\"verdict\":\"PASS\",\"installed_binary\":\"$C23_BETA_INSTALL_BIN/zclassic23\",\"repository_source_used_by_consumers\":false,\"package_root\":\"$BETA_PACKAGE_ROOT\",\"dependency_roots\":[\"$BETA_BASE_ROOT\",\"$BETA_SHA3_ROOT\"],\"author_pubkey\":\"$AUTHOR_PUB\",\"build_receipt_id\":\"$C_RECEIPT\",\"artifact_root\":\"$C_ARTIFACT\",\"fetch_inert\":true,\"explicit_builds\":2,\"publisher_disappearance_survived\":true,\"standalone_output\":\"$APP_OUTPUT\",\"updates\":{\"v1\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"recipe_root\":\"$BETA_V1_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V1_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V1_API_ROOT\",\"artifact_root\":\"$C_ARTIFACT\"},\"v2\":{\"package_root\":\"$BETA_V2_ROOT\",\"transport_root\":\"$BETA_V2_TRANSPORT\",\"release_id\":\"$BETA_V2_RELEASE_ID\",\"recipe_root\":\"$BETA_V2_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V2_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V2_API_ROOT\",\"artifact_root\":\"$V2_ARTIFACT\",\"objects_requested\":$V2_REQUESTED_OBJECTS,\"objects_transferred\":$V2_TRANSFERRED_OBJECTS,\"objects_reused\":$V2_REUSED_OBJECTS,\"bytes_requested\":$V2_REQUESTED_BYTES,\"bytes_transferred\":$V2_TRANSFERRED_BYTES,\"bytes_reused\":$V2_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"v3\":{\"package_root\":\"$BETA_V3_ROOT\",\"transport_root\":\"$BETA_V3_TRANSPORT\",\"release_id\":\"$BETA_V3_RELEASE_ID\",\"recipe_root\":\"$BETA_V3_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V3_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V3_API_ROOT\",\"artifact_root\":\"$V3_ARTIFACT\",\"objects_requested\":$V3_REQUESTED_OBJECTS,\"objects_transferred\":$V3_TRANSFERRED_OBJECTS,\"objects_reused\":$V3_REUSED_OBJECTS,\"bytes_requested\":$V3_REQUESTED_BYTES,\"bytes_transferred\":$V3_TRANSFERRED_BYTES,\"bytes_reused\":$V3_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"revert\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"bytes_transferred\":0,\"packages_rebuilt\":0,\"packages_reused\":3,\"prior_evidence_reused\":3,\"build_receipt_id\":\"$REVERT_RECEIPT\"},\"v1_fetchable_after_v3\":true,\"author_sequence_is_advisory\":true,\"exact_root_local_policy\":true},\"signed_reproduction\":{\"actions\":[\"$C_STANDARD_ACTION\",\"$D_STANDARD_ACTION\"],\"output_root\":\"$C_OUTPUT\",\"signers\":[\"$C_SIGNER\",\"$D_SIGNER\"],\"distinct_signers\":2,\"requester_executed\":false}}"

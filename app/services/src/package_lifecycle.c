@@ -339,6 +339,20 @@ static struct zcl_result pkgl_commit_step(const struct pkgl_ctx *ctx,
     ZCL_CHECK(pkgl_installed_dir(ctx, ps->root, installed, sizeof(installed)));
     ZCL_CHECK(pkgl_exists(installed, &step->already_installed));
 
+    /* A receipt belongs to this package's own exact transitive closure, not
+     * to whichever larger application happened to request it. This keeps a
+     * dependency's evidence reusable when an unrelated downstream root
+     * changes while still binding every dependency byte. */
+    struct vcs_package_lock step_lock;
+    uint8_t step_lock_root[32];
+    struct zcl_result sl =
+        pkgl_lock_for(ctx, ps->root, &step_lock, step_lock_root);
+    if (!sl.ok) {
+        pkgl_note(step->rule, sizeof(step->rule), step->detail,
+                  sizeof(step->detail), "step-lock", sl.message);
+        return sl;
+    }
+
     if (!step->already_installed) {
         char vrule[PACKAGE_LIFECYCLE_RULE_MAX + 1u];
         struct zcl_result vr =
@@ -367,10 +381,35 @@ static struct zcl_result pkgl_commit_step(const struct pkgl_ctx *ctx,
                       sizeof(step->detail), "dependency-read", dr.message);
             return dr;
         }
-        ZCL_CHECK(pkgl_build_and_install(ctx, ps->root, rel, plan->lock_root,
+        ZCL_CHECK(pkgl_build_and_install(ctx, ps->root, rel, step_lock_root,
                                          (const uint8_t (*)[32])deps,
                                          dep_count, step));
     } else {
+        const struct vcs_package_release *rel =
+            pkgl_release_for_root(ctx, ps->root);
+        if (!rel) {
+            pkgl_note(step->rule, sizeof(step->rule), step->detail,
+                      sizeof(step->detail), "release-missing", ps->name);
+            return ZCL_ERR(-1, "no release envelope for %s", ps->name);
+        }
+        uint8_t deps[VCS_PACKAGE_BUILD_MAX_DEPS][32];
+        size_t dep_count = 0;
+        struct zcl_result dr =
+            pkgl_direct_deps(ctx, ps->root, deps, &dep_count);
+        if (!dr.ok) {
+            pkgl_note(step->rule, sizeof(step->rule), step->detail,
+                      sizeof(step->detail), "dependency-read", dr.message);
+            return dr;
+        }
+        struct zcl_result er = pkgl_verify_installed_receipt(
+            ctx, ps->root, rel, step_lock_root,
+            (const uint8_t (*)[32])deps, dep_count, step);
+        if (!er.ok) {
+            pkgl_note(step->rule, sizeof(step->rule), step->detail,
+                      sizeof(step->detail), "installed-receipt-invalid",
+                      er.message);
+            return er;
+        }
         step->state = VCS_PACKAGE_LIFECYCLE_INSTALLED;
     }
 
