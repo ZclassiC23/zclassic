@@ -1479,21 +1479,47 @@ static int t_swarm_provider_restricted(void)
         !sw_make_package(&p, 1, 29))
         return 1;
     struct vcs_zcode_dht_provider_route route = {
-        .authenticated_count = 1,
+        .authenticated_count = 0,
         .reachability_pending = 2,
         .policy_denied = 3,
     };
     struct json_value route_json;
     json_init(&route_json);
     boot_zcode_dht_provider_route_test_render(
-        &route_json, &route, VCS_SWARM_FETCH_NO_STORE);
-    SW_CHECK("provider: refused fetch is fail-closed JSON",
+        &route_json, &route, VCS_SWARM_FETCH_NO_PROVIDER);
+    SW_CHECK("provider: empty authenticated route is named fail-closed JSON",
              !json_get_bool_or(&route_json, "ok", true) &&
              strcmp(json_get_str(json_get(&route_json, "code")),
                     "FETCH_REFUSED") == 0 &&
              strcmp(json_get_str(json_get(&route_json, "fetch_result")),
-                    "no-store") == 0);
+                    "no-authenticated-provider") == 0 &&
+             json_get_int(json_get(&route_json,
+                                   "authenticated_providers")) == 0 &&
+             json_get_int(json_get(&route_json,
+                                   "reachability_pending")) == 2);
     json_free(&route_json);
+    const uint64_t zero_peers[2] = {0, 0};
+    SW_CHECK("provider: empty directed fetch is refused before registration",
+             vcs_swarm_engine_fetch_from(n.engine, p.root, SW_DAY, 1,
+                                         NULL, 0) ==
+                 VCS_SWARM_FETCH_NO_PROVIDER);
+    SW_CHECK("provider: zero-only bounded fetch has the same exact refusal",
+             vcs_swarm_engine_fetch_from_bounded(
+                 n.engine, p.root, SW_DAY, 1, zero_peers, 2, 4096) ==
+                 VCS_SWARM_FETCH_NO_PROVIDER);
+    struct vcs_swarm_download_status empty_status;
+    SW_CHECK("provider: refusal creates no active or resumable download",
+             vcs_swarm_engine_download_status(n.engine, p.root,
+                                              &empty_status) &&
+             empty_status.state == VCS_SWARM_DL_INACTIVE);
+    vcs_swarm_engine_free(n.engine);
+    n.engine = vcs_swarm_engine_create(n.store, n.book, n.zcode_dir,
+                                       sw_score_contributor, NULL);
+    SW_CHECK("provider: refusal leaves no record to reload",
+             n.engine != NULL &&
+             vcs_swarm_engine_download_status(n.engine, p.root,
+                                              &empty_status) &&
+             empty_status.state == VCS_SWARM_DL_INACTIVE);
     SW_CHECK("provider: both advertisers register",
              vcs_swarm_engine_peer_add(n.engine, bad, bad_key) &&
              vcs_swarm_engine_peer_add(n.engine, honest, honest_key));

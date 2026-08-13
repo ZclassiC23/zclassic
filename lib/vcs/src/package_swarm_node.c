@@ -1567,6 +1567,18 @@ struct vcs_swarm_frame_result vcs_swarm_engine_handle_frame(
     return res;
 }
 
+static enum vcs_swarm_fetch_result provider_input_result(
+    const uint64_t *provider_peers, size_t provider_count)
+{
+    if ((!provider_peers && provider_count) ||
+        provider_count > VCS_SWARM_PROVIDER_MAX)
+        return VCS_SWARM_FETCH_BAD_INPUT;
+    for (size_t i = 0; i < provider_count; i++)
+        if (provider_peers[i] != 0)
+            return VCS_SWARM_FETCH_OK;
+    return VCS_SWARM_FETCH_NO_PROVIDER;
+}
+
 static enum vcs_swarm_fetch_result swarm_fetch(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     int64_t day, uint64_t now, const uint64_t *provider_peers,
@@ -1578,6 +1590,12 @@ static enum vcs_swarm_fetch_result swarm_fetch(
     static const uint8_t zero[32] = {0};
     if (memcmp(package_root, zero, 32) == 0)
         return VCS_SWARM_FETCH_BAD_INPUT;
+    if (restricted) {
+        enum vcs_swarm_fetch_result input =
+            provider_input_result(provider_peers, provider_count);
+        if (input != VCS_SWARM_FETCH_OK)
+            return input;
+    }
     pthread_mutex_lock(&engine->lock);
     if (!engine->store) {
         pthread_mutex_unlock(&engine->lock);
@@ -1697,9 +1715,6 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from(
     int64_t day, uint64_t now, const uint64_t *provider_peers,
     size_t provider_count)
 {
-    if ((!provider_peers && provider_count) ||
-        provider_count > VCS_SWARM_PROVIDER_MAX)
-        return VCS_SWARM_FETCH_BAD_INPUT;
     return swarm_fetch(engine, package_root, day, now, provider_peers,
                        provider_count, true, 0);
 }
@@ -1708,8 +1723,7 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from_bounded(
     int64_t day, uint64_t now, const uint64_t *provider_peers,
     size_t provider_count, uint64_t maximum_package_bytes)
 {
-    if ((!provider_peers && provider_count) ||
-        provider_count > VCS_SWARM_PROVIDER_MAX || maximum_package_bytes == 0)
+    if (maximum_package_bytes == 0)
         return VCS_SWARM_FETCH_BAD_INPUT;
     return swarm_fetch(engine, package_root, day, now, provider_peers,
                        provider_count, true, maximum_package_bytes);

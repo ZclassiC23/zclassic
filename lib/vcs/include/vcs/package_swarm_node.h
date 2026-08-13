@@ -217,6 +217,7 @@ enum vcs_swarm_fetch_result {
     VCS_SWARM_FETCH_BYTE_LIMIT,    /* package exceeds caller-owned bound */
     VCS_SWARM_FETCH_BOUND_NOT_OWNED, /* existing work has a looser bound */
     VCS_SWARM_FETCH_BAD_INPUT,
+    VCS_SWARM_FETCH_NO_PROVIDER,   /* directed fetch has no usable peer */
 };
 const char *vcs_swarm_fetch_result_string(enum vcs_swarm_fetch_result r);
 
@@ -230,8 +231,10 @@ enum vcs_swarm_fetch_result vcs_swarm_engine_fetch(
 
 /* Provider-directed form used by semantic discovery. The root is permanently
  * marked restricted in its resumable record; only these current authenticated
- * transport peer handles may receive manifest/chunk WANTs. Re-invocation
- * replaces the transient handles after reconnect/restart. */
+ * transport peer handles may receive manifest/chunk WANTs. At least one
+ * nonzero authenticated handle is required; an empty/zero-only set is
+ * refused without creating resumable state. Re-invocation replaces the
+ * transient handles after reconnect/restart. */
 enum vcs_swarm_fetch_result vcs_swarm_engine_fetch_from(
     struct vcs_swarm_engine *engine, const uint8_t package_root[32],
     int64_t day, uint64_t now, const uint64_t *provider_peers,
