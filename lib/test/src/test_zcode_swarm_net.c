@@ -624,6 +624,30 @@ struct zwn_link {
     struct send_segment *sentinel;
 };
 
+#define ZWN_FIXTURE_MAX_NODES 4u
+#define ZWN_FIXTURE_MAX_LINKS 6u
+
+struct zwn_node_spec {
+    struct zwn_node *node;
+    const char *tag;
+};
+
+struct zwn_link_spec {
+    struct zwn_node *owner;
+    struct zwn_link *link;
+    uint8_t ip[4];
+    const char *name;
+};
+
+/* Owns every successfully constructed loopback node/link immediately. This
+ * keeps ASSERT's shared failure jump from bypassing topology teardown. */
+struct zwn_fixture {
+    struct zwn_node *nodes[ZWN_FIXTURE_MAX_NODES];
+    struct zwn_link *links[ZWN_FIXTURE_MAX_LINKS];
+    size_t node_count;
+    size_t link_count;
+};
+
 static struct vcs_zcode_dht_time zwn_dht_time(uint64_t now)
 {
     return (struct vcs_zcode_dht_time){
@@ -1142,11 +1166,7 @@ static void zwn_tick(struct msg_processor *mp, struct p2p_node *node,
 static bool zwn_node_init(struct zwn_node *z, const char *tag,
                           const struct chain_params *params)
 {
-    memset(&z->ms, 0, sizeof(z->ms));
-    memset(&z->mempool, 0, sizeof(z->mempool));
-    memset(&z->null_view, 0, sizeof(z->null_view));
-    memset(&z->nm, 0, sizeof(z->nm));
-    memset(&z->mp, 0, sizeof(z->mp));
+    memset(z, 0, sizeof(*z));
     main_state_init(&z->ms);
     tx_mempool_init(&z->mempool, 0);
     coins_view_cache_init(&z->coins, &z->null_view);
@@ -1165,12 +1185,28 @@ static bool zwn_node_init(struct zwn_node *z, const char *tag,
     z->store = vcs_package_store_open(
         z->datadir, VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
     z->book = vcs_service_book_load(z->zcode_dir);
-    if (!z->store || !z->book)
+    if (!z->store || !z->book) {
+        vcs_service_book_free(z->book);
+        vcs_package_store_close(z->store);
+        net_manager_free(&z->nm);
+        coins_view_cache_free(&z->coins);
+        tx_mempool_free(&z->mempool);
+        main_state_free(&z->ms);
         return false;
+    }
     z->engine = vcs_swarm_engine_create(z->store, z->book, z->zcode_dir,
                                         zwn_score, NULL);
-    if (!z->engine)
+    if (!z->engine) {
+        vcs_service_book_free(z->book);
+        vcs_package_store_close(z->store);
+        z->book = NULL;
+        z->store = NULL;
+        net_manager_free(&z->nm);
+        coins_view_cache_free(&z->coins);
+        tx_mempool_free(&z->mempool);
+        main_state_free(&z->ms);
         return false;
+    }
     msg_processor_set_zcode_swarm(&z->mp, zwn_frame, zwn_tick, z);
     return true;
 }
@@ -1210,6 +1246,7 @@ static bool zwn_link(struct zwn_node *owner, struct zwn_link *l,
      * reserves peer id 0 (the next_outbound "no filter" convention), so
      * loopback links take explicit nonzero ids. Distinct per owner. */
     static node_id_t next_id = 100;
+    memset(l, 0, sizeof(*l));
     struct net_address addr;
     memset(&addr, 0, sizeof(addr));
     memcpy(addr.svc.addr.ip, pchIPv4Prefix, 12);
@@ -1229,8 +1266,11 @@ static bool zwn_link(struct zwn_node *owner, struct zwn_link *l,
     l->node->state = PEER_HANDSHAKE_COMPLETE;
     l->sentinel = zcl_calloc(1, sizeof(*l->sentinel),
                              "zcode_swarm_net_sentinel");
-    if (!l->sentinel)
+    if (!l->sentinel) {
+        p2p_node_free(l->node);
+        l->node = NULL;
         return false;
+    }
     l->node->send_head = l->sentinel;
     l->node->send_tail = l->sentinel;
     l->node->send_offset = 0;
@@ -1239,6 +1279,8 @@ static bool zwn_link(struct zwn_node *owner, struct zwn_link *l,
 
 static void zwn_link_free(struct zwn_link *l)
 {
+    if (!l || !l->node)
+        return;
     send_segment_free(l->sentinel);
     l->node->send_head = NULL;
     l->node->send_tail = NULL;
@@ -1246,6 +1288,115 @@ static void zwn_link_free(struct zwn_link *l)
     p2p_node_free(l->node);
     l->node = NULL;
     l->sentinel = NULL;
+}
+
+static bool zwn_fixture_nodes(struct zwn_fixture *fixture,
+                              const struct chain_params *params,
+                              const struct zwn_node_spec *specs,
+                              size_t count)
+{
+    if (!fixture || !params || !specs ||
+        count > ZWN_FIXTURE_MAX_NODES - fixture->node_count)
+        return false;
+    for (size_t i = 0; i < count; i++) {
+        if (!specs[i].node || !specs[i].tag ||
+            !zwn_node_init(specs[i].node, specs[i].tag, params))
+            return false;
+        fixture->nodes[fixture->node_count++] = specs[i].node;
+    }
+    return true;
+}
+
+static bool zwn_fixture_links(struct zwn_fixture *fixture,
+                              const struct zwn_link_spec *specs,
+                              size_t count)
+{
+    if (!fixture || !specs ||
+        count > ZWN_FIXTURE_MAX_LINKS - fixture->link_count)
+        return false;
+    for (size_t i = 0; i < count; i++) {
+        if (!specs[i].owner || !specs[i].link || !specs[i].name ||
+            !zwn_link(specs[i].owner, specs[i].link,
+                      specs[i].ip[0], specs[i].ip[1], specs[i].ip[2],
+                      specs[i].ip[3], specs[i].name))
+            return false;
+        fixture->links[fixture->link_count++] = specs[i].link;
+    }
+    return true;
+}
+
+static void zwn_fixture_release_link(struct zwn_fixture *fixture,
+                                     struct zwn_link *link)
+{
+    if (!fixture || !link)
+        return;
+    for (size_t i = 0; i < fixture->link_count; i++) {
+        if (fixture->links[i] != link)
+            continue;
+        zwn_link_free(link);
+        fixture->links[i] = fixture->links[--fixture->link_count];
+        return;
+    }
+}
+
+static void zwn_fixture_release_node(struct zwn_fixture *fixture,
+                                     struct zwn_node *node)
+{
+    if (!fixture || !node)
+        return;
+    for (size_t i = 0; i < fixture->node_count; i++) {
+        if (fixture->nodes[i] != node)
+            continue;
+        zwn_node_free(node);
+        fixture->nodes[i] = fixture->nodes[--fixture->node_count];
+        return;
+    }
+}
+
+static void zwn_fixture_cleanup(struct zwn_fixture *fixture)
+{
+    if (!fixture)
+        return;
+    while (fixture->link_count > 0)
+        zwn_link_free(fixture->links[--fixture->link_count]);
+    while (fixture->node_count > 0)
+        zwn_node_free(fixture->nodes[--fixture->node_count]);
+}
+
+static bool zwn_fixture_abort_reacquire(const struct chain_params *params)
+{
+    struct zwn_fixture fixture = {0};
+    struct zwn_node a = {0}, b = {0};
+    struct zwn_link a_b = {0}, b_a = {0};
+    const struct zwn_node_spec nodes[] = {
+        {&a, "fixture-a"}, {&b, "fixture-b"},
+    };
+    const struct zwn_link_spec links[] = {
+        {&a, &a_b, {10, 2, 0, 1}, "fixture-b"},
+        {&b, &b_a, {10, 2, 0, 2}, "fixture-a"},
+    };
+    bool initialized = zwn_fixture_nodes(
+        &fixture, params, nodes, sizeof(nodes) / sizeof(nodes[0])) &&
+        zwn_fixture_links(
+            &fixture, links, sizeof(links) / sizeof(links[0]));
+
+    /* This is the ASSERT/goto boundary: cleanup must not depend on the
+     * scenario reaching its ordinary success epilogue. */
+    zwn_fixture_cleanup(&fixture);
+    bool released = fixture.node_count == 0 && fixture.link_count == 0 &&
+        !a.engine && !a.store && !a.book &&
+        !b.engine && !b.store && !b.book &&
+        !a_b.node && !a_b.sentinel && !b_a.node && !b_a.sentinel;
+    if (!initialized || !released)
+        return false;
+
+    initialized = zwn_fixture_nodes(
+        &fixture, params, nodes, sizeof(nodes) / sizeof(nodes[0])) &&
+        zwn_fixture_links(
+            &fixture, links, sizeof(links) / sizeof(links[0]));
+    zwn_fixture_cleanup(&fixture);
+    return initialized && fixture.node_count == 0 &&
+        fixture.link_count == 0;
 }
 
 /* Drain from_link's queued wire bytes into to_link's owner through the
@@ -1621,6 +1772,7 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
                            const struct chain_params *params)
 {
     int failures = 0;
+    struct zwn_fixture fixture = {0};
     const char *name =
         mode == ZWN_GOLDEN_PLAIN
             ? "golden: end-to-end verified fetch over real zpkgswm frames"
@@ -1640,27 +1792,43 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
         ASSERT(zwn_make_package(&pkg, file_count, 0x11));
 
         struct zwn_node a, b, a2;
-        ASSERT(zwn_node_init(&a, mode == ZWN_GOLDEN_PLAIN ? "ga" :
-                             mode == ZWN_GOLDEN_RESTART ? "ra" : "da",
-                             params));
-        ASSERT(zwn_node_init(&b, mode == ZWN_GOLDEN_PLAIN ? "gb" :
-                             mode == ZWN_GOLDEN_RESTART ? "rb" : "db",
-                             params));
+        const struct zwn_node_spec initial_nodes[] = {
+            {&a, mode == ZWN_GOLDEN_PLAIN ? "ga" :
+                 mode == ZWN_GOLDEN_RESTART ? "ra" : "da"},
+            {&b, mode == ZWN_GOLDEN_PLAIN ? "gb" :
+                 mode == ZWN_GOLDEN_RESTART ? "rb" : "db"},
+        };
+        ASSERT(zwn_fixture_nodes(&fixture, params, initial_nodes,
+                                 sizeof(initial_nodes) /
+                                     sizeof(initial_nodes[0])));
         ASSERT(zwn_store_package(a.store, &pkg));
 
         struct zwn_link a_b, b_a;
-        ASSERT(zwn_link(&a, &a_b, 5, 6, 7, 8, "peer-b"));
-        ASSERT(zwn_link(&b, &b_a, 1, 2, 3, 4, "peer-a"));
+        const struct zwn_link_spec initial_links[] = {
+            {&a, &a_b, {5, 6, 7, 8}, "peer-b"},
+            {&b, &b_a, {1, 2, 3, 4}, "peer-a"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, initial_links,
+                                 sizeof(initial_links) /
+                                     sizeof(initial_links[0])));
         ASSERT(zwn_meet_side(&a, &a_b));
         ASSERT(zwn_meet_side(&b, &b_a));
 
         struct zwn_link a2_b, b_a2;
         bool two_servers = mode == ZWN_GOLDEN_DISCONNECT;
         if (two_servers) {
-            ASSERT(zwn_node_init(&a2, "da2", params));
+            const struct zwn_node_spec extra_node[] = {{&a2, "da2"}};
+            ASSERT(zwn_fixture_nodes(&fixture, params, extra_node,
+                                     sizeof(extra_node) /
+                                         sizeof(extra_node[0])));
             ASSERT(zwn_store_package(a2.store, &pkg));
-            ASSERT(zwn_link(&a2, &a2_b, 9, 9, 9, 9, "peer-b"));
-            ASSERT(zwn_link(&b, &b_a2, 8, 8, 8, 8, "peer-a2"));
+            const struct zwn_link_spec extra_links[] = {
+                {&a2, &a2_b, {9, 9, 9, 9}, "peer-b"},
+                {&b, &b_a2, {8, 8, 8, 8}, "peer-a2"},
+            };
+            ASSERT(zwn_fixture_links(&fixture, extra_links,
+                                     sizeof(extra_links) /
+                                         sizeof(extra_links[0])));
             ASSERT(zwn_meet_side(&a2, &a2_b));
             ASSERT(zwn_meet_side(&b, &b_a2));
         }
@@ -1791,18 +1959,11 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
             ASSERT(served <= pkg.total_bytes + pkg.wire_len + slack);
         }
 
-        zwn_link_free(&a_b);
-        zwn_link_free(&b_a);
-        if (two_servers) {
-            zwn_link_free(&a2_b);
-            zwn_link_free(&b_a2);
-            zwn_node_free(&a2);
-        }
-        zwn_node_free(&a);
-        zwn_node_free(&b);
+        zwn_fixture_cleanup(&fixture);
         zwn_free_package(&pkg);
         PASS();
-    } _test_next:;
+    } _test_next:
+    zwn_fixture_cleanup(&fixture);
 
     return failures;
 }
@@ -1812,6 +1973,7 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
 static int zwn_t_sovereign_source_build(const struct chain_params *params)
 {
     int failures = 0;
+    struct zwn_fixture fixture = {0};
     TEST("proven C23 source: two providers feed a fresh Git-free checkout "
          "whose rebuilt binary matches the publisher SHA3") {
         char publisher[512], consumer_cas[512], checkout[512], checkout2[512];
@@ -2124,8 +2286,12 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
             &workspace_carrier, evidence_wires, evidence_lengths));
 
         struct zwn_node a, b, a2;
-        ASSERT(zwn_node_init(&a, "sa", params));
-        ASSERT(zwn_node_init(&a2, "sa2", params));
+        const struct zwn_node_spec provider_nodes[] = {
+            {&a, "sa"}, {&a2, "sa2"},
+        };
+        ASSERT(zwn_fixture_nodes(&fixture, params, provider_nodes,
+                                 sizeof(provider_nodes) /
+                                     sizeof(provider_nodes[0])));
         ASSERT(zwn_store_source_transport(a.store, &transport));
         ASSERT(vcs_package_store_pin(
                    a.store, transport.package_root, true) ==
@@ -2135,8 +2301,13 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
                    a.store, workspace_carrier.root, true) ==
                VCS_PACKAGE_STORE_OK);
         struct zwn_link a_a2, a2_a;
-        ASSERT(zwn_link(&a, &a_a2, 10, 1, 1, 2, "source-server-b"));
-        ASSERT(zwn_link(&a2, &a2_a, 10, 1, 1, 1, "source-server-a"));
+        const struct zwn_link_spec provider_links[] = {
+            {&a, &a_a2, {10, 1, 1, 2}, "source-server-b"},
+            {&a2, &a2_a, {10, 1, 1, 1}, "source-server-a"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, provider_links,
+                                 sizeof(provider_links) /
+                                     sizeof(provider_links[0])));
         ASSERT(zwn_meet_side(&a, &a_a2));
         ASSERT(zwn_meet_side(&a2, &a2_a));
         enum vcs_swarm_download_state state = VCS_SWARM_DL_INACTIVE;
@@ -2168,15 +2339,23 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         ASSERT(server_b_status.complete && server_b_status.pinned);
         vcs_swarm_engine_peer_drop(a.engine, (uint64_t)a_a2.node->id);
         vcs_swarm_engine_peer_drop(a2.engine, (uint64_t)a2_a.node->id);
-        zwn_link_free(&a_a2);
-        zwn_link_free(&a2_a);
+        zwn_fixture_release_link(&fixture, &a_a2);
+        zwn_fixture_release_link(&fixture, &a2_a);
 
-        ASSERT(zwn_node_init(&b, "sb", params));
+        const struct zwn_node_spec consumer_node[] = {{&b, "sb"}};
+        ASSERT(zwn_fixture_nodes(&fixture, params, consumer_node,
+                                 sizeof(consumer_node) /
+                                     sizeof(consumer_node[0])));
         struct zwn_link a_b, b_a, a2_b, b_a2;
-        ASSERT(zwn_link(&a, &a_b, 5, 6, 7, 8, "source-b"));
-        ASSERT(zwn_link(&b, &b_a, 1, 2, 3, 4, "source-a"));
-        ASSERT(zwn_link(&a2, &a2_b, 9, 9, 9, 9, "source-b"));
-        ASSERT(zwn_link(&b, &b_a2, 8, 8, 8, 8, "source-a2"));
+        const struct zwn_link_spec consumer_links[] = {
+            {&a, &a_b, {5, 6, 7, 8}, "source-b"},
+            {&b, &b_a, {1, 2, 3, 4}, "source-a"},
+            {&a2, &a2_b, {9, 9, 9, 9}, "source-b"},
+            {&b, &b_a2, {8, 8, 8, 8}, "source-a2"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, consumer_links,
+                                 sizeof(consumer_links) /
+                                     sizeof(consumer_links[0])));
         ASSERT(zwn_meet_side(&a, &a_b));
         ASSERT(zwn_meet_side(&b, &b_a));
         ASSERT(zwn_meet_side(&a2, &a2_b));
@@ -2635,13 +2814,7 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
                    &server_b_status));
         ASSERT(server_b_status.complete && server_b_status.pinned);
 
-        zwn_link_free(&a_b);
-        zwn_link_free(&b_a);
-        zwn_link_free(&a2_b);
-        zwn_link_free(&b_a2);
-        zwn_node_free(&a);
-        zwn_node_free(&a2);
-        zwn_node_free(&b);
+        zwn_fixture_cleanup(&fixture);
         zwn_free_package(&workspace_carrier);
         free(workspace_wire);
         free(first_release_wire);
@@ -2656,7 +2829,8 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
         test_rm_rf_recursive(consumer_build);
         test_rm_rf_recursive(consumer_build2);
         PASS();
-    } _test_next:;
+    } _test_next:
+    zwn_fixture_cleanup(&fixture);
     return failures;
 }
 
@@ -2666,6 +2840,7 @@ static int zwn_t_sovereign_source_build(const struct chain_params *params)
 static int zwn_t_package_lifecycle(const struct chain_params *params)
 {
     int failures = 0;
+    struct zwn_fixture fixture = {0};
     const struct zwn_package_scenario scenario = zwn_package_scenarios[0];
     TEST("parameterized signed C23 package graph: A publishes, B discovers, "
          "C and D fetch onward after A disappears") {
@@ -2690,10 +2865,12 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
         }
 
         struct zwn_node a, b, c, d;
-        ASSERT(zwn_node_init(&a, "pkg-a", params));
-        ASSERT(zwn_node_init(&b, "pkg-b", params));
-        ASSERT(zwn_node_init(&c, "pkg-c", params));
-        ASSERT(zwn_node_init(&d, "pkg-d", params));
+        const struct zwn_node_spec nodes[] = {
+            {&a, "pkg-a"}, {&b, "pkg-b"},
+            {&c, "pkg-c"}, {&d, "pkg-d"},
+        };
+        ASSERT(zwn_fixture_nodes(&fixture, params, nodes,
+                                 sizeof(nodes) / sizeof(nodes[0])));
         ASSERT(vcs_package_transport_store(
                    a.store, &transport, scenario.source_dir) ==
                VCS_PACKAGE_TRANSPORT_OK);
@@ -2716,8 +2893,13 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
             b.store, transport.package_root, &status));
 
         struct zwn_link a_b, b_a;
-        ASSERT(zwn_link(&a, &a_b, 10, 0, 0, 1, "package-b"));
-        ASSERT(zwn_link(&b, &b_a, 10, 0, 0, 2, "package-a"));
+        const struct zwn_link_spec a_b_links[] = {
+            {&a, &a_b, {10, 0, 0, 1}, "package-b"},
+            {&b, &b_a, {10, 0, 0, 2}, "package-a"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, a_b_links,
+                                 sizeof(a_b_links) /
+                                     sizeof(a_b_links[0])));
         ASSERT(zwn_meet_side_quiet(&a, &a_b));
         ASSERT(zwn_meet_side_quiet(&b, &b_a));
 
@@ -2807,13 +2989,18 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
 
         /* Publisher A is genuinely removed before C begins. B is now an
          * ordinary onward provider of the entire exact package graph. */
-        zwn_link_free(&a_b);
-        zwn_link_free(&b_a);
-        zwn_node_free(&a);
+        zwn_fixture_release_link(&fixture, &a_b);
+        zwn_fixture_release_link(&fixture, &b_a);
+        zwn_fixture_release_node(&fixture, &a);
 
         struct zwn_link b_c, c_b;
-        ASSERT(zwn_link(&b, &b_c, 10, 0, 0, 3, "package-c"));
-        ASSERT(zwn_link(&c, &c_b, 10, 0, 0, 4, "package-b"));
+        const struct zwn_link_spec b_c_links[] = {
+            {&b, &b_c, {10, 0, 0, 3}, "package-c"},
+            {&c, &c_b, {10, 0, 0, 4}, "package-b"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, b_c_links,
+                                 sizeof(b_c_links) /
+                                     sizeof(b_c_links[0])));
         ASSERT(zwn_meet_side_quiet(&b, &b_c));
         ASSERT(zwn_meet_side_quiet(&c, &c_b));
         memset(discovered, 0, sizeof(discovered));
@@ -2900,8 +3087,13 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
         /* C is another ordinary provider. D fetches and imports the same
          * graph without A or any repository/registry contact. */
         struct zwn_link c_d, d_c;
-        ASSERT(zwn_link(&c, &c_d, 10, 0, 0, 5, "package-d"));
-        ASSERT(zwn_link(&d, &d_c, 10, 0, 0, 6, "package-c"));
+        const struct zwn_link_spec c_d_links[] = {
+            {&c, &c_d, {10, 0, 0, 5}, "package-d"},
+            {&d, &d_c, {10, 0, 0, 6}, "package-c"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, c_d_links,
+                                 sizeof(c_d_links) /
+                                     sizeof(c_d_links[0])));
         ASSERT(zwn_meet_side_quiet(&c, &c_d));
         ASSERT(zwn_meet_side_quiet(&d, &d_c));
         for (size_t i = 0; i < ZWN_PACKAGE_SCENARIO_COUNT; i++) {
@@ -3192,13 +3384,7 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
         vcs_package_prepared_free(&header_prepared);
         vcs_package_transport_free(&source_transport);
         vcs_package_prepared_free(&source_prepared);
-        zwn_link_free(&c_d);
-        zwn_link_free(&d_c);
-        zwn_link_free(&b_c);
-        zwn_link_free(&c_b);
-        zwn_node_free(&b);
-        zwn_node_free(&c);
-        zwn_node_free(&d);
+        zwn_fixture_cleanup(&fixture);
         for (size_t i = 1; i < ZWN_PACKAGE_SCENARIO_COUNT; i++) {
             vcs_package_transport_free(&graph_transport[i - 1u]);
             vcs_package_prepared_free(&graph_prepared[i - 1u]);
@@ -3206,7 +3392,8 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
         vcs_package_transport_free(&transport);
         vcs_package_prepared_free(&prepared);
         PASS();
-    } _test_next:;
+    } _test_next:
+    zwn_fixture_cleanup(&fixture);
     return failures;
 }
 
@@ -3215,20 +3402,26 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
 static int zwn_t_malicious(const struct chain_params *params)
 {
     int failures = 0;
+    struct zwn_fixture fixture = {0};
     TEST("malicious server: wrong-hash chunks -> INVALID_CHUNK offence on "
          "the real peer object, no credit, nothing stored, named failure") {
         struct zwn_pkg pkg;
         ASSERT(zwn_make_package(&pkg, 4, 0x22));
 
         struct zwn_node a, b;
-        ASSERT(zwn_node_init(&a, "ma", params));
-        ASSERT(zwn_node_init(&b, "mb", params));
+        const struct zwn_node_spec nodes[] = {{&a, "ma"}, {&b, "mb"}};
+        ASSERT(zwn_fixture_nodes(&fixture, params, nodes,
+                                 sizeof(nodes) / sizeof(nodes[0])));
         ASSERT(zwn_store_package(a.store, &pkg));
         a.tamper_chunks = true;
 
         struct zwn_link a_b, b_a;
-        ASSERT(zwn_link(&a, &a_b, 5, 6, 7, 8, "peer-b"));
-        ASSERT(zwn_link(&b, &b_a, 1, 2, 3, 4, "peer-a"));
+        const struct zwn_link_spec links[] = {
+            {&a, &a_b, {5, 6, 7, 8}, "peer-b"},
+            {&b, &b_a, {1, 2, 3, 4}, "peer-a"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, links,
+                                 sizeof(links) / sizeof(links[0])));
         ASSERT(zwn_meet_side(&a, &a_b));
         ASSERT(zwn_meet_side(&b, &b_a));
 
@@ -3272,13 +3465,11 @@ static int zwn_t_malicious(const struct chain_params *params)
             ASSERT(kt.offence_total > 0);
         }
 
-        zwn_link_free(&a_b);
-        zwn_link_free(&b_a);
-        zwn_node_free(&a);
-        zwn_node_free(&b);
+        zwn_fixture_cleanup(&fixture);
         zwn_free_package(&pkg);
         PASS();
-    } _test_next:;
+    } _test_next:
+    zwn_fixture_cleanup(&fixture);
     return failures;
 }
 
@@ -3290,23 +3481,30 @@ static int zwn_t_malicious(const struct chain_params *params)
 static int zwn_t_corrupt_local_repair(const struct chain_params *params)
 {
     int failures = 0;
+    struct zwn_fixture fixture = {0};
     TEST("corrupt local chunk: quarantine then repair from the surviving "
          "provider over real zpkgswm frames") {
         struct zwn_pkg pkg;
         ASSERT(zwn_make_package(&pkg, 6, 0x2a));
 
         struct zwn_node a, b, a2;
-        ASSERT(zwn_node_init(&a, "ca", params));
-        ASSERT(zwn_node_init(&a2, "ca2", params));
-        ASSERT(zwn_node_init(&b, "cb", params));
+        const struct zwn_node_spec nodes[] = {
+            {&a, "ca"}, {&a2, "ca2"}, {&b, "cb"},
+        };
+        ASSERT(zwn_fixture_nodes(&fixture, params, nodes,
+                                 sizeof(nodes) / sizeof(nodes[0])));
         ASSERT(zwn_store_package(a.store, &pkg));
         ASSERT(zwn_store_package(a2.store, &pkg));
 
         struct zwn_link a_b, b_a, a2_b, b_a2;
-        ASSERT(zwn_link(&a, &a_b, 5, 6, 7, 8, "peer-b"));
-        ASSERT(zwn_link(&b, &b_a, 1, 2, 3, 4, "peer-a"));
-        ASSERT(zwn_link(&a2, &a2_b, 9, 9, 9, 9, "peer-b"));
-        ASSERT(zwn_link(&b, &b_a2, 8, 8, 8, 8, "peer-a2"));
+        const struct zwn_link_spec links[] = {
+            {&a, &a_b, {5, 6, 7, 8}, "peer-b"},
+            {&b, &b_a, {1, 2, 3, 4}, "peer-a"},
+            {&a2, &a2_b, {9, 9, 9, 9}, "peer-b"},
+            {&b, &b_a2, {8, 8, 8, 8}, "peer-a2"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, links,
+                                 sizeof(links) / sizeof(links[0])));
         ASSERT(zwn_meet_side(&a, &a_b));
         ASSERT(zwn_meet_side(&b, &b_a));
         ASSERT(zwn_meet_side(&a2, &a2_b));
@@ -3363,16 +3561,11 @@ static int zwn_t_corrupt_local_repair(const struct chain_params *params)
         ASSERT(zwn_store_matches(b.store, &pkg));
         ASSERT(b_a2.node->misbehavior == 0);
 
-        zwn_link_free(&a_b);
-        zwn_link_free(&b_a);
-        zwn_link_free(&a2_b);
-        zwn_link_free(&b_a2);
-        zwn_node_free(&a);
-        zwn_node_free(&a2);
-        zwn_node_free(&b);
+        zwn_fixture_cleanup(&fixture);
         zwn_free_package(&pkg);
         PASS();
-    } _test_next:;
+    } _test_next:
+    zwn_fixture_cleanup(&fixture);
     return failures;
 }
 
@@ -3381,17 +3574,23 @@ static int zwn_t_corrupt_local_repair(const struct chain_params *params)
 static int zwn_t_unrequested(const struct chain_params *params)
 {
     int failures = 0;
+    struct zwn_fixture fixture = {0};
     TEST("unrequested DATA: UNREQUESTED offence on the wire, no credit") {
         struct zwn_pkg pkg;
         ASSERT(zwn_make_package(&pkg, 2, 0x33));
 
         struct zwn_node a, b;
-        ASSERT(zwn_node_init(&a, "ua", params));
-        ASSERT(zwn_node_init(&b, "ub", params));
+        const struct zwn_node_spec nodes[] = {{&a, "ua"}, {&b, "ub"}};
+        ASSERT(zwn_fixture_nodes(&fixture, params, nodes,
+                                 sizeof(nodes) / sizeof(nodes[0])));
 
         struct zwn_link a_b, b_a;
-        ASSERT(zwn_link(&a, &a_b, 5, 6, 7, 8, "peer-b"));
-        ASSERT(zwn_link(&b, &b_a, 1, 2, 3, 4, "peer-a"));
+        const struct zwn_link_spec links[] = {
+            {&a, &a_b, {5, 6, 7, 8}, "peer-b"},
+            {&b, &b_a, {1, 2, 3, 4}, "peer-a"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, links,
+                                 sizeof(links) / sizeof(links[0])));
         ASSERT(zwn_meet_side(&a, &a_b));
         ASSERT(zwn_meet_side(&b, &b_a));
 
@@ -3427,13 +3626,11 @@ static int zwn_t_unrequested(const struct chain_params *params)
             ASSERT(kt.offence_total > 0);
         }
 
-        zwn_link_free(&a_b);
-        zwn_link_free(&b_a);
-        zwn_node_free(&a);
-        zwn_node_free(&b);
+        zwn_fixture_cleanup(&fixture);
         zwn_free_package(&pkg);
         PASS();
-    } _test_next:;
+    } _test_next:
+    zwn_fixture_cleanup(&fixture);
 
     return failures;
 }
@@ -3445,6 +3642,12 @@ int test_zcode_swarm_net(void)
            sizeof(g_zwn_sovereign_receipt));
     chain_params_select(CHAIN_MAIN);
     const struct chain_params *params = chain_params_get();
+
+    TEST("parameterized multi-node fixture releases an aborted topology "
+         "and can reacquire it") {
+        ASSERT(zwn_fixture_abort_reacquire(params));
+        PASS();
+    } _test_next:;
 
     failures += zwn_test_golden(ZWN_GOLDEN_PLAIN, params);
     failures += zwn_test_golden(ZWN_GOLDEN_RESTART, params);
