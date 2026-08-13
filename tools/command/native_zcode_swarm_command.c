@@ -395,8 +395,20 @@ static void zw_handle_pin(const struct zcl_command_request *request,
         return;
     }
 
-    struct vcs_package_store *store = vcs_package_store_open(
-        zw_datadir(request), vcs_package_store_quota_bytes());
+    /* A live daemon owns one store and may be writing CAS temp files while
+     * this status/plan runs. Borrow that handle for the node's implicit
+     * datadir; opening a second recovery owner over the same files can sweep
+     * or GC state that belongs to the live engine. Explicit offline datadirs
+     * retain the one-shot owned-store path. */
+    bool own_store = false;
+    struct vcs_package_store *store =
+        zw_input_str(request->input, "datadir")
+            ? NULL : vcs_package_store_global();
+    if (!store) {
+        store = vcs_package_store_open(
+            zw_datadir(request), vcs_package_store_quota_bytes());
+        own_store = true;
+    }
     if (!store) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "NO_STORE",
@@ -408,7 +420,7 @@ static void zw_handle_pin(const struct zcl_command_request *request,
     memset(&st, 0, sizeof(st));
     bool have_status = vcs_package_store_package_status(store, root, &st);
     if (!have_status) {
-        vcs_package_store_close(store);
+        if (own_store) vcs_package_store_close(store);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_PACKAGE",
                                "plan", false, true,
@@ -429,7 +441,7 @@ static void zw_handle_pin(const struct zcl_command_request *request,
         uint8_t supplied[32], difference = 0;
         if (!supplied_hex || strlen(supplied_hex) != 64 ||
             !zcl_hex_decode_lower(supplied_hex, supplied, 32)) {
-            vcs_package_store_close(store);
+            if (own_store) vcs_package_store_close(store);
             zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                    ZCL_COMMAND_EXIT_INVALID,
                                    "INVALID_PLAN_TOKEN", "commit", false,
@@ -440,7 +452,7 @@ static void zw_handle_pin(const struct zcl_command_request *request,
         for (size_t i = 0; i < 32; i++)
             difference |= supplied[i] ^ token[i];
         if (difference) {
-            vcs_package_store_close(store);
+            if (own_store) vcs_package_store_close(store);
             zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                    ZCL_COMMAND_EXIT_INVALID, "STALE_PLAN",
                                    "commit", false, true,
@@ -451,7 +463,7 @@ static void zw_handle_pin(const struct zcl_command_request *request,
         memset(&st, 0, sizeof(st));
         have_status = vcs_package_store_package_status(store, root, &st);
     }
-    vcs_package_store_close(store);
+    if (own_store) vcs_package_store_close(store);
 
     if (r != VCS_PACKAGE_STORE_OK) {
         const char *code = "STORE_IO";

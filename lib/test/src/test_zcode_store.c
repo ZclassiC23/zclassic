@@ -663,13 +663,25 @@ static int t_store_recovery(void)
                  VCS_PACKAGE_STORE_OK);
     vcs_package_store_close(s);
 
-    /* Crash debris: a torn temp write and an orphan CAS object. */
-    char debris[512];
-    zs_store_path(debris, sizeof(debris), dd, "cas/torn.zstmp.1.1");
+    /* Crash debris: a dead-owner torn temp, a live-owner in-flight temp,
+     * and an orphan CAS object. Recovery must never unlink another live
+     * store owner's atomic write. */
+    char debris[512], live_temp[512], live_suffix[96];
+    zs_store_path(debris, sizeof(debris), dd,
+                  "cas/torn.zstmp.2147483647.1");
     FILE *f = fopen(debris, "wb");
     ZS_CHECK("recovery: temp debris planted", f != NULL);
     if (f) {
         fwrite("x", 1, 1, f);
+        fclose(f);
+    }
+    snprintf(live_suffix, sizeof(live_suffix),
+             "cas/live.zstmp.%ld.2", (long)getpid());
+    zs_store_path(live_temp, sizeof(live_temp), dd, live_suffix);
+    f = fopen(live_temp, "wb");
+    ZS_CHECK("recovery: live-owner temp planted", f != NULL);
+    if (f) {
+        fwrite("active", 1, 6, f);
         fclose(f);
     }
     char orphan_hex[65];
@@ -695,6 +707,9 @@ static int t_store_recovery(void)
         return failures;
     }
     ZS_CHECK("recovery: torn temp swept", !zs_path_exists(debris));
+    ZS_CHECK("recovery: live-owner temp is not swept",
+             zs_path_exists(live_temp));
+    (void)unlink(live_temp);
     ZS_CHECK("recovery: orphan chunk GC'd", !zs_path_exists(orphan));
     struct vcs_package_store_status st;
     ZS_CHECK("recovery: staging resumes (manifest + chunk kept)",

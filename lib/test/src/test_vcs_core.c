@@ -192,6 +192,9 @@ static int t_source_bundle(void)
              vc_write(source, "src/a.c", "int a(void) { return 1; }\n") &&
              vc_write(source, "include/a.h", "int a(void);\n") &&
              vc_write(source, "run.sh", "#!/bin/sh\ntouch should-not-exist\n") &&
+             vc_write(source, "vendor/sqlite3.c", "generated amalgamation") &&
+             vc_write(source, "vendor/include/zlib.h", "generated zlib header") &&
+             vc_write(source, "vendor/include/zconf.h", "generated config") &&
              vc_write(source, "vendor/.cache/leveldb-1.23.tar.gz", "leveldb") &&
              vc_write(source, "vendor/.cache/libevent-2.1.12.tar.gz", "libevent") &&
              vc_write(source, "vendor/.cache/openssl-3.0.16.tar.gz", "openssl") &&
@@ -208,7 +211,7 @@ static int t_source_bundle(void)
     uint8_t *first_wire = NULL;
     size_t first_wire_len = 0;
     struct vcs_source_bundle_metrics created;
-    VC_CHECK("source bundle creates compressed transport",
+    VC_CHECK("source bundle excludes cache and generated vendor outputs",
              vcs_source_bundle_create(source, first_root, &first_wire,
                                       &first_wire_len, &created) ==
                  VCS_SOURCE_BUNDLE_OK &&

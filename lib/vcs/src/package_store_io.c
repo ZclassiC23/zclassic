@@ -17,6 +17,7 @@
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -318,7 +319,19 @@ static void store_sweep_temps(struct vcs_package_store *store,
         if (S_ISDIR(st.st_mode)) {
             store_sweep_temps(store, child);
         } else if (strstr(ent->d_name, STORE_TEMP_SUFFIX ".") != NULL) {
-            if (unlink(child) == 0)
+            const char *owner_text = strstr(
+                ent->d_name, STORE_TEMP_SUFFIX ".");
+            long owner = 0;
+            unsigned long long sequence = 0;
+            int consumed = 0;
+            bool owned_by_live_process = owner_text &&
+                sscanf(owner_text + sizeof(STORE_TEMP_SUFFIX),
+                       "%ld.%llu%n", &owner, &sequence, &consumed) == 2 &&
+                owner > 0 &&
+                owner_text[sizeof(STORE_TEMP_SUFFIX) + consumed] == '\0' &&
+                (kill((pid_t)owner, 0) == 0 || errno == EPERM);
+            (void)sequence;
+            if (!owned_by_live_process && unlink(child) == 0)
                 LOG_INFO(STORE_LOG, "swept leftover temp %s", child);
         }
     }

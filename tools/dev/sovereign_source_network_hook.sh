@@ -25,7 +25,10 @@ ssn_native() {
 }
 
 ssn_local() {
-    "$NODE_BIN" "$@" 2>/dev/null | tail -1
+    # Native leaves return their structured refusal with a nonzero exit. Keep
+    # that exact result available to ssn_require_ok so a failed boundary is
+    # named instead of disappearing through the harness's `set -e` policy.
+    "$NODE_BIN" "$@" 2>/dev/null | tail -1 || true
 }
 
 ssn_require_ok() {
@@ -51,9 +54,9 @@ ssn_restart_role() {
             connects+=("127.0.0.1:${PORTS[${ORDER[1]}]}")
         fi
     fi
-    PIDS[$role]="$(dht_spawn "${DDS[$role]}" "${PORTS[$role]}" \
+    dht_spawn "PIDS[$role]" "${DDS[$role]}" "${PORTS[$role]}" \
         "${RPCS[$role]}" "${FSPORTS[$role]}" "${HTTPSPORTS[$role]}" \
-        "${connects[@]}")"
+        "${connects[@]}"
     [ "$role" -eq 0 ] && DHT_PGID_A="${PIDS[$role]}"
     [ "$role" -eq 1 ] && DHT_PGID_B="${PIDS[$role]}"
     DHT_EXTRA_PGIDS=("${PIDS[@]}")
@@ -188,17 +191,17 @@ done
 
 # Publisher-only source preparation. Git is allowed here solely to select the
 # accepted local commit; no host or consumer below receives a path into this
-# tree. The sole tracked symlink is normalized to the target bytes because the
-# canonical package grammar intentionally permits regular files only.
+# tree. The archive already contains regular, canonical AGENTS.md and CLAUDE.md
+# files, so their distinct model-neutral contract/adapter bytes are preserved.
 SSN_SOURCE="$DHT_WORK/sovereign-source-envelope"
 mkdir -p "$SSN_SOURCE/zclassic23" "$SSN_SOURCE/include" \
     "$SSN_SOURCE/src" "$SSN_SOURCE/tests" "$SSN_SOURCE/vendor/.cache" \
     "$SSN_SOURCE/zclassic23/vendor/.cache"
 git -C "$REPO_ROOT" archive HEAD | tar -x -C "$SSN_SOURCE/zclassic23"
-[ -L "$SSN_SOURCE/zclassic23/AGENTS.md" ] ||
-    ssn_die "publisher archive lost the expected AGENTS.md symlink"
-unlink "$SSN_SOURCE/zclassic23/AGENTS.md"
-cp "$SSN_SOURCE/zclassic23/CLAUDE.md" "$SSN_SOURCE/zclassic23/AGENTS.md"
+[ -f "$SSN_SOURCE/zclassic23/AGENTS.md" ] ||
+    ssn_die "publisher archive is missing canonical AGENTS.md"
+[ -f "$SSN_SOURCE/zclassic23/CLAUDE.md" ] ||
+    ssn_die "publisher archive is missing the Claude adapter"
 cp "$SSN_SOURCE/zclassic23/LICENSE" "$SSN_SOURCE/LICENSE"
 for archive in \
     leveldb-1.23.tar.gz \
@@ -216,11 +219,10 @@ done
 [ "$(find "$SSN_SOURCE/vendor/.cache" -maxdepth 1 -type f | wc -l)" -eq 5 ] ||
     ssn_die "publisher does not have the five pinned offline inputs"
 
-# The exact Zclassic23 source identity includes the ignored headers generated
-# by pinned OpenSSL/zlib inputs. Produce them before human acceptance, using
-# only the five carried archives. The package transport carries those accepted
-# headers as source bytes and carries the upstream archives separately so a
-# blank consumer can independently regenerate the libraries and same headers.
+# Prove the five carried archives can prepare the vendor tree offline before
+# asking a human to accept anything. This is preflight evidence, not source:
+# generated libraries, amalgamations, headers, and the duplicate nested cache
+# must not enter the immutable task that also carries those exact archives.
 SSN_NO_GIT_BIN="$DHT_WORK/no-git-bin"
 mkdir -p "$SSN_NO_GIT_BIN"
 ln -sf /bin/false "$SSN_NO_GIT_BIN/git"
@@ -243,6 +245,13 @@ fi
 if [ -d "$SSN_SOURCE/zclassic23/.zvcs" ]; then
     mv "$SSN_SOURCE/zclassic23/.zvcs" "$DHT_WORK/pre-vendor-zvcs"
 fi
+mv "$SSN_SOURCE/zclassic23" "$DHT_WORK/publisher-vendor-preflight"
+mkdir -p "$SSN_SOURCE/zclassic23"
+git -C "$REPO_ROOT" archive HEAD | tar -x -C "$SSN_SOURCE/zclassic23"
+[ -f "$SSN_SOURCE/zclassic23/AGENTS.md" ] ||
+    ssn_die "clean publisher archive is missing canonical AGENTS.md"
+[ -f "$SSN_SOURCE/zclassic23/CLAUDE.md" ] ||
+    ssn_die "clean publisher archive is missing the Claude adapter"
 
 printf '%s\n' '{"schema":1,"name":"zclassic23/sovereign-source-envelope","semver":"0.1.0-dev.1","language":"c23","license":"Apache-2.0","include_dir":"include","source_dir":"src","dependencies":[]}' \
     >"$SSN_SOURCE/zcode-package.json"
@@ -260,6 +269,38 @@ printf '%s\n' '#include "source_envelope.h"' '' \
 START="$(ssn_local zcode.work.start --input="{\"workspace\":\"$SSN_SOURCE\",\"goal\":\"Accept the exact enclosed Zclassic23 source and root license for sovereign P2P publication\",\"profile\":\"quick\"}")"
 ssn_require_ok "work start" "$START"
 TASK_ROOT="$(ssn_json "$START" 'd["data"]["expert"]["task_root"]')"
+
+# Build the publisher reference after immutable task creation but before its
+# proof receipts. A whole-program source build can take longer than the quick
+# profile's proof-freshness window on a loaded host; doing it first keeps the
+# later human acceptance fresh without extending or bypassing that policy. The
+# task's captured source predates these build outputs, as did the historical
+# post-acceptance ordering. Build in a separate exact archive so no generated
+# dependency byte can mutate the planned task workspace. Reuse only the
+# locally preflighted vendor tree; the later consumer independently rebuilds
+# the same tree from carrier bytes.
+PUBLISHER_BUILD_SOURCE="$DHT_WORK/publisher-reference-source"
+mkdir -p "$PUBLISHER_BUILD_SOURCE"
+git -C "$REPO_ROOT" archive HEAD | tar -x -C "$PUBLISHER_BUILD_SOURCE"
+mv "$PUBLISHER_BUILD_SOURCE/vendor" "$DHT_WORK/publisher-clean-vendor"
+cp -a "$DHT_WORK/publisher-vendor-preflight/vendor" \
+    "$PUBLISHER_BUILD_SOURCE/vendor"
+BUILD_CAPTURE="$(ssn_local zcode.workspace.source.capture \
+    --input="{\"workspace\":\"$PUBLISHER_BUILD_SOURCE\"}")"
+ssn_require_ok "publisher build-source capture" "$BUILD_CAPTURE"
+BUILD_SOURCE_ROOT="$(ssn_json "$BUILD_CAPTURE" 'd["data"]["source_root"]')"
+PUBLISHER_REFERENCE="$DHT_WORK/publisher-reference-zclassic23"
+if ! PATH="$SSN_NO_GIT_BIN:$PATH" \
+    ZCL_SOVEREIGN_SOURCE_ROOT="$BUILD_SOURCE_ROOT" \
+    ZCL_SOVEREIGN_VERIFY_BIN="$NODE_BIN" ZCL_VENDOR_OFFLINE=1 \
+    make -C "$PUBLISHER_BUILD_SOURCE" -j"$(nproc)" zclassic23 \
+    >"$DHT_WORK/publisher-reference-build.log" 2>&1; then
+    ssn_die "publisher reference binary did not build from accepted source"
+fi
+cp "$PUBLISHER_BUILD_SOURCE/build/bin/zclassic23" "$PUBLISHER_REFERENCE"
+chmod 0555 "$PUBLISHER_REFERENCE"
+PUBLISHER_BINARY_SHA256="$(sha256sum "$PUBLISHER_REFERENCE" | awk '{print $1}')"
+
 EXPORT="$(ssn_local zcode.work.run --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"adapter\":\"manual\"}")"
 ssn_require_ok "manual candidate export" "$EXPORT"
 CANDIDATE_DIR="$(ssn_json "$EXPORT" 'd["data"]["candidate_workspace"]')"
@@ -289,25 +330,6 @@ old='#include "source_envelope.h"\n\n'
 assert b.count(old)==1
 p.write_text(b.replace(old, old+'/* Explicit human acceptance of this inert source envelope. */\n', 1))
 PY
-
-# Build the publisher reference from the exact accepted nested C23 tree. The
-# outer accepted root binds this subtree; this separately rederived inner root
-# is the Makefile's sovereign source-admission coordinate.
-BUILD_CAPTURE="$(ssn_local zcode.workspace.source.capture \
-    --input="{\"workspace\":\"$SSN_SOURCE/zclassic23\"}")"
-ssn_require_ok "publisher build-source capture" "$BUILD_CAPTURE"
-BUILD_SOURCE_ROOT="$(ssn_json "$BUILD_CAPTURE" 'd["data"]["source_root"]')"
-PUBLISHER_REFERENCE="$DHT_WORK/publisher-reference-zclassic23"
-if ! PATH="$SSN_NO_GIT_BIN:$PATH" \
-    ZCL_SOVEREIGN_SOURCE_ROOT="$BUILD_SOURCE_ROOT" \
-    ZCL_SOVEREIGN_VERIFY_BIN="$NODE_BIN" ZCL_VENDOR_OFFLINE=1 \
-    make -C "$SSN_SOURCE/zclassic23" -j"$(nproc)" zclassic23 \
-    >"$DHT_WORK/publisher-reference-build.log" 2>&1; then
-    ssn_die "publisher reference binary did not build from accepted source"
-fi
-cp "$SSN_SOURCE/zclassic23/build/bin/zclassic23" "$PUBLISHER_REFERENCE"
-chmod 0555 "$PUBLISHER_REFERENCE"
-PUBLISHER_BINARY_SHA256="$(sha256sum "$PUBLISHER_REFERENCE" | awk '{print $1}')"
 
 # Offline publisher identity and detached signature. The secret is a 32-byte
 # mode-0600 file used only through inherited descriptors; it never reaches a
