@@ -187,6 +187,54 @@ int test_utxo_mirror_sync(void)
     sqlite3 *pdb = progress_store_db();
     UMS_CHECK("coins_kv schema", coins_kv_ensure_schema(pdb));
 
+    /* Empty scriptPubKeys are consensus-valid. A NULL C pointer with length
+     * zero must persist as a zero-length BLOB, never SQL NULL (which violates
+     * the mirror schema and used to wedge every wholesale rebuild after a
+     * `generate` coin entered coins_kv). Exercise both model write paths. */
+    {
+        struct db_utxo empty;
+        memset(&empty, 0, sizeof(empty));
+        ums_txid(empty.txid, 0xEE);
+        empty.value = 1;
+        empty.height = 1;
+        empty.is_coinbase = true;
+        empty.script_type = SCRIPT_OTHER;
+        UMS_CHECK("empty script lifecycle save persists",
+                  db_utxo_save(&ndb, &empty));
+        sqlite3_stmt *q = NULL;
+        bool blob_ok = sqlite3_prepare_v2(ndb.db,
+            "SELECT typeof(script),length(script) FROM utxos "
+            "WHERE txid=? AND vout=0", -1, &q, NULL) == SQLITE_OK;
+        if (blob_ok) {
+            sqlite3_bind_blob(q, 1, empty.txid, 32, SQLITE_STATIC);
+            blob_ok = sqlite3_step(q) == SQLITE_ROW &&
+                strcmp((const char *)sqlite3_column_text(q, 0), "blob") == 0 &&
+                sqlite3_column_int(q, 1) == 0;
+        }
+        sqlite3_finalize(q);
+        UMS_CHECK("empty script lifecycle value is zero-length BLOB", blob_ok);
+        UMS_CHECK("remove empty lifecycle fixture",
+                  db_utxo_delete(&ndb, empty.txid, 0));
+
+        empty.vout = 1;
+        UMS_CHECK("empty script bulk insert persists",
+                  db_utxo_insert_raw(&ndb, &empty));
+        q = NULL;
+        blob_ok = sqlite3_prepare_v2(ndb.db,
+            "SELECT typeof(script),length(script) FROM utxos "
+            "WHERE txid=? AND vout=1", -1, &q, NULL) == SQLITE_OK;
+        if (blob_ok) {
+            sqlite3_bind_blob(q, 1, empty.txid, 32, SQLITE_STATIC);
+            blob_ok = sqlite3_step(q) == SQLITE_ROW &&
+                strcmp((const char *)sqlite3_column_text(q, 0), "blob") == 0 &&
+                sqlite3_column_int(q, 1) == 0;
+        }
+        sqlite3_finalize(q);
+        UMS_CHECK("empty script bulk value is zero-length BLOB", blob_ok);
+        UMS_CHECK("remove empty bulk fixture",
+                  db_utxo_delete(&ndb, empty.txid, 1));
+    }
+
     /* ── Fixture: a FROZEN mirror (2 rows at h=100) while coins_kv holds the
      * live set (4 coins through h=104) — the exact cold-import-freeze shape. */
     UMS_CHECK("seed frozen mirror tag=0x11", ums_seed_mirror_row(&ndb, 0x11, 100));

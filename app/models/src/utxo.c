@@ -64,6 +64,18 @@ static void utxo_init_hooks(void)
     done = true;
 }
 
+/* SQLite interprets a NULL pointer passed to sqlite3_bind_blob() as SQL NULL,
+ * even when the declared byte length is zero. Empty scriptPubKeys are valid
+ * consensus data and the mirror schema correctly requires a BLOB, so preserve
+ * that distinction at the model boundary for both lifecycle and bulk writes. */
+static int utxo_bind_script(sqlite3_stmt *stmt, int pos,
+                            const struct db_utxo *u)
+{
+    if (u->script_len == 0)
+        return sqlite3_bind_zeroblob(stmt, pos, 0);
+    return AR_BIND_BLOB(stmt, pos, u->script, u->script_len);
+}
+
 /* ── Validation ────────────────────────────────────────────────── */
 
 bool db_utxo_validate(const struct db_utxo *u, struct ar_errors *errors)
@@ -106,7 +118,7 @@ bool db_utxo_save(struct node_db *ndb, const struct db_utxo *u)
     AR_BIND_BLOB(s, 1, u->txid, 32);
     AR_BIND_INT(s, 2, (int)u->vout);
     AR_BIND_INT(s, 3, u->value);
-    AR_BIND_BLOB(s, 4, u->script, (int)u->script_len);
+    utxo_bind_script(s, 4, u);
     AR_BIND_INT(s, 5, (int)u->script_type);
     if (u->has_address)
         AR_BIND_BLOB(s, 6, u->address_hash, 20);
@@ -130,7 +142,7 @@ bool db_utxo_insert_raw(struct node_db *ndb, const struct db_utxo *u)
     AR_BIND_BLOB(s, 1, u->txid, 32);
     AR_BIND_INT(s, 2, (int)u->vout);
     AR_BIND_INT(s, 3, u->value);
-    AR_BIND_BLOB(s, 4, u->script, (int)u->script_len);
+    utxo_bind_script(s, 4, u);
     AR_BIND_INT(s, 5, (int)u->script_type);
     if (u->has_address)
         AR_BIND_BLOB(s, 6, u->address_hash, 20);
