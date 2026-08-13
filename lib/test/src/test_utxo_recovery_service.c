@@ -189,8 +189,27 @@ static bool urs_seed_frontier_schema(void)
         "tip_hash BLOB)");
 }
 
+/* Stamp the canonical coins store as proven through applied_height-1.  The
+ * reducer uses next-height semantics, so a frontier at H is covered only when
+ * applied_height > H. */
+static bool urs_stamp_coin_authority(int applied_height)
+{
+    sqlite3 *db = progress_store_db();
+    static const uint8_t dummy_txid[32] = {0x73};
+    if (!db || !coins_kv_ensure_schema(db) ||
+        !coins_kv_add(db, dummy_txid, 0, 0, 0, false, NULL, 0) ||
+        !coins_kv_set_applied_height_in_tx(db, applied_height))
+        return false;
+    uint8_t one = 1;
+    return progress_meta_set(db, "coins_kv_migration_complete", &one,
+                             sizeof(one));
+}
+
 /* validate_headers_log ok=1 rows [from..to] (hash = the index hash at that
- * height) + the stage cursor at to+1: the validated header frontier == to. */
+ * height) + the stage cursor at to+1. Coin authority extends one additional
+ * height: this models a rolling log whose newest applied row has already been
+ * pruned, so recovery exercises the scan-fallback gate instead of short-
+ * circuiting through the separately-derived coins-best fast path. */
 static bool urs_seed_validated_headers(int from, int to)
 {
     sqlite3 *db = progress_store_db();
@@ -235,7 +254,7 @@ static bool urs_seed_validated_headers(int from, int to)
         printf("urs_seed_validated_headers: cursor write failed: %s\n",
                sqlite3_errmsg(db));
     sqlite3_finalize(st);
-    return ok;
+    return ok && urs_stamp_coin_authority(to + 2);
 }
 
 /* Read (ok,status) of the tip_finalize_log row at `height`. *ok_out = -1
@@ -1182,8 +1201,10 @@ int test_utxo_recovery_service(void)
 
             struct uint256 floor_hash;
             urs_hash_for_height(120, &floor_hash);
-            bool seeded = urs_seed_finalized_floor(120, &floor_hash,
-                                                   "finalized");
+            bool seeded = urs_seed_frontier_schema() &&
+                          urs_seed_validated_headers(0, 120) &&
+                          urs_seed_finalized_floor(120, &floor_hash,
+                                                   "anchor");
             struct chain_restore_result rr =
                 utxo_recovery_restore_chain_tip(&uctx, scan_fallback);
 

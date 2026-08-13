@@ -253,7 +253,8 @@ static int case_floor_scoping(void)
     RP_CHECK("schema", build_schema(db));
     /* Real seeded datadir: proven authority so the anchor floor is honored on
      * the normal-boot sub-cases (the guard leaves refold's floor=0 untouched). */
-    RP_CHECK("proven authority", rp_stamp_proven_authority(db, TEST_ANCHOR));
+    RP_CHECK("proven authority",
+             rp_stamp_proven_authority(db, TEST_ANCHOR + 1));
 
     reducer_frontier_test_set_compiled_anchor(TEST_ANCHOR);
 

@@ -44,6 +44,7 @@
 #include "net/net.h"
 #include "services/sticky_escalator.h"
 #include "services/sync_monitor.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "storage/repair_marker.h"
 #include "validation/chainstate.h"
@@ -380,6 +381,8 @@ static struct block_index *insert_index(struct main_state *ms,
     return bi;
 }
 
+static bool stamp_coins_kv_migration(sqlite3 *db);
+
 static bool setup_fixture(struct rrw_fixture *fx, const char *tag)
 {
     memset(fx, 0, sizeof(*fx));
@@ -419,7 +422,7 @@ static bool setup_fixture(struct rrw_fixture *fx, const char *tag)
         return false;
     if (!seed_coins_applied(progress_store_db(), A + 2))
         return false;
-    return true;
+    return stamp_coins_kv_migration(progress_store_db());
 }
 
 static void teardown_fixture(struct rrw_fixture *fx)
@@ -495,9 +498,9 @@ static void synth_hash_h(struct uint256 *h, int height)
  * is set separately by seed_coins_applied. */
 static bool stamp_coins_kv_migration(sqlite3 *db)
 {
-    if (!exec_sql(db,
-            "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB);"
-            "INSERT OR IGNORE INTO coins(k,v) VALUES(x'00', x'00');"))
+    static const uint8_t dummy_txid[32] = {0x74};
+    if (!coins_kv_ensure_schema(db) ||
+        !coins_kv_add(db, dummy_txid, 0, 0, A, false, NULL, 0))
         return false;
     uint8_t one = 1;
     sqlite3_stmt *st = NULL;

@@ -40,6 +40,11 @@ cd zclassic
 make -j"$(nproc)"     # builds zclassic23, zclassic-cli, zcl-rpc
 ```
 
+For the smallest server-only build, use `make -j"$(nproc)" zclassic23`. The
+published node is a C23 executable with pinned project dependencies linked
+statically; it does not inherit GTK/WebKit or the C++ LevelDB runtime from the
+build host. The build fails closed if the ELF dependency audit finds one.
+
 The first build needs internet access once: `make` auto-runs `make vendor`,
 which fetches pinned third-party source tarballs (OpenSSL, libevent, LevelDB,
 zlib, SQLite, the canonical Zcash Sapling prover), verifies each against a

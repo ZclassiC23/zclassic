@@ -14,5 +14,3 @@ config/src/boot_legacy_import.c
 config/src/boot_services.c
 config/src/boot_services_shutdown.c
 lib/storage/src/block_index_db.c
-lib/validation/src/process_block_invalidate.c
-lib/validation/src/process_block_revalidate.c

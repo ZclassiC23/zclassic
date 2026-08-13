@@ -1,0 +1,76 @@
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
+ * PURPOSE: Select the LevelDB-shaped API used by the storage compatibility
+ * wrapper without leaking that choice into its callers. */
+
+#ifndef ZCL_STORAGE_LDB_C_API_H
+#define ZCL_STORAGE_LDB_C_API_H
+
+#ifdef ZCL_C23_NODE
+
+#include "storage/ldb_reader.h"
+
+typedef ldbr_t leveldb_t;
+typedef ldbr_cache_t leveldb_cache_t;
+typedef ldbr_env_t leveldb_env_t;
+typedef ldbr_filterpolicy_t leveldb_filterpolicy_t;
+typedef ldbr_iterator_t leveldb_iterator_t;
+typedef ldbr_options_t leveldb_options_t;
+typedef ldbr_readoptions_t leveldb_readoptions_t;
+typedef ldbr_snapshot_t leveldb_snapshot_t;
+typedef ldbr_writebatch_t leveldb_writebatch_t;
+typedef ldbr_writeoptions_t leveldb_writeoptions_t;
+
+#define leveldb_no_compression ldbr_no_compression
+#define leveldb_cache_create_lru ldbr_cache_create_lru
+#define leveldb_cache_destroy ldbr_cache_destroy
+#define leveldb_close ldbr_close
+#define leveldb_create_default_env ldbr_create_default_env
+#define leveldb_create_iterator ldbr_create_iterator
+#define leveldb_create_snapshot ldbr_create_snapshot
+#define leveldb_delete ldbr_delete
+#define leveldb_destroy_db ldbr_destroy_db
+#define leveldb_env_destroy ldbr_env_destroy
+#define leveldb_filterpolicy_create_bloom ldbr_filterpolicy_create_bloom
+#define leveldb_filterpolicy_destroy ldbr_filterpolicy_destroy
+#define leveldb_free ldbr_free
+#define leveldb_get ldbr_get
+#define leveldb_iter_destroy ldbr_iter_destroy
+#define leveldb_iter_get_error ldbr_iter_get_error
+#define leveldb_iter_key ldbr_iter_key
+#define leveldb_iter_next ldbr_iter_next
+#define leveldb_iter_seek ldbr_iter_seek
+#define leveldb_iter_seek_to_first ldbr_iter_seek_to_first
+#define leveldb_iter_valid ldbr_iter_valid
+#define leveldb_iter_value ldbr_iter_value
+#define leveldb_open ldbr_open
+#define leveldb_options_create ldbr_options_create
+#define leveldb_options_destroy ldbr_options_destroy
+#define leveldb_options_set_cache ldbr_options_set_cache
+#define leveldb_options_set_compression ldbr_options_set_compression
+#define leveldb_options_set_create_if_missing ldbr_options_set_create_if_missing
+#define leveldb_options_set_env ldbr_options_set_env
+#define leveldb_options_set_filter_policy ldbr_options_set_filter_policy
+#define leveldb_options_set_max_open_files ldbr_options_set_max_open_files
+#define leveldb_put ldbr_put
+#define leveldb_readoptions_create ldbr_readoptions_create
+#define leveldb_readoptions_destroy ldbr_readoptions_destroy
+#define leveldb_readoptions_set_fill_cache ldbr_readoptions_set_fill_cache
+#define leveldb_readoptions_set_snapshot ldbr_readoptions_set_snapshot
+#define leveldb_readoptions_set_verify_checksums ldbr_readoptions_set_verify_checksums
+#define leveldb_release_snapshot ldbr_release_snapshot
+#define leveldb_write ldbr_write
+#define leveldb_writebatch_create ldbr_writebatch_create
+#define leveldb_writebatch_delete ldbr_writebatch_delete
+#define leveldb_writebatch_destroy ldbr_writebatch_destroy
+#define leveldb_writebatch_put ldbr_writebatch_put
+#define leveldb_writeoptions_create ldbr_writeoptions_create
+#define leveldb_writeoptions_destroy ldbr_writeoptions_destroy
+#define leveldb_writeoptions_set_sync ldbr_writeoptions_set_sync
+
+#else
+
+#include <leveldb/c.h>
+
+#endif
+
+#endif /* ZCL_STORAGE_LDB_C_API_H */

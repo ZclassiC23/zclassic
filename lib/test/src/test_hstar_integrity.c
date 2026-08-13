@@ -300,7 +300,7 @@ static int case_clean_rows_identical(void)
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
     reducer_frontier_provable_tip_reset();
     HI_CHECK("clean: schema", build_schema(db));
-    HI_CHECK("clean: proven authority", stamp_proven_authority(db, A));
+    HI_CHECK("clean: proven authority", stamp_proven_authority(db, A + 1));
 
     const int32_t tip = A + 6;
     bool built = true;
@@ -331,7 +331,7 @@ static int case_flipped_ok_does_not_raise(void)
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
     reducer_frontier_provable_tip_reset();
     HI_CHECK("flip: schema", build_schema(db));
-    HI_CHECK("flip: proven authority", stamp_proven_authority(db, A));
+    HI_CHECK("flip: proven authority", stamp_proven_authority(db, A + 1));
 
     const int32_t tip = A + 6;
     const int32_t bad = A + 3;   /* the corrupted height */
@@ -527,7 +527,7 @@ static int case_fold_perf(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
     HI_CHECK("perf: schema", build_schema(db));
-    HI_CHECK("perf: proven authority", stamp_proven_authority(db, A));
+    HI_CHECK("perf: proven authority", stamp_proven_authority(db, A + 1));
     (void)sqlite3_exec(db, "PRAGMA journal_mode=MEMORY; PRAGMA synchronous=OFF;",
                        NULL, NULL, NULL);
 

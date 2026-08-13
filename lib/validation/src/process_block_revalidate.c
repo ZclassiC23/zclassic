@@ -11,13 +11,12 @@
  * (a) sufficient oracle consensus on the block hash and (b) routing the
  * post-clear connect through the activation controller's mutex. Both services
  * are app-layer concerns conceptually, but the actual nStatus mutation and
- * LevelDB persistence belong to validation. Splitting this into two files
+ * durable projection emission belong to validation. Splitting this into two files
  * across layers (a validation low-level primitive plus an app-services
  * orchestrator) adds two files for no behavioral gain. Tagged so the
  * lib_layering gate doesn't have to grow its baseline. */
 #include "services/chain_activation_service.h"  // lib-layer-ok:wave-m-revalidate
 #include "services/quorum_oracle_service.h"        // lib-layer-ok:wave-m-revalidate
-#include "storage/block_index_db.h"
 #include "jobs/block_header_emit.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
@@ -31,11 +30,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-
-/* The block_tree_db handle is opened by config/src/boot.c and published
- * into g_active_block_tree (declared in <validation/process_block.h>). We
- * reuse the same handle here so cleared status updates land in the same
- * LevelDB the rest of the validation path persists to. */
 
 const char *reval_result_name(enum reval_result r)
 {
@@ -297,22 +291,13 @@ enum reval_result process_block_revalidate(int target_height,
         if (!was_failed) continue;
         p->nStatus &= ~(unsigned)BLOCK_FAILED_MASK;
         cleared++;
-        /* Feed the event-sourced block_index_projection (the surviving derived
-         * header snapshot, Program H0) from this canonical status-flip path,
-         * NOT the legacy LevelDB writer. Best-effort, never fatal; runs for
-         * every cleared entry regardless of the LevelDB handle so the
-         * projection folds the new nStatus via INSERT-OR-REPLACE by hash. */
-        block_index_emit_header_event(p, "revalidate_persist", NULL, NULL);
-        /* Persist the status-only update. We use the async write
-         * because we'll have many of these on a deeply-wedged chain;
-         * one final fsync via the supervisor's natural tick suffices.
-         * If persistence fails for one entry we count and continue —
-         * worst case is the next boot re-reads FAILED for that entry
-         * and the revalidate fires again on the next 900s tick. */
+        bool projected = block_index_emit_header_event(
+            p, "revalidate_persist", NULL, NULL);
+        /* Runtime persistence is the append-only event log. Count every
+         * failed append and refuse success if none of the cleared entries was
+         * made durable; tests without a wired runtime retain their seam. */
         if (g_active_block_tree) {
-            struct disk_block_index dbi;
-            block_index_snapshot_for_persist(&dbi, p);
-            if (block_tree_db_write_block_index(g_active_block_tree, &dbi)) {
+            if (projected) {
                 persisted++;
             } else {
                 persist_errors++;

@@ -143,21 +143,24 @@ bool rewind_to_nearest_self_verified_base(int32_t at_or_below,
         return true;
     }
 
-    /* Rewind to the self-verified base and re-derive [base, H*] from the same
-     * PoW-verified on-disk bodies (LCC-safe; served floor preserved). */
+    /* Preserve the self-verified base itself and re-derive the suffix strictly
+     * above it. stage_rederive_range's from_height is the FIRST height whose
+     * verdict/coin delta is removed; passing base instead would unwind the
+     * trusted base and leave coins_applied_height unable to cover it. */
+    int32_t rederive_from = base.height + 1;
     struct stage_rederive_range_result rr = {0};
-    if (!stage_rederive_range(db, ms, (int)base.height, (int)hstar, &rr)) {
+    if (!stage_rederive_range(db, ms, (int)rederive_from, (int)hstar, &rr)) {
         LOG_WARN("rewind_driver",
                  "[rewind_driver] %s: stage_rederive_range [%d,%d] hit a store "
-                 "error", why, (int)base.height, (int)hstar);
+                 "error", why, (int)rederive_from, (int)hstar);
         return false;  // raw-return-ok:logged-above
     }
 
     if (rr.refused_no_inverse || !rr.ok) {
         char reason_text[BLOCKER_REASON_MAX];
         snprintf(reason_text, sizeof(reason_text),
-                 "%s: re-derive [%d,%d] from base %s refused (%s) — needs "
-                 "refold-from-anchor / operator", why, (int)base.height,
+                 "%s: re-derive [%d,%d] above base %s refused (%s) — needs "
+                 "refold-from-anchor / operator", why, (int)rederive_from,
                  (int)hstar, base.kind,
                  rr.refused_no_inverse ? "LCC: applied height lacks inverse "
                                          "delta" : "rewind did not commit");
@@ -183,7 +186,7 @@ bool rewind_to_nearest_self_verified_base(int32_t at_or_below,
              "[rewind_driver] %s: re-derived [%d,%d] from self-verified base %s "
              "(self_derived=%d) rewound=%d cursors=%d coins_rewound=%d "
              "(served_floor=%d preserved) — forward fold re-derives",
-             why, (int)base.height, (int)hstar, base.kind,
+             why, (int)rederive_from, (int)hstar, base.kind,
              (int)base.self_derived, (int)rr.rewound, rr.cursors_rewound,
              (int)rr.coins_rewound, (int)served_floor);
     event_emitf(EV_RECOVERY_ACTION, 0,

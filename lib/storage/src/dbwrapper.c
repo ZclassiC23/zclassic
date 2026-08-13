@@ -4,9 +4,9 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "storage/dbwrapper.h"
+#include "storage/ldb_c_api.h"
 #include "util/util.h"
 #include "util/log_macros.h"
-#include <leveldb/c.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>

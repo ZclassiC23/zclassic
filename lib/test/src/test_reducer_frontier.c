@@ -112,14 +112,14 @@ static bool build_schema(sqlite3 *db)
     return true;
 }
 
-/* Stamp coins_kv proven-authority on the fixture db so compute_hstar treats
- * the baked TRUSTED_ANCHOR as a REAL finality floor (the production path on any
- * seeded/migrated datadir). Without this, compute_hstar's phantom-anchor guard
- * lowers the floor to 0 — correct for a fresh datadir, but the cases below
- * model a real anchored datadir and assert the anchor-floor semantics. The
- * three rungs mirror coins_kv_is_proven_authority: an 8-byte LE
- * coins_applied_height, the 1-byte migration-complete stamp, and a non-empty
- * `coins` table. Returns false on any SQLite error. */
+/* Stamp coins_kv proven-authority on the fixture db. `applied_height` is the
+ * NEXT height to apply, so a fixture that claims coverage through H must pass
+ * H+1. compute_hstar treats the baked TRUSTED_ANCHOR as a real floor only when
+ * this proven frontier covers it. Without that coverage, its phantom-anchor
+ * guard lowers the floor to 0 — correct for a fresh OR partially-folded
+ * datadir. The three authority rungs mirror coins_kv_is_proven_authority: an
+ * 8-byte LE coins_applied_height, the 1-byte migration-complete stamp, and a
+ * non-empty `coins` table. Returns false on any SQLite error. */
 static bool stamp_proven_authority(sqlite3 *db, int64_t applied_height)
 {
     char *err = NULL;
@@ -377,6 +377,60 @@ static bool set_all_cursors(sqlite3 *db, int64_t c)
 
 /* ── cases ───────────────────────────────────────────────────────────── */
 
+/* A provenance marker is not a coverage proof. This is the production shape
+ * that blocked checkpoint recovery on an old partially-synced node: coins and
+ * every success-checked stage agree through K, the authority marker is valid,
+ * but K is far below the newly compiled checkpoint A. A stale future anchor
+ * row may still exist from an interrupted prior seed; its cursor preconditions
+ * are not met and it must affect only the independently reported served_floor.
+ * H* must remain the real folded K, never be fabricated upward to A. */
+static int case_partial_authority_does_not_enable_compiled_floor(void)
+{
+    int failures = 0;
+    sqlite3 *db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
+    RF_CHECK("partial-authority: schema", build_schema(db));
+
+    const int32_t k = 3;
+    RF_CHECK("partial-authority: proven only through K",
+             stamp_proven_authority(db, k + 1));
+    bool built = true;
+    for (int32_t h = 1; h <= k; h++)
+        built = built && put_consistent_height(db, h);
+    RF_CHECK("partial-authority: real prefix rows", built);
+    RF_CHECK("partial-authority: stale future anchor is present",
+             put_tip_anchor(db, A + 100));
+    RF_CHECK("partial-authority: cursors stop at K+1",
+             set_all_cursors(db, k + 1));
+
+    int32_t hstar = -1, served = -1;
+    RF_CHECK("partial-authority: computation succeeds",
+             reducer_frontier_compute_hstar(db, &hstar, &served));
+    RF_CHECK("partial-authority: H* is honest folded prefix K", hstar == k);
+    RF_CHECK("partial-authority: H* stays below uncovered checkpoint",
+             hstar < A);
+    RF_CHECK("partial-authority: stale served floor remains diagnostic",
+             served == A + 100);
+    sqlite3_close(db);
+
+    /* Off-by-one boundary: coins_applied_height names the NEXT block. A value
+     * equal to A therefore covers only through A-1 and must not enable floor A. */
+    db = NULL;
+    if (sqlite3_open(":memory:", &db) != SQLITE_OK) return failures + 1;
+    RF_CHECK("partial-boundary: schema", build_schema(db));
+    RF_CHECK("partial-boundary: proven through A-1",
+             stamp_proven_authority(db, A));
+    RF_CHECK("partial-boundary: empty cursors", set_all_cursors(db, 0));
+    hstar = -1;
+    served = -1;
+    RF_CHECK("partial-boundary: computation succeeds",
+             reducer_frontier_compute_hstar(db, &hstar, &served));
+    RF_CHECK("partial-boundary: applied==A does not enable floor A",
+             hstar == 0 && served == 0);
+    sqlite3_close(db);
+    return failures;
+}
+
 /* (a) Fully-consistent multi-row fixture: every log ok=1 and hashes agree
  *     over [A+1 .. A+5]. H* must reach the tip A+5; served_floor == A+5. */
 static int case_consistent(void)
@@ -385,7 +439,7 @@ static int case_consistent(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
     RF_CHECK("consistent: schema", build_schema(db));
-    RF_CHECK("consistent: proven authority", stamp_proven_authority(db, A));
+    RF_CHECK("consistent: proven authority", stamp_proven_authority(db, A + 1));
 
     const int32_t tip = A + 5;
     bool built = true;
@@ -416,7 +470,7 @@ static int case_proof_and_utxo_fork_split(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
     RF_CHECK("proof-utxo-split: schema", build_schema(db));
-    RF_CHECK("proof-utxo-split: proven authority", stamp_proven_authority(db,A));
+    RF_CHECK("proof-utxo-split: proven authority", stamp_proven_authority(db, A + 1));
     bool built = true;
     for (int32_t h = A + 1; h <= A + 3; h++)
         built = built && put_consistent_height(db, h);
@@ -464,7 +518,7 @@ static int case_validation_evidence_contained(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
     RF_CHECK("evidence: schema", build_schema(db));
-    RF_CHECK("evidence: proven authority", stamp_proven_authority(db, A));
+    RF_CHECK("evidence: proven authority", stamp_proven_authority(db, A + 1));
 
     const int32_t tip = A + 3;
     bool built = true;
@@ -521,7 +575,7 @@ static int case_torn(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
     RF_CHECK("torn: schema", build_schema(db));
-    RF_CHECK("torn: proven authority", stamp_proven_authority(db, A));
+    RF_CHECK("torn: proven authority", stamp_proven_authority(db, A + 1));
 
     bool built = true;
     /* A+1..A+3 fully consistent and finalized. */
@@ -605,11 +659,11 @@ static int case_sparse_seed_anchor(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
     RF_CHECK("sparse-anchor: schema", build_schema(db));
-    RF_CHECK("sparse-anchor: proven authority", stamp_proven_authority(db, A));
-
     const int32_t base = A + 100;
     const int32_t stale_high = A + 200;
     const int32_t tip = base + 5;
+    RF_CHECK("sparse-anchor: proven authority through imported base",
+             stamp_proven_authority(db, base + 1));
     bool built = put_tip_anchor(db, stale_high) && put_tip_anchor(db, base);
     for (int32_t h = base + 1; h <= tip; h++)
         built = built && put_consistent_height(db, h);
@@ -756,7 +810,7 @@ static int case_anchor_collapse_after_forward_ok0(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
     RF_CHECK("collapse: schema", build_schema(db));
-    RF_CHECK("collapse: proven authority", stamp_proven_authority(db, A));
+    RF_CHECK("collapse: proven authority", stamp_proven_authority(db, A + 1));
 
     const int32_t base = A + 100;   /* the cold-import terminal tip */
 
@@ -817,7 +871,7 @@ static int case_clamp_up(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
     RF_CHECK("clamp: schema", build_schema(db));
-    RF_CHECK("clamp: proven authority", stamp_proven_authority(db, A));
+    RF_CHECK("clamp: proven authority", stamp_proven_authority(db, A + 1));
 
     /* script_validate fails immediately at anchor+1 -> contiguous prefix is
      * exactly the anchor. No tip_finalize ok=1 rows at all. */
@@ -853,7 +907,7 @@ static int case_hash_split(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
     RF_CHECK("split: schema", build_schema(db));
-    RF_CHECK("split: proven authority", stamp_proven_authority(db, A));
+    RF_CHECK("split: proven authority", stamp_proven_authority(db, A + 1));
 
     bool built = true;
     for (int32_t h = A + 1; h <= A + 2; h++)
@@ -902,7 +956,7 @@ static int case_split_at_floor(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
     RF_CHECK("floor: schema", build_schema(db));
-    RF_CHECK("floor: proven authority", stamp_proven_authority(db, A));
+    RF_CHECK("floor: proven authority", stamp_proven_authority(db, A + 1));
 
     /* A+1: ok=1 everywhere but hashes disagree (tag 0 vs tag 7). */
     uint8_t hv[32], hs[32];
@@ -948,7 +1002,7 @@ static int case_preflip_no_proof_block_hash(void)
     sqlite3 *db = NULL;
     if (sqlite3_open(":memory:", &db) != SQLITE_OK) { return 1; }
     RF_CHECK("preflip: schema", build_schema(db));
-    RF_CHECK("preflip: proven authority", stamp_proven_authority(db, A));
+    RF_CHECK("preflip: proven authority", stamp_proven_authority(db, A + 1));
 
     /* Recreate proof_validate_log WITHOUT the later-added block_hash column,
      * reproducing the pre-flip on-disk shape exactly. */
@@ -1021,7 +1075,7 @@ static int case_dump_reports_validate_failure_owner(void)
 
     sqlite3 *db = progress_store_db();
     RF_CHECK("dump: schema", db && build_schema(db));
-    RF_CHECK("dump: proven authority", db && stamp_proven_authority(db, A));
+    RF_CHECK("dump: proven authority", db && stamp_proven_authority(db, A + 1));
 
     const int32_t fail_h = A + 3;
     bool built = put_consistent_height(db, A + 1)
@@ -1143,7 +1197,7 @@ static int case_dump_marks_run_ahead_stage_cursors(void)
 
     sqlite3 *db = progress_store_db();
     RF_CHECK("runahead: schema", db && build_schema(db));
-    RF_CHECK("runahead: proven authority", db && stamp_proven_authority(db, A));
+    RF_CHECK("runahead: proven authority", db && stamp_proven_authority(db, A + 1));
 
     const int32_t tip = A + 3;
     bool built = db != NULL;
@@ -1334,7 +1388,7 @@ static int case_dump_reports_hstar_log_hole(void)
 
     sqlite3 *db = progress_store_db();
     RF_CHECK("dump-hole: schema", db && build_schema(db));
-    RF_CHECK("dump-hole: proven authority", db && stamp_proven_authority(db, A));
+    RF_CHECK("dump-hole: proven authority", db && stamp_proven_authority(db, A + 1));
 
     const int32_t hole_h = A + 3;
     bool built = put_consistent_height(db, A + 1)
@@ -1422,7 +1476,7 @@ static int case_dump_reports_hstar_hash_split(void)
 
     sqlite3 *db = progress_store_db();
     RF_CHECK("dump-split: schema", db && build_schema(db));
-    RF_CHECK("dump-split: proven authority", db && stamp_proven_authority(db, A));
+    RF_CHECK("dump-split: proven authority", db && stamp_proven_authority(db, A + 1));
 
     bool built = true;
     for (int32_t h = A + 1; h <= A + 2; h++)
@@ -1745,7 +1799,7 @@ static int case_dump_reports_rewind_bases(void)
 
     sqlite3 *db = progress_store_db();
     RF_CHECK("rewind: schema", db && build_schema(db));
-    RF_CHECK("rewind: proven authority", db && stamp_proven_authority(db, A));
+    RF_CHECK("rewind: proven authority", db && stamp_proven_authority(db, A + 1));
     RF_CHECK("rewind: seal schema", seal_kv_ensure_schema(db));
 
     bool built = true;
@@ -1870,7 +1924,7 @@ static int case_sovereign_base_ignores_borrowed_higher_stamp(void)
     sqlite3 *db = progress_store_db();
     RF_CHECK("sovereign-base: schema", db && build_schema(db));
     RF_CHECK("sovereign-base: proven authority",
-             db && stamp_proven_authority(db, A));
+             db && stamp_proven_authority(db, A + 1));
 
     bool built = true;
     for (int32_t h = A + 1; h <= A + 5; h++)
@@ -2122,7 +2176,7 @@ static int case_derived_stage_cursor_equivalence(void)
         if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
         RF_CHECK("derived-equiv: consistent schema", build_schema(db));
         RF_CHECK("derived-equiv: consistent proven authority",
-                 stamp_proven_authority(db, A));
+                 stamp_proven_authority(db, A + 1));
         const int32_t tip = A + 5;
         bool built = true;
         for (int32_t h = A + 1; h <= tip; h++)
@@ -2156,7 +2210,7 @@ static int case_derived_stage_cursor_equivalence(void)
         if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
         RF_CHECK("derived-equiv: torn schema", build_schema(db));
         RF_CHECK("derived-equiv: torn proven authority",
-                 stamp_proven_authority(db, A));
+                 stamp_proven_authority(db, A + 1));
         const int32_t tip = A + 5;
         bool built = true;
         for (int32_t h = A + 1; h <= tip; h++)
@@ -2231,7 +2285,7 @@ static int case_derived_stage_cursor_equivalence(void)
         if (sqlite3_open(":memory:", &db) != SQLITE_OK) return 1;
         RF_CHECK("derived-equiv: logless schema", build_schema(db));
         RF_CHECK("derived-equiv: logless proven authority",
-                 stamp_proven_authority(db, A));
+                 stamp_proven_authority(db, A + 1));
         RF_CHECK("derived-equiv: logless cursor", set_cursor(db, "body_fetch",
                                                              A + 42));
         int64_t d = derived_stage_cursor(db, "body_fetch");
@@ -2250,6 +2304,7 @@ int test_reducer_frontier(void)
     printf("\n--- reducer_frontier (L0 H* authority) ---\n");
     failures += case_body_read_repair_note();
     failures += case_derived_stage_cursor_equivalence();
+    failures += case_partial_authority_does_not_enable_compiled_floor();
     failures += case_consistent();
     failures += case_proof_and_utxo_fork_split();
     failures += case_validation_evidence_contained();

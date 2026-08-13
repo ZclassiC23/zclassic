@@ -35,18 +35,18 @@
 #include <stdint.h>
 #include <string.h>
 
-static inline void block_index_emit_header_event(
+static inline bool block_index_emit_header_event(
         const struct block_index *bi, const char *tag,
         _Atomic uint64_t *emit_ok, _Atomic uint64_t *emit_fail)
 {
     if (!bi || !bi->phashBlock)
-        return;
+        return false;
 
     event_log_t *log = event_log_singleton();
     if (!log) {
         /* Not wired yet (very early boot, or tests). The projection catches
          * up once boot completes — not a hard failure, not counted. */
-        return;
+        return false;
     }
 
     if (bi->nSolutionSize > EV_BLOCK_HEADER_MAX_SOLUTION) {
@@ -55,7 +55,7 @@ static inline void block_index_emit_header_event(
                  (unsigned)EV_BLOCK_HEADER_MAX_SOLUTION, bi->nHeight);
         if (emit_fail)
             atomic_fetch_add_explicit(emit_fail, 1, memory_order_relaxed);
-        return;
+        return false;
     }
 
     struct ev_block_header h;
@@ -83,7 +83,7 @@ static inline void block_index_emit_header_event(
     if (bufcap > sizeof(stackbuf)) {
         if (emit_fail)
             atomic_fetch_add_explicit(emit_fail, 1, memory_order_relaxed);
-        return;
+        return false;
     }
     size_t written = 0;
     if (!ev_block_header_serialize(&h, bi->nSolution, stackbuf, bufcap,
@@ -92,17 +92,18 @@ static inline void block_index_emit_header_event(
                  tag, bi->nHeight);
         if (emit_fail)
             atomic_fetch_add_explicit(emit_fail, 1, memory_order_relaxed);
-        return;
+        return false;
     }
 
     uint64_t off = event_log_append(log, EV_BLOCK_HEADER, stackbuf, written);
     if (off == UINT64_MAX) {
         if (emit_fail)
             atomic_fetch_add_explicit(emit_fail, 1, memory_order_relaxed);
-        return;
+        return false;
     }
     if (emit_ok)
         atomic_fetch_add_explicit(emit_ok, 1, memory_order_relaxed);
+    return true;
 }
 
 /* Lightweight counterpart of block_index_emit_header_event() above — see the

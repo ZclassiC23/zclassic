@@ -106,7 +106,13 @@ static bool tw_seed_applied_column(sqlite3 *db, int32_t anchor, int32_t rh)
     for (int32_t h = anchor + 1; h <= rh + 1; h++)
         if (!utxo_apply_log_insert(db, h, "verified", true, 0, 0, 0, NULL, NULL))
             return false;
-    return tw_set_cursor(db, "utxo_apply", (int64_t)rh + 2);
+    static const uint8_t dummy_txid[32] = {0x72};
+    uint8_t one = 1;
+    return coins_kv_add(db, dummy_txid, 0, 0, anchor, false, NULL, 0) &&
+           tw_set_cursor(db, "utxo_apply", (int64_t)rh + 2) &&
+           coins_kv_set_applied_height_in_tx(db, rh + 2) &&
+           progress_meta_set(db, "coins_kv_migration_complete", &one,
+                             sizeof(one));
 }
 
 /* End-to-end proof that the fail-closed default caps H* (via the untouched

@@ -385,10 +385,10 @@ static int fc_case_fresh_seed(void)
              fc_tip_row(db, H, status, sizeof(status)) == 1 &&
              strcmp(status, "anchor") == 0);
 
-    /* Model the cold-sync seed's proven-authority stamp so compute_hstar's
-     * phantom-anchor guard honors the seeded anchor (applied frontier == H). */
+    /* Model the cold-sync seed's proven-authority stamp. applied_height is the
+     * NEXT height, so coverage through the seeded H is represented by H+1. */
     FC_CHECK("T5b: coins_kv proven authority stamped",
-             fc_stamp_proven_authority(db, H));
+             fc_stamp_proven_authority(db, H + 1));
 
     /* The reducer trusted-anchor scan must ACCEPT the seed: H* anchors at
      * H (not back at the compiled checkpoint). */

@@ -416,12 +416,12 @@ without the doctor learning about it. Prose here can only describe it.
   build-epoch key hashes, so the configurations get separate object roots and
   cannot mix stale objects. `make doctor` files `cargo`/`rustc` as optional;
   their absence costs no node or wallet capability.
-- **A C++ compiler — `c++`/`g++`.** LevelDB is C++11. `cmake` is the preferred
-  build route and is genuinely optional (a direct C++11 compile is the
-  fallback), but the C++ compiler is required either way. `vendor_prereqs.tsv`
-  currently files `c++` under `vendor-optional`, which understates it — the
-  build has no path to `libleveldb.a` without one. Work to retire this
-  requirement is under way — see *Retiring the C++ requirement* below.
+- **A C++ compiler is needed only for test/dev differential oracles.** The
+  shipped `zclassic23` node is compiled as C23, reads legacy LevelDB through the
+  in-tree C23 reader, and does not link `libleveldb` or `libstdc++`. A focused
+  `make zclassic23` therefore needs no C++ compiler. The full test/dev build
+  still builds pinned LevelDB with `c++`/`g++` so the native reader can be
+  checked byte-for-byte against the upstream implementation.
 - **Not needed:** `autoconf`. The zlib and libevent tarballs ship a generated
   `./configure`; `make vendor` runs it and never regenerates it.
 - The first `make vendor` needs **network access** for the pinned tarballs (and
@@ -502,12 +502,12 @@ Notes:
 <!-- claim: file-present vendor/x11/SHA256SUMS # vendored X11 header pin -->
 <!-- claim: symbol-present vendor/x11/include Makefile # the include wiring -->
 
-### Retiring the C++ requirement
+### C23 node and the C++ differential oracle
 
-`libleveldb.a` is the only reason this project needs a C++ compiler. Nothing
-in the tree uses LevelDB's C++ API — every call site goes through the
-`leveldb_*` C API — so C++ is needed to *compile* the archive, never to
-consume it.
+`libleveldb.a` remains only as a test/dev oracle. Nothing in the shipped node
+uses LevelDB's C++ implementation; legacy bootstrap reads route through the
+`ldbr_*` C23 API, while live state and block-index status durability use the
+SQLite/event-sourced stores.
 
 The replacement is in the tree and proven: **`lib/storage/src/ldb_reader_*.c`
 is a read-only LevelDB reader written in C23** against stock `cc` and libc,
@@ -535,19 +535,13 @@ overwrites, tombstones and unflushed log writes, compares it against
 `libleveldb.a`, and then damages five different ways to confirm each is
 refused by name rather than answered wrongly.
 
-Two things must still land before `c++` can leave the prerequisite list:
-
-1. **The two production LevelDB writes must go.** They are
-   `process_block_invalidate.c` and `process_block_revalidate.c`, both
-   persisting a block-index status flip that the line above them already
-   emits to SQLite. A read-only reader cannot serve them, and the C23 reader
-   refuses every mutation by name rather than pretending.
-2. **`test_ldb_snapshot` and `tools/verify_anchor_completeness.c` must stop
-   linking `<leveldb/c.h>`** — they are the remaining consumers of
-   `leveldb_compact_range` and `leveldb_options_set_error_if_exists`. Until
-   then the C++ archive survives in the test build even if the node no longer
-   needs it. `tools/ldb_verify_c23.c` links it deliberately and forever: it is
-   the cross-check oracle, and an oracle you have deleted proves nothing.
+The release link runs `tools/scripts/check_c23_node_binary.sh` before atomic
+publication. The gate rejects GTK/WebKit, `libstdc++`, C++ ABI symbols, and any
+other unexpected dynamic dependency. On Linux the published executable may
+use only the libc/libm ABI and the ELF loader; all project dependencies are
+pinned static archives. `tools/ldb_verify_c23.c` deliberately keeps linking
+both readers: an independent oracle you delete cannot catch a native-reader
+regression.
 
 ### Verify
 

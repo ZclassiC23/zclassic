@@ -295,9 +295,9 @@ static int case_warm_publishes_durable(void)
     reducer_frontier_provable_tip_reset();
     tip_finalize_observe_reset_last_height();
     IVW_CHECK("schema", ivw_build_schema(db));
-    IVW_CHECK("proven authority", ivw_stamp_proven_authority(db, A));
-
     const int32_t tip = A + 6;
+    IVW_CHECK("proven authority through tip",
+              ivw_stamp_proven_authority(db, tip + 1));
     bool built = true;
     for (int32_t h = A + 1; h <= tip; h++)
         built = built && ivw_put_consistent_height(db, h);
@@ -419,9 +419,9 @@ static int case_warm_never_clobbers_published(void)
     reducer_frontier_provable_tip_reset();
     tip_finalize_observe_reset_last_height();
     IVW_CHECK("clobber: schema", ivw_build_schema(db));
-    IVW_CHECK("clobber: proven authority", ivw_stamp_proven_authority(db, A));
-
     const int32_t tip = A + 4;
+    IVW_CHECK("clobber: proven authority through tip",
+              ivw_stamp_proven_authority(db, tip + 1));
     bool built = true;
     for (int32_t h = A + 1; h <= tip; h++)
         built = built && ivw_put_consistent_height(db, h);

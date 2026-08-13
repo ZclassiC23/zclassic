@@ -22,6 +22,7 @@
 #include "coins/utxo_commitment.h"
 #include "core/uint256.h"
 #include "jobs/reducer_frontier.h"
+#include "jobs/reducer_frontier_schema.h"
 #include "jobs/tip_finalize_stage.h"
 #include "models/database.h"
 #include "services/reindex_epilogue.h"
@@ -254,6 +255,8 @@ int test_reindex_epilogue(void)
              active_chain_height(&ms.chain_active) == TIP);
 
     RE_CHECK("fixture: tip_finalize stage init", tip_finalize_stage_init(&ms));
+    RE_CHECK("fixture: reducer log schema complete",
+             reducer_frontier_ensure_schema(pdb));
 
     /* ── PRECONDITION: the pre-reindex TORN state. coins_applied stale-HIGH
      * ABOVE the rebuilt tip AND above the finality anchor (the tear generator

@@ -1001,7 +1001,8 @@ int t_process_block_node_db_access_is_runtime_owned(void)
                          "lib/validation/src/process_block_invalidate.c")
                == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "block_index_snapshot_for_persist") != NULL);
+        ASSERT(strstr(buf, "block_index_emit_header_event") != NULL);
+        ASSERT(strstr(buf, "block_index_snapshot_for_persist") == NULL);
         ASSERT(strstr(buf, "disk_block_index_init") == NULL);
         ASSERT(strstr(buf, "nCachedBranchId") == NULL);
         free(buf);
@@ -1011,7 +1012,8 @@ int t_process_block_node_db_access_is_runtime_owned(void)
                          "lib/validation/src/process_block_revalidate.c")
                == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
-        ASSERT(strstr(buf, "block_index_snapshot_for_persist") != NULL);
+        ASSERT(strstr(buf, "block_index_emit_header_event") != NULL);
+        ASSERT(strstr(buf, "block_index_snapshot_for_persist") == NULL);
         ASSERT(strstr(buf, "disk_block_index_init") == NULL);
         ASSERT(strstr(buf, "nCachedBranchId") == NULL);
         free(buf);

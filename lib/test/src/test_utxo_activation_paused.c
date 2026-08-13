@@ -16,6 +16,7 @@
 #include "platform/clock.h"
 #include "net/snapshot_sync_contract.h"
 #include "services/sync_monitor.h"
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "validation/process_block.h"
 
@@ -393,6 +394,21 @@ static bool seed_reducer_frontier_owner_rows(
         return false;
     sqlite3_bind_text(st, 1, "coins_applied_height", -1, SQLITE_STATIC);
     sqlite3_bind_blob(st, 2, blob, sizeof(blob), SQLITE_STATIC);
+    ok = sqlite3_step(st) == SQLITE_DONE;
+    sqlite3_finalize(st);
+    static const uint8_t dummy_txid[32] = {0x75};
+    if (!ok || !coins_kv_ensure_schema(db) ||
+        !coins_kv_add(db, dummy_txid, 0, 0, a, false, NULL, 0))
+        return false;
+    uint8_t one = 1;
+    st = NULL;
+    if (sqlite3_prepare_v2(db,
+            "INSERT OR REPLACE INTO progress_meta(key,value) VALUES(?,?)",
+            -1, &st, NULL) != SQLITE_OK)
+        return false;
+    sqlite3_bind_text(st, 1, "coins_kv_migration_complete", -1,
+                      SQLITE_STATIC);
+    sqlite3_bind_blob(st, 2, &one, sizeof(one), SQLITE_STATIC);
     ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;

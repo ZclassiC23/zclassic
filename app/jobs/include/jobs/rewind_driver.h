@@ -11,7 +11,8 @@
  *      (reducer_frontier_nearest_self_verified_base — a compiled SHA3
  *      checkpoint or a self-valid seal_kv coins_sha3 slot always beats a
  *      borrowed finalized_utxo_sha3, so recovery is ALWAYS sovereign), then
- *   2. rewinds to it and re-derives forward to H* via THE universal re-derive
+ *   2. preserves that base and re-derives base+1 through H* via THE universal
+ *      re-derive
  *      primitive stage_rederive_range() (LCC-safe: it refuses rather than
  *      manufacture a coin hole, and NEVER deletes tip_finalize_log rows / the
  *      served floor), so recovery is O(delta-from-the-nearest-rung), never a

@@ -2,7 +2,9 @@
  * PURPOSE: Decode the reducer's canonical durable trusted-base declaration. */
 
 #include "jobs/reducer_frontier.h"
+#include "reducer_frontier_trusted_base_internal.h"
 
+#include "storage/coins_kv.h"
 #include "storage/progress_store.h"
 #include "util/log_macros.h"
 
@@ -81,6 +83,13 @@ bool reducer_frontier_trusted_base_matches(sqlite3 *db, int32_t height,
         return false; /* raw-return-ok:callee logged the read failure */
     return found && stored_height == height &&
            memcmp(stored_hash, hash, sizeof(stored_hash)) == 0;
+}
+
+bool reducer_frontier_coin_authority_covers(sqlite3 *db, int32_t height)
+{
+    int32_t applied = -1;
+    return db && height >= 0 &&
+           coins_kv_is_proven_authority(db, &applied) && applied > height;
 }
 
 bool reducer_seed_floor_height_read(sqlite3 *db, int32_t *out, bool *found)

@@ -372,7 +372,7 @@ int test_boot_odelta_scan(void)
         return 1;
     }
     ODS_CHECK("schema", build_schema(db));
-    ODS_CHECK("proven authority", stamp_proven_authority(db, A));
+    ODS_CHECK("proven authority", stamp_proven_authority(db, A + 1));
 
     /* Build the full restored span [A+1 .. A+COLD_N] in one transaction. */
     sqlite3_exec(db, "BEGIN", NULL, NULL, NULL);
@@ -406,7 +406,7 @@ int test_boot_odelta_scan(void)
     ODS_CHECK("warm delta built", grown);
     ODS_CHECK("warm anchor raised",
               declare_trusted_base(db, A + COLD_N)
-              && stamp_proven_authority(db, A + COLD_N));
+              && stamp_proven_authority(db, A + COLD_N + 1));
     ODS_CHECK("warm cursors", set_all_cursors(db, A + COLD_N + DELTA + 1));
 
     boot_scan_reset_for_testing();

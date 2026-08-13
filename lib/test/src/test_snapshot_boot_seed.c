@@ -19,7 +19,7 @@
  * asserts the seeded state is SELF-CONSISTENT: coins_kv reseeded from the
  * imported UTXOs, coins_applied_height at the snapshot next-height frame,
  * coins_best_block == the snapshot tip hash, the stage cursors clamped to the
- * snapshot height, H* CLIMBED off zero (to the compiled finality floor), the
+ * snapshot height, H* CLIMBED off zero (to the covered imported base), the
  * utxo_sha3 stamped, and NO stage naming a blocker. If a future edit reverts
  * boot_import_snapshot_db back to a coins_best_block-only write, this group
  * fails — it locks the "one honest code path" that seeds EVERYTHING.
@@ -27,10 +27,9 @@
  * Height regime: boot_import_snapshot_db REFUSES a peer snapshot above the
  * compiled checkpoint (provenance gate) and requires a real SHA3 match AT the
  * checkpoint, so the only synthetically drivable height is BELOW the checkpoint
- * / finality anchor. There the epilogue's H* self-check legitimately floors at
- * the anchor (documented regtest/short-chain regime) — H* still climbs off the
- * "pinned at 0 / looks-synced-but-isn't" defect state, which is the property
- * under test. */
+ * / finality anchor. A compiled checkpoint not covered by this datadir cannot
+ * manufacture state above the imported tip, so the epilogue roots H* at the
+ * covered imported base instead. */
 
 #include "test/test_core.h"
 
@@ -325,17 +324,16 @@ int test_snapshot_boot_seed(void)
                  gh == SB_SNAP_HEIGHT);
     }
 
-    /* H* CLIMBED off the "pinned / looks-synced-but-isn't" state. Below the
-     * compiled anchor the frontier legitimately floors AT the anchor
-     * (documented short-chain regime); the property under test is that H* is no
-     * longer stuck under the seed — it is >= the finality floor and > 0. */
+    /* H* CLIMBED off the "pinned / looks-synced-but-isn't" state to the exact
+     * imported base. The higher compiled checkpoint is not a floor here because
+     * this short fixture's coin authority does not cover it. */
     {
         int32_t hs = 0, sf = 0;
         progress_store_tx_lock();
         bool ok = reducer_frontier_compute_hstar(pdb, &hs, &sf);
         progress_store_tx_unlock();
-        SB_CHECK("post: H* climbed (== finality anchor floor, not pinned at 0)",
-                 ok && hs == REDUCER_FRONTIER_TRUSTED_ANCHOR && hs > 0);
+        SB_CHECK("post: H* climbed to the covered imported base",
+                 ok && hs == SB_SNAP_HEIGHT && hs > 0);
     }
 
     /* NO stage named a blocker while seeding — the import is a clean advance,

@@ -187,9 +187,9 @@ static bool stamp_proven_authority_tf(sqlite3 *db, int32_t applied_height)
 {
     if (!seed_coins_applied_height(db, applied_height))
         return false;
-    if (!exec_sql(db,
-            "CREATE TABLE IF NOT EXISTS coins(k BLOB PRIMARY KEY, v BLOB);"
-            "INSERT OR IGNORE INTO coins(k,v) VALUES(x'00', x'00');"))
+    static const uint8_t dummy_txid[32] = {0x71};
+    if (!coins_kv_ensure_schema(db) ||
+        !coins_kv_add(db, dummy_txid, 0, 0, 0, false, NULL, 0))
         return false;
     uint8_t one = 1;
     sqlite3_stmt *st = NULL;
@@ -835,14 +835,10 @@ int test_tip_finalize_stage(void)
         tf_teardown(dir, &ms, &sc);
     }
 
-    /* stall-taxonomy audit: stage_upstream_log_hole_note. A durable
-     * hole (utxo_apply_log row deleted below the already-advanced
-     * utxo_apply cursor — the residue of a noncanonical-row purge, see
-     * docs/AGENT_TRAPS.md) must name a typed DEPENDENCY blocker
-     * immediately. tip_finalize was the one stage still relying solely on
-     * the internal tip_finalize_observe_mark_blocked counter for this
-     * exact class already fixed (via the shared helper) in body_fetch /
-     * body_persist / script_validate / proof_validate / utxo_apply. */
+    /* A durable upstream hole is hidden behind the derived contiguous-success
+     * frontier: tip_finalize stops before the missing row and publishes no
+     * downstream failure. Refilling the row raises that frontier and resumes
+     * immediately. */
     {
         char dir[256]; struct main_state ms; struct synth_chain_tf sc;
         TF_CHECK("upstream_log_hole: setup",
@@ -853,6 +849,7 @@ int test_tip_finalize_stage(void)
         TF_CHECK("upstream_log_hole: delete row at height=1 below the floor",
                  exec_sql(progress_store_db(),
                           "DELETE FROM utxo_apply_log WHERE height=1"));
+        reducer_frontier_stage_cursor_derived_reset_memo_for_testing();
         TF_CHECK("upstream_log_hole: h=0 advances, holds at the hole",
                  tip_finalize_stage_drain(100) == 1);
         TF_CHECK("upstream_log_hole: cursor held at the hole (1)",
@@ -873,9 +870,10 @@ int test_tip_finalize_stage(void)
                 break;
             }
         }
-        TF_CHECK("upstream_log_hole: typed blocker raised", uh_found);
-        TF_CHECK("upstream_log_hole: blocker names the row + height + "
-                 "class DEPENDENCY", uh_fields_ok);
+        TF_CHECK("upstream_log_hole: derived frontier hides the torn row",
+                 !uh_found);
+        TF_CHECK("upstream_log_hole: no stale blocker fields escape",
+                 !uh_fields_ok);
 
         int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
         TF_CHECK("upstream_log_hole: no terminal row written at the hole",
@@ -888,6 +886,7 @@ int test_tip_finalize_stage(void)
                           "(height, status, ok, spent_count, added_count, "
                           " total_value_delta, applied_at) "
                           "VALUES (1, 'verified', 1, 1, 2, 1, 1)"));
+        reducer_frontier_stage_cursor_derived_reset_memo_for_testing();
         TF_CHECK("upstream_log_hole: resumes once the row is refilled",
                  tip_finalize_stage_drain(100) == 2);
         TF_CHECK("upstream_log_hole: cursor advanced to tip (3)",
@@ -995,15 +994,14 @@ int test_tip_finalize_stage(void)
                  exec_sql(progress_store_db(),
                      "UPDATE tip_finalize_log SET ok=CAST('1x' AS TEXT) "
                      "WHERE height=3") &&
-                 tip_finalize_stage_step_once() == JOB_BLOCKED &&
-                 tip_finalize_stage_cursor() == 3);
-        blocker_clear("tip_finalize.validation_evidence");
+                 tip_finalize_trusted_anchor_at(
+                     progress_store_db(), 3, &sc.hashes[3]) == 0);
         TF_CHECK("anchor_storage: TEXT hash cannot authorize",
                  exec_sql(progress_store_db(),
                      "UPDATE tip_finalize_log SET ok=1,"
                      "tip_hash=CAST(tip_hash AS TEXT) WHERE height=3") &&
-                 tip_finalize_stage_step_once() == JOB_BLOCKED &&
-                 tip_finalize_stage_cursor() == 3);
+                 tip_finalize_trusted_anchor_at(
+                     progress_store_db(), 3, &sc.hashes[3]) == 0);
         tf_teardown(dir, &ms, &sc);
     }
 
@@ -1888,16 +1886,16 @@ int test_tip_finalize_stage(void)
         TF_CHECK("upstream_failed: setup",
                  tf_setup("upstream", 3, TF_FAIL_NONE, 2, dir, sizeof(dir),
                           &ms, &sc) == 0);
-        TF_CHECK("upstream_failed: drains 3",
-                 tip_finalize_stage_drain(100) == 3);
-        TF_CHECK("upstream_failed: counter == 1",
-                 tip_finalize_stage_upstream_failed_total() == 1);
+        TF_CHECK("upstream_failed: drains only the proven prefix",
+                 tip_finalize_stage_drain(100) == 2);
+        TF_CHECK("upstream_failed: failed row is not republished",
+                 tip_finalize_stage_upstream_failed_total() == 0 &&
+                 tip_finalize_stage_cursor() == 2);
         int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
         log_row_at(progress_store_db(), 2, &ok, status, sizeof(status),
                    &depth, &utxos);
-        TF_CHECK("upstream_failed: h=2 ok=0", ok == 0);
-        TF_CHECK("upstream_failed: h=2 status",
-                 strcmp(status, "upstream_failed") == 0);
+        TF_CHECK("upstream_failed: no downstream h=2 row",
+                 ok == -1 && status[0] == '\0');
         tf_teardown(dir, &ms, &sc);
     }
 
@@ -2084,6 +2082,8 @@ int test_tip_finalize_stage(void)
         ok_setup = ok_setup && exec_sql(progress_store_db(),
             "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
             "VALUES('utxo_apply', 4, 1)");
+        ok_setup = ok_setup &&
+            stamp_proven_authority_tf(progress_store_db(), 4);
         ok_setup = ok_setup && tip_finalize_stage_init(&ms);
         /* Production never wires the utxo counter (test-only seam) — and on
          * a cold import sums-through(H) sees only the zero-delta anchor row,
@@ -2129,6 +2129,8 @@ int test_tip_finalize_stage(void)
         ok_setup = ok_setup && exec_sql(progress_store_db(),
             "INSERT OR REPLACE INTO stage_cursor(name, cursor, updated_at) "
             "VALUES('utxo_apply', 5, 1)");
+        ok_setup = ok_setup &&
+            stamp_proven_authority_tf(progress_store_db(), 5);
         TF_CHECK("seed_cold_import_row_gap: successor arrival setup", ok_setup);
         TF_CHECK("seed_cold_import_row_gap: H+1 publishes on FIRST arrival",
                  tip_finalize_stage_step_once() == JOB_ADVANCED);

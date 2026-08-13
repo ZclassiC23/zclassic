@@ -191,22 +191,16 @@ static bool derive_authority_from_node_db_utxos(struct node_db *ndb,
 
     /* ── (4) Self-check: H* must have climbed to the replayed tip. If not, the
      * derivation silently did nothing coherent — fail (page + sentinel pending,
-     * next boot retries) rather than serve half-derived state.
-     *
-     * compute_hstar HARD-clamps H* up to the compiled SHA3 finality anchor
-     * (REDUCER_FRONTIER_TRUSTED_ANCHOR) — it never rewinds across finality. A
-     * production reindex tip is far above the anchor, so the expected H* is
-     * exactly tip_h. A reindex to a tip BELOW the anchor (regtest / a chain
-     * shorter than the checkpoint) legitimately pins H* at the anchor floor:
-     * the coherent post-state there is hstar == anchor, NOT tip_h. Verify
-     * against MAX(tip_h, anchor) so the self-check is correct for both regimes
-     * and the regtest smoke harness can exercise it. */
+     * next boot retries) rather than serve half-derived state. The epilogue
+     * stamps coins_applied_height=tip+1 and a trusted base at tip, so this is
+     * exact even for a short/regtest chain below the compiled checkpoint. A
+     * checkpoint is a floor only when this datadir's coin authority covers it;
+     * it must never manufacture H* above the replayed state. */
     int32_t hstar = 0, served = 0;
     progress_store_tx_lock();
     bool hs_ok = reducer_frontier_compute_hstar(pdb, &hstar, &served);
     progress_store_tx_unlock();
-    int32_t expect_hstar = tip_h > REDUCER_FRONTIER_TRUSTED_ANCHOR
-                               ? tip_h : REDUCER_FRONTIER_TRUSTED_ANCHOR;
+    int32_t expect_hstar = tip_h;
     if (!hs_ok || hstar != expect_hstar) {
         reindex_epi_page(tip_h, "hstar_below_tip");
         LOG_RETURN(false, "reindex_epi",

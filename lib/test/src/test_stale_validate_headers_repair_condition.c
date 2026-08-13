@@ -406,11 +406,10 @@ static bool setup_condition_case(const char *tag, char *dir, size_t dir_n,
     setup_main_state(ms, blocks, hashes);
     condition_engine_set_main_state(ms);
     register_stale_validate_headers_repair();
-    /* Anchor floor was overridden to 1 above; stamp proven authority so the
-     * phantom-anchor guard in compute_hstar honors it (applied frontier == the
-     * overridden anchor). */
+    /* Anchor floor was overridden to 1 above. applied_height is the NEXT
+     * height, so coverage through the overridden anchor is represented by 2. */
     return seed_schema(progress_store_db()) &&
-           seed_proven_authority(progress_store_db(), 1);
+           seed_proven_authority(progress_store_db(), 2);
 }
 
 static void teardown_condition_case(const char *dir, struct main_state *ms)

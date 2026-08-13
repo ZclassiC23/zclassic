@@ -11,6 +11,7 @@
  * progress_store_tx_lock() so the snapshot is internally consistent. */
 
 #include "jobs/reducer_frontier.h"
+#include "reducer_frontier_trusted_base_internal.h"
 
 #include "reducer_frontier_evidence.h"
 #include "reducer_frontier_self_anchor.h"  /* self-derived anchor sourcing */
@@ -481,7 +482,14 @@ static bool reducer_anchor_candidate_ok(sqlite3 *db, int32_t height,
 static bool reducer_trusted_anchor(sqlite3 *db, int32_t compiled_anchor,
                                    int32_t *out)
 {
-    *out = compiled_anchor;
+    /* The compiled checkpoint is a candidate, not synthetic state. If this
+     * datadir's proven coin frontier does not cover it, search from genesis
+     * so a lower, genuinely covered imported base can still be selected. */
+    int32_t covered_floor = compiled_anchor;
+    if (covered_floor > 0 &&
+        !reducer_frontier_coin_authority_covers(db, covered_floor))
+        covered_floor = 0;
+    *out = covered_floor;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
             "SELECT height FROM tip_finalize_log "
@@ -490,14 +498,15 @@ static bool reducer_trusted_anchor(sqlite3 *db, int32_t compiled_anchor,
             -1, &st, NULL) != SQLITE_OK)
         LOG_FAIL("reducer", "prepare trusted anchor failed: %s",
                  sqlite3_errmsg(db));
-    sqlite3_bind_int(st, 1, compiled_anchor);
+    sqlite3_bind_int(st, 1, covered_floor);
 
     bool rc_ok = true;
     while (true) {
         int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
         if (rc == SQLITE_ROW) {
             int32_t h = (int32_t)sqlite3_column_int64(st, 0);
-            if (reducer_anchor_candidate_ok(db, h, false)) {
+            if (reducer_frontier_coin_authority_covers(db, h) &&
+                reducer_anchor_candidate_ok(db, h, false)) {
                 *out = h;
                 break;
             }
@@ -521,7 +530,8 @@ static bool reducer_trusted_anchor(sqlite3 *db, int32_t compiled_anchor,
     bool base_found = false;
     if (!reducer_frontier_trusted_base_height_read(db, &base_h, &base_found))
         return false; /* raw-return-ok:trusted-base reader logged failure */
-    if (base_found && base_h >= compiled_anchor && base_h > *out &&
+    if (base_found && base_h >= covered_floor && base_h > *out &&
+        reducer_frontier_coin_authority_covers(db, base_h) &&
         reducer_anchor_candidate_ok(db, base_h, true))
         *out = base_h;
     return true;
@@ -580,21 +590,6 @@ bool reducer_frontier_compute_hstar(sqlite3 *progress_db,
     int32_t anchor = compiled_anchor;
     if (!reducer_trusted_anchor(progress_db, compiled_anchor, &anchor))
         LOG_FAIL("reducer", "trusted anchor read failed");
-
-    /* PHANTOM-ANCHOR GUARD — the baked REDUCER_FRONTIER_TRUSTED_ANCHOR is only
-     * a real finality floor when coins_kv was actually seeded/migrated on THIS
-     * datadir. On a fresh / empty datadir coins_kv is NOT the proven authority,
-     * so the anchor names a height this node has resolved NOTHING below — every
-     * empty log's contiguous prefix would otherwise return `anchor`, pinning
-     * H* (and getblockcount) to e.g. 3056758 on a node holding zero blocks.
-     * Drop the floor to 0 in that case so H* reports the honestly-resolved
-     * prefix (~0 on a bare node, or the real folded prefix mid-IBD) — the same
-     * 0-floor a from-genesis refold already uses. A real datadir (proven
-     * authority) keeps the anchor floor and the finality clamp below is exact.
-     * coins_kv_is_proven_authority is SELECT-only; the caller holds
-     * progress_store_tx_lock. */
-    if (anchor > 0 && !coins_kv_is_proven_authority(progress_db, NULL))
-        anchor = 0;
 
     *served_floor = 0;
     /* served_floor is independent of H* (C-served): report the deepest

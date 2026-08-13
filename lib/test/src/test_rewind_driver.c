@@ -443,7 +443,8 @@ static int case_base_at_or_above_hstar_noop(void)
     char dir[256];
     sqlite3 *db = rd_open_progress(dir, "noop");
     RD_CHECK("noop: progress store opens + schema", db && rd_build_schema(db));
-    RD_CHECK("noop: proven authority", db && rd_stamp_proven_authority(db, A));
+    RD_CHECK("noop: proven authority",
+             db && rd_stamp_proven_authority(db, A + 1));
     RD_CHECK("noop: clamp-up rows pin H* at anchor",
              db && rd_put_clamp_up_at_anchor(db));
     RD_CHECK("noop: cursors", db && rd_set_all_cursors(db, A + 2));
@@ -489,7 +490,8 @@ static int case_stage_rederive_store_error(void)
     /* rd_build_schema: NO body_fetch_log on purpose. */
     RD_CHECK("store-err: progress store opens + schema",
              db && rd_build_schema(db));
-    RD_CHECK("store-err: proven authority", db && rd_stamp_proven_authority(db, A));
+    RD_CHECK("store-err: proven authority",
+             db && rd_stamp_proven_authority(db, A + 1));
     bool built = db != NULL;
     for (int32_t h = A + 1; h <= A + 5; h++)
         built = built && rd_put_consistent_height(db, h);
@@ -517,10 +519,12 @@ static int case_stage_rederive_store_error(void)
 }
 
 /* Branch 6: stage_rederive_range LCC refusal (refused_no_inverse) -> escalate
- * ONCE. Same H*=A+5 / base-A topology, but WITHOUT the utxo frontier row at A:
- * the coins inverse-rewind of [A, A+6) reaches height A, finds NO utxo_apply_log
- * row there, and REFUSES rather than manufacture a coin hole. The driver names
- * its typed blocker; a second identical drive must not multiply it. */
+ * ONCE. Same H*=A+5 / base-A topology, but the first suffix height A+1 carries
+ * a malformed inverse blob. H* still reaches A+5 because the success log and
+ * branch hash are present; the coin rewind of [A+1,A+6) REFUSES rather than
+ * manufacture a coin hole.
+ * The driver names its typed blocker; a second identical drive must not
+ * multiply it. */
 static int case_rederive_refused_escalates_once(void)
 {
     int failures = 0;
@@ -529,13 +533,17 @@ static int case_rederive_refused_escalates_once(void)
     sqlite3 *db = rd_open_progress(dir, "refused");
     RD_CHECK("refused: progress store opens + schema (full)",
              db && rd_build_schema_full(db));
-    RD_CHECK("refused: proven authority", db && rd_stamp_proven_authority(db, A));
+    RD_CHECK("refused: proven authority",
+             db && rd_stamp_proven_authority(db, A + 1));
     bool built = db != NULL;
     for (int32_t h = A + 1; h <= A + 5; h++)
         built = built && rd_put_consistent_height(db, h);
-    /* NOTE: deliberately NO rd_put_utxo_frontier_row(db, A) — the missing row
-     * at the base height is what forces the LCC refusal. */
-    RD_CHECK("refused: rows built (frontier hole at base height A)", built);
+    char corrupt_first_delta[112];
+    snprintf(corrupt_first_delta, sizeof(corrupt_first_delta),
+             "UPDATE utxo_apply_delta SET spent_blob=x'01' WHERE height=%d",
+             A + 1);
+    built = built && rd_exec(db, corrupt_first_delta);
+    RD_CHECK("refused: rows built (inverse hole at first suffix height)", built);
     RD_CHECK("refused: cursors at A+6", db && rd_set_all_cursors(db, A + 6));
 
     const char *bid = "rewind_driver.refused";
@@ -575,7 +583,8 @@ static int case_success(void)
     sqlite3 *db = rd_open_progress(dir, "success");
     RD_CHECK("success: progress store opens + schema (full)",
              db && rd_build_schema_full(db));
-    RD_CHECK("success: proven authority", db && rd_stamp_proven_authority(db, A));
+    RD_CHECK("success: proven authority",
+             db && rd_stamp_proven_authority(db, A + 1));
     bool built = db != NULL;
     for (int32_t h = A + 1; h <= A + 5; h++)
         built = built && rd_put_consistent_height(db, h);
@@ -636,7 +645,8 @@ static int case_sovereign_rewinds_to_lower_self_verified(void)
     sqlite3 *db = rd_open_progress(dir, "sovereign");
     RD_CHECK("sovereign: progress store opens + schema (full)",
              db && rd_build_schema_full(db));
-    RD_CHECK("sovereign: proven authority", db && rd_stamp_proven_authority(db, A));
+    RD_CHECK("sovereign: proven authority",
+             db && rd_stamp_proven_authority(db, A + 1));
     bool built = db != NULL;
     for (int32_t h = A + 1; h <= A + 5; h++)
         built = built && rd_put_consistent_height(db, h);

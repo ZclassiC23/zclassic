@@ -6,8 +6,8 @@
  * Mechanism reuse (no reinvention of reducer reorg machinery):
  *   - mark failed         : process_block_propagate_failed_child (the
  *                           same descendant-CHILD walk used by chain advance).
- *   - persist status flip : block_tree_db_write_block_index against the shared
- *                           block-index LevelDB handle.
+ *   - persist status flip : EV_BLOCK_HEADER into the durable block-index
+ *                           projection log.
  *   - roll the chain back : active-chain cursor move + reducer kick after
  *                           FAILED is already visible.
  *   - reconnect best chain: reducer stage drain via the activation controller
@@ -27,7 +27,6 @@
  * app-layer controller process_block_revalidate.c uses. Same tradeoff,
  * same marker — keep the lib_layering baseline flat. */
 #include "services/chain_activation_service.h"  // lib-layer-ok:invalidate-lever
-#include "storage/block_index_db.h"
 #include "jobs/block_header_emit.h"
 #include "util/log_macros.h"
 #include "validation/chainstate.h"
@@ -40,12 +39,6 @@
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
-
-/* The block_tree_db handle is opened by config/src/boot.c and published
- * into g_active_block_tree (declared in <validation/process_block.h>). We
- * reuse the same handle here so flipped status updates land in the same
- * LevelDB the rest of the validation path persists to. Shared with
- * process_block_revalidate.c. */
 
 const char *invalidate_result_name(enum invalidate_result r)
 {
@@ -72,26 +65,15 @@ const char *reconsider_result_name(enum reconsider_result r)
     return "?";
 }
 
-/* Persist a single pindex's current nStatus to the shared block_tree_db.
- * Returns true on success (or when there is no db handle — tests run
- * without one and rely on the in-memory flip). */
+/* Persist a single pindex's current nStatus to the event-sourced projection.
+ * Tests without a wired runtime keep their historical in-memory-only seam. */
 static bool invalidate_persist_pindex(const struct block_index *p)
 {
-    /* Feed the event-sourced block_index_projection — the surviving derived
-     * header snapshot (Program H0) — from this canonical status-flip path,
-     * NOT from the legacy LevelDB writer. Best-effort, never fatal; runs
-     * independent of the LevelDB handle so the projection stays complete even
-     * where g_active_block_tree is unwired (tests). Covers both invalidate
-     * (FAILED_VALID set) and reconsider (FAILED cleared) — both flip p->nStatus
-     * in memory before calling here, and the projection's INSERT-OR-REPLACE by
-     * hash folds the new nStatus. */
-    block_index_emit_header_event(p, "invalidate_persist", NULL, NULL);
-
+    bool persisted =
+        block_index_emit_header_event(p, "invalidate_persist", NULL, NULL);
     if (!g_active_block_tree)
         return true;
-    struct disk_block_index dbi;
-    block_index_snapshot_for_persist(&dbi, p);
-    return block_tree_db_write_block_index(g_active_block_tree, &dbi);
+    return persisted;
 }
 
 /* ── Pure core ───────────────────────────────────────────────────── */

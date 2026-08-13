@@ -406,7 +406,7 @@ int test_seed_torn_import_gate(void)
          * migration). Without it compute_hstar's phantom-anchor guard would
          * drop H* to 0, blowing the loader's H-H*<=trigger gap check below. */
         STIG_CHECK("clean: coins_applied + migration stamped",
-                   pk && stig_set_applied(pk, STIG_ANCHOR));
+                   pk && stig_set_applied(pk, H + 1));
 
         struct node_db ndb;
         STIG_CHECK("clean: node_db opens", node_db_open(&ndb, ":memory:"));

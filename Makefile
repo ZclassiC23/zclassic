@@ -68,10 +68,15 @@ ZCL_WITH_RUST ?=
 # first parse would omit the archives, create them later, and correctly refuse
 # its own post-link identity check. The same boundary protects entry points
 # whose `vendor-ready` prerequisite may repair stale archives.
-VENDOR_ARCHIVES = libsecp256k1.a libcrypto.a libssl.a libevent.a \
-	libevent_openssl.a libevent_pthreads.a libleveldb.a libsqlite3.a \
-	libz.a libtor_stub.a $(if $(ZCL_WITH_RUST),librustzcash.a)
+NODE_VENDOR_ARCHIVES = libsecp256k1.a libcrypto.a libssl.a libevent.a \
+	libevent_openssl.a libevent_pthreads.a libsqlite3.a libz.a libtor_stub.a
+# A focused `make zclassic23` needs no C++ or Rust toolchain. Test/dev builds
+# retain LevelDB and optional rustzcash strictly as differential oracles.
+ZCL_NODE_ONLY_BUILD := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out zclassic23,$(MAKECMDGOALS))),,1),)
+VENDOR_ARCHIVES = $(NODE_VENDOR_ARCHIVES) \
+	$(if $(ZCL_NODE_ONLY_BUILD),,libleveldb.a $(if $(ZCL_WITH_RUST),librustzcash.a))
 VENDOR_LIBS = $(addprefix vendor/lib/,$(VENDOR_ARCHIVES))
+NODE_VENDOR_LIBS = $(addprefix vendor/lib/,$(NODE_VENDOR_ARCHIVES))
 VENDOR_BOOTSTRAP_MK := build/identity/vendor-inputs-ready.mk
 VENDOR_MISSING_INPUTS := $(filter-out $(wildcard $(VENDOR_LIBS)),$(VENDOR_LIBS))
 VENDOR_REPAIR_GOALS := vendor-ready deploy install
@@ -720,6 +725,17 @@ LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	$(CXX_STDLIB_LDFLAGS) -lstdc++ -lsqlite3 \
 	-levent -levent_openssl -levent_pthreads \
 	-lssl -lcrypto -lz $(if $(ZCL_WITH_RUST),-lrustzcash) -ldl -lpthread -lm
+
+# The shipped node is a C23 artifact. It never links the optional GTK/WebKit
+# presentation stack, the C++ LevelDB oracle, libstdc++, or the Rust
+# differential oracle. Legacy LevelDB bootstrap reads use the in-tree C23
+# reader; every other third-party input is an exact pinned static archive.
+NODE_C23_CFLAGS = $(CFLAGS) -DZCL_C23_NODE -UHAVE_GTK -UHAVE_WEBKIT
+NODE_C23_TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),vendor/lib/libtor_stub.a)
+NODE_C23_LIBS = vendor/lib/libsecp256k1.a vendor/lib/libsqlite3.a \
+	vendor/lib/libevent.a vendor/lib/libevent_openssl.a \
+	vendor/lib/libevent_pthreads.a vendor/lib/libssl.a \
+	vendor/lib/libcrypto.a vendor/lib/libz.a -ldl -lpthread -lm
 
 # ── Host-local compile epochs ─────────────────────────────────────────────
 # Source bytes remain the portable authority, but they no longer select the
@@ -3377,17 +3393,18 @@ zclassic23: $(ZCLASSIC23_BIN)
 # dir under its final basename because --add-gnu-debuglink reads the file
 # (stored name + CRC32) at link time.
 $(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) \
-		$(NODE_ENTRY_SRCS) $(ALL_SRCS) $(COMMAND_CATALOG_DEFS) | $(VENDOR_LIBS)
+		$(NODE_ENTRY_SRCS) $(ALL_SRCS) $(COMMAND_CATALOG_DEFS) | $(NODE_VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	dbg="$@.debug"; \
 	dbgdir="$$(mktemp -d "$@.dbgdir.XXXXXX")"; \
 	trap 'rm -rf "$$tmp" "$$dbgdir"' EXIT HUP INT TERM; \
-	$(CC) $(CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS),$^) $(TOR_LIBS) $(LIBS) $(GTK_LIBS) $(WEBKIT_LIBS); \
+	$(CC) $(NODE_C23_CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS),$^) $(NODE_C23_TOR_LIBS) $(NODE_C23_LIBS); \
 	objcopy --only-keep-debug "$$tmp" "$$dbgdir/$$(basename "$$dbg")"; \
 	strip -s "$$tmp"; \
 	objcopy --add-gnu-debuglink="$$dbgdir/$$(basename "$$dbg")" "$$tmp"; \
+	tools/scripts/check_c23_node_binary.sh "$$tmp"; \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
 	mv -f -- "$$tmp" "$@"; \
 	mv -f -- "$$dbgdir/$$(basename "$$dbg")" "$$dbg"; \
