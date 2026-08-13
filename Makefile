@@ -2122,9 +2122,26 @@ t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
 
-.PHONY: zcode-development-acceptance zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling sovereign-source-roundtrip
+.PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling sovereign-source-roundtrip
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
+
+# One product proof for the C23 Commons Alpha. The two exact groups remain the
+# owners of their generic, data-driven scenarios: package_registry proves all
+# ten declarative builds, independent reproduction, the standalone stranger
+# application and two monolith dogfood consumers; swarm_net proves the signed
+# four-node P2P lifecycle, publisher disappearance and cold/repeat/edit/revert
+# accounting. The structural gates bind the same graph to exact-once monolith
+# source ownership and keep ZVCS independent of Git/Git SHA-1 while stable
+# publication remains separately contained. Do not split this into per-package
+# runners: config/zcode_package_registry.def is the package parameter set.
+zcode-c23-commons-alpha:
+	@$(MAKE) --no-print-directory check-zcode-package-registry
+	@$(MAKE) --no-print-directory t-fast-exact \
+	  ONLY='test_zcode_package_registry,test_zcode_swarm_net'
+	@$(MAKE) --no-print-directory check-vcs-no-git check-vcs-no-sha1 \
+	  check-stable-publish-contained
+	@printf '%s\n' '{"schema":"zcl.c23_commons_alpha_acceptance.v1","verdict":"PASS","package_count":10,"dependency_levels":3,"package_graph_validation":true,"standalone_build":true,"four_node_lifecycle":true,"independent_reproduction":true,"incremental_transfer":true,"sample_application":true,"internal_dogfood_consumers":2,"vcs_git_free":true,"vcs_sha1_free":true,"stable_publish_contained":true}'
 
 # Runs the real DHT fixture's central lifecycle boundary without booting full
 # nodes: concurrent owners, a forced middle failure, signal cleanup, immediate

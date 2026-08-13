@@ -453,12 +453,12 @@ static bool registry_dogfood(const char *datadir)
 {
     const struct registry_expected *package =
         registry_named("zclassic23/package");
-    const struct registry_expected *demo =
-        registry_named("zclassic23/commons-demo");
-    char package_artifact[65], demo_artifact[65];
-    bool ok = package && demo &&
+    const struct registry_expected *json =
+        registry_named("zclassic23/json");
+    char package_artifact[65], json_artifact[65];
+    bool ok = package && json &&
         registry_dogfood_consumer(datadir, package, package_artifact) &&
-        registry_dogfood_consumer(datadir, demo, demo_artifact);
+        registry_dogfood_consumer(datadir, json, json_artifact);
     if (ok)
         printf("{\"schema\":\"zcl.c23_commons_dogfood.v1\","
                "\"consumer_count\":2,\"profile\":\"quick-v1\","
@@ -469,8 +469,30 @@ static bool registry_dogfood(const char *datadir)
                "\"consumers\":[{\"name\":\"%s\","
                "\"archive_root\":\"%s\"},{\"name\":\"%s\","
                "\"archive_root\":\"%s\"}]}\n",
-               package->name, package_artifact, demo->name, demo_artifact);
+               package->name, package_artifact, json->name, json_artifact);
     return ok;
+}
+
+static bool registry_graph_shape(const char *datadir,
+                                 size_t *levels_out,
+                                 size_t *closure_out)
+{
+    const struct registry_expected *app =
+        registry_named("zclassic23/commons-demo");
+    if (!app || !levels_out || !closure_out)
+        return false;
+    struct package_lifecycle_plan_report plan;
+    struct zcl_result planned = package_lifecycle_plan(
+        datadir, app->content_root, INT64_C(1700000900), &plan);
+    if (!planned.ok || !plan.ready || plan.plan.step_count < 4u)
+        return false;
+    uint16_t maximum_depth = 0;
+    for (size_t i = 0; i < plan.plan.step_count; i++)
+        if (plan.plan.steps[i].depth > maximum_depth)
+            maximum_depth = plan.plan.steps[i].depth;
+    *levels_out = (size_t)maximum_depth + 1u;
+    *closure_out = plan.plan.step_count;
+    return *levels_out >= 3u;
 }
 
 static bool registry_independent_reproduction(size_t *reproduced_out)
@@ -513,6 +535,19 @@ static bool registry_independent_reproduction(size_t *reproduced_out)
         vcs_package_store_close(store_a);
     if (store_b)
         vcs_package_store_close(store_b);
+
+    size_t dependency_levels = 0, app_closure = 0;
+    if (ok)
+        ok = registry_graph_shape(builder_a, &dependency_levels,
+                                  &app_closure);
+    if (ok)
+        printf("{\"schema\":\"zcl.c23_commons_graph.v1\","
+               "\"package_count\":%zu,\"dependency_levels\":%zu,"
+               "\"application_closure_packages\":%zu,"
+               "\"exact_roots\":true,\"author_signatures_verified\":true,"
+               "\"declarative_recipes\":true}\n",
+               sizeof(registry_packages) / sizeof(registry_packages[0]),
+               dependency_levels, app_closure);
 
     for (size_t i = 0;
          ok && i < sizeof(registry_packages) / sizeof(registry_packages[0]);
