@@ -22,6 +22,8 @@ exact packages without a central registry.
 - [`../README.md`](../README.md) — what the product is and what users can do.
 - [`GETTING_STARTED.md`](GETTING_STARTED.md) — build and run it on a fresh
   machine.
+- [`C23_COMMONS_QUICKSTART.md`](C23_COMMONS_QUICKSTART.md) — installed-node
+  author, consumer, and reproducer journey for exact third-party C23 packages.
 - [`MVP.md`](MVP.md) — public-node V1 acceptance contract; `make mvp` reports
   the live criterion state and `make mvp-verify` runs the local aggregate.
 - [`NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md) — discoverable,
@@ -39,6 +41,8 @@ does not authorize execution or deployment.
 
 - [`work/ZCODE_PLAN.md`](work/ZCODE_PLAN.md) — package and source protocol
   design.
+- [`C23_COMMONS_QUICKSTART.md`](C23_COMMONS_QUICKSTART.md) — concise public
+  workflow and its current portability/reproduction limits.
 - [`ZVCS.md`](ZVCS.md) — in-binary source identity and versioning.
 - `make zcode-development-acceptance` — package developer lifecycle.
 - `make zcode-async-proof-acceptance` — interchangeable full-node async work,

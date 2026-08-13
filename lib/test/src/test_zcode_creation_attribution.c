@@ -563,14 +563,25 @@ static int commons_mission_api_test(void)
             "ZClassic23 is a metaverse where people and AI create real "
             "things together, and nobody owns the world they build in.") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "find_work")),
+                      "zcode package guide") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "search_local_packages")),
                       "zcode package search") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "create_work")),
                       "zcode create") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "package_workflow")),
+                      "zcode package guide") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "verify_commons")),
                       "zcode commons verify") == 0);
         ASSERT(!json_get_bool(json_get(&reply.data, "token_required")));
         ASSERT(!json_get_bool(json_get(&reply.data, "balance_grants_truth")));
         ASSERT(!json_get_bool(json_get(&reply.data, "commons_is_owned")));
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "portable_source_identity")));
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "current_package_build_target")),
+                      "linux-x86_64-v3") == 0);
         zcl_command_reply_free(&reply); json_free(&input);
         PASS();
     } _test_next:;

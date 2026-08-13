@@ -54,7 +54,7 @@ static bool render_guide(struct zcode_package_guide_result_v1 *out)
     (void)snprintf(out->static_boundary, sizeof(out->static_boundary), "%s",
                    "CAS/index reads, signatures, publication, fetch, install, build, execution, storage and network effects");
     (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
-                   "zclassic23 zcode package search --input='{}'");
+                   "zclassic23 zcode network status");
     return true;
 }
 

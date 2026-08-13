@@ -183,6 +183,10 @@ build/bin/zclassic23 metaverse property list --input='{"datadir":"/tmp/zcl23-tou
 build/bin/zclassic23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'
 ```
 
+For the exact installed-node author, consumer, and independent-reproducer
+package journey, continue with
+[`C23_COMMONS_QUICKSTART.md`](C23_COMMONS_QUICKSTART.md).
+
 Want a real committed space instead of an empty listing? `metaverse space
 plan` then `metaverse space commit` returns the 64-hex root for
 `metaverse space show --input='{"root":"<64hex>",...}'`.

@@ -167,17 +167,13 @@ static int signer_show_public(int key_fd, secp256k1_context *ctx)
     return 0;
 }
 
-static int signer_sign(int key_fd, int digest_fd, int signature_fd,
-                       secp256k1_context *ctx)
+static bool signer_sign_digest(int key_fd, const uint8_t digest[32],
+                               uint8_t compact[64],
+                               secp256k1_context *ctx)
 {
-    uint8_t secret[32], digest[32], compact[64];
+    uint8_t secret[32];
     if (!signer_key_fd(key_fd, secret))
-        return 1;
-    if (!signer_read_exact(digest_fd, digest, sizeof(digest))) {
-        fprintf(stderr, "zclassic23-package-sign: digest fd must contain exactly 32 bytes\n");
-        memory_cleanse(secret, sizeof(secret));
-        return 1;
-    }
+        return false;
     secp256k1_ecdsa_signature signature, normalized;
     bool ok = secp256k1_ecdsa_sign(ctx, &signature, digest, secret, NULL,
                                   NULL) == 1;
@@ -190,12 +186,46 @@ static int signer_sign(int key_fd, int digest_fd, int signature_fd,
     }
     memory_cleanse(&signature, sizeof(signature));
     memory_cleanse(&normalized, sizeof(normalized));
-    if (!ok || !signer_write_exact(signature_fd, compact, sizeof(compact))) {
+    return ok;
+}
+
+static int signer_sign(int key_fd, int digest_fd, int signature_fd,
+                       secp256k1_context *ctx)
+{
+    uint8_t digest[32], compact[64];
+    if (!signer_read_exact(digest_fd, digest, sizeof(digest))) {
+        fprintf(stderr, "zclassic23-package-sign: digest fd must contain exactly 32 bytes\n");
+        return 1;
+    }
+    if (!signer_sign_digest(key_fd, digest, compact, ctx) ||
+        !signer_write_exact(signature_fd, compact, sizeof(compact))) {
         fprintf(stderr, "zclassic23-package-sign: signing or signature-fd write failed\n");
         memory_cleanse(compact, sizeof(compact));
         return 1;
     }
     memory_cleanse(compact, sizeof(compact));
+    return 0;
+}
+
+static int signer_sign_hex(int key_fd, const char *digest_hex,
+                           secp256k1_context *ctx)
+{
+    uint8_t digest[32], compact[64];
+    if (!digest_hex || strlen(digest_hex) != 64u ||
+        !zcl_hex_decode_lower(digest_hex, digest, sizeof(digest))) {
+        fprintf(stderr,
+                "zclassic23-package-sign: --sign-digest requires exactly 64 lowercase hex characters\n");
+        return 2;
+    }
+    if (!signer_sign_digest(key_fd, digest, compact, ctx)) {
+        fprintf(stderr, "zclassic23-package-sign: signing failed\n");
+        memory_cleanse(compact, sizeof(compact));
+        return 1;
+    }
+    char signature_hex[129];
+    zcl_hex_encode(compact, sizeof(compact), signature_hex);
+    memory_cleanse(compact, sizeof(compact));
+    printf("%s\n", signature_hex);
     return 0;
 }
 
@@ -205,12 +235,14 @@ static void signer_usage(void)
             "usage:\n"
             "  zclassic23-package-sign --generate PATH\n"
             "  zclassic23-package-sign --public --key-fd N\n"
+            "  zclassic23-package-sign --sign-digest 64HEX --key-fd N\n"
             "  zclassic23-package-sign --sign --key-fd N --digest-fd N --signature-fd N\n");
 }
 
 int main(int argc, char **argv)
 {
     const char *generate = NULL;
+    const char *sign_digest = NULL;
     bool show_public = false, sign = false;
     int key_fd = -1, digest_fd = -1, signature_fd = -1;
     for (int i = 1; i < argc; i++) {
@@ -220,6 +252,8 @@ int main(int argc, char **argv)
             show_public = true;
         else if (strcmp(argv[i], "--sign") == 0)
             sign = true;
+        else if (strcmp(argv[i], "--sign-digest") == 0 && i + 1 < argc)
+            sign_digest = argv[++i];
         else if (strcmp(argv[i], "--key-fd") == 0 && i + 1 < argc &&
                  signer_fd_number(argv[++i], &key_fd))
             ;
@@ -235,9 +269,10 @@ int main(int argc, char **argv)
         }
     }
     unsigned modes = (generate ? 1u : 0u) + (show_public ? 1u : 0u) +
-                     (sign ? 1u : 0u);
-    if (modes != 1u || ((show_public || sign) && key_fd < 0) ||
-        (sign && (digest_fd < 0 || signature_fd < 0))) {
+                     (sign ? 1u : 0u) + (sign_digest ? 1u : 0u);
+    if (modes != 1u || ((show_public || sign || sign_digest) && key_fd < 0) ||
+        (sign && (digest_fd < 0 || signature_fd < 0)) ||
+        (sign_digest && (digest_fd >= 0 || signature_fd >= 0))) {
         signer_usage();
         return 2;
     }
@@ -247,6 +282,7 @@ int main(int argc, char **argv)
         return 1;
     int rc = generate ? signer_generate(generate, ctx) :
              show_public ? signer_show_public(key_fd, ctx) :
+             sign_digest ? signer_sign_hex(key_fd, sign_digest, ctx) :
              signer_sign(key_fd, digest_fd, signature_fd, ctx);
     secp256k1_context_destroy(ctx);
     return rc;

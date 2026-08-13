@@ -1235,7 +1235,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode package guide` | ready | read / read / public · instant/tiny | none | `zcl.zcode_package_guide.v1` | `zclassic23 zcode package guide` | Show package read and authority boundaries |
+| `zcode package guide` | ready | read / read / public · instant/tiny | none | `zcl.zcode_package_guide.v1` | `zclassic23 zcode package guide` | Show the exact package workflow and authority boundaries |
 | `zcode package search` | ready | read / read / operator · fast/low | `publisher`, `name_prefix`, `license`, `keyword`, `limit`, `datadir` | `zcl.zcode_package_search.v1` | `zclassic23 zcode package search --input='{"keyword":"ring"}'` | Search locally published packages |
 | `zcode package show` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_show.v1` | `zclassic23 zcode package show --input='{"root":"<64hex>"}'` | Release record and manifest summary for one package root |
 | `zcode package recipe` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_recipe.v1` | `zclassic23 zcode package recipe --input='{"root":"<64hex>"}'` | Declarative build recipe for one package root |

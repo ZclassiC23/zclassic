@@ -7,6 +7,7 @@
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "services/zcode_package_view_service.h"
+#include "vcs/build_action.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -127,6 +128,94 @@ zcl_native_zcode_package_view_service_contract(void)
     return &k_package_view_contract;
 }
 
+static void package_guide_step(struct json_value *steps, const char *command,
+                               const char *subject,
+                               const char *status, const char *evidence,
+                               const char *next)
+{
+    struct json_value step;
+    json_init(&step);
+    json_set_object(&step);
+    (void)json_push_kv_str(&step, "command", command);
+    (void)json_push_kv_str(&step, "subject", subject);
+    (void)json_push_kv_str(&step, "status", status);
+    (void)json_push_kv_str(&step, "evidence", evidence);
+    (void)json_push_kv_str(&step, "next", next);
+    (void)json_push_back(steps, &step);
+    json_free(&step);
+}
+
+static void package_guide_journeys(struct json_value *data)
+{
+    struct json_value author;
+    json_init(&author);
+    json_set_array(&author);
+    package_guide_step(
+        &author, "zclassic23-package-sign --generate <key>",
+        "publisher_pubkey", "local-author-key-created", "public key only",
+        "zcode package dev prepare");
+    package_guide_step(
+        &author, "zcode package dev prepare",
+        "package, recipe and dependency-lock roots", "unsigned",
+        "manifest, API and signing roots", "offline sign, then seal");
+    package_guide_step(
+        &author, "zcode package dev seal",
+        "release_id for the exact package_root", "author-signed",
+        "verified detached author signature", "zcode create plan, then commit");
+    package_guide_step(
+        &author, "zcode create (plan, then commit)",
+        "package_root + transport_root", "locally-available",
+        "verified CAS admission", "announce pointer and provider records");
+    package_guide_step(
+        &author, "zcode network publish (pointer/provider plan+commit)",
+        "package_root -> transport_root", "availability-claimed",
+        "signed record_root and record_wire", "share package_root with consumers");
+
+    struct json_value consumer;
+    json_init(&consumer);
+    json_set_array(&consumer);
+    package_guide_step(
+        &consumer, "zcode network records",
+        "user-supplied package_root",
+        "signed-pointer-discovered", "verified pointer/provider records",
+        "select transport_root; package search is local");
+    package_guide_step(
+        &consumer, "zcode package fetch", "transport_root",
+        "inert-fetch-or-resume", "verified chunks and reconstructed package_root",
+        "repeat idempotently until reconstructed=true");
+    package_guide_step(
+        &consumer, "zcode package show", "package_root", "verified-local",
+        "release, recipe, dependency and publisher roots", "zcode use by root");
+    package_guide_step(
+        &consumer, "zcode use (plan, then commit)", "package_root + lock_root",
+        "explicitly-built-tested-installed", "build receipt and artifact roots",
+        "link the installed static archive from local policy");
+
+    struct json_value reproducer;
+    json_init(&reproducer);
+    json_set_array(&reproducer);
+    package_guide_step(
+        &reproducer, "zcode use on a second installed node",
+        "same package, lock and target/profile", "independent-local-run",
+        "second receipt and artifact roots", "compare exact observations");
+    package_guide_step(
+        &reproducer, "zcode package verify", "package_root",
+        "match-or-named-mismatch", "locally filed reproduction observations",
+        "accept or reject under local policy");
+    package_guide_step(
+        &reproducer, "zcode evidence --input={action_id,...}",
+        "an exact async action_id, not a package name", "signed-worker-evidence",
+        "signer, inputs, output root and latency",
+        "do not relabel candidate evidence as released-package evidence");
+
+    (void)json_push_kv(data, "author", &author);
+    (void)json_push_kv(data, "consumer", &consumer);
+    (void)json_push_kv(data, "reproducer", &reproducer);
+    json_free(&author);
+    json_free(&consumer);
+    json_free(&reproducer);
+}
+
 void zcl_native_handle_zcode_package_guide(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -169,5 +258,37 @@ void zcl_native_handle_zcode_package_guide(
     (void)json_push_kv_str(&reply->data, "static_boundary",
                            guide.static_boundary);
     (void)json_push_kv_str(&reply->data, "next_command", guide.next_command);
+    (void)json_push_kv_str(&reply->data, "preflight",
+                           "zcode network status");
+    (void)json_push_kv_str(&reply->data, "hosting_requirement",
+                           "run the full node with -packagehost=1");
+    (void)json_push_kv_str(
+        &reply->data, "disabled_network_next",
+        "zcode network delegate with an active finalized ZID master");
+    (void)json_push_kv_str(
+        &reply->data, "policy_requirement",
+        "allow zclassic23.package with zcode network policy mutate plan/commit, then restart");
+    (void)json_push_kv_str(
+        &reply->data, "identity_rule",
+        "name and semver select; package_root is exact identity");
+    (void)json_push_kv_str(
+        &reply->data, "verification_rule",
+        "verify roots and evidence locally; never trust identity or arrival order");
+    (void)json_push_kv_str(
+        &reply->data, "authority_not_granted",
+        "evidence does not prove general safety, usefulness or human acceptance");
+    (void)json_push_kv_bool(&reply->data, "fetch_executes", false);
+    (void)json_push_kv_bool(&reply->data, "remote_name_search", false);
+    (void)json_push_kv_str(
+        &reply->data, "package_root_entry",
+        "obtain package_root separately, then discover signed DHT records by root");
+    (void)json_push_kv_bool(&reply->data, "source_identity_portable", true);
+    (void)json_push_kv_str(&reply->data, "current_build_target",
+                           VCS_BUILD_TARGET_V1);
+    (void)json_push_kv_bool(&reply->data, "other_build_targets_proven", false);
+    (void)json_push_kv_str(
+        &reply->data, "signed_released_package_reproduction",
+        "not exposed: signed async evidence binds candidates; local receipts bind releases");
+    package_guide_journeys(&reply->data);
     zcl_hotswap_service_release(&lease);
 }

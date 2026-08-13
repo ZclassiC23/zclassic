@@ -2050,12 +2050,14 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "zcode.package.guide", "zcode.package", "",
-    "Show package read and authority boundaries",
-    "Renders the pure live package-view surface and the resident static "
-    "boundary. It reads no CAS, index, signature, publication, fetch, "
-    "install, build, execution, storage, or network state.",
+    "Show the exact package workflow and authority boundaries",
+    "Renders the bounded installed-node author, consumer and reproducer "
+    "journeys, current target portability, preflight and named product "
+    "limits over the pure live package-view surface. It reads no CAS, "
+    "index, signature, publication, fetch, install, build, execution, "
+    "storage, or network state.",
     ZCL_COMMAND_LIST_BUDGET,
-    "zcode,package,guide,workflow,hotswap,boundary",
+    "zcode,package,guide,workflow,author,consumer,reproducer,portable,boundary",
     "zcl.zcode_package_guide.input.v1", "zcl.zcode_package_guide.v1",
     "", "", "zclassic23 zcode package guide",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,

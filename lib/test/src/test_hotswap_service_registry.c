@@ -18,6 +18,7 @@
 #include "services/shop_reputation_view_service.h"
 #include "services/shop_status_view_service.h"
 #include "services/shop_want_view_service.h"
+#include "vcs/build_action.h"
 #include "vcs/zcode_lane.h"
 
 #include <stdatomic.h>
@@ -507,6 +508,39 @@ static int t_zcode_package_view(void)
         ASSERT(json_get_bool(json_get(&reply.data, "index_reads_static")));
         ASSERT(json_get_bool(json_get(&reply.data, "publication_static")));
         ASSERT(json_get_bool(json_get(&reply.data, "execution_static")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "fetch_executes")));
+        ASSERT(!json_get_bool(json_get(&reply.data, "remote_name_search")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "preflight")),
+                      "zcode network status");
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "hosting_requirement")),
+                      "run the full node with -packagehost=1");
+        ASSERT(json_get_bool(json_get(&reply.data,
+                                      "source_identity_portable")));
+        ASSERT(!json_get_bool(json_get(&reply.data,
+                                       "other_build_targets_proven")));
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
+                                            "current_build_target")),
+                      VCS_BUILD_TARGET_V1);
+        const struct json_value *author = json_get(&reply.data, "author");
+        const struct json_value *consumer = json_get(&reply.data, "consumer");
+        const struct json_value *reproducer = json_get(&reply.data,
+                                                       "reproducer");
+        ASSERT(author && author->type == JSON_ARR && author->num_children == 5);
+        ASSERT(consumer && consumer->type == JSON_ARR &&
+               consumer->num_children == 4);
+        ASSERT(reproducer && reproducer->type == JSON_ARR &&
+               reproducer->num_children == 3);
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(author, 1), "status")),
+                      "unsigned");
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(consumer, 1), "status")),
+                      "inert-fetch-or-resume");
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(consumer, 0),
+                                            "command")),
+                      "zcode network records");
+        ASSERT_STR_EQ(json_get_str(json_get(json_at(reproducer, 2),
+                                            "subject")),
+                      "an exact async action_id, not a package name");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "next_command")),
                       "candidate package service generation is active");
         zcl_command_reply_free(&reply);

@@ -282,9 +282,7 @@ beta_publish_version() {
     local prep signature
     prep="$(beta_prepare "$dir" "$AUTHOR_PUB" "$sequence")"
     beta_ok "$label prepare" "$prep"
-    signature="$(beta_sign_package "$prep" "$AUTHOR_KEY" \
-        "$BETA_AUTHOR_ROOT/$label.digest" \
-        "$BETA_AUTHOR_ROOT/$label.signature")"
+    signature="$(beta_sign_package "$prep" "$AUTHOR_KEY")"
     read -r BETA_VERSION_ROOT BETA_VERSION_TRANSPORT BETA_VERSION_RELEASE_ID \
         <<<"$(beta_seal_publish "$role" "$label" "$dir" "$AUTHOR_PUB" \
             "$sequence" "$signature" "$day")"
@@ -297,21 +295,17 @@ beta_publish_version() {
 }
 
 beta_sign_package() {
-    local prep="$1" key="$2" digest_file="$3" signature_file="$4"
+    local prep="$1" key="$2"
     local digest signature
     digest="$(printf '%s' "$prep" | beta_jget 'd["data"]["release_signing_digest"]')"
-    python3 - "$digest" "$digest_file" <<'PY'
-import pathlib,sys
-pathlib.Path(sys.argv[2]).write_bytes(bytes.fromhex(sys.argv[1]))
-PY
-    : >"$signature_file"
-    chmod 0600 "$digest_file" "$signature_file"
-    exec 7<"$key" 8<"$digest_file" 9>"$signature_file"
-    "$C23_BETA_INSTALL_BIN/zclassic23-package-sign" --sign \
-        --key-fd 7 --digest-fd 8 --signature-fd 9 ||
+    # The digest and signature are public release material. Keep only the
+    # private key off argv via a mode-0600 descriptor; the installed signer
+    # validates canonical lowercase hex and prints the public signature.
+    exec 7<"$key"
+    signature="$("$C23_BETA_INSTALL_BIN/zclassic23-package-sign" \
+        --sign-digest "$digest" --key-fd 7)" ||
         beta_die "offline author signature failed"
-    exec 7<&- 8<&- 9>&-
-    signature="$(xxd -p -c 128 "$signature_file")"
+    exec 7<&-
     [ "${#signature}" -eq 128 ] || beta_die "offline signature is not compact"
     printf '%s' "$signature"
 }
@@ -447,16 +441,14 @@ AUTHOR_PUB="$($C23_BETA_INSTALL_BIN/zclassic23-package-sign --generate "$AUTHOR_
 
 BASE_PREP="$(beta_prepare "$BETA_AUTHOR_ROOT/dependencies/base" "$AUTHOR_PUB" 1)"
 beta_ok "base prepare for signature" "$BASE_PREP"
-BASE_SIGNATURE="$(beta_sign_package "$BASE_PREP" "$AUTHOR_KEY" \
-    "$BETA_AUTHOR_ROOT/base.digest" "$BETA_AUTHOR_ROOT/base.signature")"
+BASE_SIGNATURE="$(beta_sign_package "$BASE_PREP" "$AUTHOR_KEY")"
 read -r BASE_PUBLISHED BETA_BASE_TRANSPORT BASE_RELEASE_ID <<<"$(beta_seal_publish "$BETA_A" base "$BETA_AUTHOR_ROOT/dependencies/base" \
     "$AUTHOR_PUB" 1 "$BASE_SIGNATURE" 1)"
 [ "$BASE_PUBLISHED" = "$BETA_BASE_ROOT" ] || beta_die "base fixture root drifted"
 
 SHA3_PREP="$(beta_prepare "$BETA_AUTHOR_ROOT/dependencies/sha3" "$AUTHOR_PUB" 2)"
 beta_ok "sha3 prepare for signature" "$SHA3_PREP"
-SHA3_SIGNATURE="$(beta_sign_package "$SHA3_PREP" "$AUTHOR_KEY" \
-    "$BETA_AUTHOR_ROOT/sha3.digest" "$BETA_AUTHOR_ROOT/sha3.signature")"
+SHA3_SIGNATURE="$(beta_sign_package "$SHA3_PREP" "$AUTHOR_KEY")"
 read -r SHA3_PUBLISHED BETA_SHA3_TRANSPORT SHA3_RELEASE_ID <<<"$(beta_seal_publish "$BETA_A" sha3 "$BETA_AUTHOR_ROOT/dependencies/sha3" \
     "$AUTHOR_PUB" 2 "$SHA3_SIGNATURE" 8)"
 [ "$SHA3_PUBLISHED" = "$BETA_SHA3_ROOT" ] || beta_die "sha3 fixture root drifted"
@@ -469,8 +461,7 @@ BETA_V1_LOCK_ROOT="$(printf '%s' "$PACKAGE_PREP" | beta_jget \
     'd["data"]["dependency_lock_root"]')"
 BETA_V1_API_ROOT="$(printf '%s' "$PACKAGE_PREP" | beta_jget \
     'd["data"]["api_capsule_root"]')"
-PACKAGE_SIGNATURE="$(beta_sign_package "$PACKAGE_PREP" "$AUTHOR_KEY" \
-    "$BETA_AUTHOR_ROOT/release.digest" "$BETA_AUTHOR_ROOT/release.signature")"
+PACKAGE_SIGNATURE="$(beta_sign_package "$PACKAGE_PREP" "$AUTHOR_KEY")"
 read -r PACKAGE_PUBLISHED BETA_PACKAGE_TRANSPORT PACKAGE_RELEASE_ID <<<"$(beta_seal_publish "$BETA_A" outside "$BETA_PACKAGE_DIR" \
     "$AUTHOR_PUB" 3 "$PACKAGE_SIGNATURE" 15)"
 [ "$PACKAGE_PUBLISHED" = "$BETA_PACKAGE_ROOT" ] ||
@@ -701,8 +692,7 @@ beta_ok "exact revert prepare" "$REVERT_PREP"
 [ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["dependency_lock_root"]')" = "$BETA_V1_LOCK_ROOT" ] &&
 [ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["api_capsule_root"]')" = "$BETA_V1_API_ROOT" ] ||
     beta_die "exact revert did not recreate all v1 semantic roots"
-REVERT_SIGNATURE="$(beta_sign_package "$REVERT_PREP" "$AUTHOR_KEY" \
-    "$BETA_AUTHOR_ROOT/revert.digest" "$BETA_AUTHOR_ROOT/revert.signature")"
+REVERT_SIGNATURE="$(beta_sign_package "$REVERT_PREP" "$AUTHOR_KEY")"
 REVERT_SEAL="$("$NODE_BIN" zcode package dev seal \
     --input="{\"release_body_hex\":\"$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["release_body_hex"]')\",\"signature_hex\":\"$REVERT_SIGNATURE\"}" \
     2>/dev/null | tail -1)"

@@ -6,6 +6,7 @@
 #include "base/checked.h"
 #include "base/hex.h"
 #include "json/json.h"
+#include "vcs/build_action.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_commons_projection.h"
 #include "vcs/zcode_creation_attribution.h"
@@ -143,9 +144,13 @@ void zcl_native_handle_zcode_guide(
     (void)json_push_kv_str(&reply->data, "mission",
         "ZClassic23 is a metaverse where people and AI create real things "
         "together, and nobody owns the world they build in.");
-    (void)json_push_kv_str(&reply->data, "find_work", "zcode package search");
+    (void)json_push_kv_str(&reply->data, "find_work", "zcode package guide");
+    (void)json_push_kv_str(&reply->data, "search_local_packages",
+                           "zcode package search");
     (void)json_push_kv_str(&reply->data, "inspect_work", "zcode package show");
     (void)json_push_kv_str(&reply->data, "fetch_work", "zcode package fetch");
+    (void)json_push_kv_str(&reply->data, "package_workflow",
+                           "zcode package guide");
     (void)json_push_kv_str(&reply->data, "create_work", "zcode create");
     (void)json_push_kv_str(&reply->data, "improve_work", "zcode improve");
     (void)json_push_kv_str(&reply->data, "record_evidence", "zcode evidence");
@@ -160,6 +165,12 @@ void zcl_native_handle_zcode_guide(
     (void)json_push_kv_bool(&reply->data, "commons_is_owned", false);
     (void)json_push_kv_str(&reply->data, "availability_rule",
                            "ready executes; planned fails closed");
+    (void)json_push_kv_str(
+        &reply->data, "verification_rule",
+        "verify exact roots and evidence locally; identity and reputation never replace proof");
+    (void)json_push_kv_bool(&reply->data, "portable_source_identity", true);
+    (void)json_push_kv_str(&reply->data, "current_package_build_target",
+                           VCS_BUILD_TARGET_V1);
 }
 
 static const char *zcc_status_name(
