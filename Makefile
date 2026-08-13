@@ -1959,7 +1959,7 @@ ZCODE_PACKAGE_BASE_ASAN_BIN := $(BIN_DIR)/zcode-package-base-test-asan
 ZCODE_PACKAGE_SHA3_ASAN_BIN := $(BIN_DIR)/zcode-package-sha3-test-asan
 ZCODE_PACKAGE_CODEC_ASAN_BIN := $(BIN_DIR)/zcode-package-codec-test-asan
 ZCODE_PACKAGE_REGISTRY_CHECK_BIN := $(BIN_DIR)/zcode-package-registry-check
-.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test zcode-package-foundation-test zcode-package-asan tools/zcode_dev_signer
+.PHONY: zcode-package-base-test zcode-package-sha3-test zcode-package-codec-test zcode-package-foundation-test zcode-package-asan zclassic23-package-sign
 zcode-package-base-test: $(ZCODE_PACKAGE_BASE_TEST_BIN)
 	@$(ZCODE_PACKAGE_BASE_TEST_BIN)
 $(ZCODE_PACKAGE_BASE_TEST_BIN): lib/base/tests/test_base.c \
@@ -2055,8 +2055,8 @@ $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
 	    -Ilib/platform/include -Ivendor/include -o $@ $(filter %.c,$^) \
 	    -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
 
-tools/zcode_dev_signer: $(BIN_DIR)/zcode_dev_signer
-$(BIN_DIR)/zcode_dev_signer: tools/zcode_dev_signer.c lib/base/src/cleanse.c
+zclassic23-package-sign: $(BIN_DIR)/zclassic23-package-sign
+$(BIN_DIR)/zclassic23-package-sign: tools/zcode_dev_signer.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -Ilib/base/include -Ivendor/include -o $@ $^ \
@@ -4100,7 +4100,7 @@ test-science-acceptance: test-zcode-dht-acceptance
 # seven-identity DHT/Noise harness rather than inventing test-only networking;
 # the source hook assigns publisher, two independent hosts and a no-Git fresh
 # consumer after sparse authentication. Opt-in: real daemons and full builds.
-sovereign-source-network-acceptance: zclassic23 zcl-rpc tools/zcode_dev_signer
+sovereign-source-network-acceptance: zclassic23 zcl-rpc zclassic23-package-sign
 	@bash tools/dev/sovereign_source_network_acceptance.sh
 
 # B3 file-market trade acceptance: two isolated regtest daemons (395xx
@@ -4782,7 +4782,7 @@ ci-stress: test_zcl
 # live port or the live datadir. Runs under bash because the sourced
 # isolation harness relies on `set -o pipefail`.
 .PHONY: ci-install
-ci-install: zclassic23 zcl-rpc
+ci-install: zclassic23 zcl-rpc zclassic23-package-verify zclassic23-package-sign
 	@bash tools/scripts/ci_install_gate.sh
 
 # ── ci-install-linger (C1 FULL operator claim, no docker) ─
@@ -5792,10 +5792,12 @@ DESTDIR ?=
 # but the deployment does not claim that the stable health bar was met.
 DEPLOY_VERIFY_STAGE ?= stable
 .PHONY: install
-install: vendor-ready zclassic23 zcl-rpc
+install: vendor-ready zclassic23 zcl-rpc zclassic23-package-verify zclassic23-package-sign
 	install -d "$(DESTDIR)$(PREFIX)/bin"
 	install -m 755 $(ZCLASSIC23_BIN) "$(DESTDIR)$(PREFIX)/bin/zclassic23"
 	install -m 755 $(ZCL_RPC_BIN)    "$(DESTDIR)$(PREFIX)/bin/zcl-rpc"
+	install -m 755 $(BIN_DIR)/zclassic23-package-verify "$(DESTDIR)$(PREFIX)/bin/zclassic23-package-verify"
+	install -m 755 $(BIN_DIR)/zclassic23-package-sign "$(DESTDIR)$(PREFIX)/bin/zclassic23-package-sign"
 	@if [ -z "$(DESTDIR)" ]; then \
 	    install -d "$(HOME)/.config/systemd/user"; \
 	    sed 's|%h/zclassic23/build/bin/zclassic23|$(PREFIX)/bin/zclassic23|' \
@@ -5804,7 +5806,7 @@ install: vendor-ready zclassic23 zcl-rpc
 	    (systemctl --user daemon-reload 2>/dev/null || true); \
 	    echo "installed systemd --user unit; start: systemctl --user start zclassic23"; \
 	fi
-	@echo "make install: zclassic23 + zcl-rpc -> $(DESTDIR)$(PREFIX)/bin"
+	@echo "make install: node, RPC, package verifier + offline signer -> $(DESTDIR)$(PREFIX)/bin"
 
 deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	@./tools/deploy_guard.sh canonical-deploy

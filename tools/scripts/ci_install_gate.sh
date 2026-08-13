@@ -9,7 +9,8 @@
 # This gate is the CI-friendly PROXY for that claim that proves the
 # load-bearing half hermetically:
 #
-#   1. BUILD the node + RPC client from source.
+#   1. BUILD the node, RPC client, confined package verifier and offline
+#      non-wallet package signer from source.
 #   2. INSTALL them to a THROWAWAY /tmp prefix with `install -m 755` —
 #      exactly the file-copy a `make install` target performs, but to a
 #      disposable DESTDIR so nothing lands in ~/.local or the system.
@@ -54,14 +55,19 @@ RPC_TIMEOUT="${CI_INSTALL_RPC_TIMEOUT:-60}"
 # ── Build the artifacts the install step will ship ──────────────────
 # `make ci-install` lists these as prerequisites, so they are normally
 # already built; build here too so the script is correct when run by hand.
-echo "ci-install: building zclassic23 + zcl-rpc"
-make -C "$REPO_ROOT" -j"$(nproc)" zclassic23 zcl-rpc >/dev/null \
-    || gate_die "build failed (make zclassic23 zcl-rpc)"
+echo "ci-install: building installed node + package author/reproducer tools"
+make -C "$REPO_ROOT" -j"$(nproc)" zclassic23 zcl-rpc \
+    zclassic23-package-verify zclassic23-package-sign >/dev/null \
+    || gate_die "installed product build failed"
 
 SRC_NODE="$REPO_ROOT/build/bin/zclassic23"
 SRC_RPC="$REPO_ROOT/build/bin/zcl-rpc"
+SRC_VERIFY="$REPO_ROOT/build/bin/zclassic23-package-verify"
+SRC_SIGN="$REPO_ROOT/build/bin/zclassic23-package-sign"
 [ -x "$SRC_NODE" ] || gate_die "built node missing/!executable: $SRC_NODE"
 [ -x "$SRC_RPC" ]  || gate_die "built zcl-rpc missing/!executable: $SRC_RPC"
+[ -x "$SRC_VERIFY" ] || gate_die "built package verifier missing/!executable"
+[ -x "$SRC_SIGN" ] || gate_die "built package signer missing/!executable"
 
 # ── Install to a THROWAWAY /tmp prefix (the C1 install step) ─────────
 # mktemp randomizes the path; the structural /tmp guard below refuses
@@ -101,6 +107,30 @@ make -C "$REPO_ROOT" install DESTDIR="$PREFIX" PREFIX= >/dev/null \
     || gate_die "make install -> prefix failed"
 [ -x "$PREFIX/bin/zclassic23" ] || gate_die "installed node not executable"
 [ -x "$PREFIX/bin/zcl-rpc" ]    || gate_die "installed zcl-rpc not executable"
+[ -x "$PREFIX/bin/zclassic23-package-verify" ] \
+    || gate_die "installed package verifier not executable"
+[ -x "$PREFIX/bin/zclassic23-package-sign" ] \
+    || gate_die "installed package signer not executable"
+
+# The package-author identity is separate from every wallet/deployment key.
+# Generate it inside the throwaway prefix and prove the installed signer can
+# rederive its exact compressed public key through an already-open fd.
+AUTHOR_KEY="$PREFIX/package-author.key"
+AUTHOR_PUB="$($PREFIX/bin/zclassic23-package-sign --generate "$AUTHOR_KEY")" \
+    || gate_die "installed package signer could not generate an author key"
+[ "$(stat -c %a "$AUTHOR_KEY")" = "600" ] \
+    || gate_die "package author key mode is not 600"
+exec 8<"$AUTHOR_KEY"
+AUTHOR_PUB_AGAIN="$($PREFIX/bin/zclassic23-package-sign --public --key-fd 8)" \
+    || gate_die "installed package signer could not rederive its public key"
+exec 8<&-
+[ "$AUTHOR_PUB" = "$AUTHOR_PUB_AGAIN" ] \
+    || gate_die "package signer public identity changed"
+case "$AUTHOR_PUB" in
+    02????????????????????????????????????????????????????????????????|\
+    03????????????????????????????????????????????????????????????????) : ;;
+    *) gate_die "package signer returned a non-canonical compressed key" ;;
+esac
 
 # ── Spawn ONE isolated node FROM the install prefix ─────────────────
 # Sourcing the audited chokepoint with cwd == $PREFIX/bin makes its

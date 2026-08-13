@@ -75,18 +75,18 @@ static bool signer_key_fd(int fd, uint8_t secret[32])
 {
     struct stat st;
     if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
-        fprintf(stderr, "zcode_dev_signer: key fd must name a regular file\n");
+        fprintf(stderr, "zclassic23-package-sign: key fd must name a regular file\n");
         return false;
     }
     unsigned mode = (unsigned)(st.st_mode & 0777u);
     if (mode != 0600u && mode != 0400u) {
         fprintf(stderr,
-                "zcode_dev_signer: key fd permissions are %03o; require 0600 or 0400\n",
+                "zclassic23-package-sign: key fd permissions are %03o; require 0600 or 0400\n",
                 mode);
         return false;
     }
     if (lseek(fd, 0, SEEK_SET) < 0 || !signer_read_exact(fd, secret, 32)) {
-        fprintf(stderr, "zcode_dev_signer: key fd must contain exactly 32 bytes\n");
+        fprintf(stderr, "zclassic23-package-sign: key fd must contain exactly 32 bytes\n");
         return false;
     }
     return true;
@@ -108,14 +108,14 @@ static int signer_generate(const char *path, secp256k1_context *ctx)
 {
     int random_fd = open("/dev/urandom", O_RDONLY | O_CLOEXEC);
     if (random_fd < 0) {
-        fprintf(stderr, "zcode_dev_signer: cannot open system RNG: %s\n",
+        fprintf(stderr, "zclassic23-package-sign: cannot open system RNG: %s\n",
                 strerror(errno));
         return 1;
     }
     uint8_t secret[32];
     do {
         if (!signer_read_n(random_fd, secret, sizeof(secret))) {
-            fprintf(stderr, "zcode_dev_signer: system RNG read failed\n");
+            fprintf(stderr, "zclassic23-package-sign: system RNG read failed\n");
             close(random_fd);
             memory_cleanse(secret, sizeof(secret));
             return 1;
@@ -124,7 +124,7 @@ static int signer_generate(const char *path, secp256k1_context *ctx)
     close(random_fd);
     int fd = open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC, 0600);
     if (fd < 0) {
-        fprintf(stderr, "zcode_dev_signer: refusing to replace %s: %s\n",
+        fprintf(stderr, "zclassic23-package-sign: refusing to replace %s: %s\n",
                 path, strerror(errno));
         memory_cleanse(secret, sizeof(secret));
         return 1;
@@ -134,7 +134,7 @@ static int signer_generate(const char *path, secp256k1_context *ctx)
     if (close(fd) != 0)
         wrote = false;
     if (!wrote) {
-        fprintf(stderr, "zcode_dev_signer: key write failed: %s\n",
+        fprintf(stderr, "zclassic23-package-sign: key write failed: %s\n",
                 strerror(errno));
         memory_cleanse(secret, sizeof(secret));
         return 1;
@@ -158,7 +158,7 @@ static int signer_show_public(int key_fd, secp256k1_context *ctx)
     bool ok = signer_public(ctx, secret, pubkey);
     memory_cleanse(secret, sizeof(secret));
     if (!ok) {
-        fprintf(stderr, "zcode_dev_signer: invalid secp256k1 secret\n");
+        fprintf(stderr, "zclassic23-package-sign: invalid secp256k1 secret\n");
         return 1;
     }
     char hex[67];
@@ -174,7 +174,7 @@ static int signer_sign(int key_fd, int digest_fd, int signature_fd,
     if (!signer_key_fd(key_fd, secret))
         return 1;
     if (!signer_read_exact(digest_fd, digest, sizeof(digest))) {
-        fprintf(stderr, "zcode_dev_signer: digest fd must contain exactly 32 bytes\n");
+        fprintf(stderr, "zclassic23-package-sign: digest fd must contain exactly 32 bytes\n");
         memory_cleanse(secret, sizeof(secret));
         return 1;
     }
@@ -191,7 +191,7 @@ static int signer_sign(int key_fd, int digest_fd, int signature_fd,
     memory_cleanse(&signature, sizeof(signature));
     memory_cleanse(&normalized, sizeof(normalized));
     if (!ok || !signer_write_exact(signature_fd, compact, sizeof(compact))) {
-        fprintf(stderr, "zcode_dev_signer: signing or signature-fd write failed\n");
+        fprintf(stderr, "zclassic23-package-sign: signing or signature-fd write failed\n");
         memory_cleanse(compact, sizeof(compact));
         return 1;
     }
@@ -203,9 +203,9 @@ static void signer_usage(void)
 {
     fprintf(stderr,
             "usage:\n"
-            "  zcode_dev_signer --generate PATH\n"
-            "  zcode_dev_signer --public --key-fd N\n"
-            "  zcode_dev_signer --sign --key-fd N --digest-fd N --signature-fd N\n");
+            "  zclassic23-package-sign --generate PATH\n"
+            "  zclassic23-package-sign --public --key-fd N\n"
+            "  zclassic23-package-sign --sign --key-fd N --digest-fd N --signature-fd N\n");
 }
 
 int main(int argc, char **argv)
