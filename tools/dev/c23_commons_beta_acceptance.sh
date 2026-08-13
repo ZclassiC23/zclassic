@@ -32,7 +32,7 @@ PARAMS_DIR="$RUN_ROOT/no-zk-params"
 mkdir -p "$PREFIX" "$WORK_PARENT" "$PARAMS_DIR"
 
 echo "c23-commons-beta: installing ordinary product into $PREFIX"
-make -C "$REPO_ROOT" install DESTDIR="$PREFIX" PREFIX= >/dev/null
+make -C "$REPO_ROOT" c23-portable-install DESTDIR="$PREFIX" PREFIX= >/dev/null
 for product in zclassic23 zcl-rpc zclassic23-package-sign \
         zclassic23-package-verify; do
     [ -x "$PREFIX/bin/$product" ] || {

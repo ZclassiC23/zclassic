@@ -50,6 +50,15 @@ ZCL_HOTSWAP_DEPFILE_LEAN_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(fi
 # exemption shape as ZCL_HOTSWAP_LOOP_ONLY above.
 ZCL_WORKTREE_PRIME_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out worktree-prime,$(MAKECMDGOALS))),,1),)
 
+# These front doors establish their own checksum-pinned sysroot and vendor
+# archives before entering a nested authoritative Make. On a from-empty clone,
+# do not let this outer parse first bootstrap host-ABI archives that the
+# portable builder would immediately replace.
+ZCL_PORTABLE_FRONTDOOR_GOALS := c23-portable-toolchain c23-portable-release \
+	c23-portable-install c23-commons-installed-acceptance
+ZCL_PORTABLE_FRONTDOOR_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip \
+	$(filter-out $(ZCL_PORTABLE_FRONTDOOR_GOALS),$(MAKECMDGOALS))),,1),)
+
 # ── Optional reference-only Rust proving backend ──────────────────────────
 # The production/default wallet prover is native C23. ZCL_WITH_RUST remains a
 # developer differential-oracle configuration for the pinned historical
@@ -83,9 +92,11 @@ VENDOR_REPAIR_GOALS := vendor-ready deploy install
 VENDOR_REPAIR_REQUESTED := $(filter $(VENDOR_REPAIR_GOALS),$(MAKECMDGOALS))
 ifneq ($(ZCL_STANDALONE_CLEAN),1)
 ifneq ($(ZCL_WORKTREE_PRIME_ONLY),1)
+ifneq ($(ZCL_PORTABLE_FRONTDOOR_ONLY),1)
 ifneq ($(strip $(VENDOR_MISSING_INPUTS) $(VENDOR_REPAIR_REQUESTED)),)
 ifeq ($(strip $(MAKE_RESTARTS)),)
 -include $(VENDOR_BOOTSTRAP_MK)
+endif
 endif
 endif
 endif
@@ -269,6 +280,11 @@ TEST_ZCL_BIN = $(BIN_DIR)/test_zcl
 TEST_PARALLEL_BIN = $(BIN_DIR)/test_parallel
 ZCLASSIC_CLI_BIN = $(BIN_DIR)/zclassic-cli
 ZCL_RPC_BIN = $(BIN_DIR)/zcl-rpc
+# Stable output names do not encode the compiler/sysroot that produced them.
+# The portable release therefore opts its whole-program products into a fresh
+# atomic link; otherwise a newer host-built file could pass Make's timestamp
+# check and reach the release audit/install boundary.
+C23_PORTABLE_RELINK := $(if $(filter 1,$(ZCL_C23_PORTABLE_RELEASE)),FORCE,)
 ZCL_AGENT_BIN ?= $(ZCLASSIC23_DEV_BIN)
 ZCL_AGENT_DEV_BIN ?= $(HOME)/.local/bin/zclassic23-dev
 ZCL_AGENT_DEV_DATADIR ?= $(HOME)/.zclassic-c23-dev
@@ -2072,10 +2088,10 @@ $(ZCODE_PACKAGE_REGISTRY_CHECK_BIN): tools/zcode_package_registry_check.c \
 	    -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
 
 zclassic23-package-sign: $(BIN_DIR)/zclassic23-package-sign
-$(BIN_DIR)/zclassic23-package-sign: tools/zcode_dev_signer.c lib/base/src/cleanse.c
+$(BIN_DIR)/zclassic23-package-sign: FORCE tools/zcode_dev_signer.c lib/base/src/cleanse.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	    -Ilib/base/include -Ivendor/include -o $@ $^ \
+	    -Ilib/base/include -Ivendor/include -o $@ $(filter-out FORCE,$^) \
 	    -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
 
 # Run a gate and leave a receipt. The wrapper is transparent — same output,
@@ -3348,8 +3364,27 @@ $(eval $(call BUILD_NODE_TOOL,wallet_check,tools/wallet_check.c,-lm))
 $(eval $(call BUILD_NODE_TOOL,rebuild_recent,tools/rebuild_recent.c,-lm,-fopenmp))
 # The EXTERNAL ZCODE package verifier (slice 6): the ONLY program that ever
 # compiles/executes package code, sandboxed per child (seccomp + rlimits +
-# Landlock). The node binary never does. See tools/package_verify.c.
-$(eval $(call BUILD_NODE_TOOL,zclassic23-package-verify,tools/package_verify.c))
+# Landlock). The node binary never does. Its fixed offline boundary also makes
+# the Tor stub the only honest link input; a host's optional full-Tor build must
+# not affect verifier bytes. See tools/package_verify.c.
+.PHONY: zclassic23-package-verify
+zclassic23-package-verify: $(BIN_DIR)/zclassic23-package-verify
+$(BIN_DIR)/zclassic23-package-verify: $(VIEW_GEN_HEADERS) \
+		$(BUILD_IDENTITY_STAMP) tools/package_verify.c $(ALL_SRCS) \
+		$(COMMAND_CATALOG_DEFS) $(C23_PORTABLE_RELINK) | $(NODE_VENDOR_LIBS)
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(NODE_C23_CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) \
+		-o "$$tmp" \
+		$(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) \
+			$(COMMAND_CATALOG_DEFS) $(C23_PORTABLE_RELINK),$^) \
+		vendor/lib/libtor_stub.a $(NODE_C23_LIBS); \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" \
+		"$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
 # Opt-in C23 development adapter. This small front process enters Landlock and
 # scrubs credentials before it invokes the fixed Codex CLI; the node handler
 # never executes a caller-supplied command.
@@ -3384,8 +3419,23 @@ check-wallet: wallet_check
 spec: spec_zcl
 	ulimit -s unlimited && $(BIN_DIR)/spec_zcl
 
-.PHONY: zclassic23
+.PHONY: zclassic23 c23-portable-toolchain c23-portable-release \
+	c23-portable-install
 zclassic23: $(ZCLASSIC23_BIN)
+
+# Release portability is an explicit, reproducible build input rather than an
+# accidental property of the maintainer's workstation. This path downloads a
+# checksum-pinned Debian 12 glibc 2.36 sysroot, then uses the ordinary host C23
+# compiler for every linked archive and the node. No container, sudo, Zig, or
+# alternate language toolchain is involved. The portable baseline deliberately
+# selects the default Tor stub so an optional host-built full-Tor archive cannot
+# leak a newer host ABI into the artifact.
+c23-portable-toolchain:
+	@tools/scripts/c23_portable_sysroot.sh verify
+
+c23-portable-release:
+	@tools/scripts/build_c23_portable_release.sh
+
 # Split-debug: CFLAGS carries -g, but the shipped binary stays stripped —
 # the debug payload moves to $@.debug next to the binary and .gnu_debuglink
 # points at it, so addr2line/gdb resolve file:line (symbolize_crash.sh)
@@ -3393,14 +3443,15 @@ zclassic23: $(ZCLASSIC23_BIN)
 # dir under its final basename because --add-gnu-debuglink reads the file
 # (stored name + CRC32) at link time.
 $(ZCLASSIC23_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) \
-		$(NODE_ENTRY_SRCS) $(ALL_SRCS) $(COMMAND_CATALOG_DEFS) | $(NODE_VENDOR_LIBS)
+		$(NODE_ENTRY_SRCS) $(ALL_SRCS) $(COMMAND_CATALOG_DEFS) \
+		$(C23_PORTABLE_RELINK) | $(NODE_VENDOR_LIBS)
 	@mkdir -p $(dir $@)
 	@set -eu; \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	dbg="$@.debug"; \
 	dbgdir="$$(mktemp -d "$@.dbgdir.XXXXXX")"; \
 	trap 'rm -rf "$$tmp" "$$dbgdir"' EXIT HUP INT TERM; \
-	$(CC) $(NODE_C23_CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS),$^) $(NODE_C23_TOR_LIBS) $(NODE_C23_LIBS); \
+	$(CC) $(NODE_C23_CFLAGS) -Wno-deprecated-declarations $(LDFLAGS) -o "$$tmp" $(filter-out $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(COMMAND_CATALOG_DEFS) $(C23_PORTABLE_RELINK),$^) $(NODE_C23_TOR_LIBS) $(NODE_C23_LIBS); \
 	objcopy --only-keep-debug "$$tmp" "$$dbgdir/$$(basename "$$dbg")"; \
 	strip -s "$$tmp"; \
 	objcopy --add-gnu-debuglink="$$dbgdir/$$(basename "$$dbg")" "$$tmp"; \
@@ -3442,9 +3493,9 @@ $(eval $(call BUILD_NODE_TOOL,speedrun,tools/speedrun.c))
 
 .PHONY: zcl-rpc
 zcl-rpc: $(ZCL_RPC_BIN)
-$(ZCL_RPC_BIN): tools/zcl-rpc.c
+$(ZCL_RPC_BIN): FORCE tools/zcl-rpc.c
 	@mkdir -p $(dir $@)
-	$(CC) -std=c23 -O2 -Wall -o $@ $<
+	$(CC) -std=c23 -O2 -Wall -o $@ $(filter-out FORCE,$^)
 
 # zcl-portfwd: tiny self-contained userspace TCP forwarder that maps public
 # 443/80 -> the node's unprivileged high ports (8443/8080). It is the ONE file
@@ -4118,8 +4169,7 @@ test-science-acceptance: test-zcode-dht-acceptance
 # plus package signer/verifier into a throwaway prefix, then composes the
 # canonical DHT/Noise physical-node owner with an outside-tree package graph.
 # Opt-in: seven real daemons; no production datadir, wallet key, or live port.
-c23-commons-installed-acceptance: zclassic23 zcl-rpc \
-		zclassic23-package-sign zclassic23-package-verify
+c23-commons-installed-acceptance:
 	@bash tools/dev/c23_commons_beta_acceptance.sh
 
 # Four-role, real-process sovereign source acceptance. It composes the proven
@@ -5817,22 +5867,35 @@ DESTDIR ?=
 # artifact, process, RPC/P2P, diagnostic, and <=1-tip-gap checks still apply,
 # but the deployment does not claim that the stable health bar was met.
 DEPLOY_VERIFY_STAGE ?= stable
+define INSTALL_C23_PRODUCTS
+set -eu; \
+install -d "$(DESTDIR)$(PREFIX)/bin"; \
+install -m 755 $(ZCLASSIC23_BIN) "$(DESTDIR)$(PREFIX)/bin/zclassic23"; \
+install -m 755 $(ZCL_RPC_BIN) "$(DESTDIR)$(PREFIX)/bin/zcl-rpc"; \
+install -m 755 $(BIN_DIR)/zclassic23-package-verify \
+	"$(DESTDIR)$(PREFIX)/bin/zclassic23-package-verify"; \
+install -m 755 $(BIN_DIR)/zclassic23-package-sign \
+	"$(DESTDIR)$(PREFIX)/bin/zclassic23-package-sign"; \
+if [ -z "$(DESTDIR)" ]; then \
+	install -d "$(HOME)/.config/systemd/user"; \
+	sed 's|%h/zclassic23/build/bin/zclassic23|$(PREFIX)/bin/zclassic23|' \
+		deploy/zclassic23.service \
+		> "$(HOME)/.config/systemd/user/zclassic23.service"; \
+	(systemctl --user daemon-reload 2>/dev/null || true); \
+	echo "installed systemd --user unit; start: systemctl --user start zclassic23"; \
+fi; \
+echo "make install: node, RPC, package verifier + offline signer -> $(DESTDIR)$(PREFIX)/bin"
+endef
+
 .PHONY: install
 install: vendor-ready zclassic23 zcl-rpc zclassic23-package-verify zclassic23-package-sign
-	install -d "$(DESTDIR)$(PREFIX)/bin"
-	install -m 755 $(ZCLASSIC23_BIN) "$(DESTDIR)$(PREFIX)/bin/zclassic23"
-	install -m 755 $(ZCL_RPC_BIN)    "$(DESTDIR)$(PREFIX)/bin/zcl-rpc"
-	install -m 755 $(BIN_DIR)/zclassic23-package-verify "$(DESTDIR)$(PREFIX)/bin/zclassic23-package-verify"
-	install -m 755 $(BIN_DIR)/zclassic23-package-sign "$(DESTDIR)$(PREFIX)/bin/zclassic23-package-sign"
-	@if [ -z "$(DESTDIR)" ]; then \
-	    install -d "$(HOME)/.config/systemd/user"; \
-	    sed 's|%h/zclassic23/build/bin/zclassic23|$(PREFIX)/bin/zclassic23|' \
-	        deploy/zclassic23.service \
-	        > "$(HOME)/.config/systemd/user/zclassic23.service"; \
-	    (systemctl --user daemon-reload 2>/dev/null || true); \
-	    echo "installed systemd --user unit; start: systemctl --user start zclassic23"; \
-	fi
-	@echo "make install: node, RPC, package verifier + offline signer -> $(DESTDIR)$(PREFIX)/bin"
+	@$(INSTALL_C23_PRODUCTS)
+
+# Same installation surface, but every copied product was freshly built and
+# audited by the pinned old-glibc front door above. Keeping the copy recipe
+# shared prevents portable installation from becoming a second package path.
+c23-portable-install: c23-portable-release
+	@$(INSTALL_C23_PRODUCTS)
 
 deploy: vendor-ready lint zclassic-cli tools/wal_checkpoint
 	@./tools/deploy_guard.sh canonical-deploy

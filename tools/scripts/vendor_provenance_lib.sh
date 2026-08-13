@@ -16,25 +16,41 @@ vp_sha256_text() {
     printf '%s' "$1" | sha256sum | awk '{print $1}'
 }
 
+# Version text and target triples do not identify a compiler wrapper: its
+# injected sysroot, ABI, CPU, sanitizer, or reproducibility flags can change
+# while both probes stay identical. Bind the executable bytes as well. This
+# also invalidates vendor archives after an in-place compiler package upgrade.
+vp_executable_identity_sha() {
+    local command_word="$1" executable
+    executable="$(command -v "$command_word" 2>/dev/null || true)"
+    if [[ -n "$executable" && -f "$executable" ]]; then
+        vp_sha256_file "$executable"
+    else
+        vp_sha256_text "unresolved=$command_word"
+    fi
+}
+
 # Hash a tool's stable identity without assuming it implements compiler-only
 # options.  In particular, `perl -dumpmachine` means "start the debugger for
 # umpmachine" and can wedge an unattended vendor build at a DB<1> prompt.
 vp_tool_identity_sha() {
-    local command_name="$1" version
+    local command_name="$1" version executable_sha
     local -a command_argv
     read -r -a command_argv <<<"$command_name"
     [[ ${#command_argv[@]} -gt 0 ]] || return 1
     version="$("${command_argv[@]}" --version 2>/dev/null |
         sed -n '/[^[:space:]]/{p;q;}' || true)"
+    executable_sha="$(vp_executable_identity_sha "${command_argv[0]}")"
     vp_sha256_text "command=$command_name
-version=$version"
+version=$version
+executable_sha256=$executable_sha"
 }
 
 # Compiler identity additionally binds the target triple.  Keep this separate
 # from vp_tool_identity_sha so generic build tools are never probed with
 # compiler flags.
 vp_compiler_identity_sha() {
-    local command_name="$1" version machine
+    local command_name="$1" version machine executable_sha
     local -a command_argv
     read -r -a command_argv <<<"$command_name"
     [[ ${#command_argv[@]} -gt 0 ]] || return 1
@@ -42,9 +58,11 @@ vp_compiler_identity_sha() {
         sed -n '/[^[:space:]]/{p;q;}' || true)"
     machine="$("${command_argv[@]}" -dumpmachine 2>/dev/null |
         sed -n '1p' || true)"
+    executable_sha="$(vp_executable_identity_sha "${command_argv[0]}")"
     vp_sha256_text "command=$command_name
 version=$version
-machine=$machine"
+machine=$machine
+executable_sha256=$executable_sha"
 }
 
 vp_stamp_path() {

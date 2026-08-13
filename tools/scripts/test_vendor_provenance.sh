@@ -39,7 +39,8 @@ tool_identity="$(VP_TEST_TOOL_LOG="$tool_log" \
 [[ "$(cat "$tool_log")" == "--version" ]] ||
     die "generic tool received compiler-only identity probe"
 [[ "$tool_identity" == "$(vp_sha256_text "command=$fake_tool
-version=fake-tool 1.0")" ]] ||
+version=fake-tool 1.0
+executable_sha256=$(vp_sha256_file "$fake_tool")")" ]] ||
     die "generic tool identity did not capture the first non-empty version line"
 
 : >"$tool_log"
@@ -54,10 +55,23 @@ case "$1" in
 esac
 EOF
 chmod +x "$fake_compiler"
-VP_TEST_TOOL_LOG="$tool_log" vp_compiler_identity_sha "$fake_compiler" \
-    >/dev/null || die "compiler identity failed"
+compiler_identity="$(VP_TEST_TOOL_LOG="$tool_log" \
+    vp_compiler_identity_sha "$fake_compiler")" ||
+    die "compiler identity failed"
 [[ "$(cat "$tool_log")" == $'--version\n-dumpmachine' ]] ||
     die "compiler identity did not bind version and target"
+
+# A compiler wrapper can change injected CPU/sysroot flags without changing
+# --version or -dumpmachine. Its bytes are therefore part of the identity.
+printf '%s\n' '# same probes, different injected flags' >>"$fake_compiler"
+: >"$tool_log"
+changed_compiler_identity="$(VP_TEST_TOOL_LOG="$tool_log" \
+    vp_compiler_identity_sha "$fake_compiler")" ||
+    die "changed compiler-wrapper identity failed"
+[[ "$changed_compiler_identity" != "$compiler_identity" ]] ||
+    die "compiler wrapper byte change did not invalidate toolchain identity"
+[[ "$(cat "$tool_log")" == $'--version\n-dumpmachine' ]] ||
+    die "changed compiler wrapper received unexpected probes"
 
 descriptor_a="schema=$VP_SCHEMA
 archive=libfixture.a

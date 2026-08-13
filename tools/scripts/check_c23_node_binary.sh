@@ -36,7 +36,15 @@ while IFS= read -r dep; do
     esac
 done < <(readelf -d "$bin" | sed -n 's/.*Shared library: \[\(.*\)\]/\1/p')
 
-if readelf -Ws "$bin" | grep -Eq 'GLIBCXX_|CXXABI_|__cxa_|_Z(nw|dl|da|na)'; then
+# __cxa_finalize and __cxa_atexit are ordinary libc startup/teardown symbols
+# emitted for C PIE executables too. Reject the C++ exception/guard/personality
+# surface, operator new/delete manglings, and versioned C++ ABIs instead. Do
+# not use grep -q here: under pipefail its early close SIGPIPEs readelf, making
+# the answer depend on whether readelf filled the pipe buffer (large binaries
+# used to false-pass while small binaries failed on __cxa_finalize).
+if readelf -Ws "$bin" | grep -E \
+        'GLIBCXX_|CXXABI_|__gxx_personality_v0|__cxa_(throw|rethrow|begin_catch|end_catch|allocate_exception|free_exception|pure_virtual|guard_)|_Z(nw|dl|da|na)' \
+        >/dev/null; then
     echo "c23-node: C++ runtime symbol found in node executable" >&2
     bad=1
 fi

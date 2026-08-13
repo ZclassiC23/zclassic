@@ -547,6 +547,29 @@ make a red build green. `tools/ldb_verify_c23.c` deliberately keeps linking
 both readers: an independent oracle you delete cannot catch a native-reader
 regression.
 
+The canonical x86-64 portable build supplies that old userspace boundary even
+on a newer workstation:
+
+```bash
+make c23-portable-release
+# or install the same four audited products
+make c23-portable-install PREFIX="$HOME/.local"
+```
+
+It checksum-verifies three pinned Debian 12 packages from `deb.debian.org`,
+extracts a glibc 2.36 sysroot under ignored `build/toolchains/`, rebuilds every
+static archive linked by the node through the ordinary host C23 compiler, and
+then builds and audits the node, RPC client, offline package signer, and
+confined package verifier. It needs no container, root, Zig, or
+alternate-language compiler. Unlike the faster default developer build, this
+release front door forces the original x86-64/SSE2 CPU baseline with generic
+tuning; AVX2, FMA, BMI2, and host-specific instructions are not installation
+requirements. The baseline intentionally uses the default Tor stub; a real
+embedded-Tor release must build Tor and its static dependencies through the
+same supported sysroot before linking. Other CPU architectures require their
+own pinned sysroot and independently reproduced artifact; this target does not
+mislabel an x86-64 executable as architecture-neutral.
+
 Warm production boots also avoid rescanning the entire rebuildable
 `progress.kv` projection store. A successful projection WAL checkpoint and
 close writes a single-use `progress.kv.clean` receipt bound to the exact inode,
@@ -607,8 +630,9 @@ that still proves exact bytes, process identity, RPC/P2P diagnostics, evidence
 consistency, and a tip gap no greater than one, while clearly withholding any
 stable-health claim. Invalid stage names fail before the relink.
 
-Default target is `-march=x86-64-v3` (portable AVX2/FMA/BMI2); pass `ZCL_NATIVE=1`
-to build for the host CPU only.
+The default developer target is `-march=x86-64-v3` (AVX2/FMA/BMI2); pass
+`ZCL_NATIVE=1` to build for the host CPU only. Use `c23-portable-release` for
+the wider original-x86-64 deployment baseline described above.
 
 ## Reproducible / signed releases
 
