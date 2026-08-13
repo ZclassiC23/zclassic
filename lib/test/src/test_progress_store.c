@@ -701,6 +701,8 @@ int test_progress_store(void)
         test_make_tmpdir(dir, sizeof(dir), "progress_store", "proj_quarantine");
         char fpath[512];
         snprintf(fpath, sizeof(fpath), "%s/progress.kv", dir);
+        char receipt_path[544];
+        snprintf(receipt_path, sizeof(receipt_path), "%s.clean", fpath);
 
         /* Seed a healthy store with a recognizable marker row, then close so
          * the WAL is checkpointed back into the main file. */
@@ -719,10 +721,14 @@ int test_progress_store(void)
                          NULL, NULL, NULL) == SQLITE_OK);
         }
         projection_store_close();
+        PS_CHECK("proj quarantine: clean close writes fast-open receipt",
+                 access(receipt_path, F_OK) == 0);
 
         /* (a) Reopen the HEALTHY file — must NOT quarantine, marker survives. */
         PS_CHECK("proj quarantine: healthy reopen OK",
                  projection_store_open(dir));
+        PS_CHECK("proj quarantine: healthy reopen consumes receipt",
+                 access(receipt_path, F_OK) != 0);
         {
             sqlite3_stmt *q = NULL;
             bool row_ok = false;
@@ -739,6 +745,8 @@ int test_progress_store(void)
         PS_CHECK("proj quarantine: no false-positive .corrupt file",
                  ps_count_corrupt_projection(dir) == 0);
         projection_store_close();
+        PS_CHECK("proj quarantine: second clean close rewrites receipt",
+                 access(receipt_path, F_OK) == 0);
 
         /* Deliberately corrupt a middle page of the main DB file (same
          * technique as the consensus.db quarantine test above). */
@@ -770,6 +778,8 @@ int test_progress_store(void)
          *     and reopen a fresh store. open() returns true (self-healed). */
         PS_CHECK("proj quarantine: corrupt reopen self-heals (returns true)",
                  projection_store_open(dir));
+        PS_CHECK("proj quarantine: corrupt reopen consumes/refuses receipt",
+                 access(receipt_path, F_OK) != 0);
         PS_CHECK("proj quarantine: handle non-NULL after self-heal",
                  projection_store_db() != NULL);
         PS_CHECK("proj quarantine: .corrupt sidecar was created",

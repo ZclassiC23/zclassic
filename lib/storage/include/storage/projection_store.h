@@ -54,10 +54,15 @@
  * consensus.db). The Class C projection tables it holds are fully rebuildable,
  * so this does not run the kernel's candidate-refusal gate (there is no
  * consensus-state candidate to refuse here). It DOES run the same PRAGMA
- * quick_check integrity gate as the kernel store: a non-"ok" verdict
+ * quick_check integrity gate as the kernel store on a dirty/unknown open: a
+ * non-"ok" verdict
  * quarantines the file trio aside (timestamped/pid-unique rename) and
  * reopens a FRESH, empty file — safe because every table here re-derives from
- * the kernel on the next fold. Idempotent: a second call with the same
+ * the kernel on the next fold. A successful WAL checkpoint + close writes a
+ * single-use receipt bound to the exact file identity and SQLite header; an
+ * unchanged WAL-free reopen consumes that receipt and skips the O(file-size)
+ * scan. Any mismatch, WAL, crash, or malformed receipt takes the full gate.
+ * Idempotent: a second call with the same
  * datadir is a no-op returning true; a different datadir returns false (one
  * process, one projection store). */
 bool projection_store_open(const char *datadir);

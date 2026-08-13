@@ -547,6 +547,16 @@ make a red build green. `tools/ldb_verify_c23.c` deliberately keeps linking
 both readers: an independent oracle you delete cannot catch a native-reader
 regression.
 
+Warm production boots also avoid rescanning the entire rebuildable
+`progress.kv` projection store. A successful projection WAL checkpoint and
+close writes a single-use `progress.kv.clean` receipt bound to the exact inode,
+size, timestamps, and SQLite header counters. An unchanged WAL-free reopen
+consumes that receipt and skips the O(file-size) `quick_check`. A crash,
+non-empty WAL, malformed receipt, replaced file, or any in-place write takes
+the full timed integrity scan and existing quarantine/rederive path. Never copy
+the receipt independently of its database; a mismatch is intentionally treated
+as a dirty boot.
+
 ### Verify
 
 ```bash
