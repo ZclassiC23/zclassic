@@ -55,11 +55,12 @@ struct score_package_fixture {
     const char *recipe;
     const char *lock;
     const char *capsule;
+    const char *publisher;
     const char *signature;
 };
 
 #define ZCODE_PACKAGE(name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature) \
-    {name, dir, sequence, content, release, recipe, lock, capsule, signature},
+    {name, dir, sequence, content, release, recipe, lock, capsule, publisher, signature},
 static const struct score_package_fixture score_packages[] = {
 #include "../../../config/zcode_package_registry.def"
 };
@@ -2682,8 +2683,6 @@ static int test_reproduction_qualification(void)
 
         /* The shadow planner must reload the real frozen package manifest,
          * signed release and LICENSE bytes rather than trusting Score roots. */
-        static const char publisher_pubkey_hex[] =
-            "03448effe2ae40eb4053acfceb9839163c881b22affff9572283caddeee9207ce4";
         struct vcs_package_prepare_options package_options = {
             .dir = score_packages[0].dir,
             .publisher_sequence = score_packages[0].sequence,
@@ -2691,7 +2690,7 @@ static int test_reproduction_qualification(void)
             .chain_id = "zclassic-main",
         };
         ASSERT(zcl_hex_decode_lower(
-            publisher_pubkey_hex, package_options.publisher_pubkey,
+            score_packages[0].publisher, package_options.publisher_pubkey,
             sizeof(package_options.publisher_pubkey)));
         struct vcs_package_prepared prepared;
         char prepare_detail[256];
@@ -3295,8 +3294,6 @@ static bool shadow_protocol_package_vertical(
     const uint8_t policy_root[32], const uint8_t branch_root[32],
     uint64_t epoch, uint8_t identity_value, uint8_t attribution_root[32])
 {
-    static const char publisher_pubkey_hex[] =
-        "03448effe2ae40eb4053acfceb9839163c881b22affff9572283caddeee9207ce4";
     uint8_t content[32], release_root[32], recipe[32], lock[32], capsule[32];
     if (!workspace || !package || !shadow_policy || !policy_root ||
         !branch_root || !attribution_root ||
@@ -3313,7 +3310,7 @@ static bool shadow_protocol_package_vertical(
         .reward_address = "",
         .chain_id = "zclassic-main",
     };
-    if (!zcl_hex_decode_lower(publisher_pubkey_hex, options.publisher_pubkey,
+    if (!zcl_hex_decode_lower(package->publisher, options.publisher_pubkey,
                               sizeof(options.publisher_pubkey)))
         return false;
     struct vcs_package_prepared prepared;

@@ -926,6 +926,7 @@ static void pv_san_detail_from_stderr(const char *prefix,
  * -c <srcfile> -o <obj>. argv storage must outlive the call. */
 struct pv_compile_args {
     const char *argv[192];
+    char source_prefix_map[4300];
     char inc[8][4200];   /* -I args */
     char dep[PV_EMIT_MAX_DEPS][2100]; /* -I args for locked dependencies */
     char def[64][80];    /* -D args */
@@ -950,6 +951,13 @@ static size_t pv_compile_argv(struct pv_compile_args *store,
      * on that same declared API surface rather than accidentally compiling
      * only packages that avoid gmtime_r/flockfile and similar interfaces. */
     store->argv[n++] = "-D_POSIX_C_SOURCE=200809L";
+    /* Package source is materialized beneath a fresh work root. Normalize
+     * that root before the compiler can embed it through __FILE__ (or
+     * equivalent file-name metadata), otherwise identical source built by
+     * two independent verifiers produces different object/archive bytes. */
+    snprintf(store->source_prefix_map, sizeof(store->source_prefix_map),
+             "-ffile-prefix-map=%s=.", src_root);
+    store->argv[n++] = store->source_prefix_map;
     if (warning_fatal) {
         store->argv[n++] = "-Wall";
         store->argv[n++] = "-Wextra";
