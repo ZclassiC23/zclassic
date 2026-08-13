@@ -52,9 +52,12 @@
 #include "net/net.h"
 #include "net/peer_identity.h"
 #include "net/peer_scoring.h"
+#include "services/package_lifecycle.h"
 #include "util/safe_alloc.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
+#include "vcs/package_build.h"
+#include "vcs/package_checkout.h"
 #include "vcs/package_service.h"
 #include "vcs/package_mapping.h"
 #include "vcs/package_prepare.h"
@@ -1480,67 +1483,6 @@ static bool zwn_read_package_file(
     return ok;
 }
 
-static bool zwn_checkout_package(struct vcs_package_store *store,
-                                 const uint8_t package_root[32],
-                                 const char *checkout)
-{
-    uint8_t *wire = NULL;
-    size_t wire_len = 0;
-    struct vcs_package_manifest manifest;
-    vcs_package_manifest_init(&manifest);
-    uint8_t checked[32];
-    bool ok = store && package_root && checkout &&
-        vcs_package_store_get_manifest_wire(
-            store, package_root, &wire, &wire_len) == VCS_PACKAGE_STORE_OK &&
-        vcs_package_manifest_parse(wire, wire_len, &manifest) &&
-        vcs_package_manifest_root(&manifest, checked) &&
-        memcmp(checked, package_root, 32) == 0;
-    free(wire);
-    for (size_t i = 0; ok && i < manifest.count; i++) {
-        const struct vcs_package_file *file = &manifest.files[i];
-        char path[1400];
-        int n = snprintf(path, sizeof(path), "%s/%s", checkout, file->path);
-        ok = n > 0 && (size_t)n < sizeof(path);
-        size_t prefix = strlen(checkout) + 1u;
-        for (size_t p = prefix; ok && path[p]; p++) {
-            if (path[p] != '/')
-                continue;
-            path[p] = '\0';
-            ok = mkdir(path, 0700) == 0 || errno == EEXIST;
-            path[p] = '/';
-        }
-        int fd = ok ? open(path, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC,
-                           file->mode == VCS_PACKAGE_MODE_EXECUTABLE
-                               ? 0755 : 0644) : -1;
-        ok = ok && fd >= 0;
-        for (uint32_t chunk = 0; ok && chunk < file->chunk_count; chunk++) {
-            uint8_t *bytes = NULL;
-            size_t len = 0;
-            ok = vcs_package_store_get_chunk_at(
-                     store, package_root, (uint32_t)i, chunk,
-                     &bytes, &len) == VCS_PACKAGE_STORE_OK &&
-                 vcs_package_verify_chunk(file, chunk, bytes, len);
-            size_t off = 0;
-            while (ok && off < len) {
-                ssize_t wrote = write(fd, bytes + off, len - off);
-                if (wrote < 0 && errno == EINTR)
-                    continue;
-                if (wrote <= 0)
-                    ok = false;
-                else
-                    off += (size_t)wrote;
-            }
-            free(bytes);
-        }
-        if (fd >= 0 && fsync(fd) != 0)
-            ok = false;
-        if (fd >= 0 && close(fd) != 0)
-            ok = false;
-    }
-    vcs_package_manifest_free(&manifest);
-    return ok;
-}
-
 static bool zwn_append_edit(const char *root, const char *relative,
                             const char *marker, off_t *original_size)
 {
@@ -1585,6 +1527,93 @@ static bool zwn_revert_edit(const char *root, const char *relative,
     if (close(fd) != 0)
         ok = false;
     return ok;
+}
+
+static size_t zwn_package_scenario_index(const char *name)
+{
+    for (size_t i = 0; i < ZWN_PACKAGE_SCENARIO_COUNT; i++)
+        if (strcmp(zwn_package_scenarios[i].name, name) == 0)
+            return i;
+    return ZWN_PACKAGE_SCENARIO_COUNT;
+}
+
+static bool zwn_build_package(const char *datadir,
+                              const uint8_t package_root[32],
+                              int64_t *clock, size_t *rebuilt_out)
+{
+    char root_hex[65];
+    zcl_hex_encode(package_root, 32, root_hex);
+    int64_t planned_at = *clock;
+    *clock += 4;
+    struct package_lifecycle_plan_report plan;
+    struct zcl_result planned = package_lifecycle_plan(
+        datadir, root_hex, planned_at, &plan);
+    if (!planned.ok || !plan.ready) {
+        printf("  zcode_swarm_net: plan %s failed rule=%s detail=%s "
+               "message=%s\n", root_hex, plan.rule, plan.detail,
+               planned.message);
+        return false;
+    }
+    struct package_lifecycle_commit_report commit;
+    struct zcl_result committed = package_lifecycle_commit(
+        datadir, plan.plan_id, planned_at + 1, &commit);
+    if (!committed.ok || !commit.installed) {
+        printf("  zcode_swarm_net: commit %s failed rule=%s detail=%s "
+               "message=%s\n", root_hex, commit.rule, commit.detail,
+               committed.message);
+        return false;
+    }
+    for (size_t i = 0; i < commit.step_count; i++)
+        if (!commit.steps[i].already_installed)
+            (*rebuilt_out)++;
+    return true;
+}
+
+static bool zwn_build_original_graph(const char *datadir, int64_t *clock,
+                                     size_t *rebuilt_out)
+{
+    for (size_t i = 0; i < ZWN_PACKAGE_SCENARIO_COUNT; i++) {
+        uint8_t root[32];
+        if (!zcl_hex_decode_lower(
+                zwn_package_scenarios[i].expected_package_root_hex,
+                root, sizeof(root)) ||
+            !zwn_build_package(datadir, root, clock, rebuilt_out))
+            return false;
+    }
+    return true;
+}
+
+static bool zwn_original_receipts_present(const char *datadir,
+                                          size_t *present_out)
+{
+    *present_out = 0;
+    for (size_t i = 0; i < ZWN_PACKAGE_SCENARIO_COUNT; i++) {
+        const char *root_hex =
+            zwn_package_scenarios[i].expected_package_root_hex;
+        char path[1400];
+        int n = snprintf(path, sizeof(path),
+                         "%s/zcode/installed/%s/build-report", datadir,
+                         root_hex);
+        if (n <= 0 || (size_t)n >= sizeof(path))
+            return false;
+        FILE *file = fopen(path, "rb");
+        if (!file)
+            return false;
+        uint8_t wire[VCS_PACKAGE_BUILD_MAX_WIRE_BYTES];
+        size_t wire_len = fread(wire, 1, sizeof(wire), file);
+        bool read_ok = wire_len > 0 && feof(file) && !ferror(file);
+        if (fclose(file) != 0 || !read_ok)
+            return false;
+        struct vcs_package_build_receipt receipt;
+        uint8_t expected[32];
+        if (vcs_package_build_parse(wire, wire_len, &receipt) !=
+                VCS_PACKAGE_BUILD_OK ||
+            !zcl_hex_decode_lower(root_hex, expected, sizeof(expected)) ||
+            memcmp(receipt.package_root, expected, sizeof(expected)) != 0)
+            return false;
+        (*present_out)++;
+    }
+    return true;
 }
 
 /* ── 1 + 4 + 5: the golden fetch (with restart / disconnect variants) ── */
@@ -2717,6 +2746,10 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
         ASSERT(cold.transferred_bytes == cold.fetched_bytes);
         ASSERT(cold.requested_objects == cold.transferred_objects);
         ASSERT(cold.reused_objects == 0);
+        uint64_t cold_transferred_bytes = cold.transferred_bytes;
+        uint64_t cold_reused_bytes = cold.reused_bytes;
+        uint32_t cold_missing_objects = cold.transferred_objects;
+        uint32_t cold_reused_objects = cold.reused_objects;
 
         /* Fetch/verify is inert. The semantic package does not exist in B's
          * store until the separately explicit import reconstructs it. */
@@ -2762,6 +2795,10 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
                    item_cold.transferred_bytes);
             ASSERT(item_cold.requested_objects ==
                    item_cold.transferred_objects);
+            cold_transferred_bytes += item_cold.transferred_bytes;
+            cold_reused_bytes += item_cold.reused_bytes;
+            cold_missing_objects += item_cold.transferred_objects;
+            cold_reused_objects += item_cold.reused_objects;
             ASSERT(!vcs_package_store_package_status(
                 b.store, item_transport->package_root, &status));
             struct vcs_package_transport_import item_import;
@@ -2807,6 +2844,12 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
 
         /* Exact repeat is a pure local-complete result: no WANT and no
          * payload bytes. */
+        struct vcs_swarm_download_status repeat_status;
+        memset(&repeat_status, 0, sizeof(repeat_status));
+        ASSERT(vcs_swarm_engine_download_status(
+            c.engine, transport.transport_root, &repeat_status));
+        uint64_t repeat_bytes_present = repeat_status.total_bytes;
+        uint32_t repeat_objects_present = repeat_status.total_chunks;
         ASSERT(vcs_swarm_engine_fetch(
                    c.engine, transport.transport_root, ZWN_DAY, ++c.now) ==
                VCS_SWARM_FETCH_ALREADY_COMPLETE);
@@ -2834,10 +2877,32 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
             ASSERT(vcs_package_store_pin(
                        c.store, item_transport->transport_root, true) ==
                    VCS_PACKAGE_STORE_OK);
+            memset(&repeat_status, 0, sizeof(repeat_status));
+            ASSERT(vcs_swarm_engine_download_status(
+                c.engine, item_transport->transport_root, &repeat_status));
+            repeat_bytes_present += repeat_status.total_bytes;
+            repeat_objects_present += repeat_status.total_chunks;
             ASSERT(vcs_swarm_engine_fetch(
                        c.engine, item_transport->transport_root, ZWN_DAY,
                        ++c.now) == VCS_SWARM_FETCH_ALREADY_COMPLETE);
         }
+
+        /* Build/test is a separate local-policy step. The first pass builds
+         * all ten exact roots; the repeat consumes the installed receipts
+         * without compiling any package again. */
+        int64_t build_clock = INT64_C(1700010000);
+        size_t cold_packages_rebuilt = 0;
+        ASSERT(zwn_build_original_graph(
+            c.datadir, &build_clock, &cold_packages_rebuilt));
+        ASSERT_EQ(cold_packages_rebuilt, ZWN_PACKAGE_SCENARIO_COUNT);
+        size_t original_receipts = 0;
+        ASSERT(zwn_original_receipts_present(
+            c.datadir, &original_receipts));
+        ASSERT_EQ(original_receipts, ZWN_PACKAGE_SCENARIO_COUNT);
+        size_t repeat_packages_rebuilt = 0;
+        ASSERT(zwn_build_original_graph(
+            c.datadir, &build_clock, &repeat_packages_rebuilt));
+        ASSERT_EQ(repeat_packages_rebuilt, 0);
 
         /* C is another ordinary provider. D fetches and imports the same
          * graph without A or any repository/registry contact. */
@@ -2880,26 +2945,43 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
             ASSERT(status.complete && status.pinned);
         }
 
-        /* D now becomes an author from bytes reconstructed out of the
-         * decentralized package itself. A one-source edit, a clean revert,
-         * then a one-header edit each flow through the same generic runner. */
-        char checkout[512];
-        test_make_tmpdir(checkout, sizeof(checkout),
+        /* D now becomes an author from a leaf package reconstructed out of
+         * the decentralized graph. Editing a leaf makes the rebuild and
+         * evidence-reuse accounting exact: one changed package, nine
+         * unchanged packages. Checkout is the production inert primitive,
+         * not a test-local materializer. */
+        size_t edit_index = zwn_package_scenario_index(
+            "zclassic23/presentation");
+        ASSERT(edit_index > 0 && edit_index < ZWN_PACKAGE_SCENARIO_COUNT);
+        const struct zwn_package_scenario *edit_scenario =
+            &zwn_package_scenarios[edit_index];
+        struct vcs_package_transport *edit_transport =
+            &graph_transport[edit_index - 1u];
+        char checkout_parent[512], checkout[640];
+        test_make_tmpdir(checkout_parent, sizeof(checkout_parent),
                          "zcode_swarm_net", "package-checkout");
-        ASSERT(zwn_checkout_package(d.store, transport.package_root,
-                                    checkout));
+        int checkout_n = snprintf(checkout, sizeof(checkout), "%s/source",
+                                  checkout_parent);
+        ASSERT(checkout_n > 0 && (size_t)checkout_n < sizeof(checkout));
+        struct vcs_package_checkout_metrics checkout_metrics;
+        ASSERT(vcs_package_checkout(
+                   d.store, edit_transport->package_root, checkout,
+                   &checkout_metrics) == VCS_PACKAGE_CHECKOUT_OK);
+        ASSERT(checkout_metrics.files > 0 && checkout_metrics.chunks > 0 &&
+               checkout_metrics.bytes > 0);
         off_t source_size = 0;
-        ASSERT(zwn_append_edit(checkout, "src/result.c",
+        ASSERT(zwn_append_edit(checkout, "src/zclassic_brand.c",
                                "\n/* lifecycle source edit */\n",
                                &source_size));
         struct vcs_package_prepared source_prepared;
         struct vcs_package_transport source_transport;
         vcs_package_transport_init(&source_transport);
         ASSERT(zwn_prepare_package_transport(
-            &scenario, checkout, ZWN_PACKAGE_SCENARIO_COUNT + 1u, NULL,
+            edit_scenario, checkout, ZWN_PACKAGE_SCENARIO_COUNT + 1u, NULL,
             &source_prepared, &source_transport));
         ASSERT(memcmp(source_transport.package_root,
-                      transport.package_root, 32) != 0);
+                      edit_transport->package_root, 32) != 0);
+        ASSERT_EQ(source_prepared.lock.count, 1);
         ASSERT(vcs_package_transport_store(
                    d.store, &source_transport, checkout) ==
                VCS_PACKAGE_TRANSPORT_OK);
@@ -2907,7 +2989,7 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
                                      source_transport.transport_root,
                                      true) == VCS_PACKAGE_STORE_OK);
         ASSERT(zwn_discover_transport(
-            &d, &d, &c, scenario.dht_namespace,
+            &d, &d, &c, edit_scenario->dht_namespace,
             source_transport.release_id, source_transport.transport_root,
             discovered, &provider, 1400));
         ASSERT(zwn_fetch_package_from_provider(
@@ -2924,26 +3006,40 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
                source_edit.transferred_objects);
         ASSERT(source_edit.reused_objects > 0);
         ASSERT(source_edit.reused_bytes > 0);
+        ASSERT(source_edit.transferred_bytes < cold_transferred_bytes);
         struct vcs_package_transport_import source_import;
         ASSERT(vcs_package_transport_import(
                    c.store, source_transport.transport_root,
                    &source_import) == VCS_PACKAGE_TRANSPORT_OK);
+        size_t source_packages_rebuilt = 0;
+        ASSERT(zwn_build_package(
+            c.datadir, source_import.package_root, &build_clock,
+            &source_packages_rebuilt));
+        ASSERT_EQ(source_packages_rebuilt, 1);
+        size_t source_retained_receipts = 0;
+        ASSERT(zwn_original_receipts_present(
+            c.datadir, &source_retained_receipts));
+        ASSERT_EQ(source_retained_receipts, ZWN_PACKAGE_SCENARIO_COUNT);
 
-        ASSERT(zwn_revert_edit(checkout, "src/result.c", source_size));
+        ASSERT(zwn_revert_edit(
+            checkout, "src/zclassic_brand.c", source_size));
         off_t header_size = 0;
-        ASSERT(zwn_append_edit(checkout, "include/base/result.h",
+        ASSERT(zwn_append_edit(
+                               checkout,
+                               "include/presentation/zclassic_brand.h",
                                "\n/* lifecycle header edit */\n",
                                &header_size));
         struct vcs_package_prepared header_prepared;
         struct vcs_package_transport header_transport;
         vcs_package_transport_init(&header_transport);
         ASSERT(zwn_prepare_package_transport(
-            &scenario, checkout, ZWN_PACKAGE_SCENARIO_COUNT + 2u, NULL,
+            edit_scenario, checkout, ZWN_PACKAGE_SCENARIO_COUNT + 2u, NULL,
             &header_prepared, &header_transport));
         ASSERT(memcmp(header_transport.package_root,
-                      transport.package_root, 32) != 0);
+                      edit_transport->package_root, 32) != 0);
         ASSERT(memcmp(header_transport.package_root,
                       source_transport.package_root, 32) != 0);
+        ASSERT_EQ(header_prepared.lock.count, 1);
         ASSERT(vcs_package_transport_store(
                    d.store, &header_transport, checkout) ==
                VCS_PACKAGE_TRANSPORT_OK);
@@ -2951,7 +3047,7 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
                                      header_transport.transport_root,
                                      true) == VCS_PACKAGE_STORE_OK);
         ASSERT(zwn_discover_transport(
-            &d, &d, &c, scenario.dht_namespace,
+            &d, &d, &c, edit_scenario->dht_namespace,
             header_transport.release_id, header_transport.transport_root,
             discovered, &provider, 1410));
         ASSERT(zwn_fetch_package_from_provider(
@@ -2968,31 +3064,54 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
                header_edit.transferred_objects);
         ASSERT(header_edit.reused_objects > 0);
         ASSERT(header_edit.reused_bytes > 0);
+        ASSERT(header_edit.transferred_bytes < cold_transferred_bytes);
         struct vcs_package_transport_import header_import;
         ASSERT(vcs_package_transport_import(
                    c.store, header_transport.transport_root,
                    &header_import) == VCS_PACKAGE_TRANSPORT_OK);
+        size_t header_packages_rebuilt = 0;
+        ASSERT(zwn_build_package(
+            c.datadir, header_import.package_root, &build_clock,
+            &header_packages_rebuilt));
+        ASSERT_EQ(header_packages_rebuilt, 1);
+        size_t header_retained_receipts = 0;
+        ASSERT(zwn_original_receipts_present(
+            c.datadir, &header_retained_receipts));
+        ASSERT_EQ(header_retained_receipts, ZWN_PACKAGE_SCENARIO_COUNT);
 
         /* Exact byte revert reproduces the original semantic and transport
          * roots. C already owns it, so the swarm performs no transfer. */
-        ASSERT(zwn_revert_edit(checkout, "include/base/result.h",
-                               header_size));
+        ASSERT(zwn_revert_edit(
+            checkout, "include/presentation/zclassic_brand.h", header_size));
         struct vcs_package_prepared revert_prepared;
         struct vcs_package_transport revert_transport;
         vcs_package_transport_init(&revert_transport);
         ASSERT(zwn_prepare_package_transport(
-            &scenario, checkout, scenario.publisher_sequence,
-            scenario.expected_package_root_hex,
+            edit_scenario, checkout, edit_scenario->publisher_sequence,
+            edit_scenario->expected_package_root_hex,
             &revert_prepared, &revert_transport));
         ASSERT(memcmp(revert_transport.package_root,
-                      transport.package_root, 32) == 0);
+                      edit_transport->package_root, 32) == 0);
         ASSERT(memcmp(revert_transport.release_id,
-                      transport.release_id, 32) == 0);
+                      edit_transport->release_id, 32) == 0);
         ASSERT(memcmp(revert_transport.transport_root,
-                      transport.transport_root, 32) == 0);
+                      edit_transport->transport_root, 32) == 0);
+        struct vcs_swarm_download_status revert_status;
+        memset(&revert_status, 0, sizeof(revert_status));
+        ASSERT(vcs_swarm_engine_download_status(
+            c.engine, revert_transport.transport_root, &revert_status));
         ASSERT(vcs_swarm_engine_fetch(
                    c.engine, revert_transport.transport_root,
                    ZWN_DAY, ++c.now) == VCS_SWARM_FETCH_ALREADY_COMPLETE);
+        size_t revert_packages_rebuilt = 0;
+        ASSERT(zwn_build_package(
+            c.datadir, revert_transport.package_root, &build_clock,
+            &revert_packages_rebuilt));
+        ASSERT_EQ(revert_packages_rebuilt, 0);
+        size_t revert_reusable_receipts = 0;
+        ASSERT(zwn_original_receipts_present(
+            c.datadir, &revert_reusable_receipts));
+        ASSERT_EQ(revert_reusable_receipts, ZWN_PACKAGE_SCENARIO_COUNT);
 
         char package_hex[65], transport_hex[65], recipe_hex[65];
         char release_hex[65];
@@ -3000,44 +3119,80 @@ static int zwn_t_package_lifecycle(const struct chain_params *params)
         zcl_hex_encode(transport.transport_root, 32, transport_hex);
         zcl_hex_encode(transport.recipe_root, 32, recipe_hex);
         zcl_hex_encode(transport.release_id, 32, release_hex);
-        printf("{\"schema\":\"zcl.package_graph_lifecycle.v1\","
-               "\"scenario\":\"%s\",\"package_root\":\"%s\","
+        printf("{\"schema\":\"zcl.package_graph_lifecycle.v2\","
+               "\"scenario\":\"c23-commons-alpha\","
+               "\"seed_package\":\"%s\",\"package_root\":\"%s\","
                "\"transport_root\":\"%s\",\"recipe_root\":\"%s\","
                "\"release_id\":\"%s\","
                "\"package_count\":%zu,\"full_node_count\":4,"
-               "\"cold_verified_bytes\":%" PRIu64 ","
-               "\"repeat_verified_bytes\":0,"
-               "\"cold_requested_objects\":%u,"
-               "\"source_edit_requested_bytes\":%" PRIu64 ","
-               "\"source_edit_transferred_bytes\":%" PRIu64 ","
+               "\"cold_objects_already_present\":%u,"
+               "\"cold_missing_objects\":%u,"
+               "\"cold_bytes_transferred\":%" PRIu64 ","
+               "\"cold_bytes_reused\":%" PRIu64 ","
+               "\"cold_manifests_changed\":%zu,"
+               "\"cold_packages_rebuilt\":%zu,"
+               "\"cold_prior_evidence_reusable\":0,"
+               "\"repeat_objects_already_present\":%u,"
+               "\"repeat_missing_objects\":0,"
+               "\"repeat_bytes_transferred\":0,"
+               "\"repeat_bytes_reused\":%" PRIu64 ","
+               "\"repeat_manifests_changed\":0,"
+               "\"repeat_packages_rebuilt\":%zu,"
+               "\"repeat_prior_evidence_reusable\":%zu,"
+               "\"edited_package\":\"%s\","
+               "\"source_edit_objects_already_present\":%u,"
                "\"source_edit_missing_objects\":%u,"
-               "\"source_edit_reused_objects\":%u,"
-               "\"header_edit_requested_bytes\":%" PRIu64 ","
-               "\"header_edit_transferred_bytes\":%" PRIu64 ","
+               "\"source_edit_transferred_bytes\":%" PRIu64 ","
+               "\"source_edit_reused_bytes\":%" PRIu64 ","
+               "\"source_edit_manifests_changed\":1,"
+               "\"source_edit_packages_rebuilt\":%zu,"
+               "\"source_edit_prior_evidence_reusable\":%zu,"
+               "\"header_edit_objects_already_present\":%u,"
                "\"header_edit_missing_objects\":%u,"
-               "\"header_edit_reused_objects\":%u,"
-               "\"revert_transferred_bytes\":0,"
-               "\"source_bytes\":%" PRIu64 ","
-               "\"source_chunks\":%u,\"cas_objects_reused\":%u,"
+               "\"header_edit_transferred_bytes\":%" PRIu64 ","
+               "\"header_edit_reused_bytes\":%" PRIu64 ","
+               "\"header_edit_manifests_changed\":1,"
+               "\"header_edit_packages_rebuilt\":%zu,"
+               "\"header_edit_prior_evidence_reusable\":%zu,"
+               "\"revert_objects_already_present\":%u,"
+               "\"revert_missing_objects\":0,"
+               "\"revert_bytes_transferred\":0,"
+               "\"revert_bytes_reused\":%" PRIu64 ","
+               "\"revert_manifests_changed\":0,"
+               "\"revert_packages_rebuilt\":%zu,"
+               "\"revert_prior_evidence_reusable\":%zu,"
                "\"publisher_disappeared\":true,"
                "\"onward_path\":\"A-B-C-D-C\","
-               "\"new_author\":\"D\",\"github_contacted\":false}\n",
+               "\"new_author\":\"D\",\"github_contacted\":false,"
+               "\"central_registry\":false,"
+               "\"special_coordinator\":false,"
+               "\"downloaded_c_auto_executed\":false,"
+               "\"build_test_explicit_local_policy\":true}\n",
                scenario.name, package_hex, transport_hex, recipe_hex,
                release_hex,
                ZWN_PACKAGE_SCENARIO_COUNT,
-               cold.fetched_bytes, cold.requested_objects,
-               source_edit.requested_bytes,
-               source_edit.transferred_bytes,
-               source_edit.transferred_objects,
+               cold_reused_objects, cold_missing_objects,
+               cold_transferred_bytes, cold_reused_bytes,
+               ZWN_PACKAGE_SCENARIO_COUNT, cold_packages_rebuilt,
+               repeat_objects_present +
+                   (uint32_t)ZWN_PACKAGE_SCENARIO_COUNT,
+               repeat_bytes_present,
+               repeat_packages_rebuilt, original_receipts,
+               edit_scenario->name,
                source_edit.reused_objects,
-               header_edit.requested_bytes,
-               header_edit.transferred_bytes,
-               header_edit.transferred_objects,
+               source_edit.transferred_objects,
+               source_edit.transferred_bytes, source_edit.reused_bytes,
+               source_packages_rebuilt,
+               source_retained_receipts - 1u,
                header_edit.reused_objects,
-               imported_c.source_bytes,
-               imported_c.source_chunks, imported_c.cas_objects_reused);
+               header_edit.transferred_objects,
+               header_edit.transferred_bytes, header_edit.reused_bytes,
+               header_packages_rebuilt,
+               header_retained_receipts - 1u,
+               revert_status.total_chunks + 1u, revert_status.total_bytes,
+               revert_packages_rebuilt, revert_reusable_receipts);
 
-        test_rm_rf_recursive(checkout);
+        test_rm_rf_recursive(checkout_parent);
         vcs_package_transport_free(&revert_transport);
         vcs_package_prepared_free(&revert_prepared);
         vcs_package_transport_free(&header_transport);
