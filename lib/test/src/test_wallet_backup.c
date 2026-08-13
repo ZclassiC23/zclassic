@@ -557,27 +557,43 @@ static int t_force_now_encrypted(void)
     wb_wait_runs_past(before.total_runs, &after_start);
 
     bool ran = wallet_backup_now_encrypted("invocation-only-password").ok;
+    struct wallet_backup_status encrypted_status;
+    wallet_backup_status_snapshot(&encrypted_status);
+    /* Reproduce the production race: a key-change-triggered run uses the
+     * service's plaintext configuration after the explicit encrypted run. */
+    bool plaintext_ran = wallet_backup_now().ok;
     struct wallet_backup_status status;
     wallet_backup_status_snapshot(&status);
     wallet_backup_stop();
 
-    size_t path_len = strlen(status.last_path);
+    size_t path_len = strlen(status.last_encrypted_path);
     size_t suffix_len = strlen(WALLET_BACKUP_FILENAME_SUFFIX_ENC);
     bool has_encrypted_suffix = path_len >= suffix_len &&
-        strcmp(status.last_path + path_len - suffix_len,
+        strcmp(status.last_encrypted_path + path_len - suffix_len,
                WALLET_BACKUP_FILENAME_SUFFIX_ENC) == 0;
+    size_t latest_len = strlen(status.last_path);
+    size_t plain_suffix_len = strlen(WALLET_BACKUP_FILENAME_SUFFIX);
+    bool latest_is_plaintext = latest_len >= plain_suffix_len &&
+        strcmp(status.last_path + latest_len - plain_suffix_len,
+               WALLET_BACKUP_FILENAME_SUFFIX) == 0;
     char restored[640];
     snprintf(restored, sizeof(restored), "%s/restored-one-shot.sqlite",
              f.backup_dir);
     bool decrypted = has_encrypted_suffix &&
-        wallet_backup_decrypt_file(status.last_path, restored,
+        wallet_backup_decrypt_file(status.last_encrypted_path, restored,
                                    "invocation-only-password").ok;
     int64_t rows = decrypted
         ? wb_count_rows_in_file(restored, "wallet_keys") : -1;
 
-    WB_RUN("wb: one-shot password creates a verified encrypted backup",
-           started && ran && has_encrypted_suffix && seeded == 3 && rows == 3 &&
-           status.total_runs == after_start.total_runs + 1 &&
+    WB_RUN("wb: later plaintext run preserves encrypted-backup authority",
+           started && ran && plaintext_ran && has_encrypted_suffix &&
+           latest_is_plaintext && seeded == 3 && rows == 3 &&
+           status.total_runs == after_start.total_runs + 2 &&
+           status.last_encrypted_run_unix ==
+               encrypted_status.last_run_unix &&
+           status.last_encrypted_key_count == 3 &&
+           status.last_encrypted_tables_verified ==
+               status.wallet_table_count &&
            status.total_failures == after_start.total_failures);
 
     wb_fixture_tear_down(&f);

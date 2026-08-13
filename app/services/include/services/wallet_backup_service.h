@@ -134,6 +134,13 @@ struct wallet_backup_status {
     int     wallet_table_count;
     char    last_missing_tables[256];
     char    last_path[512];        /* absolute path of last backup */
+    /* Latest verified ENCRYPTED backup is separate authority. A later
+     * scheduled plaintext snapshot must not erase proof that this file still
+     * covers the current wallet keys. */
+    int64_t last_encrypted_run_unix;
+    int64_t last_encrypted_key_count;
+    int     last_encrypted_tables_verified;
+    char    last_encrypted_path[512];
     char    last_error[256];       /* most recent failure reason */
 };
 

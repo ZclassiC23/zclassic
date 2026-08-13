@@ -21,6 +21,14 @@ static void wallet_backup_status_to_json(struct json_value *result,
     json_push_kv_int(result, "last_key_count", s->last_key_count);
     json_push_kv_int(result, "last_duration_ms", s->last_duration_ms);
     json_push_kv_str(result, "last_path", s->last_path);
+    json_push_kv_int(result, "last_encrypted_run_unix",
+                     s->last_encrypted_run_unix);
+    json_push_kv_int(result, "last_encrypted_key_count",
+                     s->last_encrypted_key_count);
+    json_push_kv_int(result, "last_encrypted_tables_verified",
+                     s->last_encrypted_tables_verified);
+    json_push_kv_str(result, "last_encrypted_path",
+                     s->last_encrypted_path);
     json_push_kv_str(result, "last_error", s->last_error);
 }
 

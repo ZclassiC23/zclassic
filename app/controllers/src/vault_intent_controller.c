@@ -41,6 +41,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 #define VI_EFFECTS_MAX 50
 #define VI_INPUTS_MAX 128
@@ -217,12 +218,17 @@ static bool vi_context_ready(struct wallet_rpc_context *ctx,
         struct wallet_backup_status backup;
         wallet_backup_status_snapshot(&backup);
         int64_t now = (int64_t)platform_time_wall_time_t();
-        size_t path_len = strlen(backup.last_path);
+        size_t path_len = strlen(backup.last_encrypted_path);
         bool encrypted_backup = path_len > 4 &&
-            strcmp(backup.last_path + path_len - 4, ".enc") == 0;
-        if (backup.last_run_unix <= 0 || now < backup.last_run_unix ||
-            now - backup.last_run_unix > 86400 || !encrypted_backup ||
-            backup.last_tables_verified != backup.wallet_table_count) {
+            strcmp(backup.last_encrypted_path + path_len - 4, ".enc") == 0;
+        if (backup.last_encrypted_run_unix <= 0 ||
+            now < backup.last_encrypted_run_unix ||
+            now - backup.last_encrypted_run_unix > 86400 ||
+            !encrypted_backup ||
+            access(backup.last_encrypted_path, R_OK) != 0 ||
+            backup.last_encrypted_tables_verified !=
+                backup.wallet_table_count ||
+            backup.last_encrypted_key_count != h.row_count) {
             vi_error(out, "ENCRYPTED_BACKUP_REQUIRED",
                      "a current-key encrypted, fully verified wallet backup under 24 hours old is required");
             return false;

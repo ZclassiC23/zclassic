@@ -68,6 +68,10 @@ struct wallet_backup_service_state {
     int     last_tables_verified;
     char    last_missing_tables[WBS_MISSING_TABLES_MAX];
     char    last_path[512];
+    int64_t last_encrypted_run_unix;
+    int64_t last_encrypted_key_count;
+    int     last_encrypted_tables_verified;
+    char    last_encrypted_path[512];
     char    last_error[256];
 
     /* Debounced event trigger (D4: plan §5.4).
@@ -234,6 +238,12 @@ void wallet_backup_status_snapshot(struct wallet_backup_status *out)
     snprintf(out->last_missing_tables, sizeof(out->last_missing_tables), "%s",
              g_wbs.last_missing_tables);
     snprintf(out->last_path,  sizeof(out->last_path),  "%s", g_wbs.last_path);
+    out->last_encrypted_run_unix = g_wbs.last_encrypted_run_unix;
+    out->last_encrypted_key_count = g_wbs.last_encrypted_key_count;
+    out->last_encrypted_tables_verified =
+        g_wbs.last_encrypted_tables_verified;
+    snprintf(out->last_encrypted_path, sizeof(out->last_encrypted_path), "%s",
+             g_wbs.last_encrypted_path);
     snprintf(out->last_error, sizeof(out->last_error), "%s", g_wbs.last_error);
     pthread_mutex_unlock(&g_wbs.lock);
 }
@@ -265,6 +275,13 @@ bool wallet_backup_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "wallet_table_count", st.wallet_table_count);
     json_push_kv_str(out, "last_missing_tables", st.last_missing_tables);
     json_push_kv_str(out, "last_path", st.last_path);
+    json_push_kv_int(out, "last_encrypted_run_unix",
+                     st.last_encrypted_run_unix);
+    json_push_kv_int(out, "last_encrypted_key_count",
+                     st.last_encrypted_key_count);
+    json_push_kv_int(out, "last_encrypted_tables_verified",
+                     st.last_encrypted_tables_verified);
+    json_push_kv_str(out, "last_encrypted_path", st.last_encrypted_path);
     json_push_kv_str(out, "last_error", st.last_error);
     return true;
 }
@@ -326,6 +343,12 @@ static struct zcl_result wbs_run_one_locked(void)
                          "%s", enc_path);
                 g_wbs.last_size_bytes =
                     stat(enc_path, &st) == 0 ? (int64_t)st.st_size : -1;
+                g_wbs.last_encrypted_run_unix = g_wbs.last_run_unix;
+                g_wbs.last_encrypted_key_count = g_wbs.last_key_count;
+                g_wbs.last_encrypted_tables_verified =
+                    g_wbs.last_tables_verified;
+                snprintf(g_wbs.last_encrypted_path,
+                         sizeof(g_wbs.last_encrypted_path), "%s", enc_path);
             } else {
                 g_wbs.total_failures++;
                 /* "encrypt_failed: " (16) + er.message (up to
