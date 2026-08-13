@@ -4910,28 +4910,56 @@ skip_parallel_tests:
         int bits = msgprocessor_test_snap_pow_bits_at(t); /* fresh window: floor */
 
         bool reject_missing = !msgprocessor_test_snap_pow_admit_at(ip, t, NULL);
-        uint64_t bogus = 1;
-        bool reject_bad = !msgprocessor_test_snap_pow_admit_at(ip, t, &bogus);
+        /* A fixed "bogus" nonce is probabilistic: at D=12 any constant can
+         * be a real solution for either accepted time bucket. Search a
+         * bounded set through the production admission path. Resetting the
+         * load counter on each try keeps every verdict at the same D=12. */
+        uint64_t bogus = 0;
+        unsigned bogus_trials = 0;
+        bool reject_bad = false;
+        for (; bogus_trials < 64; bogus_trials++, bogus++) {
+            msgprocessor_test_snap_pow_reset();
+            msg_snapshot_pow_set_armed(true);
+            if (!msgprocessor_test_snap_pow_admit_at(ip, t, &bogus)) {
+                reject_bad = true;
+                break;
+            }
+        }
 
+        msgprocessor_test_snap_pow_reset();
+        msg_snapshot_pow_set_armed(true);
+        bits = msgprocessor_test_snap_pow_bits_at(t);
         uint64_t nonce = 0;
         bool solved = msgprocessor_test_snap_pow_solve(ip, t, bits, &nonce);
         bool accept = solved &&
                       msgprocessor_test_snap_pow_admit_at(ip, t, &nonce);
 
-        /* A solution bound to a DIFFERENT peer IP must not verify here —
-         * the puzzle is peer-bound via the challenge's peer_ip input. */
-        uint8_t other_ip[16] = {0}; other_ip[15] = 3;
-        bool cross_peer_rejected =
-            !msgprocessor_test_snap_pow_admit_at(other_ip, t, &nonce);
+        /* Binding means the solution must fail for a different IP. A single
+         * fixed second IP has the same rare-collision problem as a fixed bad
+         * nonce, so test up to 64 distinct peers at a reset difficulty. If
+         * peer binding were absent, the nonce would pass for all 64. */
+        uint8_t other_ip[16] = {0};
+        unsigned peer_trials = 0;
+        bool cross_peer_rejected = false;
+        for (; peer_trials < 64; peer_trials++) {
+            other_ip[15] = (uint8_t)(3 + peer_trials);
+            msgprocessor_test_snap_pow_reset();
+            msg_snapshot_pow_set_armed(true);
+            if (!msgprocessor_test_snap_pow_admit_at(other_ip, t, &nonce)) {
+                cross_peer_rejected = true;
+                break;
+            }
+        }
 
-        msg_snapshot_pow_set_armed(false);
+        msgprocessor_test_snap_pow_reset();
         bool ok = reject_missing && reject_bad && solved && accept &&
                   cross_peer_rejected;
         if (ok) printf("OK (bits=%d)\n", bits);
-        else { printf("FAIL (bits=%d missing=%d bad=%d solved=%d "
-                      "accept=%d cross_peer_rejected=%d)\n",
-                      bits, reject_missing, reject_bad, solved, accept,
-                      cross_peer_rejected);
+        else { printf("FAIL (bits=%d missing=%d bad=%d bogus_trials=%u "
+                      "solved=%d accept=%d peer_trials=%u "
+                      "cross_peer_rejected=%d)\n",
+                      bits, reject_missing, reject_bad, bogus_trials, solved,
+                      accept, peer_trials, cross_peer_rejected);
                failures++; }
     }
 
