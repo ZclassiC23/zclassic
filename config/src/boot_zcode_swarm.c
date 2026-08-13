@@ -433,6 +433,8 @@ static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
     capability.expires_unix = wall + 600;
     if (!vcs_zcode_work_capability_seal(
             &capability, s_work_secret, s_work_pubkey) ||
+        !vcs_zcode_work_node_set_local_signer(
+            s_work, s_work_secret, s_work_pubkey) ||
         !vcs_zcode_work_node_set_local_capability(s_work, &capability))
         LOG_FAIL("net.zcode_swarm", "work capability signing failed");
     return true;
@@ -679,6 +681,7 @@ static void boot_zcode_swarm_periodic(struct msg_processor *mp,
         vcs_swarm_engine_tick(engine, wall / 86400, (uint64_t)wall);
         vcs_zcode_work_node_tick(s_work, wall);
         boot_zcode_async_proof_tick(svc, s_work, wall);
+        boot_zcode_async_proof_drain_admissions(s_work, wall);
         boot_zcode_work_drain_admissions(wall);
         boot_zcode_work_drain_cancels(wall);
         boot_zcode_work_publish_results(wall);

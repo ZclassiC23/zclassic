@@ -12,6 +12,7 @@
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "models/database_owner_lease.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_async.h"
@@ -90,10 +91,11 @@ static bool zdev_runtime_owns_ledger(const char *datadir)
            strcmp(expected, owned->path) == 0;
 }
 
-/* A live node.db is never mutated by a one-shot CLI process.  Forward the
- * exact canonical input to the authenticated daemon, where the same handler
- * revalidates it and commits through app_runtime_node_db().  A closed scratch
- * fixture has no cookie and keeps the deterministic local test path. */
+/* A live node.db is never mutated by a one-shot CLI process. Forward the exact
+ * canonical input to the authenticated daemon, where the same handler
+ * revalidates it and commits through app_runtime_node_db(). Ownership comes
+ * from the database lease, not an RPC-cookie convention: credential-directory
+ * nodes deliberately have no <datadir>/.cookie. */
 bool zcl_native_forward_live_command(
     const struct zcl_command_request *request, const char *datadir,
     const char *rpc_method, const char *fallback_code,
@@ -103,10 +105,29 @@ bool zcl_native_forward_live_command(
     if (!request || !request->input || !datadir || !datadir[0] ||
         zdev_runtime_owns_ledger(datadir))
         return false;
-    char cookie[ZDEV_PATH_MAX];
-    int cn = snprintf(cookie, sizeof(cookie), "%s/.cookie", datadir);
-    if (cn <= 0 || (size_t)cn >= sizeof(cookie) || access(cookie, R_OK) != 0)
+    char db_path[ZDEV_PATH_MAX];
+    int dn = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    if (dn <= 0 || (size_t)dn >= sizeof(db_path)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "LIVE_OWNER_PROBE_FAILED", "ownership", false, false,
+            "the selected database pathname could not be represented",
+            evidence);
+        return true;
+    }
+    enum node_db_owner_lease_probe owner =
+        node_db_owner_lease_probe(db_path);
+    if (owner == NODE_DB_OWNER_LEASE_UNOWNED ||
+        owner == NODE_DB_OWNER_LEASE_OWNED_SELF)
         return false;
+    if (owner == NODE_DB_OWNER_LEASE_PROBE_ERROR) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "LIVE_OWNER_PROBE_FAILED", "ownership", true, false,
+            "the selected database owner could not be determined",
+            evidence);
+        return true;
+    }
     int64_t encode_started_us = platform_time_monotonic_us();
     struct json_value params;
     json_init(&params); json_set_array(&params);

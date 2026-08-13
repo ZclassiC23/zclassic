@@ -7,6 +7,8 @@
 #include "chain/chainparams.h"
 #include "storage/coins_db.h"
 #include "models/wallet_key.h"
+#include "models/database_lifetime.h"
+#include "models/database_owner_lease.h"
 #include "controllers/snapshot_controller.h"
 #include "controllers/sync_controller.h"
 #include "config/db_service.h"
@@ -627,6 +629,58 @@ int test_sqlite(void) {
     }
 
     {
+        /* Cross-process born-red case from async proof acceptance: a resident
+         * canonical owner has no <datadir>/.cookie when credential-directory
+         * RPC authentication is used. A one-shot mutable helper must still
+         * discover the lease and fail before SQLite can touch its WAL. */
+        printf("SQLite live owner blocks cross-process runtime reopen... ");
+        char dir_template[] = "/tmp/zclassic23-live-owner-process-XXXXXX";
+        char *dir_path = mkdtemp(dir_template);
+        char db_path[1024], wal_path[1032], shm_path[1032];
+        struct node_db canonical = {0};
+        struct stat wal_before = {0}, wal_after = {0};
+        struct stat shm_before = {0}, shm_after = {0};
+        int64_t value = 0;
+        bool ok = dir_path != NULL;
+        if (ok) {
+            snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
+            snprintf(wal_path, sizeof(wal_path), "%s-wal", db_path);
+            snprintf(shm_path, sizeof(shm_path), "%s-shm", db_path);
+            ok = node_db_open(&canonical, db_path) &&
+                node_db_state_set_int(&canonical, "process_owner_test", 23) &&
+                node_db_owner_lease_probe(db_path) ==
+                    NODE_DB_OWNER_LEASE_OWNED_SELF &&
+                stat(wal_path, &wal_before) == 0 &&
+                stat(shm_path, &shm_before) == 0;
+        }
+        pid_t child = ok ? fork() : -1;
+        if (child == 0) {
+            struct node_db borrowed = {0};
+            bool opened = node_db_open_existing_runtime(
+                &borrowed, db_path, "test.cross_process_borrower");
+            if (opened) node_db_close(&borrowed);
+            _exit(opened ? 1 : 0);
+        }
+        int status = 0;
+        if (child < 0 || waitpid(child, &status, 0) != child ||
+            !WIFEXITED(status) || WEXITSTATUS(status) != 0)
+            ok = false;
+        ok = ok && stat(wal_path, &wal_after) == 0 &&
+            stat(shm_path, &shm_after) == 0 &&
+            wal_before.st_dev == wal_after.st_dev &&
+            wal_before.st_ino == wal_after.st_ino &&
+            shm_before.st_dev == shm_after.st_dev &&
+            shm_before.st_ino == shm_after.st_ino &&
+            node_db_state_get_int(
+                &canonical, "process_owner_test", &value) && value == 23 &&
+            node_db_state_set_int(&canonical, "process_owner_after", 24);
+        if (canonical.open) node_db_close(&canonical);
+        if (dir_path) cleanup_temp_db_dir(dir_path);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    {
         /* A live WAL has one filesystem identity. A helper that closes its own
          * mutable handle must not unlink/recreate the canonical owner's WAL,
          * which splits same-process readers across different WAL inodes and
@@ -637,6 +691,8 @@ int test_sqlite(void) {
         char db_path[1024], wal_path[1032];
         struct node_db canonical = {0}, helper = {0};
         struct stat before = {0}, after = {0};
+        int64_t helper_value = 0;
+        uint64_t unauthorized_before = db_lifetime_unauthorized_count();
         bool ok = dir_path != NULL;
         if (ok) {
             snprintf(db_path, sizeof(db_path), "%s/node.db", dir_path);
@@ -645,12 +701,24 @@ int test_sqlite(void) {
                 node_db_state_set_int(&canonical, "wal_owner_test", 23) &&
                 stat(wal_path, &before) == 0;
         }
-        if (ok)
+        for (int i = 0; ok && i < 64; i++) {
             ok = node_db_open_existing_runtime(
-                &helper, db_path, "test.live_wal_helper");
-        if (helper.open) node_db_close(&helper);
+                &helper, db_path, "test.live_wal_helper") &&
+                node_db_state_get_int(
+                    &helper, "wal_owner_test", &helper_value) &&
+                helper_value == 23;
+            if (helper.open) node_db_close(&helper);
+        }
+        /* Exercise the central filesystem boundary directly: a handle owner
+         * cannot unlink the backing owner's live WAL even if a caller asks. */
+        if (ok)
+            ok = db_lifetime_unlink(
+                wal_path, "test.borrowed_wal_cleanup",
+                DB_LIFETIME_HANDLE_OWNER, 0) != 0;
         ok = ok && stat(wal_path, &after) == 0 &&
             before.st_dev == after.st_dev && before.st_ino == after.st_ino;
+        ok = ok && db_lifetime_unauthorized_count() ==
+            unauthorized_before + 1;
         if (canonical.open) node_db_close(&canonical);
         if (dir_path) cleanup_temp_db_dir(dir_path);
         if (ok) printf("OK\n");

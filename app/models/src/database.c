@@ -552,7 +552,10 @@ static bool node_db_open_impl(struct node_db *ndb, const char *path,
     ndb->lifetime_backing_owner = boot_ceremony;
     (void)snprintf(ndb->lifetime_owner, sizeof(ndb->lifetime_owner), "%s",
                    boot_ceremony ? "node_db.canonical" : reason);
-    if (boot_ceremony && !node_db_owner_lease_acquire(ndb))
+    /* Every mutable handle explicitly joins the pathname lease.  In-process
+     * runtime helpers share the canonical owner's lease; a one-shot process
+     * cannot open the live node database behind that owner's back. */
+    if (!node_db_owner_lease_acquire(ndb, true))
         return node_db_open_abort(ndb);
 
     /* No anonymous DB open: a reopen names who/why so it cannot look like a
@@ -587,7 +590,6 @@ static bool node_db_open_impl(struct node_db *ndb, const char *path,
     db_lifetime_scope_leave(&open_scope);
     if (!raw_opened)
         return node_db_open_abort(ndb);
-
     if (boot_ceremony) {
         /* Tier-2 fast restart: skip-probe reads the PRISTINE file; true = prior
          * shutdown proved it clean, skip the ~9s quick_check. */
@@ -687,6 +689,8 @@ bool node_db_open_existing_runtime(struct node_db *ndb, const char *path,
     (void)snprintf(ndb->lifetime_owner, sizeof(ndb->lifetime_owner), "%s",
                    reason);
     ndb->lifetime_backing_owner = false;
+    if (!node_db_owner_lease_acquire(ndb, false))
+        return node_db_open_abort(ndb);
     LOG_INFO("db", "db: lightweight runtime reopen (reason=%s) path=%s",
              reason, path);
 
@@ -702,7 +706,6 @@ bool node_db_open_existing_runtime(struct node_db *ndb, const char *path,
         db_lifetime_scope_leave(&open_scope);
         return node_db_open_abort(ndb);
     }
-
     /* The boot connection already selected WAL for the database. These are
      * connection-local settings only: no journal-mode transition, mapped live
      * pages, schema DDL, migration, or full cached-statement preparation on a

@@ -27,6 +27,37 @@ struct node_db_owner_lease {
 static pthread_mutex_t g_owner_lease_mutex = PTHREAD_MUTEX_INITIALIZER;
 static struct node_db_owner_lease g_owner_leases[NODE_DB_OWNER_LEASES];
 
+enum node_db_owner_lease_probe node_db_owner_lease_probe(const char *path)
+{
+    if (!path || !path[0]) return NODE_DB_OWNER_LEASE_PROBE_ERROR;
+    if (strcmp(path, ":memory:") == 0) return NODE_DB_OWNER_LEASE_UNOWNED;
+    pthread_mutex_lock(&g_owner_lease_mutex);
+    for (int i = 0; i < NODE_DB_OWNER_LEASES; i++) {
+        struct node_db_owner_lease *lease = &g_owner_leases[i];
+        if (lease->refs > 0 && lease->pid == getpid() &&
+            strcmp(lease->path, path) == 0) {
+            pthread_mutex_unlock(&g_owner_lease_mutex);
+            return NODE_DB_OWNER_LEASE_OWNED_SELF;
+        }
+    }
+    pthread_mutex_unlock(&g_owner_lease_mutex);
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0)
+        return errno == ENOENT ? NODE_DB_OWNER_LEASE_UNOWNED
+                               : NODE_DB_OWNER_LEASE_PROBE_ERROR;
+    if (flock(fd, LOCK_EX | LOCK_NB) == 0) {
+        int unlock_rc = flock(fd, LOCK_UN);
+        int close_rc = close(fd);
+        return unlock_rc == 0 && close_rc == 0
+            ? NODE_DB_OWNER_LEASE_UNOWNED
+            : NODE_DB_OWNER_LEASE_PROBE_ERROR;
+    }
+    int saved = errno;
+    (void)close(fd);
+    return saved == EWOULDBLOCK || saved == EAGAIN
+        ? NODE_DB_OWNER_LEASE_LIVE : NODE_DB_OWNER_LEASE_PROBE_ERROR;
+}
+
 void node_db_owner_lease_release(struct node_db *ndb)
 {
     if (!ndb || ndb->lifetime_owner_lease_slot < 0) return;
@@ -52,7 +83,7 @@ void node_db_owner_lease_release(struct node_db *ndb)
     ndb->lifetime_owner_lease_slot = -1;
 }
 
-bool node_db_owner_lease_acquire(struct node_db *ndb)
+bool node_db_owner_lease_acquire(struct node_db *ndb, bool create_if_missing)
 {
     if (!ndb || !ndb->path[0])
         LOG_FAIL("db", "database owner lease requires a path");
@@ -81,7 +112,9 @@ bool node_db_owner_lease_acquire(struct node_db *ndb)
     }
     /* Lock node.db itself: no sidecar or directory metadata mutation, while
      * independent databases in one test/scratch directory remain independent. */
-    int fd = open(ndb->path, O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, 0600);
+    int open_flags = O_RDWR | O_CLOEXEC | O_NOFOLLOW;
+    if (create_if_missing) open_flags |= O_CREAT;
+    int fd = open(ndb->path, open_flags, 0600);
     if (fd < 0) goto fail_locked;
     if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
         int saved = errno;

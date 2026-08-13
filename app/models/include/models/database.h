@@ -88,10 +88,10 @@ struct node_db {
     uint64_t lifetime_generation;
     bool lifetime_backing_owner;
     char lifetime_owner[80];
-    /* Held only by node_db_open() for the lifetime of the canonical boot
-     * handle.  It prevents a second process from mistaking the same live
-     * node.db for an offline database and running boot/close ceremony over
-     * its WAL.  Runtime helper connections never own this lease. */
+    /* Held by every mutable handle. The canonical boot handle creates the
+     * cross-process lease; in-process helpers explicitly join it. This keeps
+     * a one-shot process from mistaking the same live node.db for an offline
+     * database and running open/close lifecycle over its WAL. */
     int lifetime_owner_lease_slot;
     /* Transient: set for a runtime reopen so node_db_migrate() suppresses the
      * boot-only "current schema version" banner. Never mistake a background

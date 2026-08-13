@@ -179,7 +179,9 @@ int test_sticky_conditions(void)
          * own blocker (disk_low_pause never clears "<index_id>.disk_low"
          * itself — the fold's own next pass does, per index_fold_guard.c). */
         index_fold_set_min_free_for_test(-1);
+        disk_monitor_set_free_bytes_for_test((int64_t)200 << 30);
         fold_ok = index_fold_disk_ok("address_index", "test", "/tmp");
+        disk_monitor_set_free_bytes_for_test(-1);
         SC_CHECK("disk_low: index_fold_disk_ok clears the blocker once the "
                  "floor is realistic again",
                  fold_ok && !blocker_exists("address_index.disk_low"));

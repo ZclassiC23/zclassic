@@ -22,6 +22,22 @@ enum vcs_zcode_work_swarm_type {
     VCS_ZCODE_WORK_SWARM_RESULT = 3,
     VCS_ZCODE_WORK_SWARM_CANCEL = 4,
     VCS_ZCODE_WORK_SWARM_PROGRESS = 5,
+    VCS_ZCODE_WORK_SWARM_ADMISSION = 6,
+};
+
+enum vcs_zcode_work_admission_disposition {
+    VCS_ZCODE_WORK_ADMISSION_GRANTED = 1,
+    VCS_ZCODE_WORK_ADMISSION_ATTACHED = 2,
+    VCS_ZCODE_WORK_ADMISSION_BUSY = 3,
+    VCS_ZCODE_WORK_ADMISSION_REFUSED = 4,
+};
+
+enum vcs_zcode_work_admission_reason {
+    VCS_ZCODE_WORK_ADMISSION_REASON_NONE = 0,
+    VCS_ZCODE_WORK_ADMISSION_REASON_NO_SLOT = 1,
+    VCS_ZCODE_WORK_ADMISSION_REASON_POLICY = 2,
+    VCS_ZCODE_WORK_ADMISSION_REASON_BINDING = 3,
+    VCS_ZCODE_WORK_ADMISSION_REASON_CAPACITY = 4,
 };
 
 enum vcs_zcode_work_progress_stage {
@@ -112,6 +128,22 @@ struct vcs_zcode_work_progress_v1 {
     uint8_t signature[64];
 };
 
+/* A signed, fail-closed worker admission observation. Capacity remains a
+ * process-local worker fact; this message neither creates proof authority nor
+ * changes the canonical task/candidate/action/receipt lifecycle. */
+struct vcs_zcode_work_admission_v1 {
+    uint64_t request_id;
+    uint8_t requester_pubkey[32];
+    uint8_t action_root[32];
+    uint8_t worker_signer[32];
+    uint64_t lease_generation;
+    int64_t deadline_unix;
+    uint16_t slot;
+    uint8_t disposition;
+    uint8_t reason;
+    uint8_t signature[64];
+};
+
 struct vcs_zcode_work_swarm_message {
     uint8_t type;
     union {
@@ -120,6 +152,7 @@ struct vcs_zcode_work_swarm_message {
         struct vcs_zcode_work_result_v1 result;
         struct vcs_zcode_work_cancel_v1 cancel;
         struct vcs_zcode_work_progress_v1 progress;
+        struct vcs_zcode_work_admission_v1 admission;
     } body;
 };
 
@@ -157,6 +190,15 @@ bool vcs_zcode_work_progress_verify(
 bool vcs_zcode_work_progress_verify_for_request(
     const struct vcs_zcode_work_request_v1 *request,
     const struct vcs_zcode_work_progress_v1 *progress,
+    const uint8_t expected_signer[32]);
+bool vcs_zcode_work_admission_seal(
+    struct vcs_zcode_work_admission_v1 *admission,
+    const uint8_t secret[32], const uint8_t pubkey[32]);
+bool vcs_zcode_work_admission_verify(
+    const struct vcs_zcode_work_admission_v1 *admission);
+bool vcs_zcode_work_admission_verify_for_request(
+    const struct vcs_zcode_work_request_v1 *request,
+    const struct vcs_zcode_work_admission_v1 *admission,
     const uint8_t expected_signer[32]);
 
 /* Remote work is evidence, never authority. This verifies exact request

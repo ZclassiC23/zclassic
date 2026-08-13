@@ -243,8 +243,7 @@ static int test_ring_buffer_cap(void)
     char dbdir[256];
     char dbpath[320];
     struct node_db ndb;
-    snprintf(dbdir, sizeof(dbdir), ".zcl_test_paritysample_%d", (int)getpid());
-    mkdir(dbdir, 0755);
+    test_make_tmpdir(dbdir, sizeof(dbdir), "paritysample", "ring");
     snprintf(dbpath, sizeof(dbpath), "%s/node.db", dbdir);
     memset(&ndb, 0, sizeof(ndb));
 
@@ -279,8 +278,7 @@ static int test_ring_buffer_cap(void)
         failures++;
     }
 
-    unlink(dbpath);
-    rmdir(dbdir);
+    test_cleanup_tmpdir(dbdir);
     printf("parity_sample ring buffer: %d failures\n", failures);
     return failures;
 }

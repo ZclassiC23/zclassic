@@ -81,6 +81,7 @@ static struct disk_monitor_state g_dm = {
 };
 
 static struct liveness_contract g_dm_contract;
+static _Atomic int64_t g_free_bytes_test_override = -1;
 
 /* ── Supervisor liveness ────────────────────────────────────── */
 
@@ -150,6 +151,8 @@ void disk_monitor_config_defaults(struct disk_monitor_config *cfg)
 
 int64_t disk_monitor_free_bytes(const char *path)
 {
+    int64_t override = atomic_load(&g_free_bytes_test_override);
+    if (override >= 0) return override;
     if (!path || !*path) {
         fprintf(stderr, "[disk] %s: path is NULL or empty\n", __func__);
         return -1; // raw-return-ok:logged-above
@@ -165,6 +168,11 @@ int64_t disk_monitor_free_bytes(const char *path)
      * writing?" threshold. Multiplied by `f_frsize` which is the
      * fundamental block size (not `f_bsize` which can differ). */
     return (int64_t)st.f_bavail * (int64_t)st.f_frsize;
+}
+
+void disk_monitor_set_free_bytes_for_test(int64_t bytes)
+{
+    atomic_store(&g_free_bytes_test_override, bytes);
 }
 
 /* ── Classification ─────────────────────────────────────────── */

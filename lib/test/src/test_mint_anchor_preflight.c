@@ -22,6 +22,7 @@
 #include "config/boot.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "services/disk_monitor.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -181,7 +182,9 @@ static int test_preflight_passing_datadir_all_ok(void)
 
     struct json_value report;
     json_init(&report);
+    disk_monitor_set_free_bytes_for_test((int64_t)200 << 30);
     bool all_ok = boot_mint_anchor_preflight_run_all(dir, &report);
+    disk_monitor_set_free_bytes_for_test(-1);
     MAP_CHECK("passing datadir: run_all returns true", all_ok);
     const struct json_value *checks = json_get(&report, "checks");
     MAP_CHECK("passing datadir: checks array present", checks != NULL);

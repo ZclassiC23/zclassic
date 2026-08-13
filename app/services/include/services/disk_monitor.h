@@ -117,4 +117,7 @@ enum disk_monitor_level disk_monitor_level(void);
  * temp directory they control. */
 int64_t disk_monitor_free_bytes(const char *path);
 
+/* Process-local unit-test seam. A negative value restores statvfs(). */
+void disk_monitor_set_free_bytes_for_test(int64_t bytes);
+
 #endif /* ZCL_SERVICES_DISK_MONITOR_H */

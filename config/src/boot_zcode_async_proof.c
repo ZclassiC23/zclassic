@@ -37,6 +37,55 @@ enum {
     ASYNC_PROOF_TRANSPORT_SECONDS = 90,
 };
 
+static const char *async_proof_admission_name(uint8_t disposition)
+{
+    switch (disposition) {
+    case VCS_ZCODE_WORK_ADMISSION_GRANTED: return "GRANTED";
+    case VCS_ZCODE_WORK_ADMISSION_ATTACHED: return "ATTACHED";
+    case VCS_ZCODE_WORK_ADMISSION_BUSY: return "BUSY";
+    case VCS_ZCODE_WORK_ADMISSION_REFUSED: return "REFUSED";
+    default: return "INVALID";
+    }
+}
+
+void boot_zcode_async_proof_drain_admissions(
+    struct vcs_zcode_work_node *work, int64_t now)
+{
+    struct node_db *ndb = app_runtime_node_db();
+    if (!work || !ndb || !ndb->open) return;
+    for (;;) {
+        uint64_t peer = 0;
+        struct vcs_zcode_work_admission_v1 admission;
+        if (!vcs_zcode_work_node_next_admission(work, &peer, &admission))
+            break;
+        struct vcs_zcode_work_request_v1 request;
+        if (!vcs_zcode_work_node_outbound_request(
+                work, peer, admission.request_id, &request)) {
+            LOG_ERROR("net.zcode_swarm", "admission lost its request");
+            continue;
+        }
+        bool observed = boot_zcode_async_proof_observe_admission(
+            ndb, peer, &request, &admission, now);
+        bool rerouted = observed &&
+            (admission.disposition == VCS_ZCODE_WORK_ADMISSION_BUSY ||
+             admission.disposition == VCS_ZCODE_WORK_ADMISSION_REFUSED);
+        char action_id[65];
+        zcl_hex_encode(request.action_root, 32, action_id);
+        LOG_INFO("zcode.proof_perf",
+                 "schema=zcl.async_proof_perf.v1 action=%s "
+                 "stage=worker_admission at_unix_us=%lld disposition=%s "
+                 "reason=%u slot=%u lease_generation=%llu reroute=%d",
+                 action_id, (long long)platform_time_realtime_us(),
+                 async_proof_admission_name(admission.disposition),
+                 admission.reason, admission.slot,
+                 (unsigned long long)admission.lease_generation,
+                 rerouted ? 1 : 0);
+        if (!observed)
+            LOG_WARN("net.zcode_swarm", "admission %s was not projected",
+                     async_proof_admission_name(admission.disposition));
+    }
+}
+
 static bool async_proof_rpc_run(
     const struct json_value *params, struct json_value *result,
     const char *schema, zcl_command_handler_fn handler,
@@ -292,8 +341,10 @@ static struct zcl_result async_context_build(
     free(input_wire);
     uint8_t expected_action[32];
     char context_hex[65];
-    if (packed != VCS_ZCODE_WORK_CONTEXT_OK ||
-        !zcl_hex_decode_lower(action->action_id, expected_action, 32) ||
+    if (packed != VCS_ZCODE_WORK_CONTEXT_OK)
+        return ZCL_ERR(-1, "context package refused: %s",
+                       vcs_zcode_work_context_result_string(packed));
+    if (!zcl_hex_decode_lower(action->action_id, expected_action, 32) ||
         memcmp(action_root, expected_action, 32) != 0) {
         return ZCL_ERR(-1, "context package does not bind the action");
     }
@@ -390,7 +441,13 @@ static void async_dispatch(
         ndb, &job, &action, now, event->workspace, &task, context_root,
         &context_cache_hit, &context_bytes);
     int64_t context_us = platform_time_monotonic_us() - context_started_us;
-    if (!packed.ok) return;
+    if (!packed.ok) {
+        LOG_WARN("net.zcode_async",
+                 "dispatch refused action=%s stage=context_prepare reason=%s",
+                 event->action_id,
+                 packed.message[0] ? packed.message : "unnamed");
+        return;
+    }
     uint64_t peer = 0;
     struct vcs_zcode_work_capability_v1 capability;
     int64_t selection_started_us = platform_time_monotonic_us();
@@ -514,6 +571,30 @@ bool boot_zcode_async_proof_observe_progress(
         ndb, action_id, state, peer, request->request_id, NULL, NULL,
         current.deadline_at, async_elapsed_us(now, current.created_at), now,
         &next).ok;
+}
+
+bool boot_zcode_async_proof_observe_admission(
+    struct node_db *ndb, uint64_t peer,
+    const struct vcs_zcode_work_request_v1 *request,
+    const struct vcs_zcode_work_admission_v1 *admission, int64_t now)
+{
+    if (!ndb || !ndb->open || !request || !admission || peer == 0 ||
+        now <= 0)
+        return false;
+    if (admission->disposition != VCS_ZCODE_WORK_ADMISSION_BUSY &&
+        admission->disposition != VCS_ZCODE_WORK_ADMISSION_REFUSED)
+        return true;
+    char action_id[65];
+    zcl_hex_encode(request->action_root, 32, action_id);
+    struct db_build_proof_event current, reroute;
+    if (!db_build_proof_event_latest(ndb, action_id, &current) ||
+        current.request_id != request->request_id ||
+        current.peer_id != peer ||
+        strcmp(current.state, "PEER_DISCOVERED") != 0)
+        return false;
+    return build_fabric_proof_transition(
+        ndb, action_id, "PEER_DISCOVERED", peer, request->request_id,
+        NULL, NULL, now, 0, now, &reroute).ok;
 }
 bool boot_zcode_async_proof_observe_result(
     struct node_db *ndb, uint64_t peer,

@@ -7,6 +7,7 @@
 
 #include "platform/time_compat.h"
 
+#include <errno.h>
 #include <execinfo.h>
 #include <fcntl.h>
 #include <pthread.h>
@@ -18,6 +19,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <sys/syscall.h>
 #include <unistd.h>
 
@@ -181,18 +183,24 @@ static void lifetime_log(const char *event, const char *path,
     if (!lifetime_trace_enabled() && !unauthorized)
         return;
     char caller[1024];
+    struct stat path_stat;
+    bool path_present = path && stat(path, &path_stat) == 0;
     lifetime_backtrace(caller);
     fprintf(stderr,  // obs-ok:vfs-boundary-cannot-reenter-event-persistence
             "[db-lifetime] schema=zcl.db_lifetime.v1 event=%s "
             "mono_us=%lld pid=%ld tid=%ld sqlite_file=%llu generation=%llu "
-            "owner=%s authority=%s path=%s flags=0x%x refs=%u "
+            "owner=%s authority=%s path=%s path_present=%d "
+            "path_dev=%llu path_ino=%llu flags=0x%x refs=%u "
             "unauthorized=%d rc=%d caller=%s\n",
             event ? event : "unknown", (long long)lifetime_monotonic_us(),
             (long)getpid(), lifetime_tid(),
             (unsigned long long)handle_id,
             (unsigned long long)generation, lifetime_owner(),
             lifetime_authority_name(g_scope_authority),
-            path ? path : "(null)", flags, refs,
+            path ? path : "(null)", path_present ? 1 : 0,
+            path_present ? (unsigned long long)path_stat.st_dev : 0u,
+            path_present ? (unsigned long long)path_stat.st_ino : 0u,
+            flags, refs,
             unauthorized ? 1 : 0, rc, caller[0] ? caller : "unavailable");
     fflush(stderr);
 }
@@ -288,12 +296,20 @@ static int lifetime_os_remove(const char *event, int dirfd, const char *path,
     bool tracked = dirfd == AT_FDCWD && lifetime_node_db_path(path);
     bool unauthorized = tracked && lifetime_delete_unauthorized(
         path, &generation, &refs);
-    if (unauthorized)
+    int rc;
+    if (unauthorized) {
+        /* The canonical backing owner is still live. A borrowed/helper close
+         * may release its own handle, but it cannot retire the shared path. */
         atomic_fetch_add(&g_unauthorized, 1);
-    int rc = (int)syscall(SYS_unlinkat, dirfd, path, flags);
+        errno = EPERM;
+        rc = -1;
+    } else {
+        rc = (int)syscall(SYS_unlinkat, dirfd, path, flags);
+    }
     if (tracked)
-        lifetime_log(event, path, 0, generation, flags, refs,
-                     unauthorized, rc == 0 ? SQLITE_OK : SQLITE_ERROR);
+        lifetime_log(unauthorized ? "os_unlink_refused" : event,
+                     path, 0, generation, flags, refs, unauthorized,
+                     rc == 0 ? SQLITE_OK : SQLITE_ERROR);
     return rc;
 }
 
@@ -316,12 +332,18 @@ static int lifetime_os_rename(const char *event,
     bool tracked = olddirfd == AT_FDCWD && lifetime_node_db_path(oldpath);
     bool unauthorized = tracked && lifetime_delete_unauthorized(
         oldpath, &generation, &refs);
-    if (unauthorized)
+    int rc;
+    if (unauthorized) {
         atomic_fetch_add(&g_unauthorized, 1);
-    int rc = (int)syscall(SYS_renameat, olddirfd, oldpath, newdirfd, newpath);
+        errno = EPERM;
+        rc = -1;
+    } else {
+        rc = (int)syscall(SYS_renameat, olddirfd, oldpath, newdirfd, newpath);
+    }
     if (tracked)
-        lifetime_log(event, oldpath, 0, generation, 0, refs,
-                     unauthorized, rc == 0 ? SQLITE_OK : SQLITE_ERROR);
+        lifetime_log(unauthorized ? "os_rename_refused" : event,
+                     oldpath, 0, generation, 0, refs, unauthorized,
+                     rc == 0 ? SQLITE_OK : SQLITE_ERROR);
     return rc;
 }
 
@@ -346,6 +368,8 @@ static struct db_lifetime_file *lifetime_file(sqlite3_file *file)
 static int lifetime_io_close(sqlite3_file *file)
 {
     struct db_lifetime_file *tracked = lifetime_file(file);
+    lifetime_log("close_begin", tracked->path, tracked->handle_id,
+                 tracked->generation, tracked->flags, 0, false, SQLITE_OK);
     int rc = tracked->inner_methods->xClose(tracked->inner);
     unsigned refs = lifetime_close_record(tracked);
     lifetime_log("close", tracked->path, tracked->handle_id,
@@ -426,9 +450,27 @@ static void lifetime_io_shm_barrier(sqlite3_file *file)
 static int lifetime_io_shm_unmap(sqlite3_file *file, int delete_flag)
 {
     struct db_lifetime_file *f = lifetime_file(file);
-    return f->inner_methods->xShmUnmap
-        ? f->inner_methods->xShmUnmap(f->inner, delete_flag)
+    char shm_path[DBLT_PATH_MAX];
+    uint64_t generation = 0;
+    unsigned refs = 0;
+    int n = snprintf(shm_path, sizeof(shm_path), "%s-shm", f->path);
+    bool refuse_delete = delete_flag && n > 0 &&
+        (size_t)n < sizeof(shm_path) &&
+        lifetime_delete_unauthorized(shm_path, &generation, &refs);
+    if (refuse_delete) {
+        atomic_fetch_add(&g_unauthorized, 1);
+        lifetime_log("shm_delete_refused", shm_path, f->handle_id,
+                     generation, delete_flag, refs, true, SQLITE_OK);
+    }
+    lifetime_log("shm_unmap_begin", shm_path, f->handle_id,
+                 f->generation, delete_flag, refs, false, SQLITE_OK);
+    int rc = f->inner_methods->xShmUnmap
+        ? f->inner_methods->xShmUnmap(f->inner,
+                                     refuse_delete ? 0 : delete_flag)
         : SQLITE_OK;
+    lifetime_log("shm_unmap_end", shm_path, f->handle_id,
+                 f->generation, delete_flag, refs, false, rc);
+    return rc;
 }
 
 static int lifetime_io_fetch(sqlite3_file *file, sqlite3_int64 offset,
@@ -503,13 +545,12 @@ static int lifetime_vfs_delete(sqlite3_vfs *vfs, const char *name,
     uint64_t generation = 0;
     unsigned refs = 0;
     bool unauthorized = lifetime_delete_unauthorized(name, &generation, &refs);
-    /* During diagnosis we record the exact caller and preserve SQLite's
-     * behavior.  The permanent caller-side fix must drive this count to zero;
-     * acceptance refuses any non-zero count. */
-    int rc = g_base_vfs->xDelete(g_base_vfs, name, sync_dir);
+    if (unauthorized) atomic_fetch_add(&g_unauthorized, 1);
+    int rc = unauthorized ? SQLITE_IOERR_DELETE
+                          : g_base_vfs->xDelete(g_base_vfs, name, sync_dir);
     if (lifetime_node_db_path(name))
-        lifetime_log("delete", name, 0, generation, 0, refs,
-                     unauthorized, rc);
+        lifetime_log(unauthorized ? "delete_refused" : "delete",
+                     name, 0, generation, 0, refs, unauthorized, rc);
     return rc;
 }
 

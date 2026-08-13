@@ -20,11 +20,12 @@ printf '%s\n' '{"schema":1,"name":"acceptance/async-proof","semver":"0.1.0","lan
 # started_at is durable. Candidate changes still differ by only one source file
 # and remain well below the task's fixed 16 MiB patch ceiling.
 zap_write_source() {
-    local path="$1" value="$2" i
+    local path="$1" value="$2" functions="${3:-1800}"
+    local pressure="${4:-0}" i prev
     {
         printf 'int x(void) { return %s; }\n' "$value"
         i=0
-        while [ "$i" -lt 1800 ]; do
+        while [ "$i" -lt "$functions" ]; do
             # External linkage keeps the deliberately large kill/retry
             # fixture warning-clean under the standard profile's -Werror.
             # Static unused functions would correctly make the independently
@@ -32,6 +33,25 @@ zap_write_source() {
             printf 'int zap_%05d(int v) { return v + %d; }\n' "$i" "$i"
             i=$((i + 1))
         done
+        if [ "$pressure" = 1 ]; then
+            # Balanced expansion makes compiler work observable without
+            # inflating the source/context carrier past the task's bound.
+            # Unsigned arithmetic is warning-clean in both declared compilers.
+            printf '#define ZAP_PRESSURE_0(v) ((((unsigned)(v)) * 1664525u) ^ 1013904223u)\n'
+            i=1
+            while [ "$i" -le 11 ]; do
+                prev=$((i - 1))
+                printf '#define ZAP_PRESSURE_%d(v) (ZAP_PRESSURE_%d(v) ^ ZAP_PRESSURE_%d(((unsigned)(v)) + %du))\n' \
+                    "$i" "$prev" "$prev" "$i"
+                i=$((i + 1))
+            done
+            i=0
+            while [ "$i" -lt 64 ]; do
+                printf 'unsigned zap_pressure_%02d(unsigned v) { return ZAP_PRESSURE_11(v + %du); }\n' \
+                    "$i" "$i"
+                i=$((i + 1))
+            done
+        fi
     } >"$path"
 }
 zap_write_source "$ZAP_PROJECT/src/x.c" 1
@@ -43,7 +63,8 @@ zap_field() {
 
 zap_submit() {
     local node="$1" value="$2" goal="$3" max_cpu="${4:-600}"
-    local profile="${5:-quick}"
+    local profile="${5:-quick}" functions="${6:-1800}"
+    local pressure="${7:-0}"
     local start handoff candidate result started_ms finished_ms elapsed_ms
     local ok action reproduction submit_us feedback_us event request work
     start="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work start \
@@ -55,7 +76,7 @@ zap_submit() {
         --input="{\"workspace\":\"$ZAP_PROJECT\",\"work\":\"$work\",\"adapter\":\"manual\"}" || true)"
     candidate="$(printf '%s' "$handoff" | zap_field 'd["data"]["candidate_workspace"]' 2>/dev/null || true)"
     [ -d "$candidate/src" ] || dht_die "node $node did not materialize its candidate: $handoff"
-    zap_write_source "$candidate/src/x.c" "$value"
+    zap_write_source "$candidate/src/x.c" "$value" "$functions" "$pressure"
     started_ms="$(date +%s%3N)"
     result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work run \
         --input="{\"workspace\":\"$ZAP_PROJECT\",\"work\":\"$work\",\"adapter\":\"manual\",\"datadir\":\"${DDS[$node]}\"}" || true)"
@@ -91,6 +112,44 @@ zap_submit() {
     ZAP_SUBMIT_US="$submit_us"; ZAP_FEEDBACK_US="$feedback_us"
 }
 
+zap_submit_capture() {
+    local node="$1" value="$2" goal="$3" capture="$4"
+    local functions="${5:-1800}" pressure="${6:-0}"
+    (
+        zap_submit "$node" "$value" "$goal" 600 quick "$functions" "$pressure"
+        printf '%s\n%s\n%s\n%s\n' "$ZAP_ACTION" "$ZAP_WORK" \
+            "$ZAP_FOREGROUND_MS" "$(date +%s%3N)" >"$capture"
+    )
+}
+
+zap_wait_executor_running() {
+    local node="$1" action="$2" deadline state
+    ZAP_WAIT_ACTION_STATE=missing
+    deadline=$(( $(date +%s) + 90 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        state="$(zap_sql_value "$node" "SELECT state FROM build_actions WHERE action_id='$action'")"
+        [ -n "$state" ] && ZAP_WAIT_ACTION_STATE="$state"
+        [ "$state" = RUNNING ] && return 0
+        case "$state" in
+            FAILED|ACCEPTED|CACHE_HIT|STALE_REFUSED) return 1 ;;
+        esac
+        sleep 0.1
+    done
+    return 1
+}
+
+zap_wait_named_busy() {
+    local node="$1" action="$2" deadline log
+    log="${DDS[$node]}/node.log"
+    deadline=$(( $(date +%s) + 30 ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        grep -F "action=$action stage=worker_admission" "$log" 2>/dev/null |
+            grep -q 'disposition=BUSY .*reroute=1' && return 0
+        sleep 0.1
+    done
+    return 1
+}
+
 zap_wait_context_root() {
     local node="$1" action="$2" deadline root
     deadline=$(( $(date +%s) + 90 ))
@@ -120,7 +179,7 @@ zap_publish_context_provider() {
 }
 
 zap_allow_context_policy() {
-    local node="$1" common plan token commit
+    local node="$1" common plan token commit ok code message
     common='"operation":"add","source":"local","effect":"allow","scope":"service_type","action_mask":63,"value":"zclassic23.work"'
     plan="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         zcode network policy mutate --input="{\"mode\":\"plan\",$common}" || true)"
@@ -129,7 +188,10 @@ zap_allow_context_policy() {
     token="$(printf '%s' "$plan" | zap_field 'd["data"]["plan_token"]')"
     commit="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         zcode network policy mutate --input="{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}" || true)"
-    [ "$(printf '%s' "$commit" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+    ok="$(printf '%s' "$commit" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
+    code="$(printf '%s' "$commit" | zap_field 'd.get("error",{}).get("code","")' 2>/dev/null || true)"
+    message="$(printf '%s' "$commit" | zap_field 'd.get("error",{}).get("message","")' 2>/dev/null || true)"
+    [ "$ok" = True ] || { [ "$code" = POLICY_REFUSED ] && [ "$message" = duplicate ]; } ||
         dht_die "node $node could not commit work-context policy: $commit"
 }
 
@@ -244,6 +306,10 @@ zap_assert_responsive() {
     [ -n "$response" ] && [ "$elapsed_ms" -lt 5000 ] ||
         dht_die "requester $node stopped responding during $phase (${elapsed_ms}ms): $response"
     if [ -n "${ZAP_A_DB_IDENTITIES:-}" ] && [ "$node" = "${ZAP_A:-}" ]; then
+        [ -n "${A_ORIGINAL_PID:-}" ] &&
+        [ "${PIDS[$node]:-}" = "$A_ORIGINAL_PID" ] &&
+        kill -0 "$A_ORIGINAL_PID" 2>/dev/null ||
+            dht_die "requester $node process identity changed during $phase: expected_pid=${A_ORIGINAL_PID:-missing} actual_pid=${PIDS[$node]:-missing}"
         zap_assert_db_identity "$node" "$phase"
     fi
     printf '%s,%s\n' "$phase" "$elapsed_ms" >>"$DHT_WORK/async-requester-responsiveness.csv"
@@ -438,6 +504,11 @@ if [ "${ZAP_HELPERS_ONLY:-0}" = 1 ]; then
     return 0
 fi
 
+# Keep the central SQLite/VFS ownership ledger enabled for every node started
+# by this composed phase. A clean run must contain no unauthorized lifecycle
+# owner; a failure retains exact open/close/delete callers in the artifact.
+export ZCL_DB_LIFETIME_TRACE=1
+
 # Collapse the prior discovery fixture to four full-node processes. B first
 # exercises package import with execution disabled by local policy; A, C and D
 # keep the same binary and C/D advertise the existing confined worker.
@@ -525,9 +596,132 @@ zap_assert_requester_did_not_execute "$ZAP_A" "$STANDARD_ACTION"
 zap_assert_requester_did_not_execute "$ZAP_A" "$STANDARD_REPRO_ACTION"
 zap_assert_db_lifetime_clean "$ZAP_A" "four-node package reproduction"
 
+# Exercise worker-owned one-slot admission with two independent requesters.
+# Both initially see B's signed headroom hint. B atomically grants one action,
+# names the other BUSY, and the existing requester-local projection reroutes
+# the loser to D without waiting for the original lease deadline.
+for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D"; do
+    dht_kill_group "${PIDS[$node]:-}"; PIDS[$node]=""
+done
+# Retained discovery is deliberately isolated for all four cleanly stopped
+# nodes. `-connect` does not disable the C23 reachability dialer, so leaving
+# even one node's old projection in place creates an undeclared edge and makes
+# worker choice depend on fixture history. Identity, worker key, package CAS,
+# chain, node database, and canonical listener addresses remain untouched.
+# Runtime projections are moved aside before the originals are restored; this
+# makes fixture cleanup copy-preserving and prevents a recreated empty file
+# from overwriting pre-race state.
+zap_quarantine_discovery() {
+    local node="$1" q="$2" rel key path
+    mkdir -p "$q"
+    for rel in peers.dat peers.dat.sha3 contacts_projection.db \
+               zcode/dht/contacts.v2 zcode/endpoints; do
+        key="${rel//\//__}"
+        path="${DDS[$node]}/$rel"
+        [ ! -e "$path" ] || mv "$path" "$q/original-$key"
+    done
+}
+
+zap_restore_discovery() {
+    local node="$1" q="$2" rel key path
+    for rel in peers.dat peers.dat.sha3 contacts_projection.db \
+               zcode/dht/contacts.v2 zcode/endpoints; do
+        key="${rel//\//__}"
+        path="${DDS[$node]}/$rel"
+        [ ! -e "$path" ] || mv "$path" "$q/runtime-$key"
+        [ ! -e "$q/original-$key" ] || mv "$q/original-$key" "$path"
+    done
+}
+
+RACE_DISCOVERY_QUARANTINE="$DHT_WORK/async-admission-discovery"
+for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D"; do
+    zap_quarantine_discovery "$node" "$RACE_DISCOVERY_QUARANTINE/$node"
+done
+zap_start_node "$ZAP_B"
+zap_start_node "$ZAP_D"
+SAVED_BUILDWORKERS="$DHT_BUILDWORKERS"
+DHT_BUILDWORKERS=0
+zap_start_node "$ZAP_A"
+zap_start_node "$ZAP_C"
+DHT_BUILDWORKERS="$SAVED_BUILDWORKERS"
+# This is an explicit clean phase transition, so the new resident process and
+# its new SQLite sidecar generation become the race phase's ownership
+# baseline.  Keeping the prior phase's inode/PID would falsely report the
+# deliberate restart as a mid-action lifecycle violation.
+A_ORIGINAL_PID="${PIDS[$ZAP_A]}"
+ZAP_A_DB_IDENTITIES="$(zap_db_identity "$ZAP_A" || true)"
+[ -n "$ZAP_A_DB_IDENTITIES" ] ||
+    dht_die "A did not expose stable database identities for one-slot race"
+RACE_A="$DHT_WORK/async-admission-race-a.txt"
+RACE_C="$DHT_WORK/async-admission-race-c.txt"
+# Candidate/action creation is requester-local factory work.  Keep it outside
+# concurrent processes: two processes deriving the same checkout's mutable
+# code-index/VCS projections would test shared-workspace tooling, not atomic
+# worker admission. C authenticates while idle; its action is created only
+# after B durably reports A as RUNNING, so connection setup cannot consume the
+# occupied-slot window and correctness still follows from state, not a delay.
+zap_connect "$ZAP_C" "$ZAP_B"
+zap_submit_capture "$ZAP_A" 21 "One-slot race from requester A" "$RACE_A" 1800 1
+RACE_A_ACTION="$(sed -n '1p' "$RACE_A")"
+[ "${#RACE_A_ACTION}" -eq 64 ] ||
+    dht_die "one-slot race did not create A's immutable action"
+RACE_STARTED_MS="$(date +%s%3N)"
+# Make B's first immutable action observably RUNNING before the second
+# requester offers its distinct action.  This is state-driven contention, not
+# a sleep: C remains independently live with an outstanding immutable action
+# while A owns B's sole slot.
+zap_connect "$ZAP_A" "$ZAP_B"
+zap_wait_executor_running "$ZAP_B" "$RACE_A_ACTION" ||
+    dht_die "B never durably entered RUNNING for its granted slot (last_state=$ZAP_WAIT_ACTION_STATE)"
+zap_submit_capture "$ZAP_C" 22 "One-slot race from requester C" "$RACE_C" 1800 1
+RACE_C_ACTION="$(sed -n '1p' "$RACE_C")"
+[ "${#RACE_C_ACTION}" -eq 64 ] && [ "$RACE_A_ACTION" != "$RACE_C_ACTION" ] ||
+    dht_die "one-slot race did not create C's distinct immutable action"
+printf 'A=%s B=%s C=%s D=%s\nA_action=%s\nC_action=%s\n' \
+    "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D" \
+    "$RACE_A_ACTION" "$RACE_C_ACTION" \
+    >"$DHT_WORK/async-admission-race-identities.txt"
+zap_wait_named_busy "$ZAP_C" "$RACE_C_ACTION" ||
+    dht_die "B did not issue C a named BUSY refusal while A held its slot"
+# D becomes eligible only after the BUSY fact is requester-locally projected.
+# This explicit authenticated edge is the first race-local fact that exposes
+# it; authentication uses D's canonical address and identity.
+zap_connect "$ZAP_C" "$ZAP_D"
+zap_wait_ready "$ZAP_A" "$RACE_A_ACTION" ||
+    dht_die "requester A's one-slot race action did not become ready"
+zap_wait_ready "$ZAP_C" "$RACE_C_ACTION" ||
+    dht_die "requester C's one-slot race action did not become ready"
+B_RACE_ACTIONS="$(zap_sql_count "$ZAP_B" "SELECT count(*) FROM build_actions WHERE action_id IN ('$RACE_A_ACTION','$RACE_C_ACTION') AND state IN ('ACCEPTED','CACHE_HIT')")"
+D_RACE_ACTIONS="$(zap_sql_count "$ZAP_D" "SELECT count(*) FROM build_actions WHERE action_id IN ('$RACE_A_ACTION','$RACE_C_ACTION') AND state IN ('ACCEPTED','CACHE_HIT')")"
+[ "$B_RACE_ACTIONS" -eq 1 ] && [ "$D_RACE_ACTIONS" -eq 1 ] ||
+    dht_die "one-slot race did not execute exactly once on B and once on D"
+BUSY_COUNT="$(grep -hE 'disposition=BUSY .*reroute=1' \
+    "${DDS[$ZAP_A]}/node.log" "${DDS[$ZAP_C]}/node.log" 2>/dev/null | \
+    wc -l)"
+[ "$BUSY_COUNT" -eq 1 ] ||
+    dht_die "one-slot race did not produce exactly one named BUSY reroute"
+RACE_REROUTE_SECONDS="$(
+    for requester_action in "$ZAP_A:$RACE_A_ACTION" "$ZAP_C:$RACE_C_ACTION"; do
+        requester="${requester_action%%:*}"
+        action="${requester_action#*:}"
+        zap_sql_value "$requester" "SELECT max(created_at)-min(created_at) FROM build_proof_events WHERE action_id='$action' AND state='PEER_DISCOVERED'"
+    done | sort -nr | head -1
+)"
+[ -n "$RACE_REROUTE_SECONDS" ] && [ "$RACE_REROUTE_SECONDS" -le 5 ] ||
+    dht_die "BUSY loser waited for lease expiry before reroute: ${RACE_REROUTE_SECONDS}s"
+printf 'race_started_ms=%s\nadmission_reroute_max_ms=%s\nB_executions=%s\nD_executions=%s\n' \
+    "$RACE_STARTED_MS" "$((RACE_REROUTE_SECONDS * 1000))" \
+    "$B_RACE_ACTIONS" "$D_RACE_ACTIONS" \
+    >"$DHT_WORK/async-admission-race-metrics.txt"
+zap_assert_responsive "$ZAP_A" "one-slot-race-complete"
+zap_assert_responsive "$ZAP_C" "one-slot-race-complete"
+
 # Restart the original quick-profile sequence with every executor enabled.
 for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D"; do
     dht_kill_group "${PIDS[$node]:-}"; PIDS[$node]=""
+done
+for node in "$ZAP_A" "$ZAP_B" "$ZAP_C" "$ZAP_D"; do
+    zap_restore_discovery "$node" "$RACE_DISCOVERY_QUARANTINE/$node"
 done
 zap_start_node "$ZAP_B"
 zap_start_node "$ZAP_A" "$ZAP_B"
@@ -669,8 +863,13 @@ zap_assert_receipt_bindings "$ZAP_B" "$ZAP_C" "$FINAL_ACTION"
 "$SCRIPT_DIR/zcode_async_proof_perf_report.sh" "$DHT_WORK" \
     >"$DHT_WORK/async-proof-performance-report.txt" ||
     dht_die "async proof performance report was incomplete"
-grep -q '^background_total_precise_us n=5 ' \
+PERF_CANDIDATES="$(printf '%s\n' "$STANDARD_ACTION" \
+    "$RACE_A_ACTION" "$RACE_C_ACTION" "$FIRST_ACTION" "$SECOND_ACTION" \
+    "$RETRY_ACTION" "$FINAL_ACTION" | sort -u | wc -l)"
+[ "$PERF_CANDIDATES" -eq 7 ] ||
+    dht_die "performance campaign did not retain seven distinct immutable candidates"
+grep -q "^background_total_precise_us n=$PERF_CANDIDATES " \
     "$DHT_WORK/async-proof-performance-report.txt" ||
-    dht_die "performance report did not cover all five accepted candidates"
+    dht_die "performance report did not cover all seven accepted candidates"
 
 dht_note "async proof PASS: standard_actions=$STANDARD_ACTION,$STANDARD_REPRO_ACTION quick_actions=$FIRST_ACTION,$SECOND_ACTION,$RETRY_ACTION,$FINAL_ACTION foreground_ms=$STANDARD_MS,$FIRST_MS,$SECOND_MS,$RETRY_MS,$FINAL_MS inert_fetch_node=$ZAP_B independent_reproducers=$ZAP_C,$ZAP_D github_contacted=false equal_full_nodes=true"

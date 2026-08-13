@@ -14,6 +14,7 @@
 #define VCS_ZCODE_WORK_NODE_MAX_REQUESTS 32u
 #define VCS_ZCODE_WORK_NODE_MAX_RESULTS 64u
 #define VCS_ZCODE_WORK_NODE_MAX_OUTBOUND 128u
+#define VCS_ZCODE_WORK_NODE_NO_SLOT UINT16_MAX
 
 struct vcs_zcode_work_node;
 
@@ -53,6 +54,11 @@ void vcs_zcode_work_node_tick(struct vcs_zcode_work_node *node, int64_t now);
 bool vcs_zcode_work_node_set_local_capability(
     struct vcs_zcode_work_node *node,
     const struct vcs_zcode_work_capability_v1 *capability);
+/* Installs the worker-local signing identity used only for signed admission
+ * control messages. The key must match every installed local capability. */
+bool vcs_zcode_work_node_set_local_signer(
+    struct vcs_zcode_work_node *node, const uint8_t secret[32],
+    const uint8_t pubkey[32]);
 
 bool vcs_zcode_work_node_peer_capability(
     struct vcs_zcode_work_node *node, uint64_t peer, int64_t now,
@@ -113,6 +119,9 @@ bool vcs_zcode_work_node_next_cancel(
 bool vcs_zcode_work_node_next_result(
     struct vcs_zcode_work_node *node, uint64_t *peer_out,
     struct vcs_zcode_work_result_v1 *out);
+bool vcs_zcode_work_node_next_admission(
+    struct vcs_zcode_work_node *node, uint64_t *peer_out,
+    struct vcs_zcode_work_admission_v1 *out);
 bool vcs_zcode_work_node_peek_result(
     struct vcs_zcode_work_node *node, uint64_t *peer_out,
     struct vcs_zcode_work_result_v1 *out);

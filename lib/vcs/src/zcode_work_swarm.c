@@ -18,6 +18,8 @@
 #define ZCWS_CANCEL_BYTES 144u
 #define ZCWS_PROGRESS_BODY_BYTES 160u
 #define ZCWS_PROGRESS_BYTES 224u
+#define ZCWS_ADMISSION_BODY_BYTES 136u
+#define ZCWS_ADMISSION_BYTES 200u
 
 static const uint8_t zcws_magic[4] = { 'Z', 'C', 'W', 'S' };
 
@@ -113,6 +115,32 @@ static bool zcws_progress_valid(
            p->observed_unix > 0 && zcws_nonzero(p->signer_pubkey, 32);
 }
 
+static bool zcws_admission_valid(
+    const struct vcs_zcode_work_admission_v1 *a)
+{
+    if (!a || a->request_id == 0 ||
+        !zcws_nonzero(a->requester_pubkey, 32) ||
+        !zcws_nonzero(a->action_root, 32) ||
+        !zcws_nonzero(a->worker_signer, 32))
+        return false;
+    if (a->disposition == VCS_ZCODE_WORK_ADMISSION_GRANTED ||
+        a->disposition == VCS_ZCODE_WORK_ADMISSION_ATTACHED)
+        return a->reason == VCS_ZCODE_WORK_ADMISSION_REASON_NONE &&
+               a->slot != UINT16_MAX && a->lease_generation > 0 &&
+               a->deadline_unix > 0;
+    if (a->disposition == VCS_ZCODE_WORK_ADMISSION_BUSY)
+        return a->reason == VCS_ZCODE_WORK_ADMISSION_REASON_NO_SLOT &&
+               a->slot == UINT16_MAX && a->lease_generation == 0 &&
+               a->deadline_unix == 0;
+    if (a->disposition == VCS_ZCODE_WORK_ADMISSION_REFUSED)
+        return (a->reason == VCS_ZCODE_WORK_ADMISSION_REASON_POLICY ||
+                a->reason == VCS_ZCODE_WORK_ADMISSION_REASON_BINDING ||
+                a->reason == VCS_ZCODE_WORK_ADMISSION_REASON_CAPACITY) &&
+               a->slot == UINT16_MAX && a->lease_generation == 0 &&
+               a->deadline_unix == 0;
+    return false;
+}
+
 size_t vcs_zcode_work_swarm_wire_size(
     const struct vcs_zcode_work_swarm_message *m)
 {
@@ -129,6 +157,9 @@ size_t vcs_zcode_work_swarm_wire_size(
     if (m->type == VCS_ZCODE_WORK_SWARM_PROGRESS)
         return zcws_progress_valid(&m->body.progress)
             ? ZCWS_PROGRESS_BYTES : 0;
+    if (m->type == VCS_ZCODE_WORK_SWARM_ADMISSION)
+        return zcws_admission_valid(&m->body.admission)
+            ? ZCWS_ADMISSION_BYTES : 0;
     return 0;
 }
 
@@ -203,7 +234,7 @@ bool vcs_zcode_work_swarm_serialize(
             zcl_codec_write_bytes(&writer, m->body.cancel.requester_pubkey,
                                   32) &&
             zcl_codec_write_bytes(&writer, m->body.cancel.signature, 64);
-    } else {
+    } else if (m->type == VCS_ZCODE_WORK_SWARM_PROGRESS) {
         const struct vcs_zcode_work_progress_v1 *p = &m->body.progress;
         static const uint8_t reserved[7] = {0};
         ok = ok && zcl_codec_write_u64le(&writer, p->request_id) &&
@@ -215,6 +246,20 @@ bool vcs_zcode_work_swarm_serialize(
             zcl_codec_write_i64le(&writer, p->observed_unix) &&
             zcl_codec_write_bytes(&writer, p->signer_pubkey, 32) &&
             zcl_codec_write_bytes(&writer, p->signature, 64);
+    } else {
+        const struct vcs_zcode_work_admission_v1 *a = &m->body.admission;
+        static const uint8_t reserved[4] = {0};
+        ok = ok && zcl_codec_write_u64le(&writer, a->request_id) &&
+            zcl_codec_write_bytes(&writer, a->requester_pubkey, 32) &&
+            zcl_codec_write_bytes(&writer, a->action_root, 32) &&
+            zcl_codec_write_bytes(&writer, a->worker_signer, 32) &&
+            zcl_codec_write_u64le(&writer, a->lease_generation) &&
+            zcl_codec_write_i64le(&writer, a->deadline_unix) &&
+            zcl_codec_write_u16le(&writer, a->slot) &&
+            zcl_codec_write_u8(&writer, a->disposition) &&
+            zcl_codec_write_u8(&writer, a->reason) &&
+            zcl_codec_write_bytes(&writer, reserved, sizeof(reserved)) &&
+            zcl_codec_write_bytes(&writer, a->signature, 64);
     }
     size_t written = 0;
     if (!ok || !zcl_codec_writer_finish(&writer, &written) || written != need)
@@ -249,6 +294,11 @@ static bool zcws_signed_id(uint8_t type, const void *object, uint8_t out[32])
             *(const struct vcs_zcode_work_progress_v1 *)object;
         static const char d[] = "zcl.zcode.work_progress.v1";
         domain = d; domain_len = sizeof(d); body_len = ZCWS_PROGRESS_BODY_BYTES;
+    } else if (type == VCS_ZCODE_WORK_SWARM_ADMISSION) {
+        message.body.admission =
+            *(const struct vcs_zcode_work_admission_v1 *)object;
+        static const char d[] = "zcl.zcode.work_admission.v1";
+        domain = d; domain_len = sizeof(d); body_len = ZCWS_ADMISSION_BODY_BYTES;
     } else {
         return false;
     }
@@ -354,6 +404,39 @@ bool vcs_zcode_work_progress_verify_for_request(
         memcmp(q->candidate_root, p->candidate_root, 32) == 0 &&
         memcmp(q->action_root, p->action_root, 32) == 0 &&
         memcmp(expected_signer, p->signer_pubkey, 32) == 0;
+}
+
+bool vcs_zcode_work_admission_seal(
+    struct vcs_zcode_work_admission_v1 *a,
+    const uint8_t secret[32], const uint8_t pubkey[32])
+{
+    if (!a || !secret || !pubkey || !zcws_nonzero(pubkey, 32)) return false;
+    memcpy(a->worker_signer, pubkey, 32);
+    uint8_t id[32];
+    if (!zcws_signed_id(VCS_ZCODE_WORK_SWARM_ADMISSION, a, id)) return false;
+    return vcs_signed_evidence_seal_root(id, secret, pubkey, a->signature);
+}
+
+bool vcs_zcode_work_admission_verify(
+    const struct vcs_zcode_work_admission_v1 *a)
+{
+    uint8_t id[32];
+    return zcws_admission_valid(a) &&
+           zcws_signed_id(VCS_ZCODE_WORK_SWARM_ADMISSION, a, id) &&
+           vcs_signed_evidence_verify_root(
+               id, a->signature, a->worker_signer, a->worker_signer);
+}
+
+bool vcs_zcode_work_admission_verify_for_request(
+    const struct vcs_zcode_work_request_v1 *q,
+    const struct vcs_zcode_work_admission_v1 *a,
+    const uint8_t expected_signer[32])
+{
+    return zcws_request_valid(q) && vcs_zcode_work_admission_verify(a) &&
+        expected_signer && q->request_id == a->request_id &&
+        memcmp(q->requester_pubkey, a->requester_pubkey, 32) == 0 &&
+        memcmp(q->action_root, a->action_root, 32) == 0 &&
+        memcmp(expected_signer, a->worker_signer, 32) == 0;
 }
 
 static bool zcws_header_valid(const uint8_t *wire, size_t len, uint8_t *type)
@@ -468,6 +551,23 @@ bool vcs_zcode_work_swarm_parse(
             zcl_codec_read_bytes(&reader, p->signature, 64);
         if (!ok || !zcws_zero(reserved, sizeof(reserved)) ||
             !vcs_zcode_work_progress_verify(p)) goto reject;
+    } else if (type == VCS_ZCODE_WORK_SWARM_ADMISSION &&
+               len == ZCWS_ADMISSION_BYTES) {
+        struct vcs_zcode_work_admission_v1 *a = &out->body.admission;
+        uint8_t reserved[4];
+        ok = zcl_codec_read_u64le(&reader, &a->request_id) &&
+            zcl_codec_read_bytes(&reader, a->requester_pubkey, 32) &&
+            zcl_codec_read_bytes(&reader, a->action_root, 32) &&
+            zcl_codec_read_bytes(&reader, a->worker_signer, 32) &&
+            zcl_codec_read_u64le(&reader, &a->lease_generation) &&
+            zcl_codec_read_i64le(&reader, &a->deadline_unix) &&
+            zcl_codec_read_u16le(&reader, &a->slot) &&
+            zcl_codec_read_u8(&reader, &a->disposition) &&
+            zcl_codec_read_u8(&reader, &a->reason) &&
+            zcl_codec_read_bytes(&reader, reserved, sizeof(reserved)) &&
+            zcl_codec_read_bytes(&reader, a->signature, 64);
+        if (!ok || !zcws_zero(reserved, sizeof(reserved)) ||
+            !vcs_zcode_work_admission_verify(a)) goto reject;
     } else {
         goto reject;
     }
