@@ -194,6 +194,28 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_presentation_code_change)
 
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.reproduction", "app.presentation", "",
+    "Show live independent-reproduction progress in one native window",
+    "Reads the exact action's latest root-rederived build-proof event from "
+    "the target node and renders the closed queued, admitted, running, output "
+    "received, receipt verified, and matching-artifact stages. Repeating the "
+    "command for the same action replaces that resident window instead of "
+    "opening another. REMOTE_RED and SUPERSEDED remain named red refusals. "
+    "The agent supplies only the action identity and cannot supply status "
+    "text or evidence facts.", 0,
+    "presentation,native,reproduction,progress,proof,receipt,agent",
+    "zcl.app_presentation_reproduction.input.v1",
+    "zcl.app_presentation_reproduction.v1", "action_id", "action_id",
+    "zclassic23 app presentation reproduction --input='{\"action_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_reproduction)
+
 /* ── Blog (ZBLG) ─────────────────────────────────────────────────── */
 
 ZCL_COMMAND_READY_COMMAND(

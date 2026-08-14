@@ -25,6 +25,22 @@ static int qr_failures;
     else { printf("FAIL\n"); qr_failures++; }                              \
 } while (0)
 
+static void qr_reproduction_facts(struct json_value *facts,
+                                  const char *action, const char *candidate,
+                                  const char *event, const char *receipt,
+                                  const char *state)
+{
+    json_init(facts); json_set_object(facts);
+    json_push_kv_str(facts, "schema", "zcl.build_fabric_action_state.v1");
+    json_push_kv_bool(facts, "found", true);
+    json_push_kv_bool(facts, "event_root_rederived", true);
+    json_push_kv_str(facts, "action_id", action);
+    json_push_kv_str(facts, "candidate_root", candidate);
+    json_push_kv_str(facts, "event_root", event);
+    json_push_kv_str(facts, "receipt_root", receipt);
+    json_push_kv_str(facts, "state", state);
+}
+
 static bool finder_matches(const struct qr_matrix *matrix, uint32_t ox,
                            uint32_t oy)
 {
@@ -417,6 +433,42 @@ int test_qr(void)
                  "tools/command/native_qr_command.c", "return two",
                  "returned one", "returns two", root_a, root_a, tree_root,
                  &code_model, why, sizeof(why)));
+
+    struct json_value reproduction_facts;
+    qr_reproduction_facts(&reproduction_facts, root_a, tree_root, root_b,
+                          "", "RUNNING");
+    struct zcl_present_model_v1 reproduction_model;
+    QR_CHECK("canonical running event builds six fixed progress stages",
+             zcl_native_presentation_reproduction_model_from_facts(
+                 &reproduction_facts, &reproduction_model,
+                 why, sizeof(why)) &&
+             reproduction_model.kind == ZCL_PRESENT_MODEL_PROGRESS &&
+             reproduction_model.item_count == 6 &&
+             reproduction_model.items[2].numerator == 1 &&
+             reproduction_model.items[3].numerator == 0);
+    char running_request_id[ZCL_PRESENT_MODEL_ID_MAX + 1u];
+    (void)snprintf(running_request_id, sizeof(running_request_id), "%s",
+                   reproduction_model.request_id);
+    json_free(&reproduction_facts);
+    qr_reproduction_facts(&reproduction_facts, root_a, tree_root, root_b,
+                          root_b, "REPRODUCED");
+    QR_CHECK("matching evidence updates the same action-bound window",
+             zcl_native_presentation_reproduction_model_from_facts(
+                 &reproduction_facts, &reproduction_model,
+                 why, sizeof(why)) &&
+             strcmp(reproduction_model.request_id, running_request_id) == 0 &&
+             reproduction_model.items[5].numerator == 1 &&
+             reproduction_model.items[5].status == ZCL_PRESENT_STATUS_GREEN);
+    json_free(&reproduction_facts);
+    qr_reproduction_facts(&reproduction_facts, root_a, tree_root, root_b,
+                          root_b, "REMOTE_RED");
+    QR_CHECK("remote mismatch stays a named red output refusal",
+             zcl_native_presentation_reproduction_model_from_facts(
+                 &reproduction_facts, &reproduction_model,
+                 why, sizeof(why)) &&
+             reproduction_model.items[3].status == ZCL_PRESENT_STATUS_RED &&
+             strstr(reproduction_model.summary, "named refusal") != NULL);
+    json_free(&reproduction_facts);
 
     struct json_value work_dump;
     json_init(&work_dump);

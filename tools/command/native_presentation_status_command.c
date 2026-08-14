@@ -174,10 +174,14 @@ static bool nps_parse_body(char *raw, struct json_value *out)
     return ok;
 }
 
-static bool nps_dumpstate(const char *name, struct json_value *out)
+bool zcl_native_presentation_dumpstate(const char *name, const char *key,
+                                       struct json_value *out)
 {
-    char params[96];
-    (void)snprintf(params, sizeof(params), "[\"%s\"]", name);
+    char params[192];
+    int n = key && key[0]
+        ? snprintf(params, sizeof(params), "[\"%s\",\"%s\"]", name, key)
+        : snprintf(params, sizeof(params), "[\"%s\"]", name);
+    if (n <= 0 || (size_t)n >= sizeof(params)) return false;
     struct json_value envelope;
     if (!nps_parse_body(node_rpc_call("dumpstate", params), &envelope))
         return false;
@@ -208,8 +212,10 @@ void zcl_native_handle_presentation_status(
     }
     bool have_health = nps_parse_body(
         node_rpc_call("healthcheck", "[{\"mode\":\"full\"}]"), &health);
-    bool have_backup = nps_dumpstate("wallet_backup", &backup);
-    bool have_work = nps_dumpstate("zcode_work", &work);
+    bool have_backup = zcl_native_presentation_dumpstate(
+        "wallet_backup", NULL, &backup);
+    bool have_work = zcl_native_presentation_dumpstate(
+        "zcode_work", NULL, &work);
 
     struct zcl_present_model_v1 model;
     char why[192];

@@ -364,6 +364,10 @@ void zcl_native_handle_presentation_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_code_change(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_presentation_reproduction(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+bool zcl_native_presentation_dumpstate(
+    const char *name, const char *key, struct json_value *out);
 bool zcl_native_presentation_status_model_from_facts(
     const struct json_value *status, const struct json_value *health,
     const struct json_value *backup, const struct json_value *work,
@@ -375,6 +379,9 @@ bool zcl_native_presentation_code_change_model_from_facts(
     const char *after_behavior, const char *before_blob_hex,
     const char *candidate_blob_hex, const char *candidate_root_hex,
     struct zcl_present_model_v1 *model, char *why, size_t why_cap);
+bool zcl_native_presentation_reproduction_model_from_facts(
+    const struct json_value *facts, struct zcl_present_model_v1 *model,
+    char *why, size_t why_cap);
 
 /* Shared renderer-neutral handoff used by canonical instrument builders.
  * The model is inert; this helper performs no node read or privileged effect. */
