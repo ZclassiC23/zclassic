@@ -125,13 +125,14 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_COMMAND(
     "app.presentation.show", "app.presentation", "",
     "Show a bounded renderer-neutral model in a native C23 window",
-    "Validates a closed status, table, progress, chart, timeline, code-diff, "
-    "or evidence-graph document, encodes it without structure padding, and "
-    "launches the exact same binary as a display-only native process. This "
-    "cold compatibility path deliberately rejects choices, forms, and "
-    "confirmations until their bounded events can return through the resident "
-    "host. It receives no wallet, network, datadir, package, publication, "
-    "deployment, or consensus authority.", 0,
+    "Validates a closed visual document, encodes it without structure padding, "
+    "and submits it to a warm same-binary display-only host. Status, tables, "
+    "progress, charts, timelines, code diffs, and evidence graphs return after "
+    "the first native blit. Choices, bounded forms, and exact-root "
+    "confirmations return only a numbered action ID or dismissal; the full "
+    "node must independently recheck policy and plan/commit state before "
+    "acting. The host receives no wallet, Internet, datadir, package, "
+    "publication, deployment, or consensus authority.", 0,
     "presentation,native,status,progress,diff,evidence,agent",
     "zcl.app_presentation_show.input.v1", "zcl.app_presentation_show.v1",
     "kind,request_id,title,summary,exact_root,items,actions",

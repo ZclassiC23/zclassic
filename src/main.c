@@ -26,6 +26,7 @@
 #include "net/file_service.h"           /* -filesync fast path (fs_client_sync) */
 #include "controllers/agent_controller.h" /* rpc_agent_set_boot_context */
 #include "views/ui_present.h"           /* detached reviewed UI child */
+#include "views/ui_present_host.h"      /* resident reviewed UI host */
 #include "views/wallet_gui.h"           /* -gui launch */
 #include "config/boot_self_respawn.h"   /* #8/Pillar 7: off-systemd self-respawn */
 #include "util/thread_registry.h"
@@ -155,6 +156,8 @@ int main(int argc, char **argv)
         return ui_present_child_main("qr");
     if (argc == 2 && strcmp(argv[1], "--ui-present-child=model") == 0)
         return ui_present_child_main("model");
+    if (argc == 2 && strcmp(argv[1], "--ui-present-host") == 0)
+        return ui_present_host_main();
 
     ParseParameters(argc, (const char *const *)argv);
     apply_argv_loglevel();

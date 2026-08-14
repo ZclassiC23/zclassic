@@ -8,6 +8,7 @@
 #include "presentation/presentation.h"
 #include "util/log_macros.h"
 #include "views/ui_present.h"
+#include "views/ui_present_host.h"
 
 #include <string.h>
 
@@ -64,7 +65,7 @@ static void np_fail(struct zcl_command_reply *reply, const char *code,
         "app.presentation.show");
 }
 
-static bool np_noninteractive_kind(uint16_t kind)
+static bool np_supported_kind(uint16_t kind)
 {
     return kind == ZCL_PRESENT_MODEL_STATUS_CARD ||
            kind == ZCL_PRESENT_MODEL_TABLE ||
@@ -72,7 +73,10 @@ static bool np_noninteractive_kind(uint16_t kind)
            kind == ZCL_PRESENT_MODEL_CHART ||
            kind == ZCL_PRESENT_MODEL_TIMELINE ||
            kind == ZCL_PRESENT_MODEL_CODE_DIFF ||
-           kind == ZCL_PRESENT_MODEL_EVIDENCE_GRAPH;
+           kind == ZCL_PRESENT_MODEL_EVIDENCE_GRAPH ||
+           kind == ZCL_PRESENT_MODEL_CHOICE ||
+           kind == ZCL_PRESENT_MODEL_CONFIRMATION ||
+           kind == ZCL_PRESENT_MODEL_FORM;
 }
 
 void zcl_native_handle_presentation_show(
@@ -86,14 +90,21 @@ void zcl_native_handle_presentation_show(
         np_fail(reply, "INVALID_VISUAL_MODEL", why);
         return;
     }
-    if (!np_noninteractive_kind(model.kind) || model.action_count != 0) {
-        np_fail(reply, "INTERACTION_REQUIRES_RESIDENT_HOST",
-                "this checkpoint launches only non-interactive status, table, "
-                "progress, chart, timeline, code-diff, and evidence-graph views");
+    if (!np_supported_kind(model.kind)) {
+        np_fail(reply, "UNSUPPORTED_PRESENTATION_KIND",
+                "use app.qr.show for QR; raw canvas documents are not admitted");
         return;
     }
+    bool wait_for_event = model.action_count > 0;
     int64_t started_us = platform_time_monotonic_us();
-    struct zcl_result launched = ui_present_model_launch(&model);
+    struct ui_present_host_result host;
+    struct zcl_result launched = ui_present_host_submit(
+        &model, wait_for_event, &host);
+    bool cold_fallback = false;
+    if (!launched.ok && !wait_for_event) {
+        launched = ui_present_model_launch(&model);
+        cold_fallback = launched.ok;
+    }
     int64_t handoff_us = platform_time_monotonic_us() - started_us;
     if (!launched.ok) {
         np_fail(reply, "PRESENTATION_LAUNCH_FAILED", launched.message);
@@ -105,8 +116,28 @@ void zcl_native_handle_presentation_show(
     (void)json_push_kv_str(&reply->data, "request_id", model.request_id);
     (void)json_push_kv_int(&reply->data, "item_count", model.item_count);
     (void)json_push_kv_int(&reply->data, "launch_handoff_us", handoff_us);
-    (void)json_push_kv_bool(&reply->data, "warm_host", false);
-    (void)json_push_kv_bool(&reply->data, "event_return", false);
+    (void)json_push_kv_bool(&reply->data, "resident_host",
+                            !cold_fallback && host.resident_host);
+    (void)json_push_kv_bool(&reply->data, "host_reused",
+                            !cold_fallback && host.host_reused);
+    (void)json_push_kv_int(&reply->data, "window_ready_us",
+                           cold_fallback ? -1 : host.ready_us);
+    (void)json_push_kv_bool(&reply->data, "event_return",
+                            !cold_fallback && host.event_received);
+    if (!cold_fallback && host.event_received) {
+        bool action = host.action_index < model.action_count;
+        (void)json_push_kv_str(&reply->data, "event",
+                               action ? "action" : "dismissed");
+        if (action) {
+            (void)json_push_kv_str(&reply->data, "action_id",
+                model.actions[host.action_index].id);
+            (void)json_push_kv_int(&reply->data, "action_index",
+                                   host.action_index);
+        }
+        if (model.exact_root[0])
+            (void)json_push_kv_str(&reply->data, "exact_root",
+                                   model.exact_root);
+    }
     (void)json_push_kv_str(&reply->data, "authority", "display-only");
     (void)json_push_kv_str(&reply->data, "backend",
                            zcl_present_backend_name());

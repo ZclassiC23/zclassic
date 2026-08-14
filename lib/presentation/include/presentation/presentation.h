@@ -17,6 +17,7 @@ extern "C" {
 #define ZCL_PRESENT_TITLE_MAX 127u
 #define ZCL_PRESENT_COPY_TEXT_MAX 4096u
 #define ZCL_PRESENT_DIMENSION_MAX 2048u
+#define ZCL_PRESENT_WINDOW_ACTIONS_MAX 4u
 
 enum zcl_present_pixel_format {
     ZCL_PRESENT_RGB8 = 3,
@@ -42,6 +43,23 @@ struct zcl_present_window_v1 {
     const char *copy_text;
 };
 
+enum zcl_present_window_outcome {
+    ZCL_PRESENT_WINDOW_DISMISSED = 1,
+    ZCL_PRESENT_WINDOW_ACTION = 2,
+};
+
+struct zcl_present_window_event_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t outcome;
+    uint32_t action_index;
+};
+
+/* Called after the native window and software surface exist and the first
+ * bitmap has been blitted. The callback belongs to the reviewed host, never
+ * to the inert visual document or fetched code. */
+typedef void (*zcl_present_window_ready_fn)(void *context);
+
 /* Pure validation, suitable for package hosts before they cross the native UI
  * boundary. `error` is always a bounded human-readable explanation on false. */
 bool zcl_present_window_validate_v1(
@@ -53,6 +71,17 @@ bool zcl_present_window_validate_v1(
  * copy_text when it is present. */
 bool zcl_present_window_run_v1(
     const struct zcl_present_window_v1 *request,
+    char *error, size_t error_cap);
+
+/* Interactive host variant. Number keys 1..action_count return only a bounded
+ * zero-based action index; Escape/Q/window-close return DISMISSED. Labels and
+ * authority remain outside this backend. */
+bool zcl_present_window_run_actions_v1(
+    const struct zcl_present_window_v1 *request,
+    uint32_t action_count,
+    zcl_present_window_ready_fn ready,
+    void *ready_context,
+    struct zcl_present_window_event_v1 *event,
     char *error, size_t error_cap);
 
 /* Stable diagnostic labels; neither string implies graphics acceleration. */

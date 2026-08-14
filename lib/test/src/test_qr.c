@@ -216,6 +216,12 @@ int test_qr(void)
     present.abi_version++;
     QR_CHECK("presentation ABI mismatch fails closed",
              !zcl_present_window_validate_v1(&present, why, sizeof(why)));
+    present.abi_version = ZCL_PRESENT_ABI_V1;
+    struct zcl_present_window_event_v1 bounded_event;
+    QR_CHECK("native action keys remain bounded to four",
+             !zcl_present_window_run_actions_v1(
+                 &present, ZCL_PRESENT_WINDOW_ACTIONS_MAX + 1u,
+                 NULL, NULL, &bounded_event, why, sizeof(why)));
     QR_CHECK("presentation backend is the pinned software backend",
              strcmp(zcl_present_backend_name(), "rgfw-1.8.1-software") == 0);
     QR_CHECK("presentation uses stable desktop application identity",

@@ -203,10 +203,23 @@ static bool present_scale_bitmap(const struct zcl_present_window_v1 *request,
     return true;
 }
 
-bool zcl_present_window_run_v1(
+bool zcl_present_window_run_actions_v1(
     const struct zcl_present_window_v1 *request,
+    uint32_t action_count,
+    zcl_present_window_ready_fn ready,
+    void *ready_context,
+    struct zcl_present_window_event_v1 *result,
     char *error, size_t error_cap)
 {
+    if (!result || action_count > ZCL_PRESENT_WINDOW_ACTIONS_MAX)
+        return present_error(error, error_cap,
+                             "presentation action event is invalid");
+    *result = (struct zcl_present_window_event_v1){
+        .struct_size = sizeof(*result),
+        .abi_version = ZCL_PRESENT_ABI_V1,
+        .outcome = ZCL_PRESENT_WINDOW_DISMISSED,
+        .action_index = UINT32_MAX,
+    };
     if (!zcl_present_window_validate_v1(request, error, error_cap))
         return false;
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__linux__)
@@ -258,6 +271,7 @@ bool zcl_present_window_run_v1(
 
     RGFW_window_setExitKey(window, RGFW_escape);
     RGFW_window_blitSurface(window, surface);
+    if (ready) ready(ready_context);
     uint8_t *scaled_pixels = NULL;
     while (!RGFW_window_shouldClose(window)) {
         RGFW_event event;
@@ -298,6 +312,15 @@ bool zcl_present_window_run_v1(
                 size_t copy_len = strlen(request->copy_text);
                 RGFW_writeClipboard(request->copy_text, (u32)copy_len);
             }
+            static const RGFW_key action_keys[] = {
+                RGFW_1, RGFW_2, RGFW_3, RGFW_4,
+            };
+            for (uint32_t i = 0; i < action_count; i++) {
+                if (event.key.value != action_keys[i]) continue;
+                result->outcome = ZCL_PRESENT_WINDOW_ACTION;
+                result->action_index = i;
+                RGFW_window_setShouldClose(window, RGFW_TRUE);
+            }
         }
         if (!saw_event) RGFW_waitForEvent(100);
     }
@@ -307,4 +330,13 @@ bool zcl_present_window_run_v1(
     if (error && error_cap > 0) error[0] = '\0';
     return true;
 #endif
+}
+
+bool zcl_present_window_run_v1(
+    const struct zcl_present_window_v1 *request,
+    char *error, size_t error_cap)
+{
+    struct zcl_present_window_event_v1 event;
+    return zcl_present_window_run_actions_v1(
+        request, 0, NULL, NULL, &event, error, error_cap);
 }
