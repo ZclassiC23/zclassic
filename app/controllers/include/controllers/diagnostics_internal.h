@@ -217,6 +217,11 @@ void debug_bundle_on_stall(const char *child_name,
  * hook). */
 void debug_bundle_register_stall_observer(void);
 
+/* Stop accepting automatic and manual captures, join the owned worker, and
+ * drain all capture leases. Must run before connman, databases, or main_state
+ * are released. False means ownership is unproven. Idempotent. */
+bool debug_bundle_shutdown(void);
+
 /* profile [seconds] [top_n] — sample this node's threads over `seconds` and
  * return the busiest threads (cpu_ms/name/wchan), a one-line verdict, and the
  * reducer stage step-EWMA snapshot. Backs the ops.profile native command. */

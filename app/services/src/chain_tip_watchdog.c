@@ -68,6 +68,11 @@ static _Atomic supervisor_child_id g_id       = SUPERVISOR_INVALID_ID;
 static _Atomic int64_t  g_highest_tip        = 0;
 static _Atomic int64_t  g_last_advance_us    = 0;
 static _Atomic int64_t  g_last_advance_unix  = 0;
+/* Actionable-stall time is deliberately separate from last chain advance.
+ * A chain can be quiet at tip for hours; when a new header finally appears,
+ * the reducer gets a fresh recovery interval instead of inheriting that idle
+ * time and being restarted immediately. */
+static _Atomic int64_t  g_stall_start_us     = 0;
 static _Atomic int      g_escalation         = 0;
 
 static _Atomic uint64_t g_fires_mirror   = 0;
@@ -80,6 +85,11 @@ static _Atomic uint64_t g_fires_operator_needed = 0;
  * watchdog drove an evidence-based process_block_revalidate of that one height
  * rather than a blind restart (which cannot clear an on-disk failure bit). */
 static _Atomic uint64_t g_fires_selection_remedy = 0;
+static _Atomic int64_t  g_observed_work_frontier = -1;
+static _Atomic bool     g_at_observed_tip = false;
+static _Atomic bool     g_at_tip_restart_counted = false;
+static _Atomic uint64_t g_at_observed_tip_entries = 0;
+static _Atomic uint64_t g_restarts_suppressed_at_tip = 0;
 #ifdef ZCL_TESTING
 /* Selection-wedge remedy test seams: suppress the real revalidate (which would
  * reach the quorum oracle / activation controller) and record the target so a
@@ -386,6 +396,26 @@ static void wd_drive_selection_remedy(void)
                 target, reval_result_name(rr));
 }
 
+/* Return the highest locally evidenced height for which the node could have
+ * useful chain work.  The active-chain height catches a reducer/H* lag; the
+ * best-header height catches downloaded headers awaiting bodies/validation.
+ * Absence of a main_state (hermetic decision tests and very early boot) is
+ * UNKNOWN, never an assertion that the node is caught up. */
+static bool wd_observed_work_frontier(int64_t *frontier_out)
+{
+    if (!frontier_out || !g_ms)
+        return false;
+
+    int64_t frontier = (int64_t)active_chain_height(&g_ms->chain_active);
+    struct block_index *best_header = g_ms->pindex_best_header;
+    if (best_header && (int64_t)best_header->nHeight > frontier)
+        frontier = (int64_t)best_header->nHeight;
+    if (frontier < 0)
+        return false;
+    *frontier_out = frontier;
+    return true;
+}
+
 /* ── Supervisor tick ───────────────────────────────────────────────── */
 
 /* The advance-or-escalate body, factored out so the supervisor tick and the
@@ -401,6 +431,9 @@ static void wd_apply_tick(int64_t h, int64_t now_us, bool do_shutdown)
         atomic_store(&g_highest_tip, h);
         atomic_store(&g_last_advance_us, now_us);
         atomic_store(&g_last_advance_unix, (int64_t)platform_time_wall_time_t());
+        atomic_store(&g_stall_start_us, now_us);
+        atomic_store(&g_at_observed_tip, false);
+        atomic_store(&g_at_tip_restart_counted, false);
         atomic_store(&g_escalation, 0);
         /* Tip moved: if it cleared a recorded wedge episode (sustained
          * progress past the anchor), the restart worked — reset the
@@ -410,16 +443,81 @@ static void wd_apply_tick(int64_t h, int64_t now_us, bool do_shutdown)
         return;
     }
 
-    /* Tip didn't advance. Compute age and apply escalation ladder. */
-    int64_t last = atomic_load(&g_last_advance_us);
-    if (last == 0) {
-        /* First-ever tick: seed the timer; nothing to escalate yet. */
-        atomic_store(&g_last_advance_us, now_us);
-        atomic_store(&g_last_advance_unix, (int64_t)platform_time_wall_time_t());
+    /* No height change is not itself a fault.  If neither active chain nor
+     * best-header knowledge extends above the provable tip, there is no work
+     * for a restart to unlock.  This is the normal steady state between ZCL
+     * blocks.  Clear only the in-memory escalation timer; the real
+     * last_advance timestamp remains truthful for diagnostics. */
+    int64_t work_frontier = -1;
+    bool frontier_known = wd_observed_work_frontier(&work_frontier);
+    if (frontier_known)
+        atomic_store(&g_observed_work_frontier, work_frontier);
+    if (frontier_known && work_frontier <= h) {
+        bool was_at_tip = atomic_exchange(&g_at_observed_tip, true);
+        atomic_store(&g_escalation, 0);
+        atomic_store(&g_stall_start_us, 0);
+        if (!was_at_tip) {
+            atomic_fetch_add(&g_at_observed_tip_entries, 1u);
+            int64_t last_advance = atomic_load(&g_last_advance_us);
+            int64_t idle_age_s = last_advance > 0
+                ? (now_us - last_advance) / 1000000 : 0;
+            LOG_INFO("chain_tip_watchdog",
+                     "[chain_tip_watchdog] idle at observed tip: h=%lld "
+                     "work_frontier=%lld idle_age=%llds; no chain work is "
+                     "known above H*",
+                     (long long)h, (long long)work_frontier,
+                     (long long)idle_age_s);
+            event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "chain_tip_watchdog idle_at_tip h=%lld frontier=%lld "
+                "idle_age=%llds",
+                (long long)h, (long long)work_frontier,
+                (long long)idle_age_s);
+        }
+        int64_t last_advance = atomic_load(&g_last_advance_us);
+        int64_t idle_age_s = last_advance > 0
+            ? (now_us - last_advance) / 1000000 : 0;
+        int64_t restart_secs = atomic_load(&g_thr_restart);
+        if (restart_secs > 0 && idle_age_s >= restart_secs &&
+            !atomic_exchange(&g_at_tip_restart_counted, true)) {
+            atomic_fetch_add(&g_restarts_suppressed_at_tip, 1u);
+            LOG_INFO("chain_tip_watchdog",
+                     "[chain_tip_watchdog] restart threshold crossed while "
+                     "caught up: h=%lld work_frontier=%lld idle_age=%llds; "
+                     "restart suppressed by observed-tip validation",
+                     (long long)h, (long long)work_frontier,
+                     (long long)idle_age_s);
+            event_emitf(EV_CHAIN_ADVANCE_DECISION, 0,
+                "chain_tip_watchdog restart_suppressed_at_tip h=%lld "
+                "frontier=%lld idle_age=%llds",
+                (long long)h, (long long)work_frontier,
+                (long long)idle_age_s);
+        }
         supervisor_progress(atomic_load(&g_id), h);
         return;
     }
-    int64_t age_s = (now_us - last) / 1000000;
+
+    /* Work appeared after a healthy quiet-at-tip interval.  Start the stall
+     * budget NOW.  Reusing last_advance_us would charge normal chain silence
+     * against the reducer and could request shutdown on the first new header. */
+    bool was_at_tip = atomic_exchange(&g_at_observed_tip, false);
+    atomic_store(&g_at_tip_restart_counted, false);
+    int64_t stall_start = atomic_load(&g_stall_start_us);
+    if (was_at_tip || stall_start == 0) {
+        atomic_store(&g_stall_start_us, now_us);
+        atomic_store(&g_escalation, 0);
+        if (was_at_tip) {
+            LOG_INFO("chain_tip_watchdog",
+                     "[chain_tip_watchdog] work appeared above H*: h=%lld "
+                     "work_frontier=%lld; actionable stall timer started",
+                     (long long)h, (long long)work_frontier);
+        }
+        supervisor_progress(atomic_load(&g_id), h);
+        return;
+    }
+
+    /* Tip didn't advance while work is known ahead. Compute ACTIONABLE age
+     * and apply the escalation ladder. */
+    int64_t age_s = (now_us - stall_start) / 1000000;
     int level = atomic_load(&g_escalation);
 
     int64_t thr_mirror  = atomic_load(&g_thr_mirror);
@@ -560,6 +658,13 @@ void chain_tip_watchdog_get_stats(struct chain_tip_watchdog_stats *out)
     out->operator_needed = atomic_load(&g_operator_needed);
     out->fires_operator_needed = atomic_load(&g_fires_operator_needed);
     out->fires_selection_remedy = atomic_load(&g_fires_selection_remedy);
+    out->observed_work_frontier =
+        atomic_load(&g_observed_work_frontier);
+    out->at_observed_tip = atomic_load(&g_at_observed_tip);
+    out->at_observed_tip_entries =
+        atomic_load(&g_at_observed_tip_entries);
+    out->restarts_suppressed_at_tip =
+        atomic_load(&g_restarts_suppressed_at_tip);
 }
 
 bool chain_tip_watchdog_dump_state_json(struct json_value *out, const char *key)
@@ -587,6 +692,13 @@ bool chain_tip_watchdog_dump_state_json(struct json_value *out, const char *key)
                      (int64_t)s.fires_operator_needed);
     json_push_kv_int(out, "fires_selection_remedy",
                      (int64_t)s.fires_selection_remedy);
+    json_push_kv_int(out, "observed_work_frontier",
+                     s.observed_work_frontier);
+    json_push_kv_bool(out, "at_observed_tip", s.at_observed_tip);
+    json_push_kv_int(out, "at_observed_tip_entries",
+                     (int64_t)s.at_observed_tip_entries);
+    json_push_kv_int(out, "restarts_suppressed_at_tip",
+                     (int64_t)s.restarts_suppressed_at_tip);
     return true;
 }
 
@@ -600,6 +712,7 @@ void chain_tip_watchdog_test_reset_runtime(void)
     atomic_store(&g_highest_tip, 0);
     atomic_store(&g_last_advance_us, 0);
     atomic_store(&g_last_advance_unix, 0);
+    atomic_store(&g_stall_start_us, 0);
     atomic_store(&g_escalation, 0);
     atomic_store(&g_fires_mirror, 0u);
     atomic_store(&g_fires_reserved, 0u);
@@ -612,6 +725,11 @@ void chain_tip_watchdog_test_reset_runtime(void)
     atomic_store(&g_fires_selection_remedy, 0u);
     atomic_store(&g_test_suppress_selection_remedy, false);
     atomic_store(&g_selection_remedy_last_target, (int64_t)-1);
+    atomic_store(&g_observed_work_frontier, -1);
+    atomic_store(&g_at_observed_tip, false);
+    atomic_store(&g_at_tip_restart_counted, false);
+    atomic_store(&g_at_observed_tip_entries, 0u);
+    atomic_store(&g_restarts_suppressed_at_tip, 0u);
 }
 
 void chain_tip_watchdog_test_load_persisted(void)

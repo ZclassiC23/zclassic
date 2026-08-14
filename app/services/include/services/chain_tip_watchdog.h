@@ -99,6 +99,13 @@ struct chain_tip_watchdog_stats {
      * evidence-based revalidate of that specific height INSTEAD of a blind
      * restart. A restart cannot clear an on-disk failure bit. */
     uint64_t fires_selection_remedy;
+    /* A constant tip is healthy when every locally observed work frontier is
+     * at or below H*.  These fields make that distinction operator-visible so
+     * a quiet chain is never confused with a wedged reducer. */
+    int64_t  observed_work_frontier;
+    bool     at_observed_tip;
+    uint64_t at_observed_tip_entries;
+    uint64_t restarts_suppressed_at_tip;
 };
 void chain_tip_watchdog_get_stats(struct chain_tip_watchdog_stats *out);
 

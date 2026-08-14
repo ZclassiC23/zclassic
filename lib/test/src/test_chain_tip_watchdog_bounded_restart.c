@@ -594,7 +594,80 @@ int test_chain_tip_watchdog_bounded_restart(void)
                                                def.threshold_restart_secs);
     }
 
-    /* ── (g) tip-extension SELECTION wedge: cause-probe classifies it and the
+    /* ── (g) a quiet, fully caught-up chain is not a liveness failure ───────
+     *
+     * This is the production incident shape: H*, active chain, and best
+     * header all agree, then no block arrives for longer than the restart
+     * threshold.  The watchdog must stay up indefinitely.  When a new header
+     * later appears, it must start a fresh actionable-stall interval rather
+     * than charging the normal at-tip silence against the reducer. */
+    {
+        blocker_reset_for_testing();
+        sticky_escalator_test_reset();
+        chain_tip_watchdog_test_reset_runtime();
+
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        struct block_index *g = wd_mk_idx(&ms, 0, 1, 0x00, NULL);
+        struct block_index *tip = wd_mk_idx(&ms, 1, 10, 0x51, g);
+        struct block_index *next = wd_mk_idx(&ms, 2, 20, 0x52, tip);
+        WD_CHECK("at-tip fixture built", g && tip && next);
+        if (g && tip && next) {
+            active_chain_move_window_tip(&ms.chain_active, g);
+            active_chain_move_window_tip(&ms.chain_active, tip);
+            ms.pindex_best_header = tip;
+            chain_tip_watchdog_test_set_main_state(&ms);
+            chain_tip_watchdog_test_set_thresholds(/*mirror=*/100,
+                                                   /*reserved=*/150,
+                                                   /*restart=*/200);
+
+            const int64_t US = 1000000;
+            const int64_t T0 = 1000 * US;
+            chain_tip_watchdog_test_tick(1, T0, false); /* seed advance */
+            chain_tip_watchdog_test_tick(1, T0 + 205 * US, false);
+
+            struct chain_tip_watchdog_stats s;
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("quiet caught-up chain is classified at observed tip",
+                     s.at_observed_tip);
+            WD_CHECK("caught-up frontier equals H*",
+                     s.observed_work_frontier == 1);
+            WD_CHECK("quiet caught-up chain does not restart",
+                     s.fires_restart == 0 && s.no_progress_restarts == 0);
+            WD_CHECK("suppressed at-tip restart is counted",
+                     s.restarts_suppressed_at_tip == 1);
+
+            /* A header appears after the long quiet interval.  The first tick
+             * starts a fresh timer; it cannot restart immediately. */
+            ms.pindex_best_header = next;
+            chain_tip_watchdog_test_tick(1, T0 + 206 * US, false);
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("new work exits at-tip state", !s.at_observed_tip);
+            WD_CHECK("new work receives a fresh stall interval",
+                     s.fires_restart == 0 && s.escalation_level == 0);
+
+            chain_tip_watchdog_test_tick(1, T0 + 405 * US, false);
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("fresh interval does not fire one second early",
+                     s.fires_restart == 0);
+            chain_tip_watchdog_test_tick(1, T0 + 407 * US, false);
+            chain_tip_watchdog_get_stats(&s);
+            WD_CHECK("known work still stuck past fresh interval restarts",
+                     s.fires_restart == 1);
+
+            chain_tip_watchdog_test_set_main_state(NULL);
+        }
+        wd_free_idx(next);
+        wd_free_idx(tip);
+        wd_free_idx(g);
+        main_state_free(&ms);
+        blocker_reset_for_testing();
+        sticky_escalator_test_reset();
+        chain_tip_watchdog_test_reset_runtime();
+    }
+
+    /* ── (h) tip-extension SELECTION wedge: cause-probe classifies it and the
      * watchdog drives a TARGETED revalidate of the specific successor height
      * instead of a blind restart ──────────────────────────────────────────
      *

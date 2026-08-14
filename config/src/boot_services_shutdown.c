@@ -21,6 +21,8 @@
 #include "supervisors/staged_sync_supervisor.h"
 #include "services/block_index_loader.h"
 #include "controllers/blockchain_controller.h"
+#include "controllers/diagnostics_controller.h"
+#include "controllers/network_controller.h"
 #include "event/event.h"
 #include "net/msgprocessor.h"
 #include "validation/process_block.h"
@@ -112,6 +114,11 @@ static bool shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
     /* Now join threads — safe, coins already persisted */
     printf("[shutdown] joining connman threads\n");
     connman_join(svc->connman);
+    /* Revoke the globally published diagnostics/RPC handle before destroying
+     * connman.  The diagnostics worker is already joined, but this makes any
+     * late read fail closed instead of retaining a stale process-lifetime
+     * pointer. */
+    rpc_net_set_connman(NULL);
     connman_free(svc->connman);
     printf("[shutdown] connman stopped\n");
 
@@ -294,6 +301,23 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
         printf("Emergency coins flush...\n");
         (void)shutdown_flush_coins_to_sqlite(svc, "emergency");
         printf("Emergency flush done.\n");
+    }
+
+    /* Debug capture is an owned reader of connman, node.db and main_state.
+     * Revoke new automatic AND RPC captures, then join/wait for every active
+     * capture before the first dumper dependency is quiesced.  The stage is
+     * intentionally generous: ownership is retained until every reader exits;
+     * a timed-out diagnostic is never detached. */
+    shutdown_stagewatch_enter("diagnostics-drain", 180, false, true);
+    if (!diagnostics_controller_shutdown()) {
+        fprintf(stderr,
+                "[shutdown] diagnostics ownership barrier failed; "
+                "refusing dependency teardown\n");
+        (void)boot_shutdown_marker_remove_clean(svc->datadir);
+        (void)shutdown_stagewatch_complete_unclean();
+        fflush(stdout);
+        fflush(stderr);
+        _exit(1);
     }
 
     /* I-7b phase-1: detach hot path observers from the feeder while

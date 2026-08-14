@@ -569,6 +569,19 @@ TELEMETRY_FIELD("addrman", "wired",
     "false means no address book was constructed, so an empty dial pool is a "
     "boot failure rather than an exhausted pool",
     "zclassic23 core status")
+TELEMETRY_FIELD("addrman", "snapshot_valid",
+    TFU_BOOL, TFR_EXPECT_TRUE, NULL, 0, TFS_CRITICAL,
+    "whether the diagnostic captured a bounds-checked coherent addrman "
+    "snapshot while its owner was live",
+    "false means diagnostics refused to inspect torn-down or internally "
+    "inconsistent address-manager storage; no candidate counts are safe to "
+    "interpret",
+    "zclassic23 dumpstate connman (wired), then inspect shutdown and "
+    "addrman_diag log events")
+TELEMETRY_FIELD("addrman", "unavailable_reason",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "the typed reason an addrman snapshot was refused; absent on a valid "
+    "snapshot", "", "")
 TELEMETRY_FIELD("addrman", "size",
     TFU_GAUGE, TFR_EXPECT_NONZERO, NULL, 0, TFS_CRITICAL,
     "total addresses held across the new and tried tables (peers.dat)",

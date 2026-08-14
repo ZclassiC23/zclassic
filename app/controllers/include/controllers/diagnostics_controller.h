@@ -29,6 +29,10 @@ struct json_value;
 void diagnostics_controller_set_state(struct main_state *ms,
                                       const char *datadir);
 
+/* Quiesce and join diagnostics workers before releasing state they inspect.
+ * False means ownership could not be proven and teardown must stop. */
+bool diagnostics_controller_shutdown(void);
+
 void register_diagnostics_rpc_commands(struct rpc_table *t);
 
 /* Return the machine-readable catalog of `dumpstate` subsystems. Exposed so

@@ -19,13 +19,14 @@
 #include "net/peer_lifecycle.h"
 #include "net/protocol.h"
 #include "net/version.h"
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 
 struct network_context {
-    struct connman *connman;
+    _Atomic(struct connman *) connman;
     struct msg_processor *msg_processor;
     const char *datadir;
     const char *load_snapshot_at_own_height;
@@ -62,12 +63,13 @@ static struct network_context *network_ctx(void)
 
 void rpc_net_set_connman(struct connman *cm)
 {
-    network_ctx()->connman = cm;
+    atomic_store_explicit(&network_ctx()->connman, cm, memory_order_release);
 }
 
 struct connman *rpc_net_get_connman(void)
 {
-    return network_ctx()->connman;
+    return atomic_load_explicit(&network_ctx()->connman,
+                                memory_order_acquire);
 }
 
 void rpc_net_set_msg_processor(struct msg_processor *mp)
