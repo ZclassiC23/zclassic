@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "encoding/qr.h"
+#include "command/native_command.h"
 #include "json/json.h"
 #include "presentation/canvas.h"
 #include "presentation/model.h"
@@ -10,6 +11,7 @@
 #include "views/qr_popup.h"
 #include "views/ui_present.h"
 #include "views/ui_present_host.h"
+#include "vcs/zcode_work_node.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -318,6 +320,64 @@ int test_qr(void)
     QR_CHECK("rootless publication confirmation fails closed",
              !zcl_present_model_validate_v1(
                  &confirmation, why, sizeof(why)));
+
+    struct json_value status_facts, health_facts, health_checks;
+    struct json_value backup_facts, work_facts;
+    json_init(&status_facts); json_set_object(&status_facts);
+    json_push_kv_int(&status_facts, "provable_tip", 3216084);
+    json_push_kv_bool(&status_facts, "provable_tip_published", true);
+    json_push_kv_bool(&status_facts, "sync_gap_known", true);
+    json_push_kv_int(&status_facts, "sync_gap", 0);
+    json_push_kv_int(&status_facts, "peers", 6);
+    json_init(&health_facts); json_set_object(&health_facts);
+    json_init(&health_checks); json_set_object(&health_checks);
+    json_push_kv_bool(&health_checks, "tor_enabled", true);
+    json_push_kv_bool(&health_checks, "onion_service_ready", true);
+    json_push_kv_str(&health_checks, "onion_address", "fixture.onion");
+    json_push_kv(&health_facts, "checks", &health_checks);
+    json_free(&health_checks);
+    json_init(&backup_facts); json_set_object(&backup_facts);
+    json_push_kv_int(&backup_facts, "total_runs", 3);
+    json_push_kv_int(&backup_facts, "total_failures", 0);
+    json_push_kv_int(&backup_facts, "last_run_unix", 1234);
+    json_push_kv_str(&backup_facts, "last_error", "");
+    json_init(&work_facts); json_set_object(&work_facts);
+    json_push_kv_bool(&work_facts, "enabled", true);
+    json_push_kv_int(&work_facts, "worker_capacity", 4);
+    json_push_kv_int(&work_facts, "worker_active", 1);
+    json_push_kv_int(&work_facts, "worker_available", 3);
+    struct zcl_present_model_v1 status_model;
+    QR_CHECK("canonical status facts build one closed native model",
+             zcl_native_presentation_status_model_from_facts(
+                 &status_facts, &health_facts, &backup_facts, &work_facts,
+                 &status_model, why, sizeof(why)) &&
+             status_model.kind == ZCL_PRESENT_MODEL_STATUS_CARD &&
+             status_model.item_count == 6);
+    QR_CHECK("status model labels fact authority and preserves capacity",
+             strncmp(status_model.items[0].label, "NODE FACT - ", 12) == 0 &&
+             strcmp(status_model.items[0].value, "3216084") == 0 &&
+             strcmp(status_model.items[5].value,
+                    "3 available / 4 total (1 active)") == 0);
+    QR_CHECK("dark canonical sources stay unavailable, never false-disabled",
+             zcl_native_presentation_status_model_from_facts(
+                 &status_facts, NULL, &backup_facts, NULL,
+                 &status_model, why, sizeof(why)) &&
+             strcmp(status_model.items[3].value, "unavailable") == 0 &&
+             strcmp(status_model.items[5].value, "unavailable") == 0);
+    json_free(&work_facts);
+    json_free(&backup_facts);
+    json_free(&health_facts);
+    json_free(&status_facts);
+
+    struct json_value work_dump;
+    json_init(&work_dump);
+    vcs_zcode_work_node_set_global(NULL);
+    QR_CHECK("package-worker diagnostic reports exact disabled capacity",
+             vcs_zcode_work_node_dump_state_json(&work_dump, NULL) &&
+             !json_get_bool(json_get(&work_dump, "enabled")) &&
+             json_get_int(json_get(&work_dump, "worker_capacity")) == 0 &&
+             json_get_int(json_get(&work_dump, "worker_available")) == 0);
+    json_free(&work_dump);
 
     struct zcl_present_model_bitmap_v1 visual_bitmap;
     QR_CHECK("renderer-neutral progress card becomes native RGB pixels",

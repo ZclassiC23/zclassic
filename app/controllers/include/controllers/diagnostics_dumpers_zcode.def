@@ -19,6 +19,12 @@
                NULL,
                "lib/test/src/test_zcode_store.c", false),
 
+    DIAG_RUNTIME("zcode_work", vcs_zcode_work_node_dump_state_json,
+               "bounded local package-work capacity: enabled, total slots, "
+               "active slots, and available slots; no peer or request data",
+               "lib/vcs/src/zcode_work_node.c",
+               "lib/test/src/test_zcode_dev_objects.c"),
+
     DIAG_ENTRY("zcode_dht", boot_zcode_dht_dump_state_json,
                "Noise-bound read-only ZCODE DHT: enablement reason, stable "
                "local node ID, fixed bounds, authenticated/cold contact "

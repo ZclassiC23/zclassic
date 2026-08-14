@@ -75,12 +75,12 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
 }
 
 static void np_fail(struct zcl_command_reply *reply, const char *code,
-                    const char *message)
+                    const char *message, const char *leaf)
 {
     LOG_ERROR("native.presentation", "%s: %s", code, message);
     zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
         ZCL_COMMAND_EXIT_FAILED, code, "display", false, false, message,
-        "app.presentation.show");
+        leaf);
 }
 
 static bool np_supported_kind(uint16_t kind)
@@ -105,34 +105,50 @@ void zcl_native_handle_presentation_show(
     char why[192];
     if (!ui_present_model_from_json(request->input, &model,
                                     why, sizeof(why))) {
-        np_fail(reply, "INVALID_VISUAL_MODEL", why);
+        np_fail(reply, "INVALID_VISUAL_MODEL", why,
+                "app.presentation.show");
         return;
     }
     if (!np_supported_kind(model.kind)) {
         np_fail(reply, "UNSUPPORTED_PRESENTATION_KIND",
-                "use app.qr.show for QR; raw canvas documents are not admitted");
+                "use app.qr.show for QR; raw canvas documents are not admitted",
+                "app.presentation.show");
         return;
     }
-    bool wait_for_event = model.action_count > 0;
+    zcl_native_present_model(&model, "app.presentation.show", reply);
+}
+
+void zcl_native_present_model(
+    const struct zcl_present_model_v1 *model, const char *leaf,
+    struct zcl_command_reply *reply)
+{
+    if (!model || !leaf || !reply) return;
+    if (!np_supported_kind(model->kind)) {
+        np_fail(reply, "UNSUPPORTED_PRESENTATION_KIND",
+                "use app.qr.show for QR; raw canvas documents are not admitted",
+                leaf);
+        return;
+    }
+    bool wait_for_event = model->action_count > 0;
     int64_t started_us = platform_time_monotonic_us();
     struct ui_present_host_result host;
     struct zcl_result launched = ui_present_host_submit(
-        &model, wait_for_event, &host);
+        model, wait_for_event, &host);
     bool cold_fallback = false;
     if (!launched.ok && !wait_for_event) {
-        launched = ui_present_model_launch(&model);
+        launched = ui_present_model_launch(model);
         cold_fallback = launched.ok;
     }
     int64_t handoff_us = platform_time_monotonic_us() - started_us;
     if (!launched.ok) {
-        np_fail(reply, "PRESENTATION_LAUNCH_FAILED", launched.message);
+        np_fail(reply, "PRESENTATION_LAUNCH_FAILED", launched.message, leaf);
         return;
     }
     (void)json_push_kv_bool(&reply->data, "launched", true);
     (void)json_push_kv_str(&reply->data, "presentation_kind",
-                           zcl_present_model_kind_name(model.kind));
-    (void)json_push_kv_str(&reply->data, "request_id", model.request_id);
-    (void)json_push_kv_int(&reply->data, "item_count", model.item_count);
+                           zcl_present_model_kind_name(model->kind));
+    (void)json_push_kv_str(&reply->data, "request_id", model->request_id);
+    (void)json_push_kv_int(&reply->data, "item_count", model->item_count);
     (void)json_push_kv_int(&reply->data, "launch_handoff_us", handoff_us);
     (void)json_push_kv_bool(&reply->data, "resident_host",
                             !cold_fallback && host.resident_host);
@@ -145,18 +161,18 @@ void zcl_native_handle_presentation_show(
     (void)json_push_kv_bool(&reply->data, "event_return",
                             !cold_fallback && host.event_received);
     if (!cold_fallback && host.event_received) {
-        bool action = host.action_index < model.action_count;
+        bool action = host.action_index < model->action_count;
         (void)json_push_kv_str(&reply->data, "event",
                                action ? "action" : "dismissed");
         if (action) {
             (void)json_push_kv_str(&reply->data, "action_id",
-                model.actions[host.action_index].id);
+                model->actions[host.action_index].id);
             (void)json_push_kv_int(&reply->data, "action_index",
                                    host.action_index);
         }
-        if (model.exact_root[0])
+        if (model->exact_root[0])
             (void)json_push_kv_str(&reply->data, "exact_root",
-                                   model.exact_root);
+                                   model->exact_root);
     }
     (void)json_push_kv_str(&reply->data, "authority", "display-only");
     (void)json_push_kv_str(&reply->data, "backend",

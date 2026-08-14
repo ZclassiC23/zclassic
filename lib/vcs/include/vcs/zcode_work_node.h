@@ -40,6 +40,13 @@ void vcs_zcode_work_node_free(struct vcs_zcode_work_node *node);
 void vcs_zcode_work_node_set_global(struct vcs_zcode_work_node *node);
 struct vcs_zcode_work_node *vcs_zcode_work_node_global(void);
 
+/* Reentrant diagnostic snapshot for the native agent status instrument.
+ * Reports only bounded counts and enablement; no peer identity, request,
+ * capability document, key material, or action root leaves this boundary. */
+struct json_value;
+bool vcs_zcode_work_node_dump_state_json(struct json_value *out,
+                                         const char *key);
+
 bool vcs_zcode_work_node_peer_add(struct vcs_zcode_work_node *node,
                                   uint64_t peer);
 void vcs_zcode_work_node_peer_drop(struct vcs_zcode_work_node *node,

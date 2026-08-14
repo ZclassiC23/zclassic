@@ -149,6 +149,27 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_presentation_show)
 
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.status", "app.presentation", "",
+    "Show canonical node facts in a native C23 status card",
+    "Reads the target node's canonical status, full health projection, wallet "
+    "backup snapshot, and bounded ZCODE worker-capacity snapshot, then builds "
+    "one closed renderer-neutral model. Every row is labeled NODE FACT. The "
+    "agent supplies no fact or status text; unavailable projections remain "
+    "named unavailable. The display host receives only the inert model and "
+    "holds no node authority.", 0,
+    "presentation,native,status,node,facts,backup,onion,workers",
+    "zcl.app_presentation_status.input.v1",
+    "zcl.app_presentation_status.v1", "", "",
+    "zclassic23 app presentation status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_status)
+
 /* ── Blog (ZBLG) ─────────────────────────────────────────────────── */
 
 ZCL_COMMAND_READY_COMMAND(

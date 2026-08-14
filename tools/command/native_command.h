@@ -357,8 +357,21 @@ void zcl_native_handle_vault_intent_list(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_qr_show(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+struct zcl_present_model_v1;
 void zcl_native_handle_presentation_show(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_presentation_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+bool zcl_native_presentation_status_model_from_facts(
+    const struct json_value *status, const struct json_value *health,
+    const struct json_value *backup, const struct json_value *work,
+    struct zcl_present_model_v1 *model, char *why, size_t why_cap);
+
+/* Shared renderer-neutral handoff used by canonical instrument builders.
+ * The model is inert; this helper performs no node read or privileged effect. */
+void zcl_native_present_model(
+    const struct zcl_present_model_v1 *model, const char *leaf,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_vault_swap_redeem(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
