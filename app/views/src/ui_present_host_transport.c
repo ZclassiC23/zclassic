@@ -6,7 +6,9 @@
 #include "views/ui_present_host_transport.h"
 
 #include "base/serialize_le.h"
+#include "platform/rng.h"
 #include "presentation/model.h"
+#include "util/log_macros.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -15,7 +17,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/random.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -150,20 +151,15 @@ bool ui_host_transport_recv_all(int fd, uint8_t *bytes, size_t length,
 
 bool ui_host_transport_nonce(uint8_t nonce[UI_HOST_NONCE_BYTES])
 {
-    size_t offset = 0;
-    while (offset < UI_HOST_NONCE_BYTES) {
-        ssize_t got = getrandom(nonce + offset,
-                                UI_HOST_NONCE_BYTES - offset, 0);
-        if (got > 0) {
-            offset += (size_t)got;
-            continue;
-        }
-        if (got < 0 && errno == EINTR) continue;
-        return false;
-    }
+    if (!rng_fill(nonce, UI_HOST_NONCE_BYTES))
+        LOG_RETURN(false, "presentation",
+                   "resident host request nonce entropy unavailable");
     uint8_t any = 0;
     for (size_t i = 0; i < UI_HOST_NONCE_BYTES; i++) any |= nonce[i];
-    return any != 0;
+    if (any == 0)
+        LOG_RETURN(false, "presentation",
+                   "resident host request nonce was all zero");
+    return true;
 }
 
 void ui_host_transport_request_header(

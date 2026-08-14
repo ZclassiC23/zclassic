@@ -4316,42 +4316,12 @@ void app_shutdown_offline(void)
     wallet_free(&g_wallet);
     main_state_free(&g_state);
     sapling_free_params();
-    shutdown_stagewatch_enter("offline-persist", 45, true, true);
-    if (progress_store_db()) {
-        if (!progress_store_set_sync_mode(false) ||
-            !progress_store_checkpoint())
-            durability_ok = false;
-        progress_store_close();
-    }
-    boot_stop_projection_storage();
-    if (g_node_db.open) {
-        if (!node_db_sync_flush(&g_node_db) ||
-            !node_db_exec(&g_node_db, "PRAGMA synchronous=FULL") ||
-            !node_db_wal_checkpoint(&g_node_db))
-            durability_ok = false;
-        node_db_close(&g_node_db);
-    }
+    if (!boot_offline_persist_runtime(&g_node_db))
+        durability_ok = false;
     ecc_verify_destroy();
     ecc_stop();
     boot_postmortem_stop();
-    if (!durability_ok || !boot_shutdown_marker_write_clean(g_datadir)) {
-        fprintf(stderr,
-                "[shutdown] offline durability barrier failed; exiting unclean\n");
-        (void)boot_shutdown_marker_remove_clean(g_datadir);
-        (void)shutdown_stagewatch_complete_unclean();
-        fflush(stdout);
-        fflush(stderr);
-        _exit(1);
-    }
-    shutdown_stagewatch_mark_durable();
-    if (!shutdown_stagewatch_complete_clean()) {
-        fprintf(stderr,
-                "[shutdown] offline receipt durability failed; revoking marker\n");
-        (void)boot_shutdown_marker_remove_clean(g_datadir);
-        fflush(stdout);
-        fflush(stderr);
-        _exit(1);
-    }
+    boot_offline_complete_durability_or_exit(g_datadir, durability_ok);
     boot_datadir_lock_release();
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
 }

@@ -384,3 +384,51 @@ void boot_offline_join_workers_or_exit(const char *datadir)
         thread_registry_join_all_owned();
     }
 }
+
+bool boot_offline_persist_runtime(struct node_db *ndb)
+{
+    bool ok = true;
+    shutdown_stagewatch_enter("offline-persist", 45, true, true);
+    if (progress_store_db()) {
+        if (!progress_store_set_sync_mode(false) ||
+            !progress_store_checkpoint()) {
+            LOG_WARN("shutdown", "offline progress-store checkpoint failed");
+            ok = false;
+        }
+        progress_store_close();
+    }
+    boot_stop_projection_storage();
+    if (ndb && ndb->open) {
+        if (!node_db_sync_flush(ndb) ||
+            !node_db_exec(ndb, "PRAGMA synchronous=FULL") ||
+            !node_db_wal_checkpoint(ndb)) {
+            LOG_WARN("shutdown", "offline node.db durability barrier failed");
+            ok = false;
+        }
+        node_db_close(ndb);
+    }
+    return ok;
+}
+
+void boot_offline_complete_durability_or_exit(const char *datadir,
+                                               bool durability_ok)
+{
+    if (!durability_ok || !boot_shutdown_marker_write_clean(datadir)) {
+        fprintf(stderr,
+                "[shutdown] offline durability barrier failed; exiting unclean\n");
+        (void)boot_shutdown_marker_remove_clean(datadir);
+        (void)shutdown_stagewatch_complete_unclean();
+        fflush(stdout);
+        fflush(stderr);
+        _exit(1);
+    }
+    shutdown_stagewatch_mark_durable();
+    if (shutdown_stagewatch_complete_clean())
+        return;
+    fprintf(stderr,
+            "[shutdown] offline receipt durability failed; revoking marker\n");
+    (void)boot_shutdown_marker_remove_clean(datadir);
+    fflush(stdout);
+    fflush(stderr);
+    _exit(1);
+}

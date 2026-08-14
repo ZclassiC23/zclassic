@@ -75,7 +75,7 @@ app/views/src/explorer_pages_view.c 819
 # the phrase, minting one, printing it once) landed in its own
 # config/src/boot_wallet_phrase.c instead of here, and took 25 lines of
 # existing wiring out of boot.c with it.
-config/src/boot.c 4333
+config/src/boot.c 4331
 config/src/boot_bundle_fetch.c 905
 config/src/boot_index.c 853
 config/src/boot_mint_anchor.c 808
@@ -86,7 +86,7 @@ config/src/boot_services.c 1477
 # supervisor timer tick + all-peer drain + domain registration pushed it
 # over. The work-adapter half (boot_zcode_work_*) is the natural future
 # split seam if this file grows again.
-config/src/boot_zcode_swarm.c 933
+config/src/boot_zcode_swarm.c 913
 config/src/bundle_exporter.c 925
 config/src/consensus_state_install_runtime.c 919
 config/src/consensus_state_producer_receipt.c 805

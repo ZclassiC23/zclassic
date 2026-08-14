@@ -491,6 +491,13 @@ void app_shutdown_svc(struct boot_svc_ctx *svc);
  * Drain background workers before app_shutdown_offline's destructive frees;
  * dependencies remain owned until every worker has actually exited. */
 void boot_offline_join_workers_or_exit(const char *datadir);
+/* Persist and close offline-mode stores after all writers are joined. Every
+ * failed durability operation is logged; false forbids the clean marker. */
+bool boot_offline_persist_runtime(struct node_db *ndb);
+/* Mint the clean marker + stage receipt or terminate loudly with ownership
+ * retained. This is the offline equivalent of app_shutdown_svc's barrier. */
+void boot_offline_complete_durability_or_exit(const char *datadir,
+                                               bool durability_ok);
 
 /* ── config/src/boot_anchor_snapshot_reachability.c ─────────────────────── *
  * Shared between it and boot_refold_staged.c's real loaders/AUTO-ARM so path
