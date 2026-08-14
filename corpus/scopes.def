@@ -1,0 +1,97 @@
+# corpus/scopes.def — canonical scope definition for the C23 corpus census
+# (build/bin/corpus-census, tools/corpus_census.c). One scope per line:
+#
+#   scope <name> | kind <human|ai|import> | spdx <SPDX-ID> \
+#       | src <prefix>[,<prefix>...] | tests <prefix>[,<prefix>...]
+#
+# Prefixes are repo-relative. A trailing '/' means "this directory tree";
+# otherwise the prefix is a literal file prefix (e.g. lib/test/src/test_base
+# claims lib/test/src/test_base_foundation.c). Only tracked files
+# (git ls-files) with a .c/.h/.def extension enter the census.
+#
+# File-claim precedence (deterministic; ambiguity fails closed): a tests
+# claim beats a src claim of another scope; among same-kind claims the
+# LONGEST matching prefix wins (so lib/test/src/test_base beats the shared
+# lib/test/ remainder); two equal-length competing claims are a fatal
+# overlap error. No file is ever counted twice.
+#
+# kind is DECLARED provenance: no per-file authorship marker exists in-tree,
+# so every scope below is declared `human` (pre-existing node code). The
+# census report carries this disclosure verbatim.
+#
+# spdx is bound to a real license file by the driver: a scope-local LICENSE
+# when one exists (lib/base, lib/codec, lib/commons_demo, lib/crypto,
+# lib/encoding, lib/json, lib/platform, lib/presentation, lib/sha3, lib/vcs),
+# otherwise the repo-root LICENSE (Apache-2.0). lib/commons_demo,
+# lib/encoding and lib/sha3 carry MIT texts; everything else is Apache-2.0.
+#
+# vendor/ and core/ are deliberately NOT scopes: vendor/ is third-party
+# material (the census would exclude it as VENDOR) and core/ is the
+# byte-sealed consensus core, which is not C23 Commons package content.
+
+# ── repo subtrees ───────────────────────────────────────────────────
+scope zclassic23/adapters | kind human | spdx Apache-2.0 | src adapters/
+scope zclassic23/app | kind human | spdx Apache-2.0 | src app/
+scope zclassic23/application | kind human | spdx Apache-2.0 | src application/
+scope zclassic23/apps/blog | kind human | spdx Apache-2.0 | src apps/blog/
+scope zclassic23/apps/social | kind human | spdx Apache-2.0 | src apps/social/
+scope zclassic23/apps/yardsale | kind human | spdx Apache-2.0 | src apps/yardsale/
+scope zclassic23/config | kind human | spdx Apache-2.0 | src config/
+scope zclassic23/domain | kind human | spdx Apache-2.0 | src domain/
+scope zclassic23/examples | kind human | spdx Apache-2.0 | src examples/
+scope zclassic23/ports | kind human | spdx Apache-2.0 | src ports/
+scope zclassic23/src | kind human | spdx Apache-2.0 | src src/
+scope zclassic23/tests-fixtures | kind human | spdx Apache-2.0 | src tests/
+scope zclassic23/tools | kind human | spdx Apache-2.0 | src tools/
+
+# ── shared test suite (lib/test remainder after per-lib claims) ─────
+scope zclassic23/lib-test-shared | kind human | spdx Apache-2.0 | tests lib/test/
+
+# ── libraries ───────────────────────────────────────────────────────
+scope zclassic23/lib/base | kind human | spdx Apache-2.0 | src lib/base/ | tests lib/base/tests/,lib/test/src/test_base
+scope zclassic23/lib/bloom | kind human | spdx Apache-2.0 | src lib/bloom/ | tests lib/test/src/test_bloom
+scope zclassic23/lib/chain | kind human | spdx Apache-2.0 | src lib/chain/ | tests lib/test/src/test_chain_
+scope zclassic23/lib/codec | kind human | spdx Apache-2.0 | src lib/codec/ | tests lib/codec/tests/,lib/test/src/test_codec
+scope zclassic23/lib/codeindex | kind human | spdx Apache-2.0 | src lib/codeindex/ | tests lib/test/src/test_codeindex
+scope zclassic23/lib/coins | kind human | spdx Apache-2.0 | src lib/coins/ | tests lib/test/src/test_coins_
+scope zclassic23/lib/commons_demo | kind human | spdx MIT | src lib/commons_demo/ | tests lib/commons_demo/tests/
+scope zclassic23/lib/core | kind human | spdx Apache-2.0 | src lib/core/ | tests lib/test/src/test_core
+scope zclassic23/lib/crypto | kind human | spdx Apache-2.0 | src lib/crypto/ | tests lib/crypto/tests/,lib/test/src/test_crypto_
+scope zclassic23/lib/crypto_registry | kind human | spdx Apache-2.0 | src lib/crypto_registry/ | tests lib/test/src/test_crypto_registry
+scope zclassic23/lib/encoding | kind human | spdx MIT | src lib/encoding/ | tests lib/encoding/tests/
+scope zclassic23/lib/event | kind human | spdx Apache-2.0 | src lib/event/ | tests lib/test/src/test_event_
+scope zclassic23/lib/framework | kind human | spdx Apache-2.0 | src lib/framework/
+scope zclassic23/lib/health | kind human | spdx Apache-2.0 | src lib/health/ | tests lib/test/src/test_health_
+scope zclassic23/lib/hotswap | kind human | spdx Apache-2.0 | src lib/hotswap/ | tests lib/test/src/test_hotswap_
+scope zclassic23/lib/json | kind human | spdx Apache-2.0 | src lib/json/ | tests lib/json/tests/
+scope zclassic23/lib/kernel | kind human | spdx Apache-2.0 | src lib/kernel/
+scope zclassic23/lib/keys | kind human | spdx Apache-2.0 | src lib/keys/ | tests lib/test/src/test_keys_
+scope zclassic23/lib/metaverse | kind human | spdx Apache-2.0 | src lib/metaverse/ | tests lib/test/src/test_metaverse_
+scope zclassic23/lib/metrics | kind human | spdx Apache-2.0 | src lib/metrics/
+scope zclassic23/lib/mining | kind human | spdx Apache-2.0 | src lib/mining/ | tests lib/test/src/test_mining
+scope zclassic23/lib/net | kind human | spdx Apache-2.0 | src lib/net/ | tests lib/test/src/test_net_
+scope zclassic23/lib/noise | kind human | spdx Apache-2.0 | src lib/noise/ | tests lib/test/src/test_noise_
+scope zclassic23/lib/overlay | kind human | spdx Apache-2.0 | src lib/overlay/ | tests lib/test/src/test_overlay_
+scope zclassic23/lib/platform | kind human | spdx Apache-2.0 | src lib/platform/ | tests lib/platform/tests/
+scope zclassic23/lib/policy | kind human | spdx Apache-2.0 | src lib/policy/ | tests lib/test/src/test_policy
+scope zclassic23/lib/presentation | kind human | spdx Apache-2.0 | src lib/presentation/ | tests lib/presentation/tests/
+scope zclassic23/lib/primitives | kind human | spdx Apache-2.0 | src lib/primitives/ | tests lib/test/src/test_primitives
+scope zclassic23/lib/rpc | kind human | spdx Apache-2.0 | src lib/rpc/ | tests lib/test/src/test_rpc_
+scope zclassic23/lib/sapling | kind human | spdx Apache-2.0 | src lib/sapling/ | tests lib/test/src/test_sapling_
+scope zclassic23/lib/script | kind human | spdx Apache-2.0 | src lib/script/ | tests lib/test/src/test_script_
+scope zclassic23/lib/session | kind human | spdx Apache-2.0 | src lib/session/
+scope zclassic23/lib/sha3 | kind human | spdx MIT | src lib/sha3/ | tests lib/sha3/tests/,lib/test/src/test_sha3_
+scope zclassic23/lib/sim | kind human | spdx Apache-2.0 | src lib/sim/
+scope zclassic23/lib/storage | kind human | spdx Apache-2.0 | src lib/storage/ | tests lib/test/src/test_storage_
+scope zclassic23/lib/support | kind human | spdx Apache-2.0 | src lib/support/
+scope zclassic23/lib/sync | kind human | spdx Apache-2.0 | src lib/sync/ | tests lib/test/src/test_sync_
+scope zclassic23/lib/util | kind human | spdx Apache-2.0 | src lib/util/ | tests lib/test/src/test_util_
+scope zclassic23/lib/validation | kind human | spdx Apache-2.0 | src lib/validation/ | tests lib/test/src/test_validation_
+scope zclassic23/lib/vcs | kind human | spdx Apache-2.0 | src lib/vcs/ | tests lib/vcs/tests/,lib/test/src/test_vcs_
+scope zclassic23/lib/wallet | kind human | spdx Apache-2.0 | src lib/wallet/ | tests lib/test/src/test_wallet_
+scope zclassic23/lib/zanc | kind human | spdx Apache-2.0 | src lib/zanc/ | tests lib/test/src/test_zanc
+scope zclassic23/lib/zdir | kind human | spdx Apache-2.0 | src lib/zdir/ | tests lib/test/src/test_zdir_
+scope zclassic23/lib/zid | kind human | spdx Apache-2.0 | src lib/zid/ | tests lib/test/src/test_zid_
+scope zclassic23/lib/znam | kind human | spdx Apache-2.0 | src lib/znam/ | tests lib/test/src/test_znam_
+scope zclassic23/lib/zslp | kind human | spdx Apache-2.0 | src lib/zslp/ | tests lib/test/src/test_zslp_
+scope zclassic23/lib/zswap | kind human | spdx Apache-2.0 | src lib/zswap/ | tests lib/test/src/test_zswap_

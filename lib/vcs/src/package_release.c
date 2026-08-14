@@ -280,6 +280,15 @@ const char *vcs_package_release_error_string(
     return "unknown-error";
 }
 
+/* ── shared license authority ─────────────────────────────────────── */
+
+bool vcs_package_release_license_allowed(const char *license)
+{
+    if (!license)
+        return false;
+    return release_license_valid_n(license, strlen(license));
+}
+
 /* ── validation ───────────────────────────────────────────────────── */
 
 enum vcs_package_release_error vcs_package_release_validate(

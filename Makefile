@@ -3594,6 +3594,53 @@ $(BIN_DIR)/gen_sha3_windows: tools/gen_sha3_windows.c \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -o $@ $^ -pthread
 
+# corpus-census: offline driver for the C23 corpus odometer (slice 1b).
+# Reads corpus/scopes.def, enumerates scopes via git ls-files, binds every
+# census evidence bit to a real recomputable artifact, and emits the signed
+# checkpoint/shard/evidence/report set under corpus/. Standalone build: the
+# pure census core plus the vcs evidence objects it drives — no DB, no Tor.
+.PHONY: tools/corpus-census
+tools/corpus-census: $(BIN_DIR)/corpus-census
+$(BIN_DIR)/corpus-census: tools/corpus_census.c \
+		lib/vcs/src/zcode_c23_corpus_census.c \
+		lib/vcs/src/zcode_c23_corpus_objects.c \
+		lib/vcs/src/zcode_c23_corpus_shard.c \
+		lib/vcs/src/zcode_c23_corpus_checkpoint.c \
+		lib/vcs/src/zcode_family_admission_object.c \
+		lib/vcs/src/zcode_family_moderation.c \
+		lib/vcs/src/signed_evidence.c \
+		lib/vcs/src/package_score.c lib/vcs/src/package_release.c \
+		lib/vcs/src/vcs_object.c \
+		lib/crypto/src/ed25519.c lib/crypto/src/sha512.c \
+		lib/sha3/src/sha3.c \
+		lib/base/src/cleanse.c lib/base/src/log_level.c \
+		lib/base/src/safe_alloc.c \
+		lib/codec/src/cursor.c lib/json/src/json.c \
+		lib/platform/src/rng.c lib/platform/src/clock.c
+	@mkdir -p $(dir $@)
+	# --gc-sections: ed25519's batch-verify path (never called here) pulls
+	# zcl_random_secret_bytes -> sealed-tree random.c; the collector drops it.
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+	    -Ilib/vcs/include -Ilib/base/include -Ilib/util/include \
+	    -Ilib/crypto/include -Ilib/sha3/include -Ilib/codec/include \
+	    -Ilib/json/include -Ilib/platform/include -Ilib/support/include \
+	    -Ilib/core/include -Ivendor/include \
+	    -o $@ $^ -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
+
+# Run the corpus census with the canonical args. The cutoff coordinates and
+# the lint attestation are operator inputs, never baked in:
+#   make corpus-census CORPUS_CUTOFF_HEIGHT=... CORPUS_CUTOFF_MTP=... \
+#       CORPUS_QUALITY_ATTESTED=1
+.PHONY: corpus-census
+corpus-census: $(BIN_DIR)/corpus-census
+	$(BIN_DIR)/corpus-census --repo . --def corpus/scopes.def --out corpus \
+	    --cutoff-height $${CORPUS_CUTOFF_HEIGHT:-1} \
+	    --cutoff-mtp $${CORPUS_CUTOFF_MTP:-1700000000} \
+	    --quality-attested $${CORPUS_QUALITY_ATTESTED:-0}
+
 # gen_utxo_root_ladder: one-shot tool that reads a COPY of a zclassic23
 # node.db (never the live datadir) and overwrites
 # lib/chain/{include/chain,src}/utxo_root_ladder.{h,c} with the golden-height

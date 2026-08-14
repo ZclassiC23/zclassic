@@ -158,6 +158,12 @@ struct vcs_package_release {
 const char *vcs_package_release_error_string(
     enum vcs_package_release_error error);
 
+/* True when `license` (NUL-terminated) is an exact, case-sensitive member of
+ * the frozen v1 SPDX allowlist above. Exported so sibling layers (the C23
+ * corpus census) apply the identical license policy through this one
+ * authority instead of duplicating the list. Pure query; never logs. */
+bool vcs_package_release_license_allowed(const char *license);
+
 /* Validate every field against the v1 grammars above. Does NOT look at the
  * signature. Returns VCS_PACKAGE_RELEASE_OK or the first failed rule. */
 enum vcs_package_release_error vcs_package_release_validate(
