@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 688 |
+| Registry entries (branches + leaves) | 690 |
 | Top-level roots | 11 |
-| Branches | 161 |
-| Leaves (dispatchable command paths) | 527 |
-| … `ready` (live handler in this build) | 473 |
+| Branches | 162 |
+| Leaves (dispatchable command paths) | 528 |
+| … `ready` (live handler in this build) | 474 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 24 |
-| Leaves with `effect=mutate` | 175 |
+| Leaves with `effect=mutate` | 176 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 112 |
 
@@ -93,7 +93,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 61 | 18 | 43 |
+| `config/commands/app_features.def` | 63 | 19 | 44 |
 | `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 55 | 13 | 42 |
@@ -582,6 +582,12 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `app qr show` | ready | mutate / app-write / operator · fast/low | **`payload`**, `title` | `zcl.app_qr_show.v1` | `zclassic23 app qr show 'zclassic:t1...?amount=0.01'` | Show a payload as a native QR window |
+
+#### `app.presentation` — Native presentation
+
+| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
+|---|---|---|---|---|---|---|
+| `app presentation show` | ready | mutate / app-write / operator · fast/low | **`kind`**, **`request_id`**, **`title`**, `summary`, `exact_root`, `items`, `actions` | `zcl.app_presentation_show.v1` | `zclassic23 app presentation show --input='<bounded-model>'` | Show a bounded renderer-neutral model in a native C23 window |
 
 #### `app.blog` — Blog
 

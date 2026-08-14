@@ -55,6 +55,8 @@ ZCL_COMMAND_BRANCH("app.shop.want.fulfill", "app.shop.want", "Fulfillments",
                    ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.presentation", "app", "Native presentation",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.blog", "app", "Blog", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.payments", "app", "Payments", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.payments.zpay", "app.payments", "ZPAY",
@@ -119,6 +121,29 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_qr_show)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.show", "app.presentation", "",
+    "Show a bounded renderer-neutral model in a native C23 window",
+    "Validates a closed status, table, progress, chart, timeline, code-diff, "
+    "or evidence-graph document, encodes it without structure padding, and "
+    "launches the exact same binary as a display-only native process. This "
+    "cold compatibility path deliberately rejects choices, forms, and "
+    "confirmations until their bounded events can return through the resident "
+    "host. It receives no wallet, network, datadir, package, publication, "
+    "deployment, or consensus authority.", 0,
+    "presentation,native,status,progress,diff,evidence,agent",
+    "zcl.app_presentation_show.input.v1", "zcl.app_presentation_show.v1",
+    "kind,request_id,title,summary,exact_root,items,actions",
+    "kind,request_id,title",
+    "zclassic23 app presentation show --input='<bounded-model>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_show)
 
 /* ── Blog (ZBLG) ─────────────────────────────────────────────────── */
 

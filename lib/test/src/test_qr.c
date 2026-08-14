@@ -1,6 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0 */
 
 #include "encoding/qr.h"
+#include "json/json.h"
 #include "presentation/canvas.h"
 #include "presentation/model.h"
 #include "presentation/model_render.h"
@@ -320,6 +321,41 @@ int test_qr(void)
     QR_CHECK("native model pixels preserve brand and semantic status",
              visual_has_orange && visual_has_info);
     zcl_present_model_bitmap_free_v1(&visual_bitmap);
+
+    static const char model_json[] =
+        "{\"kind\":\"code-diff\",\"request_id\":\"diff-1\","
+        "\"title\":\"Exact candidate diff\","
+        "\"summary\":\"One candidate-owned line changed.\","
+        "\"items\":[{\"kind\":\"diff-remove\",\"value\":\"return 0;\"},"
+        "{\"kind\":\"diff-add\",\"status\":\"green\","
+        "\"value\":\"return verified;\"}]}";
+    struct json_value visual_json;
+    json_init(&visual_json);
+    QR_CHECK("typed native visual JSON parses",
+             json_read(&visual_json, model_json, sizeof(model_json) - 1u));
+    struct zcl_present_model_v1 json_model;
+    bool visual_json_ok = ui_present_model_from_json(
+        &visual_json, &json_model, why, sizeof(why));
+    if (!visual_json_ok) printf("  visual JSON diagnostic: %s\n", why);
+    QR_CHECK("closed visual JSON becomes the renderer-neutral model",
+             visual_json_ok &&
+             json_model.kind == ZCL_PRESENT_MODEL_CODE_DIFF &&
+             json_model.item_count == 2 &&
+             json_model.items[1].kind == ZCL_PRESENT_ITEM_DIFF_ADD);
+    json_free(&visual_json);
+
+    static const char smuggled_json[] =
+        "{\"kind\":\"status\",\"request_id\":\"bad-1\","
+        "\"title\":\"Bad\",\"items\":[{\"kind\":\"text\","
+        "\"value\":\"x\",\"command\":\"/bin/sh\"}]}";
+    json_init(&visual_json);
+    QR_CHECK("unknown visual item key fixture parses as JSON",
+             json_read(&visual_json, smuggled_json,
+                       sizeof(smuggled_json) - 1u));
+    QR_CHECK("visual model rejects command smuggling",
+             !ui_present_model_from_json(&visual_json, &json_model,
+                                         why, sizeof(why)));
+    json_free(&visual_json);
 
     qr_matrix_free(&second);
     qr_matrix_free(&first);

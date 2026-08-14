@@ -1311,6 +1311,20 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
              * real 1..10000 bound as BAD_TOKENS_PER_PURCHASE — so the same
              * mistake reports the same code over every transport. */
             type_ok = value->type == JSON_INT && json_get_int(value) >= 0;
+        } else if (spec->path &&
+                   strcmp(spec->path, "app.presentation.show") == 0 &&
+                   strcmp(key, "items") == 0) {
+            /* The renderer-neutral model repeats the exact item shape and
+             * count validation. This coarse transport rule only makes its
+             * bounded JSON array reachable through the typed CLI. Keep 64
+             * aligned with ZCL_PRESENT_MODEL_ITEMS_MAX without making the
+             * low-rank command kernel depend upward on lib/presentation. */
+            type_ok = value->type == JSON_ARR && json_size(value) <= 64u;
+        } else if (spec->path &&
+                   strcmp(spec->path, "app.presentation.show") == 0 &&
+                   strcmp(key, "actions") == 0) {
+            /* Same low-rank mirror for ZCL_PRESENT_MODEL_ACTIONS_MAX. */
+            type_ok = value->type == JSON_ARR && json_size(value) <= 4u;
         } else if (strcmp(key, "timeout_ms") == 0) {
             type_ok = value->type == JSON_INT && json_get_int(value) >= 1 &&
                       json_get_int(value) <= 300000;

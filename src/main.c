@@ -153,6 +153,8 @@ int main(int argc, char **argv)
      * its reviewed UI backend and exits when its window closes. */
     if (argc == 2 && strcmp(argv[1], "--ui-present-child=qr") == 0)
         return ui_present_child_main("qr");
+    if (argc == 2 && strcmp(argv[1], "--ui-present-child=model") == 0)
+        return ui_present_child_main("model");
 
     ParseParameters(argc, (const char *const *)argv);
     apply_argv_loglevel();
