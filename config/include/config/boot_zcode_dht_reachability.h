@@ -19,8 +19,9 @@ struct json_value;
 bool boot_zcode_dht_reachability_refresh(
     const uint8_t network_genesis[32], struct vcs_zcode_dht_time now);
 
-/* Service callback: fixed-memory lookup + bounded ID enqueue only. It never
- * touches ZENDP, the chain, addrman, connman, a database, or a socket. */
+/* Service callback: fixed-memory lookup + bounded ID enqueue, followed by an
+ * O(1) supervisor wake for the existing DHT-periodic owner. It never touches
+ * ZENDP, the chain, addrman, connman, a database, or a socket. */
 bool boot_zcode_dht_reachability_request(void *ctx,
                                          const uint8_t node_id[32],
                                          uint64_t wall_unix);

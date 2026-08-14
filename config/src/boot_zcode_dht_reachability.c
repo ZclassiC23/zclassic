@@ -5,6 +5,7 @@
 
 #include "base/serialize_le.h"
 #include "config/boot_internal.h"
+#include "config/boot_zcode_swarm.h"
 #include "crypto/sha3.h"
 #include "models/zid_identity.h"
 #include "net/connman.h"
@@ -237,6 +238,18 @@ bool boot_zcode_dht_reachability_request(void *ctx,
   memcpy(g_reach.requests[g_reach.request_count++], node_id, 32);
   g_reach.requests_enqueued++;
   zcl_mutex_unlock(&g_reach_lock);
+
+  /* The request queue is consumed by boot_zcode_dht_periodic(), which runs
+   * at the front of the net.zcode.swarm supervisor turn.  A lookup can
+   * discover several address-free hops in sequence; leaving each accepted
+   * request to the periodic clock makes that clock latency cumulative and a
+   * valid sparse route can reach the lookup ceiling before its final Noise
+   * session is authenticated.  Wake the existing owner immediately.  The
+   * callback still performs no dial, socket, database, or DHT lifecycle work;
+   * all of that remains on the supervised consumer after this function has
+   * released the reachability lock (and after its caller releases the DHT
+   * lock). */
+  boot_zcode_swarm_request_tick();
   return true;
 }
 
