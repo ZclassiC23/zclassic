@@ -18,6 +18,7 @@ extern "C" {
 #define ZCL_PRESENT_COPY_TEXT_MAX 4096u
 #define ZCL_PRESENT_DIMENSION_MAX 2048u
 #define ZCL_PRESENT_WINDOW_ACTIONS_MAX 4u
+#define ZCL_PRESENT_WINDOW_PAGES_MAX 16u
 
 enum zcl_present_pixel_format {
     ZCL_PRESENT_RGB8 = 3,
@@ -41,6 +42,16 @@ struct zcl_present_window_v1 {
     uint32_t icon_width;
     uint32_t icon_height;
     const char *copy_text;
+};
+
+/* A fixed, bounded sequence of inert bitmaps shown in one native window.
+ * Page selection is local display state only: it grants no capability and
+ * produces no software-authority event. */
+struct zcl_present_window_pages_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    const struct zcl_present_window_v1 *pages;
+    uint32_t page_count;
 };
 
 enum zcl_present_window_outcome {
@@ -83,6 +94,22 @@ bool zcl_present_window_run_actions_v1(
     void *ready_context,
     struct zcl_present_window_event_v1 *event,
     char *error, size_t error_cap);
+
+/* Multi-page host variant. PgUp/PgDn, arrows, Home/End, and the mouse wheel
+ * select among already-bounded bitmaps. Numbered actions retain their exact
+ * meaning on every page. */
+bool zcl_present_window_run_pages_actions_v1(
+    const struct zcl_present_window_pages_v1 *request,
+    uint32_t action_count,
+    zcl_present_window_ready_fn ready,
+    void *ready_context,
+    struct zcl_present_window_event_v1 *event,
+    char *error, size_t error_cap);
+
+/* Pure clamped page transition used by the backend and sensitivity tests. */
+bool zcl_present_window_page_step_v1(
+    uint32_t current_page, uint32_t page_count, int32_t delta,
+    uint32_t *next_page);
 
 /* Deterministic hit test for the standard renderer-neutral model action row.
  * Window pixels are aspect-fit, so letterboxing and resize are accounted for

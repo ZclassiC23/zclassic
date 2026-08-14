@@ -254,8 +254,73 @@ bool zcl_present_window_action_at_v1(
     return true;
 }
 
-bool zcl_present_window_run_actions_v1(
-    const struct zcl_present_window_v1 *request,
+bool zcl_present_window_page_step_v1(
+    uint32_t current_page, uint32_t page_count, int32_t delta,
+    uint32_t *next_page)
+{
+    if (!next_page || page_count == 0 ||
+        page_count > ZCL_PRESENT_WINDOW_PAGES_MAX ||
+        current_page >= page_count)
+        return false;
+    int64_t wanted = (int64_t)current_page + delta;
+    if (wanted < 0) wanted = 0;
+    if (wanted >= (int64_t)page_count) wanted = (int64_t)page_count - 1;
+    *next_page = (uint32_t)wanted;
+    return true;
+}
+
+static bool present_pages_validate(
+    const struct zcl_present_window_pages_v1 *request,
+    char *error, size_t error_cap)
+{
+    if (!request || request->struct_size != sizeof(*request) ||
+        request->abi_version != ZCL_PRESENT_ABI_V1 || !request->pages ||
+        request->page_count == 0 ||
+        request->page_count > ZCL_PRESENT_WINDOW_PAGES_MAX)
+        return present_error(error, error_cap,
+                             "presentation pages ABI/count is invalid");
+    const struct zcl_present_window_v1 *first = &request->pages[0];
+    for (uint32_t i = 0; i < request->page_count; i++) {
+        const struct zcl_present_window_v1 *page = &request->pages[i];
+        if (!zcl_present_window_validate_v1(page, error, error_cap))
+            return false;
+        if (page->width != first->width || page->height != first->height ||
+            page->pixel_format != first->pixel_format)
+            return present_error(error, error_cap,
+                                 "presentation page geometry differs");
+    }
+    return true;
+}
+
+static bool present_replace_surface(
+    RGFW_window *window, const struct zcl_present_window_v1 *page,
+    i32 width, i32 height, RGFW_surface **surface,
+    uint8_t **scaled_pixels)
+{
+    uint8_t *replacement_pixels = NULL;
+    bool scaled = width != (i32)page->width || height != (i32)page->height;
+    if (scaled && !present_scale_bitmap(page, width, height,
+                                        &replacement_pixels))
+        return false;
+    uint8_t *pixels = scaled ? replacement_pixels
+        : (uint8_t *)(uintptr_t)page->pixels;
+    RGFW_surface *replacement = RGFW_window_createSurface(
+        window, pixels, width, height,
+        page->pixel_format == ZCL_PRESENT_RGB8
+            ? RGFW_formatRGB8 : RGFW_formatRGBA8);
+    if (!replacement) {
+        free(replacement_pixels);
+        return false;
+    }
+    RGFW_surface_free(*surface);
+    free(*scaled_pixels);
+    *surface = replacement;
+    *scaled_pixels = replacement_pixels;
+    return true;
+}
+
+bool zcl_present_window_run_pages_actions_v1(
+    const struct zcl_present_window_pages_v1 *pages,
     uint32_t action_count,
     zcl_present_window_ready_fn ready,
     void *ready_context,
@@ -271,8 +336,10 @@ bool zcl_present_window_run_actions_v1(
         .outcome = ZCL_PRESENT_WINDOW_DISMISSED,
         .action_index = UINT32_MAX,
     };
-    if (!zcl_present_window_validate_v1(request, error, error_cap))
+    if (!present_pages_validate(pages, error, error_cap))
         return false;
+    uint32_t current_page = 0;
+    const struct zcl_present_window_v1 *request = &pages->pages[current_page];
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__linux__)
     return present_error(error, error_cap,
                          "native presentation is unsupported on this platform");
@@ -334,24 +401,9 @@ bool zcl_present_window_run_actions_v1(
                 i32 resized_height = 0;
                 (void)RGFW_window_getSize(window, &resized_width,
                                           &resized_height);
-                uint8_t *replacement_pixels = NULL;
-                if (present_scale_bitmap(request, resized_width,
-                                         resized_height,
-                                         &replacement_pixels)) {
-                    RGFW_surface *replacement = RGFW_window_createSurface(
-                        window, replacement_pixels, resized_width,
-                        resized_height,
-                        request->pixel_format == ZCL_PRESENT_RGB8
-                            ? RGFW_formatRGB8 : RGFW_formatRGBA8);
-                    if (replacement) {
-                        RGFW_surface_free(surface);
-                        free(scaled_pixels);
-                        scaled_pixels = replacement_pixels;
-                        surface = replacement;
-                    } else {
-                        free(replacement_pixels);
-                    }
-                }
+                (void)present_replace_surface(
+                    window, request, resized_width, resized_height,
+                    &surface, &scaled_pixels);
                 RGFW_window_blitSurface(window, surface);
             } else if (event.type == RGFW_windowRefresh) {
                 RGFW_window_blitSurface(window, surface);
@@ -371,6 +423,43 @@ bool zcl_present_window_run_actions_v1(
                     result->outcome = ZCL_PRESENT_WINDOW_ACTION;
                     result->action_index = action;
                     RGFW_window_setShouldClose(window, RGFW_TRUE);
+                }
+            }
+            uint32_t next_page = current_page;
+            if (event.type == RGFW_mouseScroll && event.scroll.y < 0)
+                (void)zcl_present_window_page_step_v1(
+                    current_page, pages->page_count, 1, &next_page);
+            else if (event.type == RGFW_mouseScroll && event.scroll.y > 0)
+                (void)zcl_present_window_page_step_v1(
+                    current_page, pages->page_count, -1, &next_page);
+            else if (event.type == RGFW_keyPressed) {
+                if (event.key.value == RGFW_pageDown ||
+                    event.key.value == RGFW_down ||
+                    event.key.value == RGFW_right)
+                    (void)zcl_present_window_page_step_v1(
+                        current_page, pages->page_count, 1, &next_page);
+                else if (event.key.value == RGFW_pageUp ||
+                         event.key.value == RGFW_up ||
+                         event.key.value == RGFW_left)
+                    (void)zcl_present_window_page_step_v1(
+                        current_page, pages->page_count, -1, &next_page);
+                else if (event.key.value == RGFW_home)
+                    next_page = 0;
+                else if (event.key.value == RGFW_end)
+                    next_page = pages->page_count - 1u;
+            }
+            if (next_page != current_page) {
+                i32 window_width = 0, window_height = 0;
+                (void)RGFW_window_getSize(window, &window_width,
+                                          &window_height);
+                const struct zcl_present_window_v1 *next =
+                    &pages->pages[next_page];
+                if (present_replace_surface(
+                        window, next, window_width, window_height,
+                        &surface, &scaled_pixels)) {
+                    current_page = next_page;
+                    request = next;
+                    RGFW_window_blitSurface(window, surface);
                 }
             }
             if (event.type != RGFW_keyPressed) continue;
@@ -403,6 +492,25 @@ bool zcl_present_window_run_actions_v1(
     if (error && error_cap > 0) error[0] = '\0';
     return true;
 #endif
+}
+
+bool zcl_present_window_run_actions_v1(
+    const struct zcl_present_window_v1 *request,
+    uint32_t action_count,
+    zcl_present_window_ready_fn ready,
+    void *ready_context,
+    struct zcl_present_window_event_v1 *result,
+    char *error, size_t error_cap)
+{
+    struct zcl_present_window_pages_v1 pages = {
+        .struct_size = sizeof(pages),
+        .abi_version = ZCL_PRESENT_ABI_V1,
+        .pages = request,
+        .page_count = 1,
+    };
+    return zcl_present_window_run_pages_actions_v1(
+        &pages, action_count, ready, ready_context,
+        result, error, error_cap);
 }
 
 bool zcl_present_window_run_v1(

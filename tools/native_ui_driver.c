@@ -65,9 +65,10 @@ static bool send_close(Display *display, Window window)
     return true;
 }
 
-static bool send_first_action(Display *display, Window root, Window window)
+static bool send_key(Display *display, Window root, Window window,
+                     KeySym key)
 {
-    KeyCode keycode = XKeysymToKeycode(display, XK_1);
+    KeyCode keycode = XKeysymToKeycode(display, key);
     if (keycode == 0)
         return false;
     XEvent event;
@@ -96,7 +97,8 @@ static bool send_first_action(Display *display, Window root, Window window)
 static int usage(const char *program)
 {
     fprintf(stderr,
-            "usage: %s --title=<substring> --key=1|escape [--timeout-ms=N]\n",
+            "usage: %s --title=<substring> "
+            "--key=1|pagedown|pageup|escape [--timeout-ms=N]\n",
             program);
     return 2;
 }
@@ -124,8 +126,10 @@ int main(int argc, char **argv)
     if (!title || !title[0] || !key)
         return usage(argv[0]);
     bool first_action = strcmp(key, "1") == 0;
+    bool page_down = strcmp(key, "pagedown") == 0;
+    bool page_up = strcmp(key, "pageup") == 0;
     bool close = strcmp(key, "escape") == 0;
-    if (!first_action && !close)
+    if (!first_action && !page_down && !page_up && !close)
         return usage(argv[0]);
 
     Display *display = XOpenDisplay(NULL);
@@ -141,10 +145,11 @@ int main(int argc, char **argv)
         if (window == None)
             sleep_20ms();
     }
-    bool sent = window != None &&
-                (first_action
-                     ? send_first_action(display, root, window)
-                     : send_close(display, window));
+    KeySym key_sym = first_action ? XK_1
+        : (page_down ? XK_Page_Down : XK_Page_Up);
+    bool sent = window != None && (close
+        ? send_close(display, window)
+        : send_key(display, root, window, key_sym));
     (void)XCloseDisplay(display);
     if (!sent) {
         fprintf(stderr, "native_ui_driver: window/key delivery failed: %s\n",

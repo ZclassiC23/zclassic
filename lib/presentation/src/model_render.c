@@ -22,6 +22,11 @@ static const struct zcl_present_color GREEN_BG = {0xe5, 0xf2, 0xe9};
 static const struct zcl_present_color RED_BG = {0xf8, 0xe5, 0xe3};
 static const struct zcl_present_color PANEL = {0xf3, 0xf0, 0xeb};
 
+enum {
+    MODEL_CONTENT_TOP = 184,
+    MODEL_CONTENT_BOTTOM = 604,
+};
+
 static bool render_error(char *error, size_t cap, const char *message)
 {
     if (error && cap > 0) (void)snprintf(error, cap, "%s", message);
@@ -127,6 +132,71 @@ static int32_t render_item(struct zcl_present_canvas *canvas,
     return render_row(canvas, item, y);
 }
 
+static uint32_t item_height(const struct zcl_present_model_item_v1 *item)
+{
+    if (item->kind == ZCL_PRESENT_ITEM_PROGRESS) return 58u;
+    if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
+        item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
+        item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
+        return 28u;
+    if (item->kind == ZCL_PRESENT_ITEM_TEXT) return 34u;
+    return 45u;
+}
+
+static bool page_bounds(const struct zcl_present_model_v1 *model,
+                        uint32_t wanted, uint32_t *start_out,
+                        uint32_t *end_out, uint32_t *count_out)
+{
+    uint32_t page = 0;
+    uint32_t start = 0;
+    if (model->item_count == 0) {
+        if (wanted == 0) {
+            *start_out = 0;
+            *end_out = 0;
+        }
+        *count_out = 1;
+        return wanted == 0;
+    }
+    while (start < model->item_count) {
+        uint32_t end = start;
+        uint32_t used = 0;
+        uint32_t available = MODEL_CONTENT_BOTTOM - MODEL_CONTENT_TOP;
+        while (end < model->item_count) {
+            uint32_t height = item_height(&model->items[end]);
+            if (end > start && used + height > available) break;
+            used += height;
+            end++;
+        }
+        if (page == wanted) {
+            *start_out = start;
+            *end_out = end;
+        }
+        page++;
+        start = end;
+    }
+    *count_out = page;
+    return wanted < page;
+}
+
+bool zcl_present_model_page_count_v1(
+    const struct zcl_present_model_v1 *model, uint32_t *page_count,
+    char *error, size_t error_cap)
+{
+    if (!page_count)
+        return render_error(error, error_cap,
+                            "visual model page-count output is missing");
+    *page_count = 0;
+    if (!zcl_present_model_validate_v1(model, error, error_cap)) return false;
+    uint32_t start = 0, end = 0, count = 0;
+    (void)page_bounds(model, 0, &start, &end, &count);
+    if (count == 0 || count > ZCL_PRESENT_MODEL_PAGES_MAX)
+        return render_error(error, error_cap,
+                            "visual model exceeds its page bound");
+    *page_count = count;
+    if (error && error_cap > 0) error[0] = '\0';
+    return true;
+}
+
 static void render_actions(struct zcl_present_canvas *canvas,
                            const struct zcl_present_model_v1 *model)
 {
@@ -156,15 +226,24 @@ static void render_actions(struct zcl_present_canvas *canvas,
     }
 }
 
-bool zcl_present_model_render_v1(const struct zcl_present_model_v1 *model,
-                                 struct zcl_present_model_bitmap_v1 *bitmap,
-                                 char *error, size_t error_cap)
+bool zcl_present_model_render_page_v1(
+    const struct zcl_present_model_v1 *model, uint32_t page_index,
+    struct zcl_present_model_bitmap_v1 *bitmap,
+    char *error, size_t error_cap)
 {
     if (!bitmap)
         return render_error(error, error_cap,
                             "visual model bitmap output is missing");
     *bitmap = (struct zcl_present_model_bitmap_v1){0};
-    if (!zcl_present_model_validate_v1(model, error, error_cap)) return false;
+    uint32_t page_count = 0;
+    if (!zcl_present_model_page_count_v1(model, &page_count,
+                                         error, error_cap))
+        return false;
+    uint32_t start = 0, end = 0, counted = 0;
+    if (!page_bounds(model, page_index, &start, &end, &counted) ||
+        counted != page_count)
+        return render_error(error, error_cap,
+                            "visual model page index is out of range");
     uint8_t *pixels = malloc(ZCL_PRESENT_MODEL_BITMAP_BYTES); // raw-alloc-ok:standalone-presentation-package
     if (!pixels)
         return render_error(error, error_cap,
@@ -194,20 +273,15 @@ bool zcl_present_model_render_v1(const struct zcl_present_model_v1 *model,
     }
     zcl_present_canvas_line(&canvas, 42, 164, 678, 164, RULE);
 
-    int32_t y = 184;
-    uint32_t rendered = 0;
-    for (uint32_t i = 0; i < model->item_count; i++) {
-        if (y > 604) break;
+    int32_t y = MODEL_CONTENT_TOP;
+    for (uint32_t i = start; i < end; i++)
         y = render_item(&canvas, &model->items[i], y);
-        rendered++;
-    }
-    if (rendered < model->item_count) {
-        char omitted[64];
-        (void)snprintf(omitted, sizeof(omitted),
-                       "%u more bounded item%s not shown",
-                       model->item_count - rendered,
-                       model->item_count - rendered == 1u ? "" : "s");
-        text_fit(&canvas, 42, 614, omitted, 12u, 636u, MUTED);
+    if (page_count > 1u) {
+        char page[96];
+        (void)snprintf(page, sizeof(page),
+                       "Page %u of %u  -  PgUp/PgDn, arrows or wheel",
+                       page_index + 1u, page_count);
+        text_fit(&canvas, 42, 620, page, 12u, 636u, MUTED);
     }
     render_actions(&canvas, model);
     bitmap->pixels = pixels;
@@ -215,6 +289,14 @@ bool zcl_present_model_render_v1(const struct zcl_present_model_v1 *model,
     bitmap->height = canvas.height;
     if (error && error_cap > 0) error[0] = '\0';
     return true;
+}
+
+bool zcl_present_model_render_v1(const struct zcl_present_model_v1 *model,
+                                 struct zcl_present_model_bitmap_v1 *bitmap,
+                                 char *error, size_t error_cap)
+{
+    return zcl_present_model_render_page_v1(model, 0, bitmap,
+                                            error, error_cap);
 }
 
 void zcl_present_model_bitmap_free_v1(

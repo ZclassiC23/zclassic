@@ -105,11 +105,11 @@ static void ui_host_send_rejected(
     (void)ui_host_transport_send_all(fd, reply, sizeof(reply));
 }
 
-static bool ui_host_show_window(
+static bool ui_host_show_pages(
     int client,
     uint16_t flags,
     bool view_replaced,
-    const struct zcl_present_window_v1 *window,
+    const struct zcl_present_window_pages_v1 *pages,
     uint32_t action_count,
     const uint8_t nonce[UI_HOST_NONCE_BYTES])
 {
@@ -121,8 +121,8 @@ static bool ui_host_show_window(
     };
     memcpy(ready.nonce, nonce, UI_HOST_NONCE_BYTES);
     struct zcl_present_window_event_v1 event;
-    bool shown = zcl_present_window_run_actions_v1(
-        window, action_count, ui_host_window_ready, &ready,
+    bool shown = zcl_present_window_run_pages_actions_v1(
+        pages, action_count, ui_host_window_ready, &ready,
         &event, why, sizeof(why));
     if (!shown)
         LOG_WARN("presentation.host", "native window failed: %s", why);
@@ -137,47 +137,88 @@ static bool ui_host_show_window(
     return shown;
 }
 
+static bool ui_host_show_window(
+    int client,
+    uint16_t flags,
+    bool view_replaced,
+    const struct zcl_present_window_v1 *window,
+    uint32_t action_count,
+    const uint8_t nonce[UI_HOST_NONCE_BYTES])
+{
+    struct zcl_present_window_pages_v1 pages = {
+        .struct_size = sizeof(pages),
+        .abi_version = ZCL_PRESENT_ABI_V1,
+        .pages = window,
+        .page_count = 1,
+    };
+    return ui_host_show_pages(client, flags, view_replaced, &pages,
+                              action_count, nonce);
+}
+
 static bool ui_host_worker_model(int client, uint16_t flags,
                                  bool view_replaced,
                                  const uint8_t *wire, uint32_t wire_len,
                                  const uint8_t nonce[UI_HOST_NONCE_BYTES])
 {
     struct zcl_present_model_v1 model;
-    struct zcl_present_model_bitmap_v1 bitmap;
+    struct zcl_present_model_bitmap_v1
+        bitmaps[ZCL_PRESENT_MODEL_PAGES_MAX] = {{0}};
+    struct zcl_present_window_v1 windows[ZCL_PRESENT_MODEL_PAGES_MAX] = {{0}};
     char why[192];
     if (!zcl_present_model_decode_v1(wire, wire_len, &model,
                                      why, sizeof(why))) {
         LOG_WARN("presentation.host", "visual model rejected: %s", why);
         return false;
     }
-    if (!zcl_present_model_render_v1(&model, &bitmap, why, sizeof(why))) {
-        LOG_WARN("presentation.host", "visual model render failed: %s", why);
+    uint32_t page_count = 0;
+    if (!zcl_present_model_page_count_v1(&model, &page_count,
+                                         why, sizeof(why))) {
+        LOG_WARN("presentation.host", "visual model pagination failed: %s", why);
         return false;
     }
     uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
     if (!zcl_present_zclassic_icon_rgba(icon, sizeof(icon))) {
-        zcl_present_model_bitmap_free_v1(&bitmap);
         LOG_WARN("presentation.host", "native window icon is unavailable");
         return false;
     }
     char title[ZCL_PRESENT_TITLE_MAX + 1u];
     (void)snprintf(title, sizeof(title), "ZClassic23 — %s", model.title);
-    struct zcl_present_window_v1 window = {
-        .struct_size = sizeof(window),
-        .abi_version = ZCL_PRESENT_ABI_V1,
-        .title = title,
-        .pixels = bitmap.pixels,
-        .width = bitmap.width,
-        .height = bitmap.height,
-        .pixel_format = ZCL_PRESENT_RGB8,
-        .icon_rgba = icon,
-        .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
-        .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
-        .copy_text = model.exact_root[0] ? model.exact_root : NULL,
-    };
-    bool shown = ui_host_show_window(client, flags, view_replaced, &window,
-                                     model.action_count, nonce);
-    zcl_present_model_bitmap_free_v1(&bitmap);
+    bool rendered = true;
+    for (uint32_t i = 0; i < page_count; i++) {
+        if (!zcl_present_model_render_page_v1(
+                &model, i, &bitmaps[i], why, sizeof(why))) {
+            LOG_WARN("presentation.host",
+                     "visual model page render failed: %s", why);
+            rendered = false;
+            break;
+        }
+        windows[i] = (struct zcl_present_window_v1){
+            .struct_size = sizeof(windows[i]),
+            .abi_version = ZCL_PRESENT_ABI_V1,
+            .title = title,
+            .pixels = bitmaps[i].pixels,
+            .width = bitmaps[i].width,
+            .height = bitmaps[i].height,
+            .pixel_format = ZCL_PRESENT_RGB8,
+            .icon_rgba = icon,
+            .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
+            .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
+            .copy_text = model.exact_root[0] ? model.exact_root : NULL,
+        };
+    }
+    bool shown = false;
+    if (rendered) {
+        struct zcl_present_window_pages_v1 pages = {
+            .struct_size = sizeof(pages),
+            .abi_version = ZCL_PRESENT_ABI_V1,
+            .pages = windows,
+            .page_count = page_count,
+        };
+        shown = ui_host_show_pages(client, flags, view_replaced, &pages,
+                                   model.action_count, nonce);
+    }
+    for (uint32_t i = 0; i < page_count; i++)
+        zcl_present_model_bitmap_free_v1(&bitmaps[i]);
     return shown;
 }
 

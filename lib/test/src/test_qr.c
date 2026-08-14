@@ -566,6 +566,54 @@ int test_qr(void)
              visual_has_orange && visual_has_info);
     zcl_present_model_bitmap_free_v1(&visual_bitmap);
 
+    struct zcl_present_model_v1 long_table;
+    zcl_present_model_init_v1(&long_table, ZCL_PRESENT_MODEL_TABLE);
+    (void)snprintf(long_table.request_id, sizeof(long_table.request_id),
+                   "bounded-table-64");
+    (void)snprintf(long_table.title, sizeof(long_table.title),
+                   "Every bounded row is reachable");
+    long_table.item_count = ZCL_PRESENT_MODEL_ITEMS_MAX;
+    for (uint32_t i = 0; i < long_table.item_count; i++) {
+        long_table.items[i].kind = ZCL_PRESENT_ITEM_TABLE_ROW;
+        long_table.items[i].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+        (void)snprintf(long_table.items[i].id,
+                       sizeof(long_table.items[i].id), "row-%u", i + 1u);
+        (void)snprintf(long_table.items[i].label,
+                       sizeof(long_table.items[i].label), "Owner %u", i + 1u);
+        (void)snprintf(long_table.items[i].value,
+                       sizeof(long_table.items[i].value), "Exact value %u",
+                       i + 1u);
+    }
+    uint32_t table_pages = 0;
+    QR_CHECK("maximum bounded table partitions into eight exact pages",
+             zcl_present_model_page_count_v1(
+                 &long_table, &table_pages, why, sizeof(why)) &&
+             table_pages == 8u);
+    struct zcl_present_model_bitmap_v1 first_page, last_page;
+    bool first_page_ok = zcl_present_model_render_page_v1(
+        &long_table, 0, &first_page, why, sizeof(why));
+    bool last_page_ok = zcl_present_model_render_page_v1(
+        &long_table, table_pages - 1u, &last_page, why, sizeof(why));
+    QR_CHECK("first and last bounded table pages render distinct pixels",
+             first_page_ok && last_page_ok &&
+             memcmp(first_page.pixels, last_page.pixels,
+                    ZCL_PRESENT_MODEL_BITMAP_BYTES) != 0);
+    QR_CHECK("page past the exact model bound fails closed",
+             !zcl_present_model_render_page_v1(
+                 &long_table, table_pages, &visual_bitmap,
+                 why, sizeof(why)));
+    zcl_present_model_bitmap_free_v1(&first_page);
+    zcl_present_model_bitmap_free_v1(&last_page);
+    uint32_t next_page = UINT32_MAX;
+    QR_CHECK("keyboard page movement advances and clamps deterministically",
+             zcl_present_window_page_step_v1(
+                 0, table_pages, 1, &next_page) && next_page == 1u &&
+             zcl_present_window_page_step_v1(
+                 table_pages - 1u, table_pages, 1, &next_page) &&
+             next_page == table_pages - 1u &&
+             zcl_present_window_page_step_v1(
+                 0, table_pages, -1, &next_page) && next_page == 0u);
+
     static const char model_json[] =
         "{\"kind\":\"code-diff\",\"request_id\":\"diff-1\","
         "\"title\":\"Exact candidate diff\","

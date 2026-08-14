@@ -19,6 +19,7 @@
 #define ZCL_PRESENT_MODEL_ACTION_WIDTH 636u
 #define ZCL_PRESENT_MODEL_ACTION_HEIGHT 42u
 #define ZCL_PRESENT_MODEL_ACTION_GAP 12u
+#define ZCL_PRESENT_MODEL_PAGES_MAX 16u
 
 struct zcl_present_model_bitmap_v1 {
     uint8_t *pixels;
@@ -31,6 +32,18 @@ struct zcl_present_model_bitmap_v1 {
 bool zcl_present_model_render_v1(const struct zcl_present_model_v1 *model,
                                  struct zcl_present_model_bitmap_v1 *bitmap,
                                  char *error, size_t error_cap);
+
+/* A bounded model may need more than one fixed native viewport. Pagination is
+ * derived only from item kinds and the fixed software layout, so every
+ * renderer/backend sees the same page count and page pixels. Page zero is the
+ * compatibility view returned by render_v1. */
+bool zcl_present_model_page_count_v1(
+    const struct zcl_present_model_v1 *model, uint32_t *page_count,
+    char *error, size_t error_cap);
+bool zcl_present_model_render_page_v1(
+    const struct zcl_present_model_v1 *model, uint32_t page_index,
+    struct zcl_present_model_bitmap_v1 *bitmap,
+    char *error, size_t error_cap);
 void zcl_present_model_bitmap_free_v1(
     struct zcl_present_model_bitmap_v1 *bitmap);
 

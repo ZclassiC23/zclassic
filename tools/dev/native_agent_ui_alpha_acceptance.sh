@@ -118,6 +118,23 @@ json_has "$DIFF_REPLY" '"presentation_kind":"code-diff"' ||
     fail "code-diff kind was not returned"
 "$DRIVER_BIN" --title='Alpha exact code diff' --key=escape --timeout-ms=3000 >/dev/null
 
+# A model larger than one fixed viewport must remain completely reachable by
+# keyboard. The host selects only among pre-rendered inert pages; it returns no
+# software-authority event for this display-local movement.
+SCROLL_ITEMS=''
+for row in $(seq 1 12); do
+    [ -z "$SCROLL_ITEMS" ] || SCROLL_ITEMS+=','
+    SCROLL_ITEMS+="{\"kind\":\"table-row\",\"label\":\"Owner $row\",\"value\":\"Exact row $row\"}"
+done
+SCROLL_MODEL="{\"kind\":\"table\",\"request_id\":\"alpha-scroll\",\"title\":\"Alpha bounded table\",\"summary\":\"LOCAL OBSERVATION - every bounded row remains reachable\",\"items\":[${SCROLL_ITEMS}]}"
+timed_command SCROLL_REPLY SCROLL_TOTAL_US \
+    "$NODE_BIN" app presentation show --input="$SCROLL_MODEL"
+assert_display_reply "$SCROLL_REPLY"
+"$DRIVER_BIN" --title='Alpha bounded table' --key=pagedown \
+    --timeout-ms=3000 >/dev/null
+"$DRIVER_BIN" --title='Alpha bounded table' --key=escape \
+    --timeout-ms=3000 >/dev/null
+
 # Reuse one action-bound request identity. Every new inert frame must replace
 # its predecessor; the final p95 is edit-to-command-return, not render-only.
 for step in $(seq 1 20); do
@@ -199,4 +216,4 @@ AFTER_BROWSERS="$(browser_snapshot)"
 READY_P95_US="$(printf '%s\n' "$PROGRESS_REPLY" | sed -n \
     's/.*"window_ready_us":[[:space:]]*\([-0-9][0-9]*\).*/\1/p' | tail -1)"
 printf '%s\n' \
-    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"code_diff\":true,\"live_reproduction_progress\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_us\":$UPDATE_TOTAL_US,\"update_handoff_us\":$UPDATE_HANDOFF_US,\"last_worker_ready_us\":${READY_P95_US:--1}}"
+    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"code_diff\":true,\"bounded_keyboard_pagination\":true,\"live_reproduction_progress\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_us\":$UPDATE_TOTAL_US,\"update_handoff_us\":$UPDATE_HANDOFF_US,\"last_worker_ready_us\":${READY_P95_US:--1}}"
