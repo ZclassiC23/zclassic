@@ -263,10 +263,13 @@ struct liveness_contract {
      * child's on_tick inline: a child's SQLite-commit tick running inline can
      * freeze the sweep heartbeat via jbd2_log_wait_commit for >=30s and have
      * the backstop kill a healthy node. Instead the sweep sets
-     * tick_pending when a period-driven child is due; the dedicated
+     * tick_pending when a period-driven child is due; tick_running prevents
+     * the sweep from re-arming the same periodic callback while it is still
+     * executing. The dedicated
      * "zcl_supervisor_tick_runner" thread CAS-consumes it and executes
      * on_tick + stamps last_tick/ticks_run. Supervisor+runner owned. */
     _Atomic bool     tick_pending;
+    _Atomic bool     tick_running;
 
     /* vtable (set at init; never mutated after register) */
     void  *ctx;
@@ -496,6 +499,7 @@ void supervisor_tick_runner_monitor_for_testing(void);
 int64_t  supervisor_tick_runner_last_hb_age_us(void);
 uint32_t supervisor_tick_runner_stall_fires(void);
 bool     supervisor_tick_runner_running(void);
+const char *supervisor_active_callback_name(void);
 
 /* ── Introspection (zcl_state subsystem=supervisor) ────────────────── */
 

@@ -682,6 +682,8 @@ int test_supervisor(void)
         atomic_store(&c.period_secs, 1);
 
         sleep_ms(30);                       /* let the runner ENTER slow_tick */
+        SUP_CHECK("active callback names the blocking child",
+            strcmp(supervisor_active_callback_name(), "loop.slow_tick") == 0);
         uint64_t hb0 = supervisor_sweep_heartbeat();
         sleep_ms(120);                      /* runner still inside the 150ms tick */
         uint64_t hb1 = supervisor_sweep_heartbeat();
@@ -691,6 +693,8 @@ int test_supervisor(void)
         sleep_ms(150);                      /* let the slow tick finish */
         SUP_CHECK("slow on_tick actually executed on the runner",
             atomic_load(&cc.tick_calls) >= 1);
+        SUP_CHECK("active callback clears after the child returns",
+            strcmp(supervisor_active_callback_name(), "none") == 0);
         SUP_CHECK("runner thread is alive", supervisor_tick_runner_running());
         supervisor_stop();
     }

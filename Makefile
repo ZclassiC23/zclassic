@@ -55,7 +55,8 @@ ZCL_WORKTREE_PRIME_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-o
 # do not let this outer parse first bootstrap host-ABI archives that the
 # portable builder would immediately replace.
 ZCL_PORTABLE_FRONTDOOR_GOALS := c23-portable-toolchain c23-portable-release \
-	c23-portable-install c23-commons-installed-acceptance
+	c23-portable-install c23-commons-installed-acceptance \
+	native-agent-ui-alpha
 ZCL_PORTABLE_FRONTDOOR_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip \
 	$(filter-out $(ZCL_PORTABLE_FRONTDOOR_GOALS),$(MAKECMDGOALS))),,1),)
 
@@ -1042,17 +1043,21 @@ check-vendor-provenance:
 	@sha256sum --check vendor/x11/SHA256SUMS
 
 # Reusable native presentation package. This deliberately has a tiny source
-# closure: three project TUs plus pinned RGFW headers, with no node/app objects.
+# closure: five project TUs plus pinned RGFW headers, with no node/app objects.
 PRESENTATION_BUILD_DIR := build/presentation
 PRESENTATION_PACKAGE_CFLAGS := -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	-Ilib/presentation/include -Ivendor/x11/include
+	-Ilib/presentation/include -Ilib/base/include -Ivendor/x11/include
 PRESENTATION_PACKAGE_SRCS := \
 	lib/presentation/src/presentation.c \
 	lib/presentation/src/canvas.c \
+	lib/presentation/src/model.c \
+	lib/presentation/src/model_render.c \
 	lib/presentation/src/zclassic_brand.c
 PRESENTATION_PACKAGE_OBJS := \
 	$(PRESENTATION_BUILD_DIR)/presentation.o \
 	$(PRESENTATION_BUILD_DIR)/canvas.o \
+	$(PRESENTATION_BUILD_DIR)/model.o \
+	$(PRESENTATION_BUILD_DIR)/model_render.o \
 	$(PRESENTATION_BUILD_DIR)/zclassic_brand.o
 PRESENTATION_PACKAGE_ARCHIVE := build/lib/libzclpresentation.a
 PRESENTATION_DEMO_BIN := $(PRESENTATION_BUILD_DIR)/bitmap-demo
@@ -1126,6 +1131,25 @@ $(PRESENTATION_BUILD_DIR)/canvas.o: \
 		lib/presentation/src/canvas.c \
 		-o $(PRESENTATION_BUILD_DIR)/canvas.o
 
+$(PRESENTATION_BUILD_DIR)/model.o: \
+	lib/presentation/src/model.c \
+	lib/presentation/include/presentation/model.h \
+	lib/base/include/base/serialize_le.h
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/model.c \
+		-o $(PRESENTATION_BUILD_DIR)/model.o
+
+$(PRESENTATION_BUILD_DIR)/model_render.o: \
+	lib/presentation/src/model_render.c \
+	lib/presentation/include/presentation/model_render.h \
+	lib/presentation/include/presentation/model.h \
+	lib/presentation/include/presentation/canvas.h
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/model_render.c \
+		-o $(PRESENTATION_BUILD_DIR)/model_render.o
+
 $(PRESENTATION_PACKAGE_ARCHIVE): $(PRESENTATION_PACKAGE_OBJS) \
 	$(PRESENTATION_PROVENANCE_STAMP)
 	@mkdir -p build/lib
@@ -1175,9 +1199,11 @@ presentation-portability: presentation-demo
 	@if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then \
 		mkdir -p $(PRESENTATION_BUILD_DIR)/windows; \
 		x86_64-w64-mingw32-gcc -std=c2x -O2 -Wall -Wextra -Werror \
-			-pedantic -Ilib/presentation/include \
+			-pedantic -Ilib/presentation/include -Ilib/base/include \
 			lib/presentation/src/presentation.c \
 			lib/presentation/src/canvas.c \
+			lib/presentation/src/model.c \
+			lib/presentation/src/model_render.c \
 			lib/presentation/src/zclassic_brand.c \
 			lib/presentation/examples/bitmap_demo.c \
 			-luser32 -lgdi32 -lshell32 -lole32 \
@@ -2154,7 +2180,7 @@ t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
 
-.PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip
+.PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
 
@@ -2192,6 +2218,37 @@ zcode-async-proof-acceptance: zclassic23 zcl-rpc
 	@DHT_PACKAGEHOST=1 DHT_BUILDWORKERS=1 \
 	  DHT_AFTER_SPARSE_HOOK="$(CURDIR)/tools/dev/zcode_async_proof_acceptance_hook.sh" \
 	  bash tools/dev/zcode_dht_acceptance.sh
+
+# One browser-free product proof for the AI-controlled native C23 UI. The two
+# exact semantic owners prove model sensitivity, provenance labels, bounded
+# actions and publication plan/commit separation. The physical phase measures
+# cold/warm/replacement latency on real native windows and returns a real user
+# action through the display-only host. Full Stranger Beta remains an explicit
+# prerequisite, so smooth presentation can never hide a broken installed
+# obtain/verify/reproduce/use journey.
+
+# The physical-only target deliberately consumes an already audited node. Use
+# native-agent-ui-alpha as the public front door: it establishes the portable
+# compiler/sysroot first, avoiding any accidental host-ABI or optional-Tor
+# relink between the product build and the window proof.
+native-agent-ui-physical-acceptance: native-ui-driver
+	@test -x "$(ZCLASSIC23_BIN)" || { \
+	  echo 'native-agent-ui: missing audited node; run make native-agent-ui-alpha' >&2; \
+	  exit 1; \
+	}
+	@tools/scripts/check_c23_node_binary.sh "$(ZCLASSIC23_BIN)" >/dev/null
+	@bash tools/dev/native_agent_ui_alpha_acceptance.sh
+
+native-agent-ui-alpha:
+	@$(MAKE) --no-print-directory c23-portable-release
+	@$(MAKE) --no-print-directory native-ui-driver
+	@$(MAKE) --no-print-directory native-agent-ui-physical-acceptance
+	@$(MAKE) --no-print-directory t-fast-exact \
+	  ONLY='test_qr,test_syncdiag_rpc,test_zcode_publish'
+	@C23_BETA_NATIVE_UI_JOURNEY=1 \
+	  C23_BETA_NATIVE_UI_DRIVER="$(CURDIR)/$(NATIVE_UI_DRIVER_BIN)" \
+	  $(MAKE) --no-print-directory c23-commons-installed-acceptance
+	@printf '%s\n' '{"schema":"zcl.native_agent_ui_alpha.v1","verdict":"PASS","renderer_neutral_model":true,"resident_same_binary_host":true,"bounded_keyboard_pagination":true,"progress_host_restart_resume":true,"configured_agent_typed_views":true,"typed_qr":true,"typed_status":true,"typed_code_diff":true,"typed_reproduction_progress":true,"exact_publication_confirmation":true,"installed_package_change_journey":true,"agent_visual_requests":3,"human_actions":1,"visual_authority":"none","authored_ux":"c23","browser_required":false,"headless_refusal_named":true,"stranger_beta_green":true}'
 
 # Measurement-only scaling campaign over the same three interchangeable full
 # nodes.  It creates no lifecycle/cache authority beyond canonical immutable
@@ -4038,6 +4095,18 @@ $(SQLQ_BIN): tools/sqlq.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
 	    -D_POSIX_C_SOURCE=200809L -Ivendor/include \
 	    -o $@ tools/sqlq.c \
 	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
+
+# Physical native-agent UI acceptance driver. It links only the workstation's
+# X11 client ABI and sends one bounded event to an exact titled window; it owns
+# no node/package authority and is never shipped.
+NATIVE_UI_DRIVER_BIN = $(BIN_DIR)/native_ui_driver
+.PHONY: native-ui-driver
+native-ui-driver: $(NATIVE_UI_DRIVER_BIN)
+$(NATIVE_UI_DRIVER_BIN): tools/native_ui_driver.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -D_POSIX_C_SOURCE=200809L -Ivendor/x11/include \
+	    -o $@ $< -lX11
 
 # Crash recovery harness: fork zclassic23, SIGKILL at random points,
 # restart, and assert data-integrity invariants. Needs a pre-seeded

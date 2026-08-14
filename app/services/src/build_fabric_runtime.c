@@ -341,9 +341,53 @@ struct zcl_result build_fabric_runtime_register(bool worker_enabled,
 
 bool build_fabric_dump_state_json(struct json_value *out, const char *key)
 {
-    (void)key;
     if (!out) return false;
     json_set_object(out);
+    if (key && key[0]) {
+        uint8_t action_root[32];
+        (void)json_push_kv_str(out, "schema",
+                              "zcl.build_fabric_action_state.v1");
+        (void)json_push_kv_str(out, "action_id", key);
+        if (!zcl_hex_decode_lower(key, action_root, sizeof(action_root))) {
+            (void)json_push_kv_bool(out, "found", false);
+            (void)json_push_kv_str(out, "reason",
+                                  "action_id_not_lowercase_sha3");
+            return true;
+        }
+        struct node_db *ndb = app_runtime_node_db();
+        struct db_build_proof_event event;
+        if (!app_runtime_node_db_handle_open(ndb) ||
+            !db_build_proof_event_latest(ndb, key, &event)) {
+            (void)json_push_kv_bool(out, "found", false);
+            (void)json_push_kv_str(out, "reason",
+                                  "proof_event_not_found");
+            return true;
+        }
+        (void)json_push_kv_bool(out, "found", true);
+        (void)json_push_kv_str(out, "state", event.state);
+        (void)json_push_kv_str(out, "event_root", event.event_root);
+        (void)json_push_kv_str(out, "prior_event_root",
+                              event.prior_event_root);
+        (void)json_push_kv_str(out, "source_root",
+                              event.source_root_sha3);
+        (void)json_push_kv_str(out, "task_root", event.task_root_sha3);
+        (void)json_push_kv_str(out, "candidate_root",
+                              event.candidate_root_sha3);
+        (void)json_push_kv_str(out, "proof_policy_root",
+                              event.proof_policy_root_sha3);
+        (void)json_push_kv_str(out, "context_root",
+                              event.context_root_sha3);
+        (void)json_push_kv_str(out, "receipt_root",
+                              event.receipt_root_sha3);
+        (void)json_push_kv_int(out, "peer_id", (int64_t)event.peer_id);
+        (void)json_push_kv_int(out, "request_id",
+                              (int64_t)event.request_id);
+        (void)json_push_kv_int(out, "deadline_at", event.deadline_at);
+        (void)json_push_kv_int(out, "elapsed_us", event.elapsed_us);
+        (void)json_push_kv_int(out, "created_at", event.created_at);
+        (void)json_push_kv_bool(out, "event_root_rederived", true);
+        return true;
+    }
     (void)json_push_kv_str(out, "schema", "zcl.build_fabric_state.v1");
     (void)json_push_kv_bool(out, "worker_enabled", atomic_load(&g_worker_enabled));
     (void)json_push_kv_int(out, "requester_ticks", (int64_t)atomic_load(&g_requester_ticks));

@@ -423,7 +423,7 @@ struct zcl_result segment_sealer_start(struct segment_sealer_service *svc)
     pthread_mutex_unlock(&svc->ready_mutex);
     if (!ready_ok) {
         atomic_store(&svc->stop_requested, true);
-        pthread_detach(svc->thread);
+        pthread_join(svc->thread, NULL);
         svc->thread_started = false;
         return ZCL_ERR(-4, "segment_sealer: thread did not signal ready in 30s");
     }

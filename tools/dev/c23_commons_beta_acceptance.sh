@@ -9,9 +9,28 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_ROOT="$(mktemp -d /tmp/zcl23-c23-beta.XXXXXX)"
 KEEP="${C23_BETA_KEEP:-0}"
 
+beta_ui_host_pids() {
+    local proc cmd environment
+    [ "${C23_BETA_NATIVE_UI_JOURNEY:-0}" = 1 ] || return 0
+    for proc in /proc/[0-9]*; do
+        [ -r "$proc/cmdline" ] && [ -r "$proc/environ" ] || continue
+        cmd="$(tr '\0' ' ' < "$proc/cmdline" 2>/dev/null || true)"
+        [ "$cmd" = "$PREFIX/bin/zclassic23 --ui-present-host " ] || continue
+        environment="$(tr '\0' '\n' < "$proc/environ" 2>/dev/null || true)"
+        case "$environment" in
+            *"XDG_RUNTIME_DIR=$RUN_ROOT/native-ui-runtime"*)
+                printf '%s\n' "${proc##*/}" ;;
+        esac
+    done
+    return 0
+}
+
 beta_cleanup() {
-    local rc="$?"
+    local rc="$?" pid
     trap - EXIT INT TERM
+    while IFS= read -r pid; do
+        [ -n "$pid" ] && kill "$pid" 2>/dev/null || true
+    done < <(beta_ui_host_pids)
     case "$RUN_ROOT" in
         /tmp/zcl23-c23-beta.*)
             if [ "$rc" -eq 0 ] && [ "$KEEP" != 1 ]; then
@@ -30,6 +49,19 @@ PREFIX="$RUN_ROOT/install"
 WORK_PARENT="$RUN_ROOT/work"
 PARAMS_DIR="$RUN_ROOT/no-zk-params"
 mkdir -p "$PREFIX" "$WORK_PARENT" "$PARAMS_DIR"
+
+if [ "${C23_BETA_NATIVE_UI_JOURNEY:-0}" = 1 ]; then
+    [ -n "${DISPLAY:-}" ] || {
+        echo "c23-commons-beta: native journey requires DISPLAY" >&2
+        exit 2
+    }
+    [ -x "${C23_BETA_NATIVE_UI_DRIVER:-}" ] || {
+        echo "c23-commons-beta: native journey driver is unavailable" >&2
+        exit 2
+    }
+    mkdir -m 0700 "$RUN_ROOT/native-ui-runtime"
+    export XDG_RUNTIME_DIR="$RUN_ROOT/native-ui-runtime"
+fi
 
 echo "c23-commons-beta: installing ordinary product into $PREFIX"
 make -C "$REPO_ROOT" c23-portable-install DESTDIR="$PREFIX" PREFIX= >/dev/null

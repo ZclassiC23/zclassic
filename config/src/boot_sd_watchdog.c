@@ -104,6 +104,29 @@ static bool boot_sd_watchdog_supervisor_alive(void)
     return age_us < SUPERVISOR_BACKSTOP_DEFAULT_FREEZE_US;
 }
 
+static int64_t boot_sd_watchdog_freshness_bound_us(void)
+{
+    uint64_t wd_us = sd_notify_watchdog_usec();
+    return wd_us > 0 ? (int64_t)wd_us : 120LL * 1000000;
+}
+
+/* A healthy sweep alone is insufficient: the sweep intentionally runs apart
+ * from child callbacks, the message handler, and the dial scheduler. Gate the
+ * keepalive on all three execution pillars so a frozen worker cannot be hidden
+ * by an otherwise-live monitoring thread. */
+static bool boot_sd_watchdog_runtime_alive(void)
+{
+    if (!boot_sd_watchdog_supervisor_alive())
+        return false;
+    int64_t bound_us = boot_sd_watchdog_freshness_bound_us();
+    if (supervisor_tick_runner_running() &&
+        supervisor_tick_runner_last_hb_age_us() >= bound_us)
+        return false;
+    return !g_sd_watchdog_ctx ||
+           connman_runtime_progress_fresh(g_sd_watchdog_ctx->connman,
+                                          bound_us);
+}
+
 /* boot_progress freshness, shared by the collect tick (STATUS label) and
  * the pet thread. Snapshot import bulk INSERT, block-by-block catchup, and
  * UTXO replay all take longer than WatchdogSec and would otherwise be
@@ -181,7 +204,7 @@ static void *boot_sd_watchdog_pet_main(void *arg)
         int64_t pub_us = 0;
         bool have = node_health_last_verdict(&pub_us);
         int64_t verdict_age_us = have ? now_us - pub_us : 0;
-        if (boot_sd_watchdog_pet_decide(boot_sd_watchdog_supervisor_alive(),
+        if (boot_sd_watchdog_pet_decide(boot_sd_watchdog_runtime_alive(),
                                         have, verdict_age_us,
                                         boot_sd_watchdog_recent_progress(),
                                         bound_us - (now_us - start_us),
@@ -220,7 +243,7 @@ static void boot_sd_watchdog_tick(void *ctx)
      * supervisor=FROZEN marker when Pillar 7's gate is the reason the
      * ping stopped (as opposed to a plain health/progress lapse). */
     bool recent_progress = boot_sd_watchdog_recent_progress();
-    bool supervisor_alive = boot_sd_watchdog_supervisor_alive();
+    bool supervisor_alive = boot_sd_watchdog_runtime_alive();
     char status[320];
     const char *label = recent_progress ? boot_progress_last_label() : NULL;
     snprintf(status, sizeof(status),
@@ -278,7 +301,7 @@ bool boot_sd_watchdog_start(void *ctx)
     /* Defense-in-depth: sd_notify_watchdog_ping() itself now refuses to
      * send WATCHDOG=1 whenever the root supervisor sweep is stale, even
      * if some future call site forgets the explicit check above. */
-    sd_notify_set_health_check(boot_sd_watchdog_supervisor_alive);
+    sd_notify_set_health_check(boot_sd_watchdog_runtime_alive);
     sd_notify_ready();
     sd_notify_status("zclassic23 started");
 

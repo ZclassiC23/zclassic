@@ -449,12 +449,11 @@ struct zcl_result block_pruning_start(struct block_pruning_service *svc)
     pthread_mutex_unlock(&svc->ready_mutex);
 
     if (!ready_ok) {
-        /* Signal stop and detach so the OS reaps the thread whenever
-         * it next checks the flag. We don't pthread_join here because
-         * the thread may be wedged in a syscall (disk I/O); blocking
-         * app_init on that is exactly the failure mode we're escaping. */
+        /* Signal stop and retain ownership. A stage watchdog may terminate a
+         * genuinely wedged process, but startup must not discard a live
+         * worker and later free its service state. */
         atomic_store(&svc->stop_requested, true);
-        pthread_detach(svc->thread);
+        pthread_join(svc->thread, NULL);
         svc->thread_started = false;
         return ZCL_ERR(-4,
             "block_pruning: thread did not signal ready within 30 s — aborted start");

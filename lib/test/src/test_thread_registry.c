@@ -108,6 +108,23 @@ static int t_registry_reports_straggler(void)
     return failures;
 }
 
+static int t_registry_owned_join_waits_for_straggler(void)
+{
+    int failures = 0;
+    thread_registry_reset_for_test();
+
+    TEST("thread_registry: owned join never abandons a live worker") {
+        ASSERT_EQ(thread_registry_spawn("tr-owned",
+                                        tr_stuck_worker, NULL, NULL),
+                  0);
+        ASSERT_EQ(thread_registry_join_all(0), 1);
+        thread_registry_join_all_owned();
+        ASSERT_EQ(thread_registry_live_count(), 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* spawn returns pthread errno on pthread_create failure. Feed it an
  * obviously broken entry (NULL) and assert the registry doesn't leak
  * a reserved slot on the rejected spawn. */
@@ -134,5 +151,6 @@ int test_thread_registry(void)
     failures += t_registry_rejects_null_entry();
     failures += t_registry_stress_50_threads();
     failures += t_registry_reports_straggler();
+    failures += t_registry_owned_join_waits_for_straggler();
     return failures;
 }

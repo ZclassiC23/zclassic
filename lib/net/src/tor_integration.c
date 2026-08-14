@@ -93,14 +93,14 @@ static void tor_join_thread_bounded(pthread_t thread,
 
     if (rc == ETIMEDOUT) {
         fprintf(stderr,  // obs-ok:shutdown-straggler-named
-                "Tor: %s join timed out after %ds; detaching\n",
+                "Tor: %s join timed out after %ds; retaining ownership\n",
                 name ? name : "thread", timeout_sec);
     } else {
         fprintf(stderr,  // obs-ok:shutdown-straggler-named
-                "Tor: %s join failed rc=%d (%s); detaching\n",
+                "Tor: %s join failed rc=%d (%s); retaining ownership\n",
                 name ? name : "thread", rc, strerror(rc));
     }
-    pthread_detach(thread);
+    pthread_join(thread, NULL);
 }
 
 static void ensure_onion_suffix(void)

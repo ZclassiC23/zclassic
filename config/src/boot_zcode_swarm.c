@@ -293,7 +293,6 @@ static void boot_zcode_work_drain_cancels(int64_t now)
 }
 static void boot_zcode_work_publish_results(int64_t now)
 {
-    (void)now;
     struct node_db *ndb = app_runtime_node_db();
     if (!s_work || !ndb || !ndb->open || !s_work_key_ready ||
         !boot_zcode_work_workspace())
@@ -373,6 +372,7 @@ static void boot_zcode_work_publish_results(int64_t now)
             break;
         }
     }
+    (void)vcs_zcode_work_node_requeue_results(s_work, now);
 }
 static void boot_zcode_work_observe_results(int64_t now)
 {
@@ -669,7 +669,9 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
         free(ev.reply);
     }
     if (ev.disconnect_peer)
-        atomic_store(&node->disconnect, true);
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_APPLICATION,
+            P2P_DISCONNECT_SOURCE_APPLICATION, node->endpoint_generation);
     return true;
 }
 
@@ -697,7 +699,6 @@ static void boot_zcode_swarm_periodic(struct msg_processor *mp,
         boot_zcode_work_drain_admissions(wall);
         boot_zcode_work_drain_cancels(wall);
         boot_zcode_work_publish_results(wall);
-        (void)vcs_zcode_work_node_requeue_results(s_work, wall);
         boot_zcode_work_observe_results(wall);
         /* A result observed above derives RECEIPT_VERIFIED. Project readiness
          * in the same supervised turn instead of imposing another timer

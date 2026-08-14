@@ -66,6 +66,9 @@
  * one is a registered catalog row (see LINT_SHARD_LIST below) and builds its
  * own sandbox, so this is also the number of concurrent private clones. */
 #define LINT_GATE_SHARD_COUNT 8
+#define LINT_SHARD_LIST(X) \
+    X(01, 0) X(02, 1) X(03, 2) X(04, 3) \
+    X(05, 4) X(06, 5) X(07, 6) X(08, 7)
 
 /* Which of this family's registered group names must run alone.
  *
@@ -82,6 +85,21 @@ bool lint_gates_group_is_exclusive(const char *group_name)
     if (!group_name) return false;
     if (strncmp(group_name, "test_", 5) == 0) group_name += 5;
     return strcmp(group_name, "make_lint_gates") == 0;
+}
+
+/* The eight private-sandbox shards are safe to run together, but each copies
+ * and scans a source tree. Two concurrent 16-worker suites repeatedly starved
+ * a different shard past the unchanged 300 s group timeout. Keep this family
+ * in one bounded, parallel quiet phase before unrelated suite work. */
+bool lint_gates_group_requires_quiet_pool(const char *group_name)
+{
+    if (!group_name) return false;
+    if (strncmp(group_name, "test_", 5) == 0) group_name += 5;
+#define LINT_QUIET_MATCH(tag, idx) \
+    if (strcmp(group_name, "make_lint_gates_shard_" #tag) == 0) return true;
+    LINT_SHARD_LIST(LINT_QUIET_MATCH)
+#undef LINT_QUIET_MATCH
+    return false;
 }
 
 #ifdef ZCL_TESTING
@@ -660,10 +678,6 @@ static int lint_run_shard(int shard)
  * `int test_<name>(void)` as an entry point, so these generated definitions
  * are invisible to it while the catalog rows still bind name -> symbol. */
 
-#define LINT_SHARD_LIST(X) \
-    X(01, 0) X(02, 1) X(03, 2) X(04, 3) \
-    X(05, 4) X(06, 5) X(07, 6) X(08, 7)
-
 #define LINT_SHARD_ENTRY(tag, idx) \
     int test_make_lint_gates_shard_##tag(void) { return lint_run_shard(idx); }
 LINT_SHARD_LIST(LINT_SHARD_ENTRY)
@@ -821,6 +835,13 @@ static int t_partition_only_base_group_is_exclusive(void)
         ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_heavy_02"));
         ASSERT(!lint_gates_group_is_exclusive("test_make_lint_gates_partition"));
         ASSERT(!lint_gates_group_is_exclusive(NULL));
+        ASSERT(lint_gates_group_requires_quiet_pool(
+            "test_make_lint_gates_shard_01"));
+        ASSERT(lint_gates_group_requires_quiet_pool(
+            "make_lint_gates_shard_08"));
+        ASSERT(!lint_gates_group_requires_quiet_pool(
+            "test_make_lint_gates_realroot"));
+        ASSERT(!lint_gates_group_requires_quiet_pool(NULL));
         PASS();
     } _test_next:;
     return failures;

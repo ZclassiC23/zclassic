@@ -35,6 +35,7 @@
 #include "net/download.h"
 #include "chain/chainparams.h"  /* fMineBlocksOnDemand (regtest legacy-mirror skip) */
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* See config/boot_internal.h for why this predicate is shared rather than
@@ -114,6 +115,11 @@ bool boot_legacy_mirror_start(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (!svc)
         return false;
+    const char *oracle_mode = getenv("ZCL_LEGACY_ORACLE_MODE");
+    if (oracle_mode && strcmp(oracle_mode, "off") == 0) {
+        printf("[legacy-mirror] disabled by -legacyoracle=off\n");
+        return true;
+    }
     /* The legacy mirror parity-compares this node against a co-located
      * zclassicd oracle. On regtest (fMineBlocksOnDemand) there is no zclassicd
      * regtest counterpart, so the mirror can only mis-compare against a
@@ -185,6 +191,11 @@ void boot_gap_fill_stop(void *ctx)
 bool boot_zclassicd_oracle_start(void *ctx)
 {
     struct boot_svc_ctx *svc = ctx;
+    const char *oracle_mode = getenv("ZCL_LEGACY_ORACLE_MODE");
+    if (oracle_mode && strcmp(oracle_mode, "off") == 0) {
+        printf("[oracle] zclassicd oracle disabled by -legacyoracle=off\n");
+        return true;
+    }
     const char *net = boot_nonmain_network_name(svc);
     if (net) {
         printf("[oracle] zclassicd height oracle skipped on %s (the oracle is "
@@ -284,6 +295,11 @@ bool boot_utxo_mirror_sync_start(void *ctx)
     struct boot_svc_ctx *svc = ctx;
     if (!svc)
         return false;
+    const char *mirror_mode = getenv("ZCL_UTXO_MIRROR_MODE");
+    if (mirror_mode && strcmp(mirror_mode, "off") == 0) {
+        printf("[utxo_mirror] disabled by -utxomirror=off\n");
+        return true;
+    }
     struct node_db *ndb = boot_node_db(svc);
     if (!ndb || !ndb->open) {
         /* No mirror to feed (e.g. store-less runtime profile) — skip cleanly.

@@ -10,6 +10,8 @@
 #include "services/build_fabric_async.h"
 #include "services/build_fabric_runtime.h"
 #include "services/build_fabric_worker.h"
+#include "config/db_service.h"
+#include "config/runtime.h"
 #include "base/hex.h"
 #include "crypto/ed25519.h"
 #include "platform/time_compat.h"
@@ -363,6 +365,27 @@ static int test_bf_async_proof_events(void)
         ASSERT_EQ(timings.remote_execution_us, 30);
         ASSERT_EQ(timings.receipt_verification_us, 40);
         ASSERT_EQ(timings.total_background_proof_us, 60);
+
+        struct db_service db_service;
+        db_service_init(&db_service);
+        ASSERT(db_service_attach(&db_service, &ndb));
+        ASSERT(db_service_start_test_worker(&db_service));
+        struct app_runtime_context runtime = {.db_service = &db_service};
+        app_runtime_set_current(&runtime);
+        struct json_value action_state;
+        json_init(&action_state);
+        ASSERT(build_fabric_dump_state_json(
+            &action_state, action.action_id));
+        ASSERT(json_get_bool(json_get(&action_state, "found")));
+        ASSERT_STR_EQ(json_get_str(json_get(&action_state, "state")),
+                      "READY_FOR_ACCEPTANCE");
+        ASSERT_STR_EQ(json_get_str(json_get(&action_state, "candidate_root")),
+                      action.candidate_root_sha3);
+        ASSERT(json_get_bool(json_get(
+            &action_state, "event_root_rederived")));
+        json_free(&action_state);
+        app_runtime_set_current(NULL);
+        db_service_stop(&db_service);
 
         struct db_build_job newer_job;
         struct db_build_action newer_action;

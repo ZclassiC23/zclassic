@@ -194,16 +194,78 @@ size_t zcode_view_package(const struct zcode_view_package_input *in,
 
     char safe_name[160];
     html_escape(safe_name, sizeof(safe_name), in->entry->name);
-    n = snprintf(body + off, sizeof(body) - off, "<h1>%s</h1>", safe_name);
+    char safe_semver[80];
+    html_escape(safe_semver, sizeof(safe_semver), in->entry->semver);
+    n = snprintf(body + off, sizeof(body) - off,
+        "<h1>%s <span class='pill'>%s</span></h1>"
+        "<section class='card'><h2>What it does</h2>"
+        "<p class='bad'>No human purpose is published for this exact "
+        "release. Its name and source paths are not treated as proof of "
+        "behavior.</p>"
+        "<div class='kv'><b>exact version</b>"
+        "<span class='val mono'>%s</span></div></section>"
+        "<section class='card'><h2>Try it</h2>"
+        "<p>No runnable example is published for this release. Nothing "
+        "was executed. A future example must declare bounded input, output, "
+        "success, failure, time, and resource limits as package facts.</p>"
+        "</section>"
+        "<section class='card'><h2>Change it</h2>"
+        "<p>This installed compatibility page is read-only. Tell your agent "
+        "what you want to change; typed native commands perform the work and "
+        "summon bounded native C23 views when you need to inspect, compare, "
+        "choose, or confirm something. This page never gains software "
+        "authority.</p></section>",
+        safe_name, safe_semver, safe_semver);
     if (n > 0) off += (size_t)n;
 
+    n = snprintf(body + off, sizeof(body) - off,
+        "<section class='card'><h2>What changed</h2>");
+    if (n > 0) off += (size_t)n;
+    if (in->entry->has_parent) {
+        n = snprintf(body + off, sizeof(body) - off,
+            "<div class='kv'><b>predecessor</b>"
+            "<span class='val mono'><a href='/zcode/package/%s'>%s</a>"
+            "</span></div>"
+            "<p>No behavior comparison is published for this successor; "
+            "the exact predecessor link is shown without inventing a "
+            "diff.</p>", in->entry->parent_root_hex,
+            in->entry->parent_root_hex);
+    } else {
+        n = snprintf(body + off, sizeof(body) - off,
+            "<p>This is the first release in its published lineage. There "
+            "is no predecessor to compare.</p>");
+    }
+    if (n > 0) off += (size_t)n;
+    n = snprintf(body + off, sizeof(body) - off, "</section>");
+    if (n > 0) off += (size_t)n;
+
+    n = snprintf(body + off, sizeof(body) - off,
+        "<section class='card'><h2>Verify</h2>"
+        "<div class='kv'><b>exact source identity</b>"
+        "<span class='val mono'>%s</span></div>"
+        "<p>The package root binds the manifest and its content. Verifier "
+        "claims below are local evidence, not guesses or peer counts.</p>",
+        in->entry->package_root_hex);
+    if (n > 0) off += (size_t)n;
+    off += zcode_emit_attest_card(body + off, sizeof(body) - off, in);
+    n = snprintf(body + off, sizeof(body) - off, "</section>");
+    if (n > 0) off += (size_t)n;
+
+    n = snprintf(body + off, sizeof(body) - off,
+        "<section class='card'><h2>Use and share</h2>"
+        "<p><a class='btn' href='/zcode/download/%s'>Obtain exact manifest"
+        "</a></p>"
+        "<p>This attachment is inert package data; the page never compiles "
+        "or runs downloaded C. Keep the package root with it so another "
+        "node can identify the same release.</p></section>"
+        "<details><summary>Technical package details</summary>",
+        in->entry->package_root_hex);
+    if (n > 0) off += (size_t)n;
     off += zcode_emit_release_card(body + off, sizeof(body) - off,
                                    in->entry, in->release);
     off += zcode_emit_manifest_card(body + off, sizeof(body) - off, in);
-    off += zcode_emit_attest_card(body + off, sizeof(body) - off, in);
-
     n = snprintf(body + off, sizeof(body) - off,
-        "<div class='card'><h2>Swarm</h2>");
+        "<div class='card'><h2>Swarm availability</h2>");
     if (n > 0) off += (size_t)n;
     if (in->swarm_advertisers >= 0) {
         n = snprintf(body + off, sizeof(body) - off,
@@ -220,7 +282,8 @@ size_t zcode_view_package(const struct zcode_view_package_input *in,
     }
     if (n > 0) off += (size_t)n;
     n = snprintf(body + off, sizeof(body) - off,
-        "</div><p><a href='/zcode/packages'>&larr; all packages</a></p>");
+        "</div></details><p><a href='/zcode/packages'>&larr; all packages"
+        "</a></p>");
     if (n > 0) off += (size_t)n;
 
     n = zcode_body_end(body + off, sizeof(body) - off);

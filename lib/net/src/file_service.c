@@ -59,14 +59,14 @@ static void fs_join_thread_bounded(pthread_t thread,
 
     if (rc == ETIMEDOUT) {
         fprintf(stderr,  // obs-ok:shutdown-straggler-named
-                "file_service: %s join timed out after %ds; detaching\n",
+                "file_service: %s join timed out after %ds; retaining ownership\n",
                 name ? name : "thread", timeout_sec);
     } else {
         fprintf(stderr,  // obs-ok:shutdown-straggler-named
-                "file_service: %s join failed rc=%d (%s); detaching\n",
+                "file_service: %s join failed rc=%d (%s); retaining ownership\n",
                 name ? name : "thread", rc, strerror(rc));
     }
-    pthread_detach(thread);
+    pthread_join(thread, NULL);
 }
 
 /* ── Session management ────────────────────────────────────────── */

@@ -828,6 +828,28 @@ void peer_lifecycle_note_reject(const struct p2p_node *node,
 void peer_lifecycle_note_disconnected(const struct p2p_node *node,
                                       const char *reason)
 {
+    /* Cleanup is the single lifetime fold for the typed causal record. It is
+     * deliberately independent of note_terminal's generation dedupe: a
+     * timeout/reject may already own the human-facing terminal incident, but
+     * the exact typed cleanup cause must still enter cumulative telemetry. */
+    if (node) {
+        int typed_reason = atomic_load_explicit(&node->disconnect_reason,
+                                                memory_order_acquire);
+        int typed_source = atomic_load_explicit(&node->disconnect_source,
+                                                memory_order_relaxed);
+        uint64_t generation = atomic_load_explicit(
+            &node->disconnect_endpoint_generation, memory_order_relaxed);
+        pthread_mutex_lock(&g_pl.lock);
+        if (typed_reason > P2P_DISCONNECT_NONE &&
+            typed_reason < P2P_DISCONNECT_REASON_COUNT)
+            g_pl.totals.disconnect_reason_counts[typed_reason]++;
+        if (typed_source > P2P_DISCONNECT_SOURCE_UNKNOWN &&
+            typed_source < P2P_DISCONNECT_SOURCE_COUNT)
+            g_pl.totals.disconnect_source_counts[typed_source]++;
+        if (generation > g_pl.totals.max_endpoint_generation)
+            g_pl.totals.max_endpoint_generation = generation;
+        pthread_mutex_unlock(&g_pl.lock);
+    }
     note_terminal(node, reason, "disconnect", false, false);
 }
 
@@ -1002,6 +1024,32 @@ static void summary_to_json(const struct peer_lifecycle_summary *s,
                      s->zcl23_handshakes);
     json_push_kv_int(out, "pre_handshake_disconnects",
                      s->pre_handshake_disconnects);
+}
+
+static void causal_disconnects_to_json(
+    const struct peer_lifecycle_summary *s, struct json_value *out)
+{
+    struct json_value reasons = {0};
+    json_set_object(&reasons);
+    for (int reason = P2P_DISCONNECT_NONE + 1;
+         reason < P2P_DISCONNECT_REASON_COUNT; reason++)
+        json_push_kv_int(&reasons,
+                         p2p_disconnect_reason_name(reason),
+                         s->disconnect_reason_counts[reason]);
+    json_push_kv(out, "causal_disconnects", &reasons);
+    json_free(&reasons);
+
+    struct json_value sources = {0};
+    json_set_object(&sources);
+    for (int source = P2P_DISCONNECT_SOURCE_UNKNOWN + 1;
+         source < P2P_DISCONNECT_SOURCE_COUNT; source++)
+        json_push_kv_int(&sources,
+                         p2p_disconnect_source_name(source),
+                         s->disconnect_source_counts[source]);
+    json_push_kv(out, "causal_disconnect_sources", &sources);
+    json_free(&sources);
+    json_push_kv_int(out, "max_endpoint_generation",
+                     (int64_t)s->max_endpoint_generation);
 }
 
 static void summary_add_entry(struct peer_lifecycle_summary *s,
@@ -1784,6 +1832,7 @@ bool peer_lifecycle_summary_json(struct json_value *out)
     if (!out) return false;
     pthread_mutex_lock(&g_pl.lock);
     summary_to_json(&g_pl.totals, out);
+    causal_disconnects_to_json(&g_pl.totals, out);
     append_sources_locked(out);
     pthread_mutex_unlock(&g_pl.lock);
     return true;
@@ -1802,6 +1851,7 @@ bool peer_lifecycle_dump_state_json(struct json_value *out,
     struct peer_lifecycle_summary totals = g_pl.totals;
     struct json_value summary = {0};
     summary_to_json(&totals, &summary);
+    causal_disconnects_to_json(&totals, &summary);
     json_push_kv(out, "summary", &summary);
     json_free(&summary);
 

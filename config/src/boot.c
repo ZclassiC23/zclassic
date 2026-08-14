@@ -4280,28 +4280,30 @@ void app_shutdown(void)
     boot_stop_platform_services();
     app_shutdown_svc(&g_svc);
     boot_postmortem_stop();
-    /* Written LAST before releasing the datadir lock: marker present means
-     * teardown completed. An alarm-forced exit still reads as unclean. */
-    boot_shutdown_marker_write_clean(g_datadir);
+    /* app_shutdown_svc completed the marker + receipt durability barrier. */
     boot_datadir_lock_release();
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
 }
 
 void app_shutdown_offline(void)
 {
+    bool durability_ok = true;
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_REQUESTED);
     signal(SIGALRM, shutdown_alarm_abort);
+    shutdown_stagewatch_begin(g_datadir);
+    shutdown_stagewatch_enter("offline-worker-drain", 15, false, true);
     thread_registry_request_shutdown();
     event_async_stop();
     boot_stop_platform_services();
     boot_stop_db_service_kernel();
     staged_sync_supervisor_shutdown_stages();
-    boot_offline_join_workers_or_exit(g_datadir); /* D2: join bg workers or _exit before frees */
+    boot_offline_join_workers_or_exit(g_datadir);
     coins_view_cache_free(&g_coins_tip);
     coins_view_sqlite_close(&g_coins_sqlite);
     if (g_wallet_sqlite.open) {
         struct zcl_result r = wallet_sqlite_flush_r(&g_wallet_sqlite, &g_wallet);
         if (!r.ok) {
+            durability_ok = false;
             fprintf(stderr,
                     "[shutdown] offline wallet flush failed: code=%d "
                     "message=%s source=%s:%d\n",
@@ -4314,16 +4316,12 @@ void app_shutdown_offline(void)
     wallet_free(&g_wallet);
     main_state_free(&g_state);
     sapling_free_params();
-    progress_store_close();
-    boot_stop_projection_storage();
-    if (g_node_db.open) {
-        (void)node_db_wal_checkpoint(&g_node_db);
-        node_db_close(&g_node_db);
-    }
+    if (!boot_offline_persist_runtime(&g_node_db))
+        durability_ok = false;
     ecc_verify_destroy();
     ecc_stop();
     boot_postmortem_stop();
-    boot_shutdown_marker_write_clean(g_datadir);
+    boot_offline_complete_durability_or_exit(g_datadir, durability_ok);
     boot_datadir_lock_release();
     boot_stage_advance_to(BOOT_STAGE_SHUTDOWN_COMPLETE);
 }

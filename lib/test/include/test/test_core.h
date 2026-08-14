@@ -467,6 +467,9 @@ int test_make_lint_gates_partition(void);
  * name whose checks plant into the live worktree and therefore must run
  * alone. test_parallel.c's group_requires_exclusive_repo() delegates here. */
 bool lint_gates_group_is_exclusive(const char *group_name);
+/* True for the eight private-sandbox scan shards that share one bounded
+ * parallel quiet phase before unrelated suite workers. */
+bool lint_gates_group_requires_quiet_pool(const char *group_name);
 
 int test_multisig(void);
 int test_rpc_auth_hardening(void);

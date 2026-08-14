@@ -3,6 +3,7 @@
 
 #include "vcs/zcode_work_node.h"
 
+#include "json/json.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 
@@ -170,6 +171,38 @@ void vcs_zcode_work_node_set_global(struct vcs_zcode_work_node *node)
 struct vcs_zcode_work_node *vcs_zcode_work_node_global(void)
 {
     return g_work_node;
+}
+
+bool vcs_zcode_work_node_dump_state_json(struct json_value *out,
+                                         const char *key)
+{
+    (void)key;
+    if (!out) {
+        LOG_FAIL("zcode_work", "dump_state_json: out is NULL");
+    }
+    json_set_object(out);
+    struct vcs_zcode_work_node *node = g_work_node;
+    if (!node) {
+        json_push_kv_bool(out, "enabled", false);
+        json_push_kv_int(out, "worker_capacity", 0);
+        json_push_kv_int(out, "worker_active", 0);
+        json_push_kv_int(out, "worker_available", 0);
+        return true;
+    }
+    pthread_mutex_lock(&node->lock);
+    size_t capacity = node->has_local_capability
+        ? node->local_capability.slots : 0;
+    if (capacity > sizeof(node->slots) / sizeof(node->slots[0]))
+        capacity = sizeof(node->slots) / sizeof(node->slots[0]);
+    size_t active = 0;
+    for (size_t i = 0; i < capacity; i++)
+        active += node->slots[i].used ? 1u : 0u;
+    json_push_kv_bool(out, "enabled", node->has_local_capability);
+    json_push_kv_int(out, "worker_capacity", (int64_t)capacity);
+    json_push_kv_int(out, "worker_active", (int64_t)active);
+    json_push_kv_int(out, "worker_available", (int64_t)(capacity - active));
+    pthread_mutex_unlock(&node->lock);
+    return true;
 }
 
 static int work_peer_slot(const struct vcs_zcode_work_node *node,

@@ -4,8 +4,8 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* The parallel outbound dialer: anchors-first candidate gathering plus the
- * non-blocking batch-connect machinery, and the thread_open_connections
+/* The persistent outbound dial scheduler: anchors-first candidate gathering
+ * plus non-blocking connect machinery, and the thread_open_connections
  * loop that drives them. Split out of connman.c (which owns lifecycle,
  * addrman persistence, seed discovery, outbound-target selection +
  * diversity-cap accounting, the socket reactor, and the message-cycle
@@ -27,19 +27,19 @@
 #include <string.h>
 #include <unistd.h>
 
-/* ── Parallel dialer: anchors-first candidate gathering + batch completion ──
+/* ── Persistent dial scheduler: deduplicated candidates, one attempt ──────
  *
  * The old dialer dialed serially: connect_socket_directly() blocked in
  * select() for up to DEFAULT_CONNECT_TIMEOUT (5 s) PER address, up to 3
  * attempts a loop — so a cold boot could spend ~15 s of wall time before it
- * had even 3 peers if the first candidates were slow/dead. The dialer now
- * gathers a batch of distinct candidates (persisted anchors FIRST, then
- * addnode/addrman), fires up to ZCL_DIAL_BATCH_MAX non-blocking connect()s at
- * once, and poll()s them against ONE shared deadline — so N slow peers cost
- * one 5 s window total, not N×5 s, and the fastest live peers win the slots.
- * All fan-out stays inside this single thread (no new threads). */
+ * had even 3 peers if the first candidates were slow/dead. Candidate gathering
+ * remains shared by anchors, DHT hints, addnodes, and addrman, but the owning
+ * scheduler starts only one non-blocking connect at a time. This makes endpoint
+ * deduplication and recovery backoff deterministic and prevents dial storms.
+ * The scheduler remains a single persistent thread. */
 
-#define ZCL_DIAL_BATCH_MAX 8   /* <= MAX_OUTBOUND_CONNECTIONS */
+#define ZCL_DIAL_BATCH_MAX 8   /* candidate/test buffer bound */
+#define ZCL_DIAL_SCHEDULER_WIDTH 1 /* one scheduler-owned TCP attempt */
 
 static bool connect_only_wait_needed(bool connect_only, size_t outbound,
                                      size_t addnode_count,
@@ -382,9 +382,15 @@ static void connman_sweep_feelers(struct connman *cm)
         if (n->state >= PEER_HANDSHAKE_COMPLETE) {
             if (ngood < ZCL_DIAL_BATCH_MAX)
                 good_svcs[ngood++] = n->addr.svc;
-            n->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                n, P2P_DISCONNECT_FEELER_COMPLETE,
+                P2P_DISCONNECT_SOURCE_DIAL_SCHEDULER,
+                n->endpoint_generation);
         } else if (now - n->time_connected > ZCL_FEELER_HANDSHAKE_BUDGET_SECS) {
-            n->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                n, P2P_DISCONNECT_FEELER_TIMEOUT,
+                P2P_DISCONNECT_SOURCE_DIAL_SCHEDULER,
+                n->endpoint_generation);
         }
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);
@@ -559,6 +565,9 @@ void *thread_open_connections(void *arg)
     thread_liveness_beat(&g_open_liveness, 0);
 
     while (!g_stop) {
+        atomic_store_explicit(&cm->dial_scheduler_last_progress_us,
+                              platform_time_monotonic_us(),
+                              memory_order_relaxed);
         /* Count outbound peers in two buckets:
          *   `outbound_slot` — all non-disconnecting outbound peers,
          *     used as the upper bound on connection slots so we don't
@@ -707,6 +716,8 @@ void *thread_open_connections(void *arg)
         }
         if (want > ZCL_DIAL_BATCH_MAX)
             want = ZCL_DIAL_BATCH_MAX;
+        if (want > ZCL_DIAL_SCHEDULER_WIDTH)
+            want = ZCL_DIAL_SCHEDULER_WIDTH;
 
         struct connman_dial_candidate batch[ZCL_DIAL_BATCH_MAX + 1];
         size_t nbatch = 0;
@@ -716,7 +727,7 @@ void *thread_open_connections(void *arg)
         /* Feeler: at most one transient NEW-table validation probe per
          * interval, appended beyond the slot budget (feelers never occupy an
          * outbound slot). Skipped in -connect-only mode. */
-        if (!g_connect_only) {
+        if (!g_connect_only && nbatch == 0) {
             int64_t feeler_interval = connman_feeler_interval_secs();
             if (now_oc - cm->last_feeler_ts >= feeler_interval &&
                 !connman_feeler_in_flight(cm)) {

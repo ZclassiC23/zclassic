@@ -51,6 +51,7 @@
 #include "keys/key.h"
 #include "keys/key_io.h"
 #include "keys/pubkey.h"
+#include "presentation/model.h"
 #include "vcs/package_index.h"
 #include "vcs/package_publish.h"
 #include "vcs/package_recipe.h"
@@ -501,6 +502,15 @@ static int t_plan_happy(void)
              json_get_int(json_get(rel, "replayed_releases")) == 0);
     ZP_CHECK("plan: no failures",
              zp_failure_rule(&c.reply, 0) == NULL);
+    struct zcl_present_model_v1 confirmation;
+    char confirmation_error[192];
+    ZP_CHECK("plan: exact output feeds the native confirmation instrument",
+             zcl_native_presentation_publication_confirm_model_from_plan(
+                 &c.reply.data, &confirmation, confirmation_error,
+                 sizeof(confirmation_error)) &&
+             confirmation.kind == ZCL_PRESENT_MODEL_CONFIRMATION &&
+             strcmp(confirmation.exact_root, id_hex) == 0 &&
+             confirmation.action_count == 2);
     zp_cmd_free(&c);
 
     /* Without dir the chunk check is honestly skipped, not failed. */
@@ -517,6 +527,10 @@ static int t_plan_happy(void)
                     "needs_chunk_source") == 0 &&
              strcmp(json_get_str(json_get(&c.reply.data, "next_action")),
                     "rerun zcode package publish plan with dir") == 0);
+    ZP_CHECK("plan: unchecked chunks cannot produce confirmation chrome",
+             !zcl_native_presentation_publication_confirm_model_from_plan(
+                 &c.reply.data, &confirmation, confirmation_error,
+                 sizeof(confirmation_error)));
     zp_cmd_free(&c);
 
     free(release_hex);

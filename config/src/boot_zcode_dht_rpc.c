@@ -17,7 +17,6 @@
 #define DHT_PUBLIC_TOKEN_BYTES 16u
 #define DHT_PUBLIC_ACTIVE_GRACE_S 5u
 #define DHT_PUBLIC_RESULT_RETENTION_S 30u
-
 struct public_lookup {
   bool used, cached;
   uint8_t lookup_token[DHT_PUBLIC_TOKEN_BYTES];
@@ -797,4 +796,5 @@ void boot_zcode_dht_register_rpc(struct rpc_table *table) {
     rpc_table_must_append(table, &commands[i]);
   boot_zcode_dht_record_register_rpc(table);
   boot_zcode_dht_replication_register_rpc(table);
+  boot_zcode_package_register_rpc(table);
 }

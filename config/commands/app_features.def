@@ -55,6 +55,8 @@ ZCL_COMMAND_BRANCH("app.shop.want.fulfill", "app.shop.want", "Fulfillments",
                    ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.swap", "app", "Swaps", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.qr", "app", "QR", ZCL_COMMAND_LAYER_APP)
+ZCL_COMMAND_BRANCH("app.presentation", "app", "Native presentation",
+                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.blog", "app", "Blog", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.payments", "app", "Payments", ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("app.payments.zpay", "app.payments", "ZPAY",
@@ -103,9 +105,10 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_COMMAND(
     "app.qr.show", "app.qr", "", "Show a payload as a native QR window",
-    "Launches a detached same-binary portable C QR window and returns "
-    "immediately. The bounded payload crosses the process boundary through "
-    "stdin, never argv, environment, node transport, logs, or the result. The "
+    "Launches a portable C QR window through the warm same-binary presentation "
+    "host, retaining the detached reviewed child as a portable fallback. The "
+    "bounded payload crosses only length-framed local IPC or framed stdin, "
+    "never argv, environment, node transport, logs, or the result. The "
     "window copies with C, closes with Escape/Q, and uses an integer-scaled "
     "four-module quiet zone for reliable scanning. RGFW and the QR encoder are "
     "pinned permissive source in this repository.", 0,
@@ -119,6 +122,124 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_qr_show)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.show", "app.presentation", "",
+    "Show a bounded renderer-neutral model in a native C23 window",
+    "Validates a closed visual document, encodes it without structure padding, "
+    "and submits it to a warm same-binary display-only host. Status, tables, "
+    "progress, charts, timelines, code diffs, and evidence graphs return after "
+    "the first native blit; a later non-interactive model with the same "
+    "request_id replaces that display-only view. Choices, "
+    "bounded forms, and exact-root "
+    "confirmations return only a numbered action ID or dismissal; the full "
+    "node must independently recheck policy and plan/commit state before "
+    "acting. The host receives no wallet, Internet, datadir, package, "
+    "publication, deployment, or consensus authority.", 0,
+    "presentation,native,status,progress,diff,evidence,agent",
+    "zcl.app_presentation_show.input.v1", "zcl.app_presentation_show.v1",
+    "kind,request_id,title,summary,exact_root,items,actions",
+    "kind,request_id,title",
+    "zclassic23 app presentation show --input='<bounded-model>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_show)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.status", "app.presentation", "",
+    "Show canonical node facts in a native C23 status card",
+    "Reads the target node's canonical status, full health projection, wallet "
+    "backup snapshot, and bounded ZCODE worker-capacity snapshot, then builds "
+    "one closed renderer-neutral model. Every row is labeled NODE FACT. The "
+    "agent supplies no fact or status text; unavailable projections remain "
+    "named unavailable. The display host receives only the inert model and "
+    "holds no node authority.", 0,
+    "presentation,native,status,node,facts,backup,onion,workers",
+    "zcl.app_presentation_status.input.v1",
+    "zcl.app_presentation_status.v1", "", "",
+    "zclassic23 app presentation status",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_status)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.code-change", "app.presentation", "",
+    "Show an exact ZVCS-backed C code change in a native window",
+    "Loads and rederives two immutable ZVCS source manifests, verifies the "
+    "selected C blob at each exact address, and computes a bounded before/after "
+    "diff, affected test route, and candidate include tokens inside ZClassic23. "
+    "Requested/before/after behavior prose is visibly labeled AGENT SUMMARY; "
+    "source paths, roots, diff lines, test routes, includes, and byte counts are "
+    "labeled LOCAL OBSERVATION. The presentation host receives only the inert "
+    "model and no source-store or software authority.", 0,
+    "presentation,native,code,diff,zvcs,source,tests,dependencies,agent",
+    "zcl.app_presentation_code_change.input.v1",
+    "zcl.app_presentation_code_change.v1",
+    "workspace,before_root,candidate_root,path,requested_behavior,before_behavior,after_behavior",
+    "workspace,before_root,candidate_root,path,requested_behavior,before_behavior,after_behavior",
+    "zclassic23 app presentation code-change --input='<exact-roots-and-summaries>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_code_change)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.reproduction", "app.presentation", "",
+    "Show live independent-reproduction progress in one native window",
+    "Reads the exact action's latest root-rederived build-proof event from "
+    "the target node and renders the closed queued, admitted, running, output "
+    "received, receipt verified, and matching-artifact stages. Repeating the "
+    "command for the same action replaces that resident window instead of "
+    "opening another. REMOTE_RED and SUPERSEDED remain named red refusals. "
+    "The agent supplies only the action identity and cannot supply status "
+    "text or evidence facts.", 0,
+    "presentation,native,reproduction,progress,proof,receipt,agent",
+    "zcl.app_presentation_reproduction.input.v1",
+    "zcl.app_presentation_reproduction.v1", "action_id", "action_id",
+    "zclassic23 app presentation reproduction --input='{\"action_id\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_reproduction)
+
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.publication-confirm", "app.presentation", "",
+    "Ask for an exact local package-publication decision in native C23",
+    "Re-runs the ordinary read-only ZCODE package publication plan over the "
+    "exact signed release, manifest, recipe, and local chunk source. Only a "
+    "ready plan receives ZClassic23-authored confirmation chrome and fixed "
+    "Confirm/Cancel actions. The returned human decision is bound to the "
+    "exact plan and view identities. This command cannot publish; the "
+    "separate commit command independently re-validates current inputs and "
+    "policy before any local-store effect.", 0,
+    "presentation,native,confirmation,publication,package,plan,human",
+    "zcl.zcode_publish_plan.input.v1",
+    "zcl.app_presentation_publication_confirm.v1",
+    "release_hex,manifest_hex,recipe_hex,dir,datadir", "",
+    "zclassic23 app presentation publication-confirm --input='"
+    "{\"release_hex\":\"..\",\"manifest_hex\":\"..\","
+    "\"recipe_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_publication_confirm)
 
 /* ── Blog (ZBLG) ─────────────────────────────────────────────────── */
 

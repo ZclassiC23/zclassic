@@ -16,6 +16,7 @@
 #include "event/event.h"
 #include "net/peer_bandwidth.h"
 #include "net/peer_lifecycle.h"
+#include "net/peer_liveness.h"
 #include "net/port_policy.h"
 #include "net/peer_scoring.h"
 #include "net/addrman_integrity.h"
@@ -61,7 +62,7 @@ static pthread_t g_thread_socket;
 static pthread_t g_thread_open;
 static pthread_t g_thread_message;
 /* Shared with connman_dialer.c — see connman_internal.h. */
-volatile bool g_stop = false;
+_Atomic bool g_stop = false;
 
 /* Supervisor liveness for the 4 P2P threads. Root children (not
  * supervisor_register_in_domain(net,...)): lib/net cannot include the
@@ -1457,7 +1458,7 @@ static void *thread_socket_handler(void *arg)
         }
 
         int nready = poll(pfds, (nfds_t)npfds, 50 /* ms */);
-        if (nready <= 0) continue;
+        if (nready < 0) continue;
 
         /* Accept new connections via net.c accept_connection() */
         for (size_t i = 0; i < listen_count; i++) {
@@ -1535,7 +1536,10 @@ static void *thread_socket_handler(void *arg)
                                                &dec, &dec_len)) {
                             connman_note_addnode_prehandshake_disconnect(
                                 cm, node, "v2-transport");
-                            node->disconnect = true;
+                            (void)p2p_node_request_disconnect(
+                                node, P2P_DISCONNECT_TRANSPORT_ERROR,
+                                P2P_DISCONNECT_SOURCE_SOCKET,
+                                node->endpoint_generation);
                             v2_dropped = true;
                         } else {
                             /* Handshake replies / flushed sealed pending go out
@@ -1560,7 +1564,10 @@ static void *thread_socket_handler(void *arg)
                                                 cm->manager.message_start)) {
                         connman_note_addnode_prehandshake_disconnect(
                             cm, node, "message-parse");
-                        node->disconnect = true;
+                        (void)p2p_node_request_disconnect(
+                            node, P2P_DISCONNECT_MESSAGE_PARSE,
+                            P2P_DISCONNECT_SOURCE_SOCKET,
+                            node->endpoint_generation);
                     }
                     free(dec);
                     /* Single framing-layer scoring point: the parse path has
@@ -1571,6 +1578,9 @@ static void *thread_socket_handler(void *arg)
                      * threshold. No-op when nothing was tagged. */
                     p2p_node_score_framing_offence(&cm->manager, node);
                     node->last_recv = GetTime();
+                    atomic_store_explicit(
+                        &node->last_activity_monotonic_us,
+                        platform_time_monotonic_us(), memory_order_relaxed);
                     node->recv_bytes += (uint64_t)n;
                     /* Consume download tokens post-recv. */
                     if (g_peer_bw_active)
@@ -1579,13 +1589,19 @@ static void *thread_socket_handler(void *arg)
                 } else if (n == 0) {
                     connman_note_addnode_prehandshake_disconnect(
                         cm, node, "remote-close");
-                    node->disconnect = true;
+                    (void)p2p_node_request_disconnect(
+                        node, P2P_DISCONNECT_REMOTE_CLOSE,
+                        P2P_DISCONNECT_SOURCE_SOCKET,
+                        node->endpoint_generation);
                 } else {
                     int err = errno;
                     if (err != EAGAIN && err != EWOULDBLOCK && err != EINTR) {
                         connman_note_addnode_prehandshake_disconnect(
                             cm, node, "recv-error");
-                        node->disconnect = true;
+                        (void)p2p_node_request_disconnect(
+                            node, P2P_DISCONNECT_IO_ERROR,
+                            P2P_DISCONNECT_SOURCE_SOCKET,
+                            node->endpoint_generation);
                     }
                 }
                 /* If disconnecting, clean up messages while holding lock */
@@ -1622,7 +1638,10 @@ static void *thread_socket_handler(void *arg)
             if ((rev & (POLLHUP | POLLERR)) && !node->disconnect) {
                 connman_note_addnode_prehandshake_disconnect(
                     cm, node, "poll-hup-err");
-                node->disconnect = true;
+                (void)p2p_node_request_disconnect(
+                    node, P2P_DISCONNECT_IO_ERROR,
+                    P2P_DISCONNECT_SOURCE_SOCKET,
+                    node->endpoint_generation);
             }
         }
         /* Free deferred nodes (still under cs_nodes lock). refs
@@ -1658,32 +1677,63 @@ static void *thread_socket_handler(void *arg)
             }
         }
 
-        /* Timeout: disconnect nodes with no activity */
+        /* Liveness and handshake timeouts.  The keepalive state machine uses
+         * monotonic time and is evaluated even when poll() returned zero. */
         {
             int64_t now_check = GetTime();
+            int64_t now_mono_us = platform_time_monotonic_us();
             for (size_t i = 0; i < cm->manager.num_nodes; i++) {
                 struct p2p_node *n = cm->manager.nodes[i];
                 if (n->disconnect) continue;
 
-                /* Addnode peers get longer timeout (10 min) since they
-                 * auto-reconnect anyway and we want them stable */
                 size_t addnode_index = SIZE_MAX;
                 bool is_addnode =
                     connman_find_addnode_index(cm, &n->addr, &addnode_index);
-                int timeout = is_addnode ? 600 : 120;
 
-                if (n->state >= PEER_HANDSHAKE_COMPLETE &&
-                    n->last_recv > 0 &&
-                    now_check - n->last_recv > timeout) {
-                    event_emitf(EV_TCP_TIMEOUT, (uint32_t)n->id,
-                                "inactivity %llds state=%s",
-                                (long long)(now_check - n->last_recv),
-                                peer_state_name(n->state));
-                    peer_lifecycle_note_timeout(n, "inactivity");
-                    printf("Peer %s: timeout (no data for %llds)\n",
-                           n->addr_name,
-                           (long long)(now_check - n->last_recv));
-                    n->disconnect = true;
+                if (n->state >= PEER_HANDSHAKE_COMPLETE) {
+                    struct peer_liveness_sample sample = {
+                        .connected_us = atomic_load_explicit(
+                            &n->connected_monotonic_us,
+                            memory_order_relaxed),
+                        .last_activity_us = atomic_load_explicit(
+                            &n->last_activity_monotonic_us,
+                            memory_order_relaxed),
+                        .ping_sent_us = atomic_load_explicit(
+                            &n->keepalive_ping_sent_monotonic_us,
+                            memory_order_relaxed),
+                    };
+                    enum peer_liveness_action action =
+                        peer_liveness_decide(&sample, now_mono_us);
+                    enum p2p_disconnect_reason reason = P2P_DISCONNECT_NONE;
+                    const char *timeout_name = NULL;
+                    if (action == PEER_LIVENESS_DISCONNECT_PONG_TIMEOUT) {
+                        reason = P2P_DISCONNECT_PONG_TIMEOUT;
+                        timeout_name = "pong_timeout";
+                    } else if (action ==
+                               PEER_LIVENESS_DISCONNECT_HARD_SILENCE) {
+                        reason = P2P_DISCONNECT_HARD_SILENCE;
+                        timeout_name = "hard_silence";
+                    }
+                    if (reason != P2P_DISCONNECT_NONE) {
+                        int64_t silent_secs = sample.last_activity_us > 0
+                            ? (now_mono_us - sample.last_activity_us) /
+                                  1000000LL
+                            : 0;
+                        event_emitf(EV_TCP_TIMEOUT, (uint32_t)n->id,
+                                    "%s silence=%llds state=%s",
+                                    timeout_name, (long long)silent_secs,
+                                    peer_state_name(n->state));
+                        peer_lifecycle_note_timeout(n, timeout_name);
+                        LOG_WARN("net",
+                                 "peer %s liveness timeout: %s after %llds "
+                                 "silence",
+                                 n->addr_name, timeout_name,
+                                 (long long)silent_secs);
+                        (void)p2p_node_request_disconnect(
+                            n, reason, P2P_DISCONNECT_SOURCE_KEEPALIVE,
+                            n->endpoint_generation);
+                        continue;
+                    }
                 }
                 /* TCP connect timeout: 10s for outbound peers stuck
                  * in PEER_CONNECTING (TCP SYN sent, never reached
@@ -1714,7 +1764,10 @@ static void *thread_socket_handler(void *arg)
                     if (is_addnode)
                         connman_record_addnode_failure(
                             cm, addnode_index, CONNMAN_ADDNODE_FAILURE_TCP);
-                    n->disconnect = true;
+                    (void)p2p_node_request_disconnect(
+                        n, P2P_DISCONNECT_CONNECT_TIMEOUT,
+                        P2P_DISCONNECT_SOURCE_DIAL_SCHEDULER,
+                        n->endpoint_generation);
                     continue;
                 }
 
@@ -1748,7 +1801,10 @@ static void *thread_socket_handler(void *arg)
                         connman_record_addnode_failure(
                             cm, addnode_index,
                             CONNMAN_ADDNODE_FAILURE_PROTOCOL);
-                    n->disconnect = true;
+                    (void)p2p_node_request_disconnect(
+                        n, P2P_DISCONNECT_HANDSHAKE_TIMEOUT,
+                        P2P_DISCONNECT_SOURCE_DIAL_SCHEDULER,
+                        n->endpoint_generation);
                 }
             }
         }
@@ -1758,12 +1814,26 @@ static void *thread_socket_handler(void *arg)
         for (size_t i = 0; i < cm->manager.num_nodes; ) {
             if (cm->manager.nodes[i]->disconnect) {
                 struct p2p_node *node = cm->manager.nodes[i];
+                enum p2p_disconnect_reason reason =
+                    (enum p2p_disconnect_reason)atomic_load_explicit(
+                        &node->disconnect_reason, memory_order_acquire);
+                enum p2p_disconnect_source source =
+                    (enum p2p_disconnect_source)atomic_load_explicit(
+                        &node->disconnect_source, memory_order_relaxed);
+                uint64_t generation = atomic_load_explicit(
+                    &node->disconnect_endpoint_generation,
+                    memory_order_relaxed);
                 event_emitf(EV_TCP_DISCONNECTED, (uint32_t)node->id,
-                            "%s state=%s misbehavior=%d",
+                            "%s state=%s misbehavior=%d reason=%s source=%s "
+                            "endpoint_generation=%llu",
                             node->addr_name,
                             peer_state_name(node->state),
-                            node->misbehavior);
-                peer_lifecycle_note_disconnected(node, "cleanup");
+                            node->misbehavior,
+                            p2p_disconnect_reason_name(reason),
+                            p2p_disconnect_source_name(source),
+                            (unsigned long long)generation);
+                peer_lifecycle_note_disconnected(
+                    node, p2p_disconnect_reason_name(reason));
 
                 /* Re-queue any in-flight blocks from this peer — both the
                  * legacy download manager AND the parallel block swarm.
@@ -2006,6 +2076,9 @@ static void *thread_message_handler(void *arg)
     uint64_t msg_cycles = 0;
 
     while (!g_stop) {
+        atomic_store_explicit(&cm->message_last_progress_us,
+                              platform_time_monotonic_us(),
+                              memory_order_relaxed);
         thread_liveness_beat(&g_msg_liveness, (int64_t)++msg_cycles);
         bool did_work = connman_run_message_cycle(cm);
         if (!did_work) {
@@ -2300,8 +2373,10 @@ static bool timed_join(pthread_t thread, int timeout_sec)
     int rc = pthread_timedjoin_np(thread, NULL, &ts);
     if (rc == 0)
         return true;
-    /* Timeout (ETIMEDOUT) or other error — detach and move on. */
-    pthread_detach(thread);
+    /* Retain ownership after the diagnostic deadline. The stage watchdog may
+     * terminate a genuinely wedged process, but this function must never
+     * detach a worker and let its dependencies be freed underneath it. */
+    pthread_join(thread, NULL);
     return false;
 }
 
@@ -2310,9 +2385,9 @@ void connman_join(struct connman *cm)
     if (!cm)
         return;
 
-    /* Use 30-second timeout per thread to prevent SIGKILL from systemd. If a
-     * thread is stuck (e.g., message thread in reducer activation), detach it
-     * rather than blocking shutdown indefinitely. */
+    /* Five seconds is the diagnostic join deadline. A late worker remains
+     * owned and is joined before teardown; external shutdown watchdogs remain
+     * responsible for a genuinely wedged process. */
     if (cm->started || cm->dns_seed_thread_started || cm->socket_thread_started ||
         cm->open_thread_started || cm->message_thread_started) {
         if (cm->dns_seed_thread_started) {
@@ -2335,11 +2410,7 @@ void connman_join(struct connman *cm)
         }
         if (cm->message_thread_started) {
             if (!timed_join(g_thread_message, 5)) {
-                /* Detached, still running: it will keep touching addrman/nodes.
-                 * Flag it so connman_free() defers (leaks) net_manager teardown
-                 * instead of freeing state out from under the live thread. */
-                LOG_WARN("connman", "message thread join timed out; detached and still running — deferring net_manager teardown");
-                cm->message_thread_detached = true;
+                LOG_WARN("connman", "message thread exceeded join deadline but was retained until exit");
             }
             cm->message_thread_started = false;
             thread_liveness_retire(&g_msg_liveness);
@@ -2794,7 +2865,10 @@ int connman_force_outbound_rotation(struct connman *cm, const char *reason)
     for (size_t i = 0; i < cm->manager.num_nodes; i++) {
         struct p2p_node *node = cm->manager.nodes[i];
         if (node && !node->inbound && !node->disconnect) {
-            node->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                node, P2P_DISCONNECT_POLICY_ROTATION,
+                P2P_DISCONNECT_SOURCE_PEER_POLICY,
+                node->endpoint_generation);
             disconnected++;
         }
     }
@@ -2932,4 +3006,19 @@ void connman_get_message_cycle_stats(
                                            memory_order_relaxed);
     out->wakes = atomic_load_explicit(&cm->message_wakes,
                                       memory_order_relaxed);
+}
+
+bool connman_runtime_progress_fresh(struct connman *cm, int64_t max_age_us)
+{
+    if (!cm || !cm->started)
+        return true;
+    if (max_age_us <= 0)
+        return false;
+    int64_t now = platform_time_monotonic_us();
+    int64_t msg = atomic_load_explicit(&cm->message_last_progress_us,
+                                       memory_order_relaxed);
+    int64_t dial = atomic_load_explicit(&cm->dial_scheduler_last_progress_us,
+                                        memory_order_relaxed);
+    return msg > 0 && dial > 0 && now - msg >= 0 && now - msg < max_age_us &&
+           now - dial >= 0 && now - dial < max_age_us;
 }

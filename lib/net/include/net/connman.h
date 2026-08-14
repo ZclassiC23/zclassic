@@ -279,6 +279,8 @@ struct connman {
     _Atomic uint64_t message_recv_ready;
     _Atomic uint64_t message_idle_waits;
     _Atomic uint64_t message_wakes;
+    _Atomic int64_t  message_last_progress_us;
+    _Atomic int64_t  dial_scheduler_last_progress_us;
 };
 
 /* Persist a newly learned NODE_V2TRANSPORT capability in the existing
@@ -373,6 +375,10 @@ void connman_get_outbound_health(struct connman *cm,
 void connman_get_message_cycle_stats(
     struct connman *cm,
     struct connman_message_cycle_stats *out);
+
+/* Watchdog gate for the two scheduler loops owned by connman. Not-started
+ * instances are fresh; a started loop must have progressed within max_age_us. */
+bool connman_runtime_progress_fresh(struct connman *cm, int64_t max_age_us);
 int connman_force_outbound_rotation(struct connman *cm, const char *reason);
 
 void connman_relay_transaction(struct connman *cm,

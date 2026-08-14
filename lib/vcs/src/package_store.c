@@ -12,18 +12,38 @@
 #include "base/hex.h"
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
+#include "crypto/sha3.h"
 #include "json/json.h"
 #include "util/util.h"
 #include "vcs/package_recipe.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <sys/file.h>
 #include <unistd.h>
 
 #define STORE_LOG "vcs.store"
+
+static bool store_process_lock(struct vcs_package_store *store)
+{
+    if (!store || store->process_lock_fd < 0)
+        return false;
+    int rc;
+    do {
+        rc = flock(store->process_lock_fd, LOCK_EX);
+    } while (rc != 0 && errno == EINTR);
+    return rc == 0;
+}
+
+static void store_process_unlock(struct vcs_package_store *store)
+{
+    if (store && store->process_lock_fd >= 0)
+        (void)flock(store->process_lock_fd, LOCK_UN);
+}
 
 const char *vcs_package_store_result_string(
     enum vcs_package_store_result result)
@@ -268,15 +288,37 @@ struct vcs_package_store *vcs_package_store_open(const char *datadir,
     if (!store)
         LOG_NULL(STORE_LOG, "alloc store");
     memset(store, 0, sizeof(*store));
+    store->process_lock_fd = -1;
     int n = snprintf(store->root, sizeof(store->root), "%s/zcode", datadir);
     if (n <= 0 || (size_t)n >= sizeof(store->root)) {
         free(store);
         LOG_NULL(STORE_LOG, "datadir too long");
     }
+    if (!store_mkdir_p(store->root)) {
+        free(store);
+        LOG_NULL(STORE_LOG, "create store root");
+    }
+    char lock_path[STORE_PATH_MAX];
+    n = snprintf(lock_path, sizeof(lock_path), "%s/store-process.lock",
+                 store->root);
+    if (n <= 0 || (size_t)n >= sizeof(lock_path)) {
+        free(store);
+        LOG_NULL(STORE_LOG, "process lock path too long");
+    }
+    store->process_lock_fd = open(lock_path, O_RDWR | O_CREAT | O_CLOEXEC,
+                                  0600);
+    if (store->process_lock_fd < 0 || !store_process_lock(store)) {
+        if (store->process_lock_fd >= 0)
+            close(store->process_lock_fd);
+        free(store);
+        LOG_NULL(STORE_LOG, "could not lock store recovery at %s", lock_path);
+    }
     store->quota = quota_bytes;
     pthread_mutex_init(&store->lock, NULL);
     store->accept = vcs_package_accept_new();
     if (!store->accept) {
+        store_process_unlock(store);
+        close(store->process_lock_fd);
         pthread_mutex_destroy(&store->lock);
         free(store);
         LOG_NULL(STORE_LOG, "alloc accept context");
@@ -285,10 +327,13 @@ struct vcs_package_store *vcs_package_store_open(const char *datadir,
         char root_copy[STORE_PATH_MAX];
         snprintf(root_copy, sizeof(root_copy), "%s", store->root);
         vcs_package_accept_free(store->accept);
+        store_process_unlock(store);
+        close(store->process_lock_fd);
         pthread_mutex_destroy(&store->lock);
         free(store);
         LOG_NULL(STORE_LOG, "recovery under %s", root_copy);
     }
+    store_process_unlock(store);
     LOG_INFO(STORE_LOG,
              "package store open at %s (quota %llu bytes, %zu packages, "
              "%zu CAS chunks, %llu orphans GC'd)",
@@ -310,8 +355,29 @@ void vcs_package_store_close(struct vcs_package_store *store)
     free(store->pkgs);
     free(store->cas);
     vcs_package_accept_free(store->accept);
+    close(store->process_lock_fd);
     pthread_mutex_destroy(&store->lock);
     free(store);
+}
+
+bool vcs_package_store_pin_plan(
+    struct vcs_package_store *store, const uint8_t root[32], bool pinned,
+    struct vcs_package_store_status *status_out, uint8_t token_out[32])
+{
+    if (!store || !root || !status_out || !token_out)
+        return false;
+    memset(status_out, 0, sizeof(*status_out));
+    if (!vcs_package_store_package_status(store, root, status_out))
+        return false;
+    struct sha3_256_ctx sha;
+    uint8_t mutation = pinned ? 1u : 0u;
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)"zcl.package.pin.plan.v1", 24);
+    sha3_256_write(&sha, root, 32);
+    sha3_256_write(&sha, &mutation, 1);
+    sha3_256_write(&sha, (const uint8_t *)status_out, sizeof(*status_out));
+    sha3_256_finalize(&sha, token_out);
+    return true;
 }
 
 static pthread_mutex_t g_global_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -429,13 +495,15 @@ enum vcs_package_store_result vcs_package_store_put_manifest(
     snprintf(staging_dir, sizeof(staging_dir), "%s/staging/%s", store->root,
              root_hex);
     snprintf(staged, sizeof(staged), "%s/manifest", staging_dir);
-    if (!store_mkdir_p(staging_dir) ||
+    if (!store_process_lock(store) || !store_mkdir_p(staging_dir) ||
         !store_atomic_write(staged, wire, wire_len)) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_IO;
     }
     if (!store_record_add(store, wire, wire_len, root_hex, false)) {
         store_rm_rf(staging_dir);
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_ALLOC;
     }
@@ -453,14 +521,17 @@ enum vcs_package_store_result vcs_package_store_put_manifest(
         if (!store_ensure_room(store, pool, bytes, pkg->root)) {
             store_drop_package(store, index);
             store->quota_rejects_total++;
+            store_process_unlock(store);
             pthread_mutex_unlock(&store->lock);
             return VCS_PACKAGE_STORE_ERR_QUOTA;
         }
         if (!store_commit_if_complete(store, root)) {
+            store_process_unlock(store);
             pthread_mutex_unlock(&store->lock);
             return VCS_PACKAGE_STORE_ERR_IO;
         }
     }
+    store_process_unlock(store);
     pthread_mutex_unlock(&store->lock);
     return VCS_PACKAGE_STORE_OK;
 }
@@ -509,6 +580,10 @@ enum vcs_package_store_result vcs_package_store_put_chunk(
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_OK;
     }
+    if (!store_process_lock(store)) {
+        pthread_mutex_unlock(&store->lock);
+        return VCS_PACKAGE_STORE_ERR_IO;
+    }
 
     uint32_t present_before = 0;
     uint64_t bytes_before = 0;
@@ -540,6 +615,7 @@ enum vcs_package_store_result vcs_package_store_put_chunk(
         }
     }
     if (result != VCS_PACKAGE_STORE_OK) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return result;
     }
@@ -552,6 +628,7 @@ enum vcs_package_store_result vcs_package_store_put_chunk(
     snprintf(cas_dir, sizeof(cas_dir), "%s", cas_path);
     char *slash = strrchr(cas_dir, '/');
     if (!slash) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         LOG_RETURN(VCS_PACKAGE_STORE_ERR_IO, STORE_LOG,
                    "malformed CAS path %s", cas_path);
@@ -560,14 +637,17 @@ enum vcs_package_store_result vcs_package_store_put_chunk(
     if (!store_mkdir_p(cas_dir) ||
         !store_atomic_write(cas_path, chunk, chunk_len) ||
         !store_cas_insert(store, hash)) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_IO;
     }
     store_packages_touch_hash(store, hash);
     if (will_complete && !store_commit_if_complete(store, package_root)) {
+        store_process_unlock(store);
         pthread_mutex_unlock(&store->lock);
         return VCS_PACKAGE_STORE_ERR_IO;
     }
+    store_process_unlock(store);
     pthread_mutex_unlock(&store->lock);
     return VCS_PACKAGE_STORE_OK;
 }

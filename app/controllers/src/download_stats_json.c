@@ -85,6 +85,14 @@ void download_stats_push_json(struct json_value *obj,
                          (int64_t)diag->queue_peer_avoid_count);
         json_push_kv_int(obj, "queue_peer_avoid_max_seconds",
                          diag->queue_peer_avoid_max_seconds);
+        json_push_kv_int(obj, "queued_forward",
+                         (int64_t)diag->queued_forward);
+        json_push_kv_int(obj, "queued_history",
+                         (int64_t)diag->queued_history);
+        json_push_kv_int(obj, "in_flight_forward",
+                         (int64_t)diag->in_flight_forward);
+        json_push_kv_int(obj, "in_flight_history",
+                         (int64_t)diag->in_flight_history);
         json_push_kv_int(obj, "assign_attempts",
                          (int64_t)diag->assign_attempts);
         json_push_kv_int(obj, "assign_successes",

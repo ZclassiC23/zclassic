@@ -44,6 +44,7 @@ struct store_package {
 
 struct vcs_package_store {
     char root[STORE_PATH_MAX]; /* <datadir>/zcode */
+    int process_lock_fd;       /* recovery/CAS transaction serialization */
     uint64_t quota;
     struct store_package *pkgs;
     size_t pkg_count;

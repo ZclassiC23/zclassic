@@ -52,6 +52,11 @@ extern "C" {
 bool boot_shutdown_marker_detect_unclean(const char *datadir);
 bool boot_shutdown_marker_write_clean(const char *datadir);
 
+/* Remove a previously written clean marker and fsync the datadir. Used when a
+ * later shutdown receipt barrier fails so the next boot cannot mistake the
+ * interrupted teardown for a verified clean stop. */
+bool boot_shutdown_marker_remove_clean(const char *datadir);
+
 /* Pristine on-disk identity of a node.db file, captured BEFORE any sqlite
  * handle is opened (so it reflects exactly what the previous shutdown left). */
 struct node_db_file_identity {

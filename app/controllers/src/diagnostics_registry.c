@@ -62,6 +62,7 @@
 #include "net/file_service.h"
 #include "zswap/zswap_yardsale.h"
 #include "vcs/package_store.h"
+#include "vcs/zcode_work_node.h"
 #include "controllers/messaging_controller.h"
 #include "services/chain_evidence_authority_service.h"
 #include "services/gap_fill_service.h"

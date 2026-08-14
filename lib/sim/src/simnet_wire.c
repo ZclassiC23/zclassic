@@ -706,7 +706,10 @@ static bool simnet_wire_pump_to_nut(struct simnet_wire *wire, size_t peer_id,
                                          (unsigned int)chunk,
                                          wire->params->pchMessageStart);
         if (!ok) {
-            node->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                node, P2P_DISCONNECT_MESSAGE_PARSE,
+                P2P_DISCONNECT_SOURCE_SOCKET,
+                node->endpoint_generation);
             for (size_t i = 0; i < node->recv_msg_count; i++)
                 net_message_free(&node->recv_msgs[i]);
             node->recv_msg_count = 0;
@@ -714,6 +717,9 @@ static bool simnet_wire_pump_to_nut(struct simnet_wire *wire, size_t peer_id,
             LOG_FAIL("simnet.wire", "NUT rejected inbound bytes");
         }
         node->last_recv = platform_time_wall_time_t();
+        atomic_store_explicit(&node->last_activity_monotonic_us,
+                              platform_time_monotonic_us(),
+                              memory_order_relaxed);
         node->recv_bytes += (uint64_t)chunk;
         if (peer->link.down_tokens != SIZE_MAX)
             peer->link.down_tokens -= chunk;

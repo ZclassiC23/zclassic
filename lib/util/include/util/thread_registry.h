@@ -92,6 +92,13 @@ void thread_registry_unregister_self(void);
  * shutdown). Prints the name of every straggler. */
 int thread_registry_join_all(int timeout_sec);
 
+/* Drain every still-active registered thread without abandoning ownership.
+ * This is the final shutdown barrier: callers must keep every dependency
+ * alive until it returns. A process-level shutdown watchdog may terminate an
+ * irrecoverably stuck process, but this function never detaches a worker and
+ * never reports completion while one can still access caller-owned state. */
+void thread_registry_join_all_owned(void);
+
 /* Current count of active entries. Exposed for the stress test. */
 int thread_registry_live_count(void);
 

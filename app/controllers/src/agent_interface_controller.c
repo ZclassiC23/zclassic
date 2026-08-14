@@ -139,7 +139,8 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
         "\"preferred_transport\":\"native_cli\", ... }\n");
 
     struct json_value transports, capabilities, machine, runtime, loop,
-                      native_owned, avoid, versioning;
+                      visual_instruments, visual_loop, native_owned, avoid,
+                      versioning;
     json_set_object(result);
     json_push_kv_str(result, "schema", "zcl.agent_interface.v2");
     json_push_kv_str(result, "api_version", "v1");
@@ -247,6 +248,33 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv(result, "development_loop", &loop);
     json_free(&loop);
 
+    json_init(&visual_instruments);
+    json_set_array(&visual_instruments);
+    agent_push_contract_command_surface_json(
+        &visual_instruments, "agentinterface.visual_instruments");
+    json_push_kv(result, "native_visual_instruments", &visual_instruments);
+    json_free(&visual_instruments);
+
+    json_init(&visual_loop);
+    json_set_object(&visual_loop);
+    json_push_kv_str(&visual_loop, "schema", "zcl.agent_visual_loop.v1");
+    json_push_kv_str(&visual_loop, "request",
+                     "user intent plus the smallest exact subject identity");
+    json_push_kv_str(&visual_loop, "agent_action",
+                     "invoke one native_visual_instruments command");
+    json_push_kv_str(&visual_loop, "display",
+                     "warm same-binary C23 presentation host");
+    json_push_kv_str(&visual_loop, "result",
+                     "bounded display result or exact human decision");
+    json_push_kv_str(&visual_loop, "authority_rule",
+                     "the full node owns facts and independently rechecks every effect; the visual host owns none");
+    json_push_kv_str(&visual_loop, "generic_model_policy",
+                     "app presentation show is not the configured-agent path for privileged facts or confirmations");
+    json_push_kv_bool(&visual_loop, "browser_required", false);
+    json_push_kv_bool(&visual_loop, "python_required", false);
+    json_push_kv(result, "native_visual_loop", &visual_loop);
+    json_free(&visual_loop);
+
     json_init(&native_owned);
     json_set_array(&native_owned);
     agent_interface_push_str(&native_owned, "schema/version emission");
@@ -256,6 +284,8 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     agent_interface_push_str(&native_owned, "diagnostic drill-down routing");
     agent_interface_push_str(&native_owned,
                              "background quality lane contracts");
+    agent_interface_push_str(&native_owned,
+                             "canonical visual fact projection and confirmation chrome");
     json_push_kv(result, "must_live_in_c", &native_owned);
     json_free(&native_owned);
 
@@ -273,6 +303,9 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
                              "do not scrape node.db when zclassic23 dbquery or a typed command exists");
     agent_interface_push_str(&avoid,
                              "do not infer deploy safety from comments or unit names");
+    agent_interface_push_str(
+        &avoid,
+        "do not fabricate privileged visual facts or confirmation text; invoke the semantic native visual command");
     json_push_kv(result, "avoid", &avoid);
     json_free(&avoid);
 

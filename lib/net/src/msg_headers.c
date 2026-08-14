@@ -1087,7 +1087,10 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                     (unsigned long long)count, node->addr_name);
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                             "too many headers");
-        node->disconnect = true;
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_RESOURCE_LIMIT,
+            P2P_DISCONNECT_SOURCE_RESOURCE_GOVERNOR,
+            node->endpoint_generation);
         return false;
     }
 

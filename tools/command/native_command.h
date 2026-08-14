@@ -357,6 +357,42 @@ void zcl_native_handle_vault_intent_list(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_qr_show(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+struct zcl_present_model_v1;
+void zcl_native_handle_presentation_show(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_presentation_status(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_presentation_code_change(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_presentation_reproduction(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_presentation_publication_confirm(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
+bool zcl_native_presentation_dumpstate(
+    const char *name, const char *key, struct json_value *out);
+bool zcl_native_presentation_status_model_from_facts(
+    const struct json_value *status, const struct json_value *health,
+    const struct json_value *backup, const struct json_value *work,
+    struct zcl_present_model_v1 *model, char *why, size_t why_cap);
+bool zcl_native_presentation_code_change_model_from_facts(
+    const uint8_t *before, size_t before_len,
+    const uint8_t *after, size_t after_len, const char *path,
+    const char *requested, const char *before_behavior,
+    const char *after_behavior, const char *before_blob_hex,
+    const char *candidate_blob_hex, const char *candidate_root_hex,
+    struct zcl_present_model_v1 *model, char *why, size_t why_cap);
+bool zcl_native_presentation_reproduction_model_from_facts(
+    const struct json_value *facts, struct zcl_present_model_v1 *model,
+    char *why, size_t why_cap);
+bool zcl_native_presentation_publication_confirm_model_from_plan(
+    const struct json_value *plan, struct zcl_present_model_v1 *model,
+    char *why, size_t why_cap);
+
+/* Shared renderer-neutral handoff used by canonical instrument builders.
+ * The model is inert; this helper performs no node read or privileged effect. */
+void zcl_native_present_model(
+    const struct zcl_present_model_v1 *model, const char *leaf,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_vault_swap_redeem(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

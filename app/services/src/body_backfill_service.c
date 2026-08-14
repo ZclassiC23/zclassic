@@ -61,11 +61,25 @@
  * are taken after it is released, and every dl_* call happens outside both.
  */
 
-/* Do not hand below-tip work to the download manager while the queue is
- * already deep. The queue is height-sorted, so a below-tip height sorts
- * AHEAD of every tip-chasing block; an ungated backfill would push live
- * sync to the back of its own queue. */
+/* Additional producer-side throttle. The download manager independently
+ * enforces the hard history lane limits and forward-first assignment. */
 #define BODY_HISTORY_QUEUE_HEADROOM 256
+
+enum bb_backfill_mode {
+    BB_BACKFILL_THROTTLED = 0,
+    BB_BACKFILL_OFF,
+    BB_BACKFILL_NORMAL,
+};
+
+static enum bb_backfill_mode bb_backfill_mode(void)
+{
+    const char *mode = getenv("ZCL_BODY_HISTORY_BACKFILL_MODE");
+    if (mode && strcmp(mode, "off") == 0)
+        return BB_BACKFILL_OFF;
+    if (mode && strcmp(mode, "normal") == 0)
+        return BB_BACKFILL_NORMAL;
+    return BB_BACKFILL_THROTTLED;
+}
 
 struct bb_probe_ctx {
     struct main_state *ms; /* cs_main is held by the caller for the walk */
@@ -189,11 +203,14 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
     body_history_publish((folded && evaluated) ? &verdict : NULL);
 
     int enqueued = 0;
-    if (folded && res.missing > 0 && !tip_work_pending && !census_only) {
+    enum bb_backfill_mode mode = bb_backfill_mode();
+    if (mode != BB_BACKFILL_OFF && folded && res.missing > 0 &&
+        !tip_work_pending && !census_only) {
         uint64_t in_flight = 0, queued = 0;
         dl_get_stats(dm, NULL, NULL, NULL, &in_flight, &queued);
-        if (queued <= BODY_HISTORY_QUEUE_HEADROOM &&
-            in_flight < dl_get_max_in_flight_total() / 4) {
+        if (mode == BB_BACKFILL_NORMAL ||
+            (queued <= BODY_HISTORY_QUEUE_HEADROOM &&
+             in_flight < dl_get_max_in_flight_total() / 4)) {
             struct uint256 *eh = zcl_malloc(
                 BODY_HISTORY_ENQUEUE_MAX * sizeof(*eh), "body_history_enq_h");
             int32_t *ehh = zcl_malloc(
@@ -213,7 +230,8 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
                     keep++;
                 }
                 if (keep > 0) {
-                    size_t added = dl_queue_blocks(dm, eh, ehh, keep);
+                    size_t added = dl_queue_blocks_class(
+                        dm, eh, ehh, keep, DL_WORK_HISTORY);
                     enqueued = (int)added;
                     if (added > 0) {
                         body_history_global_lock();
@@ -304,4 +322,3 @@ int body_backfill_catch_up(struct main_state *ms, struct download_manager *dm,
     }
     return slices;
 }
-

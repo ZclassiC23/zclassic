@@ -1430,6 +1430,100 @@ static int test_dl_unknown_height_sorts_last(void)
     return failures;
 }
 
+static int test_dl_history_lane_is_bounded_and_forward_wins(void)
+{
+    int failures = 0;
+    TEST("history lane is bounded and saturated history cannot delay forward work") {
+        struct download_manager dm;
+        dl_init(&dm);
+
+        struct uint256 history[40];
+        int32_t history_heights[40];
+        for (int i = 0; i < 40; i++) {
+            history[i] = make_hash16((uint16_t)(8000 + i));
+            history_heights[i] = 100 + i;
+        }
+        ASSERT(dl_queue_blocks_class(&dm, history, history_heights, 40,
+                                     DL_WORK_HISTORY) == 40);
+
+        /* Eight peers fill exactly 16 global history slots, two apiece. */
+        struct uint256 out[4];
+        for (uint32_t peer = 1; peer <= 8; peer++)
+            ASSERT(dl_assign_to_peer(&dm, peer, out, 4) ==
+                   DL_MAX_HISTORY_PER_PEER);
+        ASSERT(dl_assign_to_peer(&dm, 9, out, 4) == 0);
+
+        struct dl_diagnostics diag;
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.in_flight_history == DL_MAX_HISTORY_IN_FLIGHT);
+        ASSERT(diag.in_flight_forward == 0);
+        ASSERT(diag.queued_history == 24);
+
+        /* A forward hash avoided by this peer must not open a path around the
+         * already saturated global history cap. */
+        struct uint256 avoided_forward = make_hash16(8999);
+        ASSERT(dl_mark_requested(&dm, &avoided_forward, 899999, 9));
+        ASSERT(dl_peer_disconnected(&dm, 9) == 1);
+        ASSERT(dl_assign_to_peer(&dm, 9, out, 4) == 0);
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.in_flight_history == DL_MAX_HISTORY_IN_FLIGHT);
+        ASSERT(diag.queued_history == 24);
+
+        /* This peer is parked on the saturated history lane. Enqueuing a
+         * forward item must invalidate that practical result even though no
+         * history capacity was released, and the next assignment must be the
+         * forward item despite its much higher height. */
+        struct uint256 forward = make_hash16(9000);
+        int32_t forward_height = 900000;
+        ASSERT(dl_queue_blocks(&dm, &forward, &forward_height, 1) == 1);
+        ASSERT(dl_assignment_should_attempt(&dm, 9));
+        ASSERT(dl_assign_to_peer(&dm, 9, out, 4) == 1);
+        ASSERT(uint256_eq(&out[0], &forward));
+
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.in_flight_history == DL_MAX_HISTORY_IN_FLIGHT);
+        ASSERT(diag.in_flight_forward == 1);
+        ASSERT(diag.queued_forward == 1); /* avoided forward remains queued */
+
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_dl_history_promotion_wakes_parked_peer(void)
+{
+    int failures = 0;
+    TEST("promoting queued history to forward wakes an avoid-parked peer") {
+        struct download_manager dm;
+        dl_init(&dm);
+        struct uint256 hash = make_hash16(9100);
+        int32_t height = 123;
+        struct uint256 out[1];
+        ASSERT(dl_queue_blocks_class(&dm, &hash, &height, 1,
+                                     DL_WORK_HISTORY) == 1);
+        ASSERT(dl_assign_to_peer(&dm, 7, out, 1) == 1);
+        ASSERT(dl_peer_disconnected(&dm, 7) == 1);
+        ASSERT(dl_assign_to_peer(&dm, 7, out, 1) == 0);
+        ASSERT(!dl_assignment_should_attempt(&dm, 7));
+
+        /* Deduplicated promotion returns zero new hashes, but is still a
+         * material queue change and clears history/avoidance policy. */
+        ASSERT(dl_queue_blocks(&dm, &hash, &height, 1) == 0);
+        ASSERT(dl_assignment_should_attempt(&dm, 7));
+        ASSERT(dl_assign_to_peer(&dm, 7, out, 1) == 1);
+        ASSERT(uint256_eq(&out[0], &hash));
+        struct dl_diagnostics diag;
+        dl_get_diagnostics(&dm, &diag);
+        ASSERT(diag.in_flight_forward == 1);
+        ASSERT(diag.in_flight_history == 0);
+        dl_free(&dm);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_gap_fill_registers_supervisor_contract(void)
 {
     int failures = 0;
@@ -1667,6 +1761,8 @@ int test_download(void)
     failures += test_dl_lowest_height_first();
     failures += test_dl_sorted_across_paths();
     failures += test_dl_unknown_height_sorts_last();
+    failures += test_dl_history_lane_is_bounded_and_forward_wins();
+    failures += test_dl_history_promotion_wakes_parked_peer();
     failures += test_dl_tip_bias_prefers_fast_peer();
     failures += test_dl_tip_bias_no_starvation_shallow_queue();
     failures += test_dl_batch_compaction_deep_queue();

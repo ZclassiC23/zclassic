@@ -85,25 +85,31 @@ size_t zcode_view_index(size_t packages, uint64_t settled_facts,
 {
     char body[16384];
     size_t off = 0;
-    int n = zcode_body_start(body, sizeof(body), "ZCODE Library");
+    int n = zcode_body_start(body, sizeof(body), "Exact C23 software");
     if (n > 0) off = (size_t)n;
 
     n = snprintf(body + off, sizeof(body) - off,
-        "<h1>ZCODE Library</h1>"
-        "<p><span class='pill'>SIMULATION</span> Publish, test, maintain "
-        "and share permissive C23 code through "
-        "ZClassic23. Earn ZCODE, climb the rankings and collect permanent "
-        "contributor badges. This site reads the same local projections as "
-        "the <code>zcode.*</code> typed commands &mdash; the signed release "
-        "envelopes and verified chunks under the node's package store are "
-        "the only package truth. ZCODE score and rewards are "
-        "simulation-only &mdash; no live token exists.</p>"
+        "<h1>Build, verify, and share exact C23 software</h1>"
+        "<p>Open a package, understand the exact version this node has, "
+        "inspect its evidence, and decide whether to use or share it. "
+        "Runnable examples and change tools appear only when their exact "
+        "package facts exist; this site never guesses behavior.</p>"
+        "<p><a class='btn' href='/zcode/packages'>Browse exact packages</a>"
+        "</p>"
         "<div class='grid'>"
-        "<div class='card'><h3><a href='/zcode/packages'>Packages</a></h3>"
+        "<div class='card'><h2><a href='/zcode/packages'>Packages</a></h2>"
         "<div class='kv'><b>published releases</b>"
         "<span class='val'>%zu</span></div>"
-        "<p>Search and inspect signed releases, manifests and verifier "
-        "attestations.</p></div>"
+        "<p>Understand, verify, obtain, and share content-addressed C23 "
+        "releases from this node.</p></div>"
+        "<div class='card'><h2>Independent evidence</h2>"
+        "<p>Package pages show the exact source identity and every local "
+        "verifier attestation. Missing evidence is shown as missing.</p>"
+        "</div></div>"
+        "<h2>Community signals <span class='pill'>SIMULATION</span></h2>"
+        "<p class='meta'>Scores, rankings, and rewards are simulations; no "
+        "live ZCODE token exists. They never replace package evidence.</p>"
+        "<div class='grid'>"
         "<div class='card'><h3><a href='/zcode/leaderboard'>Rankings</a></h3>"
         "<div class='kv'><b>settled score facts</b>"
         "<span class='val'>%llu</span></div>"
@@ -113,7 +119,7 @@ size_t zcode_view_index(size_t packages, uint64_t settled_facts,
         "<div class='kv'><b>earned badges</b>"
         "<span class='val'>%zu</span></div>"
         "<p>Permanent, signed contributor badges.</p></div>"
-        "<div class='card'><h3>Swarm</h3>"
+        "<div class='card'><h3>Availability</h3>"
         "<div class='kv'><b>local swarm</b><span class='val'>%s</span></div>"
         "<p>Package pages show how many peers currently advertise a "
         "package in this node's local swarm view.</p></div>"
