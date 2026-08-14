@@ -315,7 +315,12 @@ bool zcl_present_window_run_actions_v1(
             static const RGFW_key action_keys[] = {
                 RGFW_1, RGFW_2, RGFW_3, RGFW_4,
             };
-            for (uint32_t i = 0; i < action_count; i++) {
+            /* Keep the array bound local even though entry validation already
+             * rejects action_count > 4. LTO must be able to prove this read is
+             * bounded without depending on a distant control-flow fact. */
+            for (uint32_t i = 0;
+                 i < action_count && i < ZCL_PRESENT_WINDOW_ACTIONS_MAX;
+                 i++) {
                 if (event.key.value != action_keys[i]) continue;
                 result->outcome = ZCL_PRESENT_WINDOW_ACTION;
                 result->action_index = i;

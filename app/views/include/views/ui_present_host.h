@@ -13,14 +13,17 @@
 struct ui_present_host_result {
     bool resident_host;
     bool host_reused;
+    bool view_replaced;
     bool event_received;
     uint32_t action_index;
     int64_t ready_us;
 };
 
-/* Submit one already-validated inert model. Non-interactive callers return
- * after the first native blit. Interactive callers wait for one numbered
- * action or dismissal; the caller still owns all policy and authority. */
+/* Submit one already-validated inert model. Non-interactive calls with the
+ * same request_id replace that request's prior display-only window, making
+ * progress/status updates live without keeping candidate code or authority
+ * resident. Interactive callers wait for one numbered action or dismissal;
+ * the caller still owns all policy and authority. */
 struct zcl_result ui_present_host_submit(
     const struct zcl_present_model_v1 *model,
     bool wait_for_event,

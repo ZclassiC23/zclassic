@@ -28,6 +28,7 @@
 #include <sys/socket.h>
 #include <sys/types.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -44,6 +45,7 @@
 #define UI_HOST_READY_TIMEOUT_MS 3000
 #define UI_HOST_EVENT_TIMEOUT_MS (10 * 60 * 1000)
 #define UI_HOST_IDLE_EXIT_US (10LL * 60LL * 1000000LL)
+#define UI_HOST_SESSIONS_MAX 16u
 
 static const uint8_t UI_HOST_REQUEST_MAGIC[4] = {'Z', 'P', 'H', 'R'};
 static const uint8_t UI_HOST_REPLY_MAGIC[4] = {'Z', 'P', 'H', 'A'};
@@ -230,6 +232,7 @@ static int ui_host_connect(bool *reused)
 struct ui_host_ready_context {
     int fd;
     int64_t started_us;
+    uint32_t ready_value;
 };
 
 static void ui_host_window_ready(void *context)
@@ -237,7 +240,8 @@ static void ui_host_window_ready(void *context)
     struct ui_host_ready_context *ready = context;
     uint8_t reply[UI_HOST_REPLY_BYTES];
     int64_t elapsed = platform_time_monotonic_us() - ready->started_us;
-    ui_host_reply_bytes(reply, UI_HOST_PHASE_READY, UI_HOST_STATUS_OK, 0,
+    ui_host_reply_bytes(reply, UI_HOST_PHASE_READY, UI_HOST_STATUS_OK,
+                        ready->ready_value,
                         elapsed > 0 ? (uint64_t)elapsed : 0);
     (void)ui_host_send_all(ready->fd, reply, sizeof(reply));
 }
@@ -252,6 +256,7 @@ static void ui_host_send_rejected(int fd, uint16_t phase)
 static bool ui_host_show_window(
     int client,
     uint16_t flags,
+    bool view_replaced,
     const struct zcl_present_window_v1 *window,
     uint32_t action_count)
 {
@@ -259,6 +264,7 @@ static bool ui_host_show_window(
     struct ui_host_ready_context ready = {
         .fd = client,
         .started_us = platform_time_monotonic_us(),
+        .ready_value = view_replaced ? 1u : 0u,
     };
     struct zcl_present_window_event_v1 event;
     bool shown = zcl_present_window_run_actions_v1(
@@ -278,6 +284,7 @@ static bool ui_host_show_window(
 }
 
 static bool ui_host_worker_model(int client, uint16_t flags,
+                                 bool view_replaced,
                                  const uint8_t *wire, uint32_t wire_len)
 {
     struct zcl_present_model_v1 model;
@@ -313,7 +320,7 @@ static bool ui_host_worker_model(int client, uint16_t flags,
         .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
         .copy_text = model.exact_root[0] ? model.exact_root : NULL,
     };
-    bool shown = ui_host_show_window(client, flags, &window,
+    bool shown = ui_host_show_window(client, flags, view_replaced, &window,
                                      model.action_count);
     zcl_present_model_bitmap_free_v1(&bitmap);
     return shown;
@@ -378,37 +385,104 @@ static bool ui_host_worker_qr(int client, const uint8_t *wire,
         .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
         .copy_text = payload,
     };
-    bool shown = ui_host_show_window(client, 0, &window, 0);
+    bool shown = ui_host_show_window(client, 0, false, &window, 0);
     qr_popup_card_free(&card);
     return shown;
 }
 
-static int ui_host_worker(int listener, int client)
+static int ui_host_worker(int listener, int client, uint16_t flags,
+                          bool view_replaced, const uint8_t *wire,
+                          uint32_t wire_len)
 {
     close(listener);
-    uint8_t header[UI_HOST_REQUEST_BYTES];
-    uint16_t flags = 0;
-    uint32_t model_len = 0;
-    if (!ui_host_recv_all(client, header, sizeof(header),
-                          UI_HOST_READY_TIMEOUT_MS) ||
-        !ui_host_parse_request_header(header, &flags, &model_len)) {
-        ui_host_send_rejected(client, UI_HOST_PHASE_READY);
-        close(client);
-        return 2;
-    }
-    uint8_t wire[ZCL_PRESENT_MODEL_WIRE_MAX];
-    if (!ui_host_recv_all(client, wire, model_len,
-                          UI_HOST_READY_TIMEOUT_MS)) {
-        ui_host_send_rejected(client, UI_HOST_PHASE_READY);
-        close(client);
-        return 2;
-    }
     bool shown = flags & UI_HOST_FLAG_QR_CARD
-        ? ui_host_worker_qr(client, wire, model_len)
-        : ui_host_worker_model(client, flags, wire, model_len);
+        ? ui_host_worker_qr(client, wire, wire_len)
+        : ui_host_worker_model(client, flags, view_replaced, wire, wire_len);
     if (!shown) ui_host_send_rejected(client, UI_HOST_PHASE_READY);
     close(client);
     return shown ? 0 : 1;
+}
+
+struct ui_host_session {
+    pid_t worker;
+    char request_id[ZCL_PRESENT_MODEL_ID_MAX + 1u];
+};
+
+static void ui_host_session_forget_worker(
+    struct ui_host_session sessions[UI_HOST_SESSIONS_MAX], pid_t worker)
+{
+    for (size_t i = 0; i < UI_HOST_SESSIONS_MAX; i++) {
+        if (sessions[i].worker == worker)
+            sessions[i] = (struct ui_host_session){0};
+    }
+}
+
+static void ui_host_sessions_reap(
+    struct ui_host_session sessions[UI_HOST_SESSIONS_MAX])
+{
+    for (;;) {
+        pid_t worker = waitpid(-1, NULL, WNOHANG);
+        if (worker > 0) {
+            ui_host_session_forget_worker(sessions, worker);
+            continue;
+        }
+        if (worker < 0 && errno == EINTR) continue;
+        break;
+    }
+}
+
+/* Replace only a still-owned, unreaped display worker. Keeping children as
+ * zombies until this parent reaps them prevents PID reuse from ever turning a
+ * visual replacement into a signal sent to an unrelated process. */
+static bool ui_host_session_replace(
+    struct ui_host_session sessions[UI_HOST_SESSIONS_MAX],
+    const char *request_id)
+{
+    ui_host_sessions_reap(sessions);
+    for (size_t i = 0; i < UI_HOST_SESSIONS_MAX; i++) {
+        if (sessions[i].worker <= 0 ||
+            strcmp(sessions[i].request_id, request_id) != 0)
+            continue;
+        pid_t worker = sessions[i].worker;
+        if (kill(worker, SIGTERM) != 0 && errno != ESRCH)
+            LOG_WARN("presentation.host",
+                     "prior display worker termination failed: %s",
+                     strerror(errno));
+        while (waitpid(worker, NULL, 0) < 0 && errno == EINTR) {}
+        sessions[i] = (struct ui_host_session){0};
+        return true;
+    }
+    return false;
+}
+
+static bool ui_host_session_remember(
+    struct ui_host_session sessions[UI_HOST_SESSIONS_MAX],
+    const char *request_id, pid_t worker)
+{
+    /* Do not reap here: this worker may have exited between fork and this
+     * bookkeeping step. Leaving it waitable until a later reap prevents its
+     * PID from being reused while the table records ownership. */
+    for (size_t i = 0; i < UI_HOST_SESSIONS_MAX; i++) {
+        if (sessions[i].worker != 0) continue;
+        sessions[i].worker = worker;
+        (void)snprintf(sessions[i].request_id,
+                       sizeof(sessions[i].request_id), "%s", request_id);
+        return true;
+    }
+    return false;
+}
+
+static bool ui_host_session_has_slot(
+    struct ui_host_session sessions[UI_HOST_SESSIONS_MAX],
+    const char *request_id)
+{
+    ui_host_sessions_reap(sessions);
+    for (size_t i = 0; i < UI_HOST_SESSIONS_MAX; i++) {
+        if (sessions[i].worker == 0 ||
+            strcmp(sessions[i].request_id, request_id) == 0)
+            return true;
+    }
+    return false;
 }
 
 static bool ui_host_peer_allowed(int client)
@@ -469,6 +543,7 @@ static struct zcl_result ui_host_submit_wire(
     }
     result->resident_host = true;
     result->host_reused = reused;
+    result->view_replaced = value == 1u;
     result->ready_us = elapsed_us > INT64_MAX ? INT64_MAX
                                                : (int64_t)elapsed_us;
     if (!(flags & UI_HOST_FLAG_WAIT_EVENT)) {
@@ -554,7 +629,7 @@ int ui_present_host_main(void)
 #else
     int listener = ui_host_listen();
     if (listener < 0) return 2;
-    (void)signal(SIGCHLD, SIG_IGN);
+    struct ui_host_session sessions[UI_HOST_SESSIONS_MAX] = {{0}};
     int64_t last_request_us = platform_time_monotonic_us();
     for (;;) {
         struct pollfd wait = {.fd = listener, .events = POLLIN};
@@ -562,6 +637,7 @@ int ui_present_host_main(void)
         if (ready < 0 && errno == EINTR) continue;
         if (ready < 0) break;
         if (ready == 0) {
+            ui_host_sessions_reap(sessions);
             if (platform_time_monotonic_us() - last_request_us >
                 UI_HOST_IDLE_EXIT_US)
                 break;
@@ -574,10 +650,73 @@ int ui_present_host_main(void)
             close(client);
             continue;
         }
+        uint8_t header[UI_HOST_REQUEST_BYTES];
+        uint16_t flags = 0;
+        uint32_t wire_len = 0;
+        if (!ui_host_recv_all(client, header, sizeof(header),
+                              UI_HOST_READY_TIMEOUT_MS) ||
+            !ui_host_parse_request_header(header, &flags, &wire_len)) {
+            ui_host_send_rejected(client, UI_HOST_PHASE_READY);
+            close(client);
+            continue;
+        }
+        uint8_t wire[ZCL_PRESENT_MODEL_WIRE_MAX];
+        if (!ui_host_recv_all(client, wire, wire_len,
+                              UI_HOST_READY_TIMEOUT_MS)) {
+            ui_host_send_rejected(client, UI_HOST_PHASE_READY);
+            close(client);
+            continue;
+        }
+        bool replaceable = false;
+        bool view_replaced = false;
+        char request_id[ZCL_PRESENT_MODEL_ID_MAX + 1u] = {0};
+        if (!(flags & UI_HOST_FLAG_QR_CARD)) {
+            struct zcl_present_model_v1 model;
+            char why[192];
+            if (!zcl_present_model_decode_v1(wire, wire_len, &model,
+                                             why, sizeof(why)) ||
+                (!!(flags & UI_HOST_FLAG_WAIT_EVENT) !=
+                 (model.action_count > 0))) {
+                LOG_WARN("presentation.host",
+                         "resident visual request rejected before fork");
+                ui_host_send_rejected(client, UI_HOST_PHASE_READY);
+                close(client);
+                continue;
+            }
+            replaceable = model.action_count == 0;
+            (void)snprintf(request_id, sizeof(request_id), "%s",
+                           model.request_id);
+            if (replaceable &&
+                !ui_host_session_has_slot(sessions, request_id)) {
+                ui_host_send_rejected(client, UI_HOST_PHASE_READY);
+                close(client);
+                continue;
+            }
+            if (replaceable)
+                view_replaced = ui_host_session_replace(sessions,
+                                                        request_id);
+        }
         pid_t worker = fork();
         if (worker == 0)
-            _exit(ui_host_worker(listener, client));
+            _exit(ui_host_worker(listener, client, flags, view_replaced,
+                                 wire, wire_len));
+        if (worker < 0 ||
+            (replaceable &&
+             !ui_host_session_remember(sessions, request_id, worker))) {
+            if (worker > 0) {
+                (void)kill(worker, SIGTERM);
+                while (waitpid(worker, NULL, 0) < 0 && errno == EINTR) {}
+            }
+            ui_host_send_rejected(client, UI_HOST_PHASE_READY);
+            close(client);
+            continue;
+        }
         close(client);
+    }
+    for (size_t i = 0; i < UI_HOST_SESSIONS_MAX; i++) {
+        if (sessions[i].worker <= 0) continue;
+        (void)kill(sessions[i].worker, SIGTERM);
+        while (waitpid(sessions[i].worker, NULL, 0) < 0 && errno == EINTR) {}
     }
     close(listener);
     return 0;

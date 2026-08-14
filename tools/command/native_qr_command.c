@@ -64,6 +64,7 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
                             !cold_fallback && host.resident_host);
     (void)json_push_kv_bool(&reply->data, "host_reused",
                             !cold_fallback && host.host_reused);
+    (void)json_push_kv_bool(&reply->data, "view_replaced", false);
     (void)json_push_kv_int(&reply->data, "window_ready_us",
                            cold_fallback ? -1 : host.ready_us);
     (void)json_push_kv_str(&reply->data, "authority", "display-only");
@@ -137,6 +138,8 @@ void zcl_native_handle_presentation_show(
                             !cold_fallback && host.resident_host);
     (void)json_push_kv_bool(&reply->data, "host_reused",
                             !cold_fallback && host.host_reused);
+    (void)json_push_kv_bool(&reply->data, "view_replaced",
+                            !cold_fallback && host.view_replaced);
     (void)json_push_kv_int(&reply->data, "window_ready_us",
                            cold_fallback ? -1 : host.ready_us);
     (void)json_push_kv_bool(&reply->data, "event_return",

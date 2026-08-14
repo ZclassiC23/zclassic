@@ -32,7 +32,12 @@ abstract AF_UNIX endpoint (no socket path or canonical datadir), accepts only
 same-UID peers, and forks disposable window workers from one warm exact-binary
 parent. QR cards and renderer-neutral models share this transport without
 changing their separate deterministic compositors. The first software blit is
-acknowledged separately from a later numbered action/dismissal event. The event
+acknowledged separately from a later numbered action/dismissal event.
+Non-interactive models with the same bounded request ID replace only their
+prior display worker, so an agent can publish live reproduction/progress
+frames without accumulating windows or putting authority in the visual
+process. Child ownership is reaped before replacement, preventing PID reuse
+from redirecting the replacement signal. The event
 carries no authority: the calling
 node or agent command must recheck the exact root, authentication, capability,
 local policy, and plan/commit state. This early-dispatch host code path opens
