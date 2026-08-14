@@ -19,6 +19,11 @@ struct ui_present_host_result {
     int64_t ready_us;
 };
 
+/* Fail closed before spawning a presentation process when the platform has
+ * no usable native display session.  `why` is a stable, named diagnostic for
+ * typed command replies and headless acceptance. */
+bool ui_present_host_display_ready(char *why, size_t why_cap);
+
 /* Submit one already-validated inert model. Non-interactive calls with the
  * same request_id replace that request's prior display-only window, making
  * progress/status updates live without keeping candidate code or authority

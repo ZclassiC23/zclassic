@@ -41,6 +41,11 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
         nqr_fail(reply, "TITLE_TOO_LARGE", "title exceeds 80 bytes");
         return;
     }
+    char display_why[96];
+    if (!ui_present_host_display_ready(display_why, sizeof(display_why))) {
+        nqr_fail(reply, "HEADLESS_DISPLAY_UNAVAILABLE", display_why);
+        return;
+    }
     int64_t started_us = platform_time_monotonic_us();
     struct ui_present_host_result host;
     struct zcl_result launched = ui_present_host_submit_qr(
@@ -127,6 +132,11 @@ void zcl_native_present_model(
         np_fail(reply, "UNSUPPORTED_PRESENTATION_KIND",
                 "use app.qr.show for QR; raw canvas documents are not admitted",
                 leaf);
+        return;
+    }
+    char display_why[96];
+    if (!ui_present_host_display_ready(display_why, sizeof(display_why))) {
+        np_fail(reply, "HEADLESS_DISPLAY_UNAVAILABLE", display_why, leaf);
         return;
     }
     bool wait_for_event = model->action_count > 0;
