@@ -290,6 +290,11 @@ static int test_process_sensitive_groups_are_catalog_exclusive(void)
             "test_command_registry_latency"));
         ASSERT(zcl_test_group_requires_exclusive_run(
             "test_command_registry_latency"));
+        /* ZVCS hard-gates warm status and manifest latency. Running it in
+         * the worker pool made unrelated CPU and filesystem producers turn
+         * the 20 ms contract into a scheduler-contention measurement. */
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_vcs_core"));
         /* This compares forced-pool and serial routing back-to-back. The
          * worker pool must not introduce a different producer population
          * between those two measurements. */
