@@ -15,6 +15,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 #include <dirent.h>
+#include <stdlib.h>
 
 /* Recursively remove a directory tree (like rm -rf). */
 static void remove_tree(const char *path)
@@ -304,6 +305,43 @@ static int test_onion_persist_args_parse(void)
     return failures;
 }
 
+static int test_stability_control_args_parse(void)
+{
+    int failures = 0;
+    printf("test_stability_control_args_parse: ");
+
+    struct app_context ctx = {0};
+    bool show_metrics = false;
+    char *valid[] = { "zclassic23", "-utxomirror=off",
+                      "-bodyhistorybackfill=normal", "-legacyoracle=off" };
+    int rc = args_parse_node_options(4, valid, &ctx, &show_metrics);
+    bool parsed = rc == -1 &&
+        getenv("ZCL_UTXO_MIRROR_MODE") &&
+        strcmp(getenv("ZCL_UTXO_MIRROR_MODE"), "off") == 0 &&
+        getenv("ZCL_BODY_HISTORY_BACKFILL_MODE") &&
+        strcmp(getenv("ZCL_BODY_HISTORY_BACKFILL_MODE"), "normal") == 0 &&
+        getenv("ZCL_LEGACY_ORACLE_MODE") &&
+        strcmp(getenv("ZCL_LEGACY_ORACLE_MODE"), "off") == 0;
+
+    struct app_context bad_ctx = {0};
+    char *invalid[] = { "zclassic23", "-utxomirror=rebuild" };
+    bool invalid_refused =
+        args_parse_node_options(2, invalid, &bad_ctx, &show_metrics) == 1;
+
+    unsetenv("ZCL_UTXO_MIRROR_MODE");
+    unsetenv("ZCL_BODY_HISTORY_BACKFILL_MODE");
+    unsetenv("ZCL_LEGACY_ORACLE_MODE");
+
+    if (parsed && invalid_refused) {
+        printf("OK\n");
+    } else {
+        printf("FAIL (parsed=%d invalid_refused=%d)\n",
+               parsed, invalid_refused);
+        failures++;
+    }
+    return failures;
+}
+
 int test_onion_persistence(void)
 {
     int failures = 0;
@@ -315,6 +353,7 @@ int test_onion_persistence(void)
     failures += test_onion_identity_rotation();
     failures += test_onion_ephemeral_default();
     failures += test_onion_persist_args_parse();
+    failures += test_stability_control_args_parse();
 
     printf("Persistent onion identity: %d failures\n", failures);
     return failures;

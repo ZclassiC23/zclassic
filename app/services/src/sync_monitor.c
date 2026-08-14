@@ -600,7 +600,9 @@ int sync_monitor_local_header_refill(struct connman *cm,
 
     if (prev_retry_count > 0 && worst && eligible >= 2 &&
         eligible < LOCAL_HEADER_REFILL_MIN_PEERS) {
-        worst->disconnect = true;
+        (void)p2p_node_request_disconnect(
+            worst, P2P_DISCONNECT_SYNC_STALL,
+            P2P_DISCONNECT_SOURCE_SYNC, worst->endpoint_generation);
         rotated_peer = true;
     }
     zcl_mutex_unlock(&cm->manager.cs_nodes);

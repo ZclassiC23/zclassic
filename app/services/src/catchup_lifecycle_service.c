@@ -64,14 +64,14 @@ static bool catchup_lifecycle_join_thread_bounded(pthread_t thread,
 
     if (rc == ETIMEDOUT) {
         LOG_WARN("catchup_lifecycle",
-                 "%s join timed out after %ds; detaching",
+                 "%s join timed out after %ds; retaining ownership",
                  name ? name : "thread", timeout_sec);
     } else {
         LOG_WARN("catchup_lifecycle",
-                 "%s join failed rc=%d (%s); detaching",
+                 "%s join failed rc=%d (%s); retaining ownership",
                  name ? name : "thread", rc, strerror(rc));
     }
-    pthread_detach(thread);
+    pthread_join(thread, NULL);
     return false;
 }
 

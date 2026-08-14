@@ -189,21 +189,9 @@ static bool read_coins_kv_state(int32_t *frontier_out, int64_t *count_out)
         return false;
     *frontier_out = fr;
 
-    /* The live-coin COUNT is a full scan of the WITHOUT-ROWID coins table
-     * (~1.3M rows) — NOT under the shared lock (that would stall the reducer
-     * drive). Read it through an independent read-only connection; -1 on any
-     * failure, which the caller treats as drift-unknown (rebuilds to be safe). */
+    /* Never count the live table here. A cursor-equal steady-state pass must be
+     * O(1); bounded auditors detect corruption independently. */
     *count_out = -1;
-    char pkv_path[PROGRESS_STORE_PATH_MAX];
-    if (progress_store_path(pkv_path, sizeof(pkv_path))) {
-        sqlite3 *rdb = NULL;
-        if (sqlite3_open_v2(pkv_path, &rdb, SQLITE_OPEN_READONLY, NULL)
-                == SQLITE_OK) {
-            sqlite3_busy_timeout(rdb, 5000);
-            *count_out = coins_kv_count(rdb);
-        }
-        if (rdb) sqlite3_close(rdb);
-    }
     return true;
 }
 
@@ -231,7 +219,7 @@ static bool mirror_run_db_lane(struct node_db *ndb,
 
 struct mirror_node_state_ctx {
     int64_t cursor;
-    int64_t mirror_count;
+    bool mirror_has_rows;
     bool ok;
 };
 
@@ -243,7 +231,22 @@ static bool mirror_read_node_state_lane(struct node_db *ndb, void *ctx)
         return false;
     s->cursor = 0;
     (void)node_db_state_get_int(ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &s->cursor);
-    s->mirror_count = db_utxo_count(ndb);
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT EXISTS(SELECT 1 FROM utxos LIMIT 1)",
+            -1, &st, NULL) != SQLITE_OK) {
+        LOG_WARN("utxo_mirror", "node state probe prepare failed: %s",
+                 sqlite3_errmsg(ndb->db));
+        return false;
+    }
+    if (sqlite3_step(st) != SQLITE_ROW) { // raw-sql-ok:read-only-introspection
+        LOG_WARN("utxo_mirror", "node state probe step failed: %s",
+                 sqlite3_errmsg(ndb->db));
+        sqlite3_finalize(st);
+        return false;
+    }
+    s->mirror_has_rows = sqlite3_column_int(st, 0) != 0;
+    sqlite3_finalize(st);
     s->ok = true;
     return true;
 }
@@ -392,22 +395,38 @@ static int64_t mirror_rebuild_from_coins_kv(struct node_db *ndb, int32_t frontie
      * height the caller asserts this pass reflects) is an exact covering
      * height, letting utxo_mirror_delta_apply take over incrementally from
      * here instead of the boot-time refresh redoing this O(n) work. */
-    if (!utxo_commitment_save_checkpoint_at_height(ndb->db, &uc, frontier))
-        LOG_WARN("utxo_mirror",
-                 "rebuild: commitment checkpoint save failed at h=%d "
-                 "(mirror data correct; boot refresh self-heals)", frontier);
+    if (!utxo_commitment_save_checkpoint_at_height(ndb->db, &uc, frontier)) {
+        if (!node_db_rollback(ndb))
+            LOG_WARN("utxo_mirror",
+                     "rebuild: node.db ROLLBACK failed after commitment error");
+        LOG_RETURN(-1, "utxo_mirror",
+                   "rebuild: commitment checkpoint save failed at frontier=%d",
+                   frontier);
+    }
+
+    if (!db_utxo_rebuild_wallet_and_address_caches_in_txn(ndb)) {
+        if (!node_db_rollback(ndb))
+            LOG_WARN("utxo_mirror",
+                     "rebuild: node.db ROLLBACK failed after cache error");
+        LOG_RETURN(-1, "utxo_mirror",
+                   "rebuild: wallet/address cache refresh failed");
+    }
+
+    int64_t next_cursor = frontier;
+    if (!node_db_state_set(ndb, UTXO_MIRROR_SYNC_CURSOR_KEY,
+                           &next_cursor, sizeof(next_cursor))) {
+        if (!node_db_rollback(ndb))
+            LOG_WARN("utxo_mirror",
+                     "rebuild: node.db ROLLBACK failed after cursor error");
+        LOG_RETURN(-1, "utxo_mirror",
+                   "rebuild: cursor persist failed at frontier=%d", frontier);
+    }
 
     if (!node_db_commit(ndb)) {
         if (!node_db_rollback(ndb))
             LOG_WARN("utxo_mirror", "rebuild: node.db ROLLBACK failed after commit fail");
         LOG_RETURN(-1, "utxo_mirror", "rebuild: node.db COMMIT failed");
     }
-
-    /* Refresh the derived wallet_utxos + addresses read models from the new
-     * mirror set (they are bulk-rebuilt, never maintained incrementally). */
-    if (!db_utxo_rebuild_wallet_and_address_caches(ndb))
-        LOG_WARN("utxo_mirror",
-                 "rebuild: wallet/address cache refresh failed (mirror itself ok)");
 
     return written;
 }
@@ -416,19 +435,12 @@ struct mirror_rebuild_ctx {
     struct utxo_mirror_sync_service *svc;
     int32_t cursor;          /* current mirror cursor (in) */
     int32_t frontier;        /* coins_kv applied frontier (in) */
-    int64_t mirror_count;    /* current mirror row count (in) */
+    bool mirror_has_rows;    /* O(1) existence probe, not a full count */
     int32_t applied_through; /* height the mirror is consistent through (out) */
     int64_t written;         /* rows changed / written (out) */
     bool cursor_persisted;
     bool used_delta;         /* diagnostics: delta vs wholesale rebuild */
 };
-
-static bool mirror_persist_cursor(struct node_db *ndb, int32_t through)
-{
-    int64_t v = (int64_t)through;
-    return app_runtime_node_db_state_set(
-        ndb, UTXO_MIRROR_SYNC_CURSOR_KEY, &v, sizeof(v));
-}
 
 static bool mirror_rebuild_and_advance_lane(struct node_db *ndb, void *ctx)
 {
@@ -439,46 +451,50 @@ static bool mirror_rebuild_and_advance_lane(struct node_db *ndb, void *ctx)
 
     app_runtime_node_db_sync_flush_if_needed(ndb);
 
-    /* Incremental delta when the mirror only LAGS the frontier (the steady-state
-     * case — a few blocks behind). A torn mirror (cursor already == frontier but
-     * row counts differ) or a fresh/empty mirror can't be delta'd, so those fall
-     * through to the wholesale rebuild, which also self-heals any residual count
-     * gap a delta might leave (e.g. a missing utxo_apply_delta row). This turns
-     * the O(total_UTXO_count) DELETE+reinsert paid on every accepted block into
-     * O(coins touched by the new blocks). */
-    if (r->cursor > 0 && r->mirror_count > 0 && r->frontier > r->cursor) {
+    /* Incremental delta when the mirror lags the frontier (steady state).
+     * Initial/empty construction is the only automatic wholesale path. */
+    if (r->cursor > 0 && r->mirror_has_rows && r->frontier > r->cursor) {
         int32_t applied_through = r->cursor;
         int64_t rows = 0;
         int rc = utxo_mirror_delta_apply(ndb, r->cursor, r->frontier,
                                          UTXO_MIRROR_DELTA_MAX_HEIGHTS_PER_PASS,
+                                         UTXO_MIRROR_SYNC_CURSOR_KEY,
                                          &applied_through, &rows);
         if (rc == UTXO_MIRROR_DELTA_OK) {
             r->used_delta = true;
             r->written = rows;
             r->applied_through = applied_through;
-            r->cursor_persisted = mirror_persist_cursor(ndb, applied_through);
-            if (!r->cursor_persisted)
-                LOG_WARN("utxo_mirror",
-                         "[utxo_mirror] delta cursor persist failed at %d "
-                         "(mirror data correct; next pass re-detects drift)",
-                         applied_through);
+            r->cursor_persisted = true;
             return true;
         }
         if (rc == UTXO_MIRROR_DELTA_ERROR)
             return false;  /* logged in utxo_mirror_delta_apply; pass re-runs */
-        /* UTXO_MIRROR_DELTA_FALLBACK → wholesale rebuild below. */
+        /* Missing causal history is not permission for an automatic million-
+         * row rebuild. Quarantine once; an explicit audit/recovery action can
+         * later reconstruct the derived mirror. */
+        atomic_store(&r->svc->mirror_health, UTXO_MIRROR_QUARANTINED);
+        atomic_fetch_add(&r->svc->quarantines_total, 1);
+        atomic_store(&r->svc->last_quarantine_unix,
+                     platform_time_wall_unix());
+        LOG_WARN("utxo_mirror",
+                 "mirror quarantined: causal delta/checkpoint missing in "
+                 "[%d,%d); automatic wholesale rebuild refused",
+                 r->cursor, r->frontier);
+        return false;
     }
 
+    atomic_store(&r->svc->mirror_health, UTXO_MIRROR_AUDITING);
     r->written = mirror_rebuild_from_coins_kv(ndb, r->frontier);
-    if (r->written < 0)
+    if (r->written < 0) {
+        atomic_store(&r->svc->mirror_health, UTXO_MIRROR_QUARANTINED);
+        atomic_fetch_add(&r->svc->quarantines_total, 1);
+        atomic_store(&r->svc->last_quarantine_unix,
+                     platform_time_wall_unix());
         return false;
+    }
     r->applied_through = r->frontier;
-    r->cursor_persisted = mirror_persist_cursor(ndb, r->frontier);
-    if (!r->cursor_persisted)
-        LOG_WARN("utxo_mirror",
-                 "[utxo_mirror] cursor persist failed at frontier=%d "
-                 "(mirror data is correct; next pass re-detects drift)",
-                 r->frontier);
+    r->cursor_persisted = true;
+    atomic_store(&r->svc->mirror_health, UTXO_MIRROR_HEALTHY);
     return true;
 }
 
@@ -488,6 +504,8 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
 {
     if (!svc || !svc->ndb || !svc->ndb->open)
         LOG_RETURN(-1, "utxo_mirror", "run_once: node.db unavailable");
+    if (atomic_load(&svc->mirror_health) == UTXO_MIRROR_QUARANTINED)
+        return 0;
 
     /* During a from-genesis refold the coins_kv frontier climbs every pass, so
      * drift is true on every tick and this would DELETE+reinsert the ENTIRE
@@ -562,13 +580,21 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
         LOG_RETURN(-1, "utxo_mirror", "run_once: node.db state read failed");
     }
 
-    /* Drift = the mirror cursor lags the frontier, OR the row counts diverge
-     * (a count mismatch at the same height means an earlier pass tore, or the
-     * cold-import seed differs from the live set). Either triggers a rebuild;
-     * an exact in-step mirror does no work. */
-    bool drift = (state.cursor != (int64_t)frontier) ||
-                 (coins_count >= 0 && state.mirror_count >= 0 &&
-                  coins_count != state.mirror_count);
+    if (state.cursor > (int64_t)frontier) {
+        atomic_store(&svc->mirror_health, UTXO_MIRROR_QUARANTINED);
+        atomic_fetch_add(&svc->quarantines_total, 1);
+        atomic_store(&svc->last_quarantine_unix,
+                     platform_time_wall_unix());
+        LOG_RETURN(-1, "utxo_mirror",
+                   "run_once: mirror cursor=%lld is ahead of frontier=%d; "
+                   "mirror quarantined",
+                   (long long)state.cursor, frontier);
+    }
+
+    /* Cursor equality is the constant-time steady state. Integrity auditing is
+     * bounded and independent; this loop never counts either million-row
+     * table merely to rediscover that nothing advanced. */
+    bool drift = state.cursor != (int64_t)frontier;
     if (!drift) {
         atomic_store(&svc->last_mirror_height, state.cursor);
         atomic_store(&svc->last_pass_unix, platform_time_wall_unix());
@@ -576,16 +602,15 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
     }
 
     LOG_INFO("utxo_mirror",
-             "[utxo_mirror] drift: mirror_height=%lld count=%lld -> "
-             "frontier=%d coins_kv_count=%lld; rebuilding mirror",
-             (long long)state.cursor, (long long)state.mirror_count,
-             frontier, (long long)coins_count);
+             "[utxo_mirror] drift: cursor=%lld -> frontier=%d; "
+             "applying causal delta",
+             (long long)state.cursor, frontier);
 
     struct mirror_rebuild_ctx rebuild = {
         .svc = svc,
         .cursor = (int32_t)state.cursor,
         .frontier = frontier,
-        .mirror_count = state.mirror_count,
+        .mirror_has_rows = state.mirror_has_rows,
         .applied_through = (int32_t)state.cursor,
         .written = -1,
         .cursor_persisted = false,
@@ -606,7 +631,12 @@ int64_t utxo_mirror_sync_run_once(struct utxo_mirror_sync_service *svc)
         return -1;  // raw-return-ok:logged-in-mirror_rebuild_from_coins_kv
     }
 
-    atomic_fetch_add(&svc->rebuilds_run, 1);
+    if (rebuild.used_delta) {
+        atomic_fetch_add(&svc->delta_passes_run, 1);
+        atomic_fetch_add(&svc->delta_rows_changed, rebuild.written);
+    } else {
+        atomic_fetch_add(&svc->rebuilds_run, 1);
+    }
     atomic_fetch_add(&svc->rows_written, rebuild.written);
     atomic_store(&svc->last_mirror_height, (int64_t)rebuild.applied_through);
     atomic_store(&svc->last_pass_unix, platform_time_wall_unix());
@@ -661,12 +691,17 @@ void utxo_mirror_sync_init(struct utxo_mirror_sync_service *svc,
     pthread_cond_init(&svc->ready_cond, NULL);
     atomic_store(&svc->stop_requested, false);
     atomic_store(&svc->state, UTXO_MIRROR_SYNC_IDLE);
+    atomic_store(&svc->mirror_health, UTXO_MIRROR_HEALTHY);
     atomic_store(&svc->rebuilds_run, 0);
+    atomic_store(&svc->delta_passes_run, 0);
+    atomic_store(&svc->delta_rows_changed, 0);
+    atomic_store(&svc->quarantines_total, 0);
     atomic_store(&svc->rows_written, 0);
     atomic_store(&svc->last_mirror_height, 0);
     atomic_store(&svc->last_frontier, 0);
     atomic_store(&svc->last_pass_unix, 0);
     atomic_store(&svc->last_error_unix, 0);
+    atomic_store(&svc->last_quarantine_unix, 0);
 
     int tick = UTXO_MIRROR_SYNC_DEFAULT_TICK_SECONDS;
     const char *env = getenv("ZCL_UTXO_MIRROR_TICK_SECONDS");
@@ -712,7 +747,10 @@ struct zcl_result utxo_mirror_sync_start(struct utxo_mirror_sync_service *svc)
 
     if (!ready_ok) {
         atomic_store(&svc->stop_requested, true);
-        pthread_detach(svc->thread);
+        /* Ownership is retained until the worker exits. Detaching here used
+         * to let shutdown destroy svc/ndb while the worker could still touch
+         * them. */
+        pthread_join(svc->thread, NULL);
         atomic_store(&svc->thread_started, false);
         return ZCL_ERR(-4,
             "utxo_mirror: thread did not signal ready within 30 s — aborted start");
@@ -759,6 +797,16 @@ static const char *utxo_mirror_sync_state_name(int state)
     }
 }
 
+static const char *utxo_mirror_health_state_name(int state)
+{
+    switch (state) {
+    case UTXO_MIRROR_HEALTHY: return "HEALTHY";
+    case UTXO_MIRROR_AUDITING: return "AUDITING";
+    case UTXO_MIRROR_QUARANTINED: return "QUARANTINED";
+    default: return "UNKNOWN";
+    }
+}
+
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe: g_utxo_mirror_sync
  * is NULL before the service starts. Most fields are _Atomic members of the
  * boot-owned instance, read with atomic_load. The two exceptions:
@@ -782,10 +830,19 @@ bool utxo_mirror_sync_dump_state_json(struct json_value *out, const char *key)
 
     json_push_kv_str(out, "state",
                      utxo_mirror_sync_state_name(atomic_load(&svc->state)));
+    json_push_kv_str(out, "mirror_health",
+                     utxo_mirror_health_state_name(
+                         atomic_load(&svc->mirror_health)));
     json_push_kv_bool(out, "thread_started", atomic_load(&svc->thread_started));
     json_push_kv_int(out, "tick_seconds", (int64_t)svc->tick_seconds);
     json_push_kv_int(out, "rebuilds_run",
                      atomic_load(&svc->rebuilds_run));
+    json_push_kv_int(out, "delta_passes_run",
+                     atomic_load(&svc->delta_passes_run));
+    json_push_kv_int(out, "delta_rows_changed",
+                     atomic_load(&svc->delta_rows_changed));
+    json_push_kv_int(out, "quarantines_total",
+                     atomic_load(&svc->quarantines_total));
     json_push_kv_int(out, "rows_written",
                      atomic_load(&svc->rows_written));
     json_push_kv_int(out, "last_mirror_height",
@@ -796,5 +853,7 @@ bool utxo_mirror_sync_dump_state_json(struct json_value *out, const char *key)
                      atomic_load(&svc->last_pass_unix));
     json_push_kv_int(out, "last_error_unix",
                      atomic_load(&svc->last_error_unix));
+    json_push_kv_int(out, "last_quarantine_unix",
+                     atomic_load(&svc->last_quarantine_unix));
     return true;
 }

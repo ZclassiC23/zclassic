@@ -321,7 +321,10 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
                     "proto %d too old (min %d) %s",
                     ver.protocol_version, MIN_PEER_PROTO_VERSION,
                     node->addr_name);
-        node->disconnect = true;
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_PROTOCOL_VIOLATION,
+            P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+            node->endpoint_generation);
         peer_lifecycle_note_reject(node, "protocol-too-old");
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_PROTOCOL_VIOLATION,
                             "protocol version too old");
@@ -336,7 +339,10 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
         mp->net_mgr->local_host_nonce != 0) {
         event_emitf(EV_TCP_DISCONNECTED, (uint32_t)node->id,
                     "self-connection %s", node->addr_name);
-        node->disconnect = true;
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_SELF_CONNECTION,
+            P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+            node->endpoint_generation);
         peer_lifecycle_note_reject(node, "self-connection");
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_PROTOCOL_VIOLATION,
                             "self-connection nonce");

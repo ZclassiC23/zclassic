@@ -123,7 +123,10 @@ bool process_inv(struct msg_processor *mp, struct p2p_node *node,
                             "inv count exceeds MAX_INV_SZ");
         printf("Peer %s: inv message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
-        node->disconnect = true;
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_RESOURCE_LIMIT,
+            P2P_DISCONNECT_SOURCE_RESOURCE_GOVERNOR,
+            node->endpoint_generation);
         return false;
     }
 

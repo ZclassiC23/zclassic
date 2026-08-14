@@ -52,7 +52,10 @@ static bool process_notfound(struct msg_processor *mp, struct p2p_node *node,
          * lets a hostile peer repeat this forever across reconnects. */
         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_FLOOD,
                             "notfound count exceeds MAX_INV_SZ");
-        node->disconnect = true;
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_RESOURCE_LIMIT,
+            P2P_DISCONNECT_SOURCE_RESOURCE_GOVERNOR,
+            node->endpoint_generation);
         return false;
     }
 
@@ -126,7 +129,10 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
                             "addr count exceeds negotiated wire cap");
         printf("Peer %s: addr message too large (%llu)\n",
                node->addr_name, (unsigned long long)count);
-        node->disconnect = true;
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_RESOURCE_LIMIT,
+            P2P_DISCONNECT_SOURCE_RESOURCE_GOVERNOR,
+            node->endpoint_generation);
         return false;
     }
 
@@ -158,7 +164,10 @@ static bool process_addr(struct msg_processor *mp, struct p2p_node *node,
             printf("Peer %s: addr rate limit exceeded (%u in %ds)\n",
                    node->addr_name, node->addr_rate_window_count,
                    ADDR_RATE_WINDOW_SECS);
-            node->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                node, P2P_DISCONNECT_RESOURCE_LIMIT,
+                P2P_DISCONNECT_SOURCE_RESOURCE_GOVERNOR,
+                node->endpoint_generation);
             return false;
         }
     }

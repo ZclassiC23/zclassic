@@ -736,16 +736,15 @@ void gap_fill_stop(void)
     pthread_cond_broadcast(&g_gf.cv);
     pthread_mutex_unlock(&g_gf.mu);
     if (g_gf.thread_started) {
-        /* cap join at 5 s. If the worker is stuck
-         * (eg holding cs_main on a long pprev walk), detach rather
-         * than block systemd shutdown past TimeoutStopSec. */
+        /* Five seconds is a diagnostic deadline. Retain ownership until the
+         * worker exits before persisting coverage or clearing callbacks. */
         struct timespec ts;
         if (platform_time_realtime_timespec(&ts) == 0) {
             ts.tv_sec += 5;
             int rc = pthread_timedjoin_np(g_gf.thread, NULL, &ts);
             if (rc != 0) {
-                LOG_WARN("gap_fill_stop", "gap_fill_stop: thread join timed out (rc=%d) — " "detaching", rc);
-                pthread_detach(g_gf.thread);
+                LOG_WARN("gap_fill_stop", "gap_fill_stop: thread join exceeded deadline (rc=%d); retaining ownership", rc);
+                pthread_join(g_gf.thread, NULL);
             }
         } else {
             pthread_join(g_gf.thread, NULL);

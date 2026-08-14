@@ -194,6 +194,10 @@ int api_status_focused_tests(void)
         download_stats_push_json(&thin_obj, &thin_snap, false);
         /* full=true carries extended diagnostics full=false does not. */
         ok = ok && json_get(&full_obj, "last_assign_result") != NULL;
+        ok = ok && json_get(&full_obj, "queued_forward") != NULL;
+        ok = ok && json_get(&full_obj, "queued_history") != NULL;
+        ok = ok && json_get(&full_obj, "in_flight_forward") != NULL;
+        ok = ok && json_get(&full_obj, "in_flight_history") != NULL;
         ok = ok && json_get(&thin_obj, "last_assign_result") == NULL;
         /* Both push the same core + throughput fields. */
         ok = ok && json_get(&full_obj, "bytes_downloaded") != NULL;

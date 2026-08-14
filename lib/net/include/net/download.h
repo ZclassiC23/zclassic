@@ -47,6 +47,17 @@
                                           * is shallower or nothing else is
                                           * eligible, so a slow peer is never
                                           * starved (bias, not partition). */
+#define DL_MAX_HISTORY_IN_FLIGHT 16       /* background history is subordinate
+                                          * to tip-advancing forward work */
+#define DL_MAX_HISTORY_PER_PEER 2         /* keep any one peer from becoming a
+                                          * history-only bottleneck */
+
+/* Work classes are part of the download manager's scheduling contract.
+ * Forward work always wins assignment; history uses its own bounded lane. */
+enum dl_work_class {
+    DL_WORK_FORWARD = 0,
+    DL_WORK_HISTORY = 1,
+};
 
 /* Dynamic limits — return aggressive values during IBD, conservative at tip.
  * These check sync_get_state() internally. Thread-safe. */
@@ -59,6 +70,7 @@ struct dl_in_flight {
     int32_t        height;          /* -1 if unknown */
     uint32_t       peer_id;
     int64_t        request_time;    /* seconds since epoch */
+    enum dl_work_class work_class;
     bool           active;          /* true if slot in use */
 };
 
@@ -115,6 +127,10 @@ struct dl_diagnostics {
     uint64_t in_flight_peer_count;
     uint64_t queue_peer_avoid_count;
     int64_t  queue_peer_avoid_max_seconds;
+    uint64_t queued_forward;
+    uint64_t queued_history;
+    uint64_t in_flight_forward;
+    uint64_t in_flight_history;
     uint64_t assign_attempts;
     uint64_t assign_successes;
     uint64_t assign_zero_results;
@@ -147,6 +163,7 @@ enum dl_assign_result {
     DL_ASSIGN_MAX_ZERO,
     DL_ASSIGN_PEER_WINDOW_FULL,
     DL_ASSIGN_GLOBAL_WINDOW_FULL,
+    DL_ASSIGN_HISTORY_THROTTLED,
     DL_ASSIGN_NO_SLOT,
     DL_ASSIGN_PEER_AVOID_COOLDOWN,
 };
@@ -171,6 +188,7 @@ struct download_manager {
     int32_t             *queue_heights; /* corresponding heights */
     uint32_t            *queue_avoid_peers; /* peer to avoid temporarily */
     int64_t             *queue_avoid_until; /* epoch seconds; 0 = inactive */
+    enum dl_work_class  *queue_classes; /* logical forward/history lanes */
     size_t               queue_len;
     size_t               queue_cap;
 
@@ -360,6 +378,14 @@ size_t dl_queue_blocks(struct download_manager *dm,
                        const struct uint256 *hashes,
                        const int32_t *heights,
                        size_t count);
+
+/* Class-aware enqueue. DL_WORK_HISTORY is intrinsically capped during
+ * assignment; callers do not need to reproduce scheduler limits. */
+size_t dl_queue_blocks_class(struct download_manager *dm,
+                             const struct uint256 *hashes,
+                             const int32_t *heights,
+                             size_t count,
+                             enum dl_work_class work_class);
 
 /* Push a block to the FRONT of the queue (highest priority).
  * Used by reducer activation when it needs the next sequential block. */

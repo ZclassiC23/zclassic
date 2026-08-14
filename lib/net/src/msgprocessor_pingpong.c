@@ -50,7 +50,7 @@ static bool process_pong(struct p2p_node *node, struct byte_stream *s)
                  node->addr_name);
 
     if (node->ping_nonce_sent != 0 && nonce == node->ping_nonce_sent) {
-        int64_t now = (int64_t)platform_time_wall_time_t() * 1000000;
+        int64_t now = platform_time_monotonic_us();
         int64_t rtt = now - node->ping_usec_start;
         if (rtt > 0) {
             node->ping_usec_time = rtt;
@@ -64,6 +64,8 @@ static bool process_pong(struct p2p_node *node, struct byte_stream *s)
                     (node->avg_latency_us * 4 + rtt) / 5;
         }
         node->ping_nonce_sent = 0;
+        atomic_store_explicit(&node->keepalive_ping_sent_monotonic_us, 0,
+                              memory_order_relaxed);
     }
     return true;
 }

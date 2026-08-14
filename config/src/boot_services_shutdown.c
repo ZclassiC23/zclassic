@@ -10,7 +10,6 @@
 #include "config/boot_shutdown_marker.h"
 #include "config/boot_fast_restart.h"
 #include "config/boot_loop_guard.h"
-#include "config/boot_self_respawn.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "util/shutdown_stagewatch.h"
@@ -91,7 +90,7 @@ static bool shutdown_flush_coins_to_sqlite(struct boot_svc_ctx *svc,
     return true;
 }
 
-static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
+static bool shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
 {
     /* Stop P2P entrypoints before flush; any in-flight reducer sees
      * g_shutdown_requested and returns before mutating coins further. */
@@ -116,16 +115,17 @@ static void shutdown_quiesce_network_and_flush_coins(struct boot_svc_ctx *svc)
     printf("[shutdown] connman stopped\n");
 
     /* Final flush in case message thread connected blocks before exit. */
-    (void)shutdown_flush_coins_to_sqlite(svc, "final");
+    bool final_flush_ok = shutdown_flush_coins_to_sqlite(svc, "final");
     coins_view_cache_free(svc->coins_tip);
     coins_view_sqlite_close(svc->coins_sqlite);
 
     /* Close cached block file handles */
     disk_block_io_close_cache();
     printf("[shutdown] network quiesced and coins closed\n");
+    return final_flush_ok;
 }
 
-static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
+static void shutdown_stop_runtime_and_drain_workers(struct boot_svc_ctx *svc)
 {
     printf("[shutdown] stopping runtime services\n");
     /* The heartbeat sweeper owns periodic callbacks into runtime services,
@@ -159,6 +159,25 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
     boot_join_projection_backfill_service(svc);
     boot_join_catchup_service(svc);
 
+    /* Diagnostic timeout first, then retain ownership until every remaining
+     * worker exits. The stage watchdog is still pre-durability here, so a
+     * genuinely wedged worker produces an unclean process exit without ever
+     * closing its databases or freeing its dependencies underneath it. */
+    int stragglers = thread_registry_join_all(2);
+    if (stragglers > 0) {
+        fprintf(stderr,
+                "[shutdown] %d worker(s) exceeded their join budget; "
+                "waiting with dependencies retained\n",
+                stragglers);
+        thread_registry_join_all_owned();
+    }
+    printf("[shutdown] runtime workers drained\n");
+}
+
+static bool shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
+{
+    bool ok = true;
+
     rpc_blockchain_mmr_save(boot_node_db(svc));
     rpc_blockchain_mmb_save(boot_node_db(svc));
     rpc_blockchain_commitment_mmr_save(boot_node_db(svc));
@@ -169,24 +188,51 @@ static void shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
     }
 
     if (svc->wallet_sqlite->open) {
-        wallet_sqlite_flush(svc->wallet_sqlite, svc->wallet);
+        struct zcl_result wallet_flush =
+            wallet_sqlite_flush_r(svc->wallet_sqlite, svc->wallet);
+        if (!wallet_flush.ok) {
+            LOG_WARN("shutdown", "wallet flush failed: code=%d message=%s",
+                     wallet_flush.code,
+                     wallet_flush.message[0] ? wallet_flush.message
+                                             : "unspecified");
+            ok = false;
+        }
         wallet_sqlite_close(svc->wallet_sqlite);
     }
+
+    /* progress.kv may have run synchronous=OFF during IBD. Restore its safe
+     * mode and prove its WAL checkpoint before closing the handle. */
+    if (progress_store_db()) {
+        if (!progress_store_set_sync_mode(false))
+            ok = false;
+        if (!progress_store_checkpoint())
+            ok = false;
+        progress_store_close();
+    }
+
     if (svc->node_db->open) {
-        db_service_flush_write(svc->db_service);
+        if (!db_service_flush_write(svc->db_service))
+            ok = false;
         node_db_sync_mempool_save(svc->node_db, svc->mempool);
-        /* Checkpoint WAL before closing — prevents WAL corruption on
-         * unclean restart and keeps the WAL file small. */
-        if (node_db_wal_checkpoint(svc->node_db))
+        /* IBD paths may have selected synchronous=OFF. The last authoritative
+         * commit and checkpoint must run behind SQLite's strongest barrier. */
+        if (!db_service_exec_write(svc->db_service,
+                                   "PRAGMA synchronous=FULL"))
+            ok = false;
+        if (db_service_wal_checkpoint(svc->db_service))
             printf("[shutdown] WAL checkpoint complete\n");
-        else
+        else {
             fprintf(stderr, "[shutdown] WAL checkpoint failed\n");
-        db_service_close_write(svc->db_service);
+            ok = false;
+        }
+        if (!db_service_close_write(svc->db_service))
+            ok = false;
     }
     printf("[shutdown] stopping DB/service kernels\n");
     boot_stop_db_service_kernel();
     zcl_service_kernel_stop_all(&svc->service_kernel);
     printf("[shutdown] runtime state persisted\n");
+    return ok;
 }
 
 static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
@@ -203,9 +249,6 @@ static void shutdown_release_owned_resources(struct boot_svc_ctx *svc)
     tx_mempool_free(svc->mempool);
     main_state_free(svc->state);
     sapling_free_params();
-    /* Graceful checkpoint and close of progress.kv. No-op if never opened. */
-    progress_store_close();
-
     boot_stop_projection_storage();
 
     ecc_verify_destroy();
@@ -258,24 +301,40 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     shutdown_stagewatch_enter("frontend-stop", 15, false, true);
     shutdown_stop_frontend_services(svc);
     shutdown_stagewatch_enter("network-quiesce", 30, true, true);
-    shutdown_quiesce_network_and_flush_coins(svc);
+    bool durability_ok = shutdown_quiesce_network_and_flush_coins(svc);
+    shutdown_stagewatch_enter("worker-drain", 15, false, true);
+    shutdown_stop_runtime_and_drain_workers(svc);
+    /* Capture while state and progress.kv are still live, after every writer
+     * that could move their frontier has been joined. */
+    boot_fast_restart_capture_shutdown_facts(svc->state);
     /* runtime-persist holds the final WAL checkpoint + wallet flush + mempool
      * save — the slow-after-a-long-fold stage that used to breach the 90s
      * cliff. Durability-critical: never skipped, only graced. */
     shutdown_stagewatch_enter("runtime-persist", 45, true, true);
-    shutdown_persist_runtime_state(svc);
+    if (!shutdown_persist_runtime_state(svc))
+        durability_ok = false;
 
-    /* Tier-2 P2: record the fast-restart binding while state + progress.kv are
-     * still live (values match the flat index saved just after the marker). */
-    boot_fast_restart_capture_shutdown_facts(svc->state);
+    if (!durability_ok) {
+        fprintf(stderr,
+                "[shutdown] durability barrier failed; refusing clean marker\n");
+        (void)boot_shutdown_marker_remove_clean(svc->datadir);
+        (void)shutdown_stagewatch_complete_unclean();
+        fflush(stdout);
+        fflush(stderr);
+        _exit(1);
+    }
 
-    /* Write the verified-clean shutdown marker HERE — node.db is now
-     * WAL-checkpointed and closed, so its on-disk identity is final and binds
-     * the next boot's quick_check-skip. This point is reached on BOTH the
-     * straggler _exit(0) path below AND the normal completion, whereas
-     * app_shutdown()'s later write is skipped when the straggler path _exit()s.
-     * Idempotent: app_shutdown() may re-write the identical marker. */
-    boot_shutdown_marker_write_clean(svc->datadir);
+    /* Write the verified-clean marker only after every authoritative writer is
+     * joined and node.db is WAL-checkpointed and closed. */
+    if (!boot_shutdown_marker_write_clean(svc->datadir)) {
+        fprintf(stderr,
+                "[shutdown] clean marker durability failed; exiting unclean\n");
+        (void)boot_shutdown_marker_remove_clean(svc->datadir);
+        (void)shutdown_stagewatch_complete_unclean();
+        fflush(stdout);
+        fflush(stderr);
+        _exit(1);
+    }
 
     /* THE durability point: coins flushed, node.db WAL-checkpointed + closed,
      * clean marker written. Everything past here is resumable at next boot, so
@@ -285,71 +344,43 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
     /* Durability secured; only best-effort teardown follows. The block-index flat cache is written AFTER the marker (it previously preceded the checkpoint and lost the marker on a mid-teardown kill). */
     shutdown_stagewatch_enter("fast-restart-persist", 20, false, true);
     shutdown_persist_fast_restart_state(svc);
-    shutdown_stagewatch_enter("thread-join", 15, false, true);
-    {
-        int stragglers = thread_registry_join_all(2);
-        if (stragglers > 0) {
-            /* A worker thread's bounded join timed out and it was detached, so
-             * it may still be running. All durable state is already persisted
-             * above (coins flushed, WAL checkpointed, DBs closed), so running
-             * the destructive frees in shutdown_release_owned_resources would
-             * race that thread (use-after-free on main_state / Sapling params /
-             * caches it reads). Skip the frees and exit now — the OS reclaims
-             * everything microseconds later. Durability was secured above, so
-             * record the CLEAN receipt first: this is a truthful success. */
-            fprintf(stderr,
-                    "[shutdown] %d background thread(s) still finishing; state is "
-                    "already saved, exiting now\n",
-                    stragglers);
-            shutdown_stagewatch_complete_clean();
-            fflush(stdout);
-            fflush(stderr);
-            /* Off-systemd, honor a latched self-respawn HERE rather than
-             * _exit(0)ing into a DOWN node: main.c's post-app_shutdown()
-             * re-exec is unreachable on this early-exit path. execv is
-             * strictly safer than the frees we just skipped — it atomically
-             * discards the detached straggler threads, so there is no
-             * use-after-free window — and it is the exact recovery systemd's
-             * Restart=always would perform. Under systemd it is a no-op
-             * (sd_notify active), so Restart=always stays the sole authority.
-             * Returns only if not armed or execv failed → the _exit(0) below
-             * is the unchanged clean exit. */
-            boot_self_respawn_exec_or_return();
-            _exit(0);
-        }
-    }
-    /* I-7b phase-2: net threads are joined; safe to destroy. */
+    /* Every worker was joined before persistence; destructive release is now
+     * ownership-safe and cannot race a timed-out background callback. */
     shutdown_stagewatch_enter("release-resources", 15, false, true);
     shutdown_release_owned_resources(svc);
 
     printf("Shutdown complete.\n");
     /* Closes the last stage, cancels the alarm, writes the CLEAN receipt. */
-    shutdown_stagewatch_complete_clean();
+    if (!shutdown_stagewatch_complete_clean()) {
+        fprintf(stderr,
+                "[shutdown] receipt durability failed; revoking clean marker\n");
+        if (!boot_shutdown_marker_remove_clean(svc->datadir))
+            fprintf(stderr,
+                    "[shutdown] CRITICAL: failed to revoke clean marker\n");
+        fflush(stdout);
+        fflush(stderr);
+        _exit(1);
+    }
 }
 
-/* D2 fix: the OFFLINE teardown (app_shutdown_offline, boot.c) sibling of the
- * straggler guard above. thread_registry_request_shutdown() only SETS a flag;
+/* The OFFLINE teardown must obey the same ownership rule. The registry's
+ * shutdown request only SETS a flag;
  * some background workers spawned during boot — notably the deferred Sapling-
  * tree rebuild (sapling_tree_rebuild_start_deferred), which the seed one-shot
  * arms on a root-mismatch and which replays h≈activation..tip reading g_state /
  * g_node_db WITHOUT polling that flag — are still live here. Running the
- * destructive frees (main_state_free / node_db_close / progress_store_close)
- * while such a worker reads that state is a use-after-free (SIGSEGV) — the crash
- * observed exiting the -coldstart-seed-oneshot mode. Bounded-join every
- * registered worker; if a straggler survives, the seed state is already
- * WAL-committed (app_init committed it before returning), so write the clean
- * marker and _exit(0) WITHOUT the frees — the OS reclaims the rest and releases
- * the datadir lock on exit. Returns only when every worker joined (frees safe).
- * Mirrors app_shutdown_svc's straggler guard for the whole worker class, not
- * just this one rebuild. */
+ * destructive frees while such a worker reads that state is a use-after-free.
+ * Diagnose bounded-join overruns, then retain dependencies and ownership until
+ * every worker actually exits. */
 void boot_offline_join_workers_or_exit(const char *datadir)
 {
-    if (thread_registry_join_all(2) <= 0)
-        return;
-    fprintf(stderr, "[shutdown] background thread(s) still finishing; seed state "
-                    "is already saved, exiting now\n");
-    boot_shutdown_marker_write_clean(datadir);
-    fflush(stdout);
-    fflush(stderr);
-    _exit(0);
+    (void)datadir;
+    int stragglers = thread_registry_join_all(2);
+    if (stragglers > 0) {
+        fprintf(stderr,
+                "[shutdown] %d offline worker(s) exceeded join budget; "
+                "waiting with dependencies retained\n",
+                stragglers);
+        thread_registry_join_all_owned();
+    }
 }

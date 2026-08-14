@@ -170,6 +170,7 @@ static shutdown_stagewatch_clock_fn g_clock = real_clock_us;
  * snprintf. g_receipt_ok gates whether we have a valid path. */
 static char g_receipt_path[1088];
 static _Atomic bool g_receipt_ok;   /* read in signal ctx */
+static int g_datadir_fd = -1;       /* opened by begin; safe to fsync in SIGALRM */
 
 /* Exit-reason breadcrumb path — same "compute once in begin(), signal
  * handler only ever does raw open/write/fsync of the pre-computed path"
@@ -202,6 +203,9 @@ void shutdown_stagewatch_set_clock_for_test(shutdown_stagewatch_clock_fn fn)
 
 void shutdown_stagewatch_reset_for_test(void)
 {
+    if (g_datadir_fd >= 0)
+        (void)close(g_datadir_fd);
+    g_datadir_fd = -1;
     g_clock = real_clock_us;
     memset(g_receipt_path, 0, sizeof(g_receipt_path));
     atomic_store(&g_receipt_ok, false);
@@ -232,6 +236,9 @@ bool shutdown_stagewatch_is_durable(void) { return g_durable != 0; }
 
 void shutdown_stagewatch_begin(const char *datadir)
 {
+    if (g_datadir_fd >= 0)
+        (void)close(g_datadir_fd);
+    g_datadir_fd = -1;
     g_start_us = g_clock();
     g_n_stages = 0;
     g_cur_active = 0;
@@ -242,6 +249,7 @@ void shutdown_stagewatch_begin(const char *datadir)
     atomic_store(&g_receipt_ok, false);
     atomic_store(&g_exit_reason_path_ok, false);
     if (datadir && *datadir) {
+        g_datadir_fd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
         int n = snprintf(g_receipt_path, sizeof(g_receipt_path), "%s/%s",
                          datadir, SHUTDOWN_RECEIPT_NAME);
         if (n > 0 && (size_t)n < sizeof(g_receipt_path))
@@ -318,6 +326,8 @@ static void write_terminal_receipt_signalsafe(enum shutdown_outcome outcome)
         fd, outcome, g_cur_name, g_durable != 0);
     (void)fsync(fd);
     (void)close(fd);
+    if (g_datadir_fd >= 0)
+        (void)fsync(g_datadir_fd);
 }
 
 /* AS-safe: append a "forced=1" marker to the exit-reason breadcrumb (see
@@ -391,16 +401,16 @@ void shutdown_stagewatch_on_alarm(void)
     }
 }
 
-void shutdown_stagewatch_complete_clean(void)
+static bool shutdown_stagewatch_complete(enum shutdown_outcome outcome)
 {
     close_current_stage();
-    alarm(0);
+    bool durable = !atomic_load(&g_receipt_ok);
 
     if (atomic_load(&g_receipt_ok)) {
         char content[4096];
         int64_t total = g_clock() - g_start_us;
         int clen = shutdown_stagewatch_format_receipt(
-            content, sizeof(content), SHUTDOWN_OUTCOME_CLEAN, g_last_stage,
+            content, sizeof(content), outcome, g_last_stage,
             g_durable != 0, total, g_stages, g_n_stages);
         if (clen > 0) {
             /* temp + fsync + atomic rename, mirroring the clean-shutdown
@@ -410,19 +420,37 @@ void shutdown_stagewatch_complete_clean(void)
             if (tn > 0 && (size_t)tn < sizeof(tmp)) {
                 int fd = open(tmp, O_WRONLY | O_CREAT | O_TRUNC | O_CLOEXEC, 0644);
                 if (fd >= 0) {
-                    bool ok = (write(fd, content, (size_t)clen) == (ssize_t)clen)
-                              && (fsync(fd) == 0);
+                    bool ok = as_write_str(fd, content) == clen &&
+                              fsync(fd) == 0;
                     if (close(fd) != 0)
                         ok = false;
                     if (ok && rename(tmp, g_receipt_path) != 0)
                         ok = false;
+                    if (ok && (g_datadir_fd < 0 || fsync(g_datadir_fd) != 0))
+                        ok = false;
                     if (!ok)
                         (void)unlink(tmp);
+                    durable = ok;
                 }
             }
         }
     }
+    alarm(0);
     g_active = 0;
+    if (g_datadir_fd >= 0)
+        (void)close(g_datadir_fd);
+    g_datadir_fd = -1;
+    return durable;
+}
+
+bool shutdown_stagewatch_complete_clean(void)
+{
+    return shutdown_stagewatch_complete(SHUTDOWN_OUTCOME_CLEAN);
+}
+
+bool shutdown_stagewatch_complete_unclean(void)
+{
+    return shutdown_stagewatch_complete(SHUTDOWN_OUTCOME_FORCED_UNCLEAN);
 }
 
 /* ── Exit-reason breadcrumb ──────────────────────────────────────────── */

@@ -382,13 +382,10 @@ int db_utxo_repair_missing_heights_from_tx_index(struct node_db *ndb)
     return sqlite3_changes(ndb->db);
 }
 
-bool db_utxo_rebuild_wallet_and_address_caches(struct node_db *ndb)
+bool db_utxo_rebuild_wallet_and_address_caches_in_txn(struct node_db *ndb)
 {
     if (!ndb || !ndb->open)
         LOG_FAIL("utxo", "rebuild_wallet_and_address_caches: db unavailable");
-
-    if (!node_db_begin(ndb))
-        LOG_FAIL("utxo", "rebuild_wallet_and_address_caches: begin failed");
 
     bool ok = true;
     ok = ok && node_db_exec(ndb, "DELETE FROM wallet_utxos");
@@ -409,10 +406,24 @@ bool db_utxo_rebuild_wallet_and_address_caches(struct node_db *ndb)
         "FROM utxos WHERE address_hash IS NOT NULL "
         "GROUP BY address_hash");
 
-    if (!ok) {
-        (void)node_db_rollback(ndb);
+    if (!ok)
         LOG_FAIL("utxo",
                  "rebuild_wallet_and_address_caches: refresh statements failed");
+
+    return true;
+}
+
+bool db_utxo_rebuild_wallet_and_address_caches(struct node_db *ndb)
+{
+    if (!ndb || !ndb->open)
+        LOG_FAIL("utxo", "rebuild_wallet_and_address_caches: db unavailable");
+
+    if (!node_db_begin(ndb))
+        LOG_FAIL("utxo", "rebuild_wallet_and_address_caches: begin failed");
+
+    if (!db_utxo_rebuild_wallet_and_address_caches_in_txn(ndb)) {
+        (void)node_db_rollback(ndb);
+        return false;
     }
 
     if (!node_db_commit(ndb))

@@ -683,16 +683,15 @@ void bg_validation_stop(struct bg_validation_service *svc)
         return;
     bg_validation_supervisor_done();
     atomic_store(&svc->stop_requested, true);
-    /* cap join at 5 s. bg-validation can be in the
-     * middle of a slow signature/proof batch — better to detach than
-     * to overrun TimeoutStopSec and earn a SIGKILL. */
+    /* Five seconds is a diagnostic deadline. Retain ownership until the
+     * validation worker exits so its dependencies cannot be freed live. */
     struct timespec ts;
     if (platform_time_realtime_timespec(&ts) == 0) {
         ts.tv_sec += 5;
         int rc = pthread_timedjoin_np(svc->thread, NULL, &ts);
         if (rc != 0) {
-            LOG_WARN("bg_validation_stop", "bg_validation_stop: thread join timed out (rc=%d) " "— detaching", rc);
-            pthread_detach(svc->thread);
+            LOG_WARN("bg_validation_stop", "bg_validation_stop: thread join exceeded deadline (rc=%d); retaining ownership", rc);
+            pthread_join(svc->thread, NULL);
         }
     } else {
         pthread_join(svc->thread, NULL);

@@ -167,9 +167,15 @@ void shutdown_stagewatch_mark_durable(void);
  * back to the legacy "forcing exit" + _exit(1)). */
 void shutdown_stagewatch_on_alarm(void);
 
-/* Normal (non-signal) clean completion: close the last stage, cancel the
- * alarm, and write the CLEAN receipt. */
-void shutdown_stagewatch_complete_clean(void);
+/* Normal (non-signal) clean completion: close the last stage, write and fsync
+ * the CLEAN receipt plus its parent directory, then cancel the alarm. Returns
+ * false if the receipt durability barrier could not be completed. */
+bool shutdown_stagewatch_complete_clean(void);
+
+/* Normal-context terminal failure path. Writes and fsyncs an UNCLEAN receipt,
+ * cancels the alarm, and returns whether that diagnostic receipt was durable.
+ * This never changes the process exit code; the caller must exit non-zero. */
+bool shutdown_stagewatch_complete_unclean(void);
 
 /* ── Exit-reason breadcrumb ──────────────────────────────────────────── */
 

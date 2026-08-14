@@ -20,8 +20,6 @@
 #include <stdatomic.h>
 #include <stdint.h>
 
-#define PING_INTERVAL (2 * 60)
-#define TIMEOUT_INTERVAL (20 * 60)
 #define MAX_INV_SZ 50000
 #define MAX_ADDR_TO_SEND 1000
 #define MAX_PROTOCOL_MESSAGE_LENGTH (2 * 1024 * 1024)
@@ -49,6 +47,47 @@
 #define INIT_PROTO_VERSION 209
 
 typedef int32_t node_id_t;
+
+/* The first request owns the causal disconnect record until cleanup.  Keep
+ * reason and source typed so recovery policy and telemetry never have to infer
+ * cause from a final generic "cleanup" string. */
+enum p2p_disconnect_reason {
+    P2P_DISCONNECT_NONE = 0,
+    P2P_DISCONNECT_REMOTE_CLOSE,
+    P2P_DISCONNECT_IO_ERROR,
+    P2P_DISCONNECT_TRANSPORT_ERROR,
+    P2P_DISCONNECT_MESSAGE_PARSE,
+    P2P_DISCONNECT_CONNECT_TIMEOUT,
+    P2P_DISCONNECT_HANDSHAKE_TIMEOUT,
+    P2P_DISCONNECT_PONG_TIMEOUT,
+    P2P_DISCONNECT_HARD_SILENCE,
+    P2P_DISCONNECT_PROTOCOL_VIOLATION,
+    P2P_DISCONNECT_RESOURCE_LIMIT,
+    P2P_DISCONNECT_SYNC_STALL,
+    P2P_DISCONNECT_POLICY_ROTATION,
+    P2P_DISCONNECT_FEELER_COMPLETE,
+    P2P_DISCONNECT_FEELER_TIMEOUT,
+    P2P_DISCONNECT_SELF_CONNECTION,
+    P2P_DISCONNECT_V2_UPGRADE,
+    P2P_DISCONNECT_EVICTED,
+    P2P_DISCONNECT_APPLICATION,
+    P2P_DISCONNECT_LOCAL_SHUTDOWN,
+    P2P_DISCONNECT_REASON_COUNT,
+};
+
+enum p2p_disconnect_source {
+    P2P_DISCONNECT_SOURCE_UNKNOWN = 0,
+    P2P_DISCONNECT_SOURCE_SOCKET,
+    P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+    P2P_DISCONNECT_SOURCE_KEEPALIVE,
+    P2P_DISCONNECT_SOURCE_DIAL_SCHEDULER,
+    P2P_DISCONNECT_SOURCE_SYNC,
+    P2P_DISCONNECT_SOURCE_PEER_POLICY,
+    P2P_DISCONNECT_SOURCE_RESOURCE_GOVERNOR,
+    P2P_DISCONNECT_SOURCE_APPLICATION,
+    P2P_DISCONNECT_SOURCE_SHUTDOWN,
+    P2P_DISCONNECT_SOURCE_COUNT,
+};
 
 struct block;  /* forward decl for BIP152 pending compact block state */
 
@@ -217,6 +256,10 @@ struct p2p_node {
     bool inbound;
     bool network_node;
     _Atomic bool disconnect;
+    _Atomic int disconnect_reason;  /* enum p2p_disconnect_reason */
+    _Atomic int disconnect_source;  /* enum p2p_disconnect_source */
+    uint64_t endpoint_generation;
+    _Atomic uint64_t disconnect_endpoint_generation;
     bool relay_txes;
     bool sent_addr;
     int ref_count;
@@ -274,6 +317,11 @@ struct p2p_node {
     int64_t ping_usec_time;
     int64_t min_ping_usec_time;
     bool ping_queued;
+    /* Socket/message threads share these monotonic stamps.  last_recv remains
+     * wall time solely for protocol-compatible operator statistics. */
+    _Atomic int64_t connected_monotonic_us;
+    _Atomic int64_t last_activity_monotonic_us;
+    _Atomic int64_t keepalive_ping_sent_monotonic_us;
     bool prefer_headers;
     bool send_compact;
 
@@ -443,7 +491,7 @@ struct net_manager {
     zcl_mutex_t cs_total_bytes_recv;
     zcl_mutex_t cs_total_bytes_sent;
 
-    volatile bool stop_requested;
+    _Atomic bool stop_requested;
 
     unsigned char message_start[MESSAGE_START_SIZE];
     uint16_t default_port;
@@ -488,6 +536,15 @@ void p2p_node_score_framing_offence(struct net_manager *nm,
                                     struct p2p_node *node);
 
 void p2p_node_close_socket(struct p2p_node *node);
+
+/* Atomically preserve the first causal reason and request cleanup.  A nonzero
+ * endpoint_generation must match the live node generation, preventing a stale
+ * scheduler result from disconnecting a replacement session. */
+bool p2p_node_request_disconnect(
+    struct p2p_node *node, enum p2p_disconnect_reason reason,
+    enum p2p_disconnect_source source, uint64_t endpoint_generation);
+const char *p2p_disconnect_reason_name(enum p2p_disconnect_reason reason);
+const char *p2p_disconnect_source_name(enum p2p_disconnect_source source);
 
 void p2p_node_copy_stats(const struct p2p_node *node, struct node_stats *stats);
 

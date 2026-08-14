@@ -61,6 +61,10 @@ void print_usage(const char *prog)
     printf("                      request Host header with a single cert)\n");
     printf("  -profile=<name>     Service profile: full, zclassic-only, explorer, onion-node, legacy-compat\n");
     printf("  -operator-lane=<name>  Operator lane: canonical, soak, dev, test, copy\n");
+    printf("  -utxomirror=auto|off  Derived UTXO mirror policy (default: auto)\n");
+    printf("  -bodyhistorybackfill=throttled|off|normal  Below-tip body policy\n");
+    printf("                      (default: throttled; forward work always wins)\n");
+    printf("  -legacyoracle=off|auto  Co-located legacy oracle policy (default: auto)\n");
     printf("  -nolegacyimport     Do not auto-read/link ~/.zclassic during boot\n");
     printf("  -packagehost=0|1    Host ZCODE package content from <datadir>/zcode\n");
     printf("                      (default 0, hosting off; local store only)\n");
@@ -359,6 +363,34 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
         else if (strcmp(argv[i], "-tor") == 0) ctx->tor = true;
         else if (strcmp(argv[i], "-onion-persist") == 0) ctx->onion_persist = true;
         else if (strcmp(argv[i], "-onion-rotate") == 0) ctx->onion_rotate = true;
+        else if (strncmp(argv[i], "-utxomirror=", 12) == 0) {
+            const char *mode = argv[i] + 12;
+            if (strcmp(mode, "auto") != 0 && strcmp(mode, "off") != 0) {
+                fprintf(stderr, "invalid -utxomirror=%s (accepted: auto, off)\n",
+                        mode);
+                return 1;
+            }
+            setenv("ZCL_UTXO_MIRROR_MODE", mode, 1);
+        }
+        else if (strncmp(argv[i], "-bodyhistorybackfill=", 21) == 0) {
+            const char *mode = argv[i] + 21;
+            if (strcmp(mode, "throttled") != 0 && strcmp(mode, "off") != 0 &&
+                strcmp(mode, "normal") != 0) {
+                fprintf(stderr, "invalid -bodyhistorybackfill=%s "
+                        "(accepted: throttled, off, normal)\n", mode);
+                return 1;
+            }
+            setenv("ZCL_BODY_HISTORY_BACKFILL_MODE", mode, 1);
+        }
+        else if (strncmp(argv[i], "-legacyoracle=", 14) == 0) {
+            const char *mode = argv[i] + 14;
+            if (strcmp(mode, "off") != 0 && strcmp(mode, "auto") != 0) {
+                fprintf(stderr, "invalid -legacyoracle=%s (accepted: off, auto)\n",
+                        mode);
+                return 1;
+            }
+            setenv("ZCL_LEGACY_ORACLE_MODE", mode, 1);
+        }
         else if (strncmp(argv[i], "-profile=", 9) == 0) {
             if (!app_runtime_profile_parse(argv[i] + 9,
                                            &ctx->runtime_profile)) {

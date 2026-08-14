@@ -9,6 +9,7 @@
 #include <sqlite3.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 struct node_db;
 typedef bool (*db_service_write_fn)(struct node_db *ndb, void *ctx);
@@ -57,7 +58,7 @@ struct db_service {
     zcl_cond_t queue_cond;
     pthread_t worker_thread;
     bool worker_started;
-    bool stop_requested;
+    _Atomic bool stop_requested;
     struct db_service_job *queue[DB_SERVICE_QUEUE_CAP];
     size_t queue_head;
     size_t queue_tail;
@@ -72,7 +73,7 @@ struct db_service {
      * file stays bounded regardless of reader pressure. */
     pthread_t ckpt_thread;
     bool ckpt_started;
-    bool ckpt_stop_requested;
+    _Atomic bool ckpt_stop_requested;
 };
 
 void db_service_init(struct db_service *svc);

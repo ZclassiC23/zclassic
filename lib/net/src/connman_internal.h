@@ -27,10 +27,11 @@
 #include "util/thread_liveness.h"
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdatomic.h>
 
 /* Shared P2P-thread shutdown flag. Set false at connman_start(), true by
  * connman_signal_stop(); every long-running loop in both files polls it. */
-extern volatile bool g_stop;
+extern _Atomic bool g_stop;
 
 /* -connect mode: only connect to specified peers, no seeds. Defined
  * (non-static) in connman.c; declared here for connman_dialer.c. */

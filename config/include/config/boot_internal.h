@@ -229,10 +229,10 @@ struct boot_svc_ctx {
     bool address_backfill_thread_started;
     pthread_t hodl_history_thread;
     bool hodl_history_thread_started;
-    bool hodl_history_thread_stop;
+    _Atomic bool hodl_history_thread_stop;
     pthread_t projection_backfill_thread;
     bool projection_backfill_thread_started;
-    bool projection_backfill_thread_stop;
+    _Atomic bool projection_backfill_thread_stop;
     struct snapshot_tx_index_job tx_index_job;
     bool want_address_backfill;
     bool want_snapshot_tx_index;
@@ -488,9 +488,8 @@ struct block_index_projection *boot_ensure_block_index_projection(
 void app_shutdown_svc(struct boot_svc_ctx *svc);
 
 /* ── config/src/boot_services_shutdown.c ──────────────────────────────────── *
- * Bounded-join background workers before app_shutdown_offline's destructive
- * frees; _exit(0) on a straggler rather than use-after-free state it still
- * reads. See the definition for the full contract (D2 fix). */
+ * Drain background workers before app_shutdown_offline's destructive frees;
+ * dependencies remain owned until every worker has actually exited. */
 void boot_offline_join_workers_or_exit(const char *datadir);
 
 /* ── config/src/boot_anchor_snapshot_reachability.c ─────────────────────── *

@@ -669,7 +669,9 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
         free(ev.reply);
     }
     if (ev.disconnect_peer)
-        atomic_store(&node->disconnect, true);
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_APPLICATION,
+            P2P_DISCONNECT_SOURCE_APPLICATION, node->endpoint_generation);
     return true;
 }
 

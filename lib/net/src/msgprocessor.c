@@ -34,6 +34,7 @@
 #include "net/p2p_game.h"
 #include "net/net_fault.h"
 #include "net/peer_lifecycle.h"
+#include "net/peer_liveness.h"
 #include "net/peer_scoring.h"
 #include "net/tip_watchdog.h"
 #include "net/zmsg.h"
@@ -2130,7 +2131,10 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             if (e->requires_handshake && node->version == 0) {
                 printf("Peer %s: received %s before version\n",
                        node->addr_name, cmd);
-                node->disconnect = true;
+                (void)p2p_node_request_disconnect(
+                    node, P2P_DISCONNECT_PROTOCOL_VIOLATION,
+                    P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+                    node->endpoint_generation);
                 stream_free(&s);
                 net_message_free(&msg);
                 goto _msg_loop_exit;
@@ -2155,7 +2159,10 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
             if (node->version == 0) {
                 printf("Peer %s: received %s before version\n",
                        node->addr_name, cmd);
-                node->disconnect = true;
+                (void)p2p_node_request_disconnect(
+                    node, P2P_DISCONNECT_PROTOCOL_VIOLATION,
+                    P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+                    node->endpoint_generation);
                 stream_free(&s);
                 net_message_free(&msg);
                 goto _msg_loop_exit;
@@ -2182,7 +2189,10 @@ bool msg_process_messages(void *ctx, struct p2p_node *node)
         if (!dispatched && node->version == 0) {
             printf("Peer %s: received %s before version\n",
                    node->addr_name, cmd);
-            node->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                node, P2P_DISCONNECT_PROTOCOL_VIOLATION,
+                P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+                node->endpoint_generation);
             stream_free(&s);
             net_message_free(&msg);
             goto _msg_loop_exit;
@@ -2341,7 +2351,9 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                        ? last_useful
                        : node->time_connected)),
                    (unsigned long long)node->total_headers_delivered);
-            node->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                node, P2P_DISCONNECT_SYNC_STALL,
+                P2P_DISCONNECT_SOURCE_SYNC, node->endpoint_generation);
             return true;
         }
 
@@ -2401,7 +2413,9 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                        node->addr_name,
                        (unsigned long long)node->total_headers_delivered,
                        (long long)connected_for);
-                node->disconnect = true;
+                (void)p2p_node_request_disconnect(
+                    node, P2P_DISCONNECT_SYNC_STALL,
+                    P2P_DISCONNECT_SOURCE_SYNC, node->endpoint_generation);
                 return true;
             }
         }
@@ -2431,7 +2445,9 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                        (unsigned long long)body_timeout,
                        (long long)(now_send - (node->time_connected
                            ? node->time_connected : now_send)));
-                node->disconnect = true;
+                (void)p2p_node_request_disconnect(
+                    node, P2P_DISCONNECT_SYNC_STALL,
+                    P2P_DISCONNECT_SOURCE_SYNC, node->endpoint_generation);
                 return true;
             }
         }
@@ -2463,7 +2479,9 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                        (unsigned long long)dark_recv,
                        (long long)(now_send - dark_last_body),
                        (unsigned long long)dark_timeout);
-                node->disconnect = true;
+                (void)p2p_node_request_disconnect(
+                    node, P2P_DISCONNECT_SYNC_STALL,
+                    P2P_DISCONNECT_SOURCE_SYNC, node->endpoint_generation);
                 return true;
             }
         }
@@ -2724,13 +2742,24 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
         }
     }
 
-    /* Send ping */
-    int64_t now = (int64_t)platform_time_wall_time_t();
-    if (node->ping_nonce_sent == 0 &&
-        now - node->last_send > PING_INTERVAL) {
+    /* Send a keepalive ping after 60 seconds without incoming traffic.  The
+     * socket thread owns deadlines against these same monotonic stamps. */
+    int64_t now_mono_us = platform_time_monotonic_us();
+    struct peer_liveness_sample liveness = {
+        .connected_us = atomic_load_explicit(
+            &node->connected_monotonic_us, memory_order_relaxed),
+        .last_activity_us = atomic_load_explicit(
+            &node->last_activity_monotonic_us, memory_order_relaxed),
+        .ping_sent_us = atomic_load_explicit(
+            &node->keepalive_ping_sent_monotonic_us, memory_order_relaxed),
+    };
+    if (peer_liveness_decide(&liveness, now_mono_us) ==
+        PEER_LIVENESS_SEND_PING) {
         uint64_t nonce = GetRand(UINT64_MAX);
         node->ping_nonce_sent = nonce;
-        node->ping_usec_start = now * 1000000;
+        node->ping_usec_start = now_mono_us;
+        atomic_store_explicit(&node->keepalive_ping_sent_monotonic_us,
+                              now_mono_us, memory_order_relaxed);
 
         struct byte_stream ping;
         stream_init(&ping, 8);

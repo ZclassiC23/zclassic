@@ -322,6 +322,11 @@ struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
     node->inbound = inbound;
     node->recv_version = INIT_PROTO_VERSION;
     node->time_connected = GetTime();
+    int64_t connected_us = platform_time_monotonic_us();
+    atomic_store_explicit(&node->connected_monotonic_us, connected_us,
+                          memory_order_relaxed);
+    atomic_store_explicit(&node->last_activity_monotonic_us, connected_us,
+                          memory_order_relaxed);
     node->starting_height = -1;
     uint256_set_null(&node->hash_continue);
     net_service_init(&node->addr_local);
@@ -345,6 +350,7 @@ struct p2p_node *p2p_node_create(struct net_manager *nm, zcl_socket_t sock,
 
     zcl_mutex_lock(&nm->cs_last_node_id);
     node->id = nm->last_node_id++;
+    node->endpoint_generation = (uint64_t)(uint32_t)node->id + 1;
     zcl_mutex_unlock(&nm->cs_last_node_id);
 
     if (nm->signals.initialize_node)
@@ -439,9 +445,80 @@ int p2p_node_get_ref(struct p2p_node *node)
 
 void p2p_node_close_socket(struct p2p_node *node)
 {
-    node->disconnect = true;
+    (void)p2p_node_request_disconnect(
+        node, P2P_DISCONNECT_LOCAL_SHUTDOWN,
+        P2P_DISCONNECT_SOURCE_SHUTDOWN,
+        node ? node->endpoint_generation : 0);
     if (node->socket != ZCL_INVALID_SOCKET)
         close_socket(&node->socket);
+}
+
+const char *p2p_disconnect_reason_name(enum p2p_disconnect_reason reason)
+{
+    switch (reason) {
+    case P2P_DISCONNECT_REMOTE_CLOSE: return "remote_close";
+    case P2P_DISCONNECT_IO_ERROR: return "io_error";
+    case P2P_DISCONNECT_TRANSPORT_ERROR: return "transport_error";
+    case P2P_DISCONNECT_MESSAGE_PARSE: return "message_parse";
+    case P2P_DISCONNECT_CONNECT_TIMEOUT: return "connect_timeout";
+    case P2P_DISCONNECT_HANDSHAKE_TIMEOUT: return "handshake_timeout";
+    case P2P_DISCONNECT_PONG_TIMEOUT: return "pong_timeout";
+    case P2P_DISCONNECT_HARD_SILENCE: return "hard_silence";
+    case P2P_DISCONNECT_PROTOCOL_VIOLATION: return "protocol_violation";
+    case P2P_DISCONNECT_RESOURCE_LIMIT: return "resource_limit";
+    case P2P_DISCONNECT_SYNC_STALL: return "sync_stall";
+    case P2P_DISCONNECT_POLICY_ROTATION: return "policy_rotation";
+    case P2P_DISCONNECT_FEELER_COMPLETE: return "feeler_complete";
+    case P2P_DISCONNECT_FEELER_TIMEOUT: return "feeler_timeout";
+    case P2P_DISCONNECT_SELF_CONNECTION: return "self_connection";
+    case P2P_DISCONNECT_V2_UPGRADE: return "v2_upgrade";
+    case P2P_DISCONNECT_EVICTED: return "evicted";
+    case P2P_DISCONNECT_APPLICATION: return "application";
+    case P2P_DISCONNECT_LOCAL_SHUTDOWN: return "local_shutdown";
+    case P2P_DISCONNECT_NONE:
+    default: return "unknown";
+    }
+}
+
+const char *p2p_disconnect_source_name(enum p2p_disconnect_source source)
+{
+    switch (source) {
+    case P2P_DISCONNECT_SOURCE_SOCKET: return "socket";
+    case P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER: return "message_handler";
+    case P2P_DISCONNECT_SOURCE_KEEPALIVE: return "keepalive";
+    case P2P_DISCONNECT_SOURCE_DIAL_SCHEDULER: return "dial_scheduler";
+    case P2P_DISCONNECT_SOURCE_SYNC: return "sync";
+    case P2P_DISCONNECT_SOURCE_PEER_POLICY: return "peer_policy";
+    case P2P_DISCONNECT_SOURCE_RESOURCE_GOVERNOR: return "resource_governor";
+    case P2P_DISCONNECT_SOURCE_APPLICATION: return "application";
+    case P2P_DISCONNECT_SOURCE_SHUTDOWN: return "shutdown";
+    case P2P_DISCONNECT_SOURCE_UNKNOWN:
+    default: return "unknown";
+    }
+}
+
+bool p2p_node_request_disconnect(
+    struct p2p_node *node, enum p2p_disconnect_reason reason,
+    enum p2p_disconnect_source source, uint64_t endpoint_generation)
+{
+    if (!node || reason <= P2P_DISCONNECT_NONE)
+        return false;
+    if (endpoint_generation != 0 &&
+        endpoint_generation != node->endpoint_generation)
+        return false;
+
+    int expected = P2P_DISCONNECT_NONE;
+    if (!atomic_compare_exchange_strong_explicit(
+            &node->disconnect_reason, &expected, (int)reason,
+            memory_order_acq_rel, memory_order_acquire))
+        return false;
+
+    atomic_store_explicit(&node->disconnect_source, (int)source,
+                          memory_order_relaxed);
+    atomic_store_explicit(&node->disconnect_endpoint_generation,
+                          node->endpoint_generation, memory_order_relaxed);
+    atomic_store_explicit(&node->disconnect, true, memory_order_release);
+    return true;
 }
 
 bool p2p_node_receive_bytes(struct p2p_node *node, const char *data,
@@ -738,7 +815,10 @@ bool p2p_node_end_message(struct p2p_node *node)
             free(ct);
             stream_free(&tls_msg_stream);
             tls_msg_active = false;
-            node->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                node, P2P_DISCONNECT_TRANSPORT_ERROR,
+                P2P_DISCONNECT_SOURCE_MESSAGE_HANDLER,
+                node->endpoint_generation);
             zcl_mutex_unlock(&node->cs_send);
             LOG_FAIL("net", "v2 transport write failed node id=%d", (int)node->id);
         }
@@ -792,7 +872,10 @@ void p2p_node_queue_raw(struct p2p_node *node, const uint8_t *bytes, size_t len)
     zcl_mutex_lock(&node->cs_send);
     struct send_segment *seg = send_segment_create(bytes, len);
     if (!seg) {
-        node->disconnect = true;
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_RESOURCE_LIMIT,
+            P2P_DISCONNECT_SOURCE_RESOURCE_GOVERNOR,
+            node->endpoint_generation);
         zcl_mutex_unlock(&node->cs_send);
         LOG_WARN("net", "p2p_node_queue_raw: send_segment_create failed node id=%d",
                  (int)node->id);
@@ -1309,7 +1392,10 @@ void peer_misbehaving(struct net_manager *nm, struct p2p_node *node,
         ban_addr_ex(nm, &node->addr.svc.addr,
                    ban_secs, false,
                    new_score, reason ? reason : "threshold reached");
-        node->disconnect = true;
+        (void)p2p_node_request_disconnect(
+            node, P2P_DISCONNECT_PROTOCOL_VIOLATION,
+            P2P_DISCONNECT_SOURCE_PEER_POLICY,
+            node->endpoint_generation);
 
         if (strand) {
             /* Say it out loud: a silent bounded ban would look identical to
@@ -1806,7 +1892,10 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
             cand, ncand, (int64_t)platform_time_wall_time_t());
         if (victim_idx >= 0) {
             struct p2p_node *victim = cand_node[victim_idx];
-            victim->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                victim, P2P_DISCONNECT_EVICTED,
+                P2P_DISCONNECT_SOURCE_PEER_POLICY,
+                victim->endpoint_generation);
             evicted = true;
             evicted_id = victim->id;
             snprintf(evicted_addr_name, sizeof(evicted_addr_name), "%s",

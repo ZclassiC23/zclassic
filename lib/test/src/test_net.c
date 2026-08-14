@@ -18,6 +18,7 @@
 #include "net/msgprocessor.h"
 #include "net/connman.h"
 #include "net/peer_strategy.h"
+#include "net/peer_liveness.h"
 #include "net/tip_watchdog.h"
 #include "net/download.h"
 #include "event/event.h"
@@ -287,6 +288,147 @@ static int64_t onion_dump_int(const char *key, bool *found)
 int test_net(void)
 {
     int failures = 0;
+
+    /* Binary keepalive contract: all boundaries are caller-clocked so this
+     * suite advances hours instantly and never sleeps. */
+    printf("peer_liveness: ping boundary is monotonic 60 seconds... ");
+    {
+        const int64_t t0 = 1000000LL;
+        struct peer_liveness_sample s = {
+            .connected_us = t0, .last_activity_us = t0, .ping_sent_us = 0,
+        };
+        bool ok = peer_liveness_decide(
+                      &s, t0 + PEER_LIVENESS_PING_IDLE_US - 1) ==
+                      PEER_LIVENESS_NONE &&
+                  peer_liveness_decide(
+                      &s, t0 + PEER_LIVENESS_PING_IDLE_US) ==
+                      PEER_LIVENESS_SEND_PING;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("peer_liveness: delayed scheduling and lost-pong boundary... ");
+    {
+        const int64_t t0 = 2000000LL;
+        struct peer_liveness_sample delayed = {
+            .connected_us = t0, .last_activity_us = t0, .ping_sent_us = 0,
+        };
+        bool sends_when_late = peer_liveness_decide(
+            &delayed, t0 + 5 * PEER_LIVENESS_PING_IDLE_US) ==
+            PEER_LIVENESS_SEND_PING;
+        delayed.ping_sent_us = t0 + 5 * PEER_LIVENESS_PING_IDLE_US;
+        bool waits = peer_liveness_decide(
+            &delayed,
+            delayed.ping_sent_us + PEER_LIVENESS_PONG_DEADLINE_US - 1) ==
+            PEER_LIVENESS_NONE;
+        bool drops = peer_liveness_decide(
+            &delayed,
+            delayed.ping_sent_us + PEER_LIVENESS_PONG_DEADLINE_US) ==
+            PEER_LIVENESS_DISCONNECT_PONG_TIMEOUT;
+        bool ok = sends_when_late && waits && drops;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("peer_liveness: traffic supersedes an outstanding ping... ");
+    {
+        const int64_t ping_us = 100000000LL;
+        struct peer_liveness_sample s = {
+            .connected_us = 1,
+            .last_activity_us = ping_us + 10,
+            .ping_sent_us = ping_us,
+        };
+        bool recovered = peer_liveness_decide(
+            &s, ping_us + PEER_LIVENESS_PONG_DEADLINE_US + 1) ==
+            PEER_LIVENESS_SEND_PING;
+        bool ok = recovered;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("peer_liveness: hard silence backstop is exactly 20 minutes... ");
+    {
+        const int64_t t0 = 3000000LL;
+        struct peer_liveness_sample s = {
+            .connected_us = t0, .last_activity_us = t0, .ping_sent_us = 0,
+        };
+        bool before = peer_liveness_decide(
+            &s, t0 + PEER_LIVENESS_HARD_SILENCE_US - 1) ==
+            PEER_LIVENESS_SEND_PING;
+        bool at = peer_liveness_decide(
+            &s, t0 + PEER_LIVENESS_HARD_SILENCE_US) ==
+            PEER_LIVENESS_DISCONNECT_HARD_SILENCE;
+        bool ok = before && at;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("peer_liveness: wall-clock jumps cannot alter a decision... ");
+    {
+        const int64_t mono = 5000000LL;
+        struct peer_liveness_sample s = {
+            .connected_us = mono, .last_activity_us = mono,
+            .ping_sent_us = 0,
+        };
+        /* Deliberately model two absurd wall readings. Neither is an input to
+         * the production decision seam. */
+        int64_t wall_before = 1700000000000LL;
+        int64_t wall_after = wall_before - 86400000LL;
+        enum peer_liveness_action a = peer_liveness_decide(
+            &s, mono + PEER_LIVENESS_PING_IDLE_US);
+        enum peer_liveness_action b = peer_liveness_decide(
+            &s, mono + PEER_LIVENESS_PING_IDLE_US);
+        bool ok = wall_before != wall_after && a == b &&
+                  a == PEER_LIVENESS_SEND_PING;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("peer_disconnect: first cause and endpoint generation win... ");
+    {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+        node.endpoint_generation = 42;
+        bool stale_refused = !p2p_node_request_disconnect(
+            &node, P2P_DISCONNECT_SYNC_STALL,
+            P2P_DISCONNECT_SOURCE_SYNC, 41);
+        bool first = p2p_node_request_disconnect(
+            &node, P2P_DISCONNECT_PONG_TIMEOUT,
+            P2P_DISCONNECT_SOURCE_KEEPALIVE, 42);
+        bool second_refused = !p2p_node_request_disconnect(
+            &node, P2P_DISCONNECT_IO_ERROR,
+            P2P_DISCONNECT_SOURCE_SOCKET, 42);
+        bool ok = stale_refused && first && second_refused &&
+                  atomic_load(&node.disconnect) &&
+                  atomic_load(&node.disconnect_reason) ==
+                      P2P_DISCONNECT_PONG_TIMEOUT &&
+                  atomic_load(&node.disconnect_source) ==
+                      P2P_DISCONNECT_SOURCE_KEEPALIVE &&
+                  atomic_load(&node.disconnect_endpoint_generation) == 42;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman watchdog freshness requires message and dial progress... ");
+    {
+        struct connman cm;
+        memset(&cm, 0, sizeof(cm));
+        const int64_t bound = 1000000;
+        bool before_start = connman_runtime_progress_fresh(&cm, bound);
+        cm.started = true;
+        int64_t now = platform_time_monotonic_us();
+        atomic_store(&cm.message_last_progress_us, now);
+        atomic_store(&cm.dial_scheduler_last_progress_us, now);
+        bool both_fresh = connman_runtime_progress_fresh(&cm, bound);
+        atomic_store(&cm.dial_scheduler_last_progress_us, now - bound - 1);
+        bool stale_dial = !connman_runtime_progress_fresh(&cm, bound);
+        atomic_store(&cm.dial_scheduler_last_progress_us, now);
+        atomic_store(&cm.message_last_progress_us, now - bound - 1);
+        bool stale_message = !connman_runtime_progress_fresh(&cm, bound);
+        bool ok = before_start && both_fresh && stale_dial && stale_message;
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
 
     printf("net_addr IPv4... ");
     {

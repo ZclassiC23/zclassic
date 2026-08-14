@@ -110,6 +110,10 @@ static struct liveness_contract g_runner_contract;
 static pthread_mutex_t g_runner_wake_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t  g_runner_wake_cond = PTHREAD_COND_INITIALIZER;
 static _Atomic uint64_t g_runner_wake_seq = 0;
+/* A contract is caller-owned and may be unregistered as part of service
+ * teardown.  Publish a stable name snapshot instead of retaining that pointer
+ * in diagnostics.  g_lock also makes concurrent JSON reads race-free. */
+static char g_runner_active_name[SUPERVISOR_NAME_MAX];
 
 const char *supervisor_stall_reason_name(enum supervisor_stall_reason r)
 {
@@ -596,12 +600,25 @@ static void run_due_ticks(void)
         if (!c) continue;
         if (atomic_load(&c->completed)) continue;
 
+        bool expected_running = false;
+        if (!atomic_compare_exchange_strong(&c->tick_running,
+                                             &expected_running, true))
+            continue;   /* this contract already has an owned callback */
         bool expected = true;
-        if (!atomic_compare_exchange_strong(&c->tick_pending, &expected, false))
+        if (!atomic_compare_exchange_strong(&c->tick_pending, &expected, false)) {
+            atomic_store(&c->tick_running, false);
             continue;   /* not marked due */
+        }
 
         int64_t before = atomic_load(&c->last_tick_us);
+        pthread_mutex_lock(&g_lock);
+        snprintf(g_runner_active_name, sizeof(g_runner_active_name), "%s",
+                 c->name);
+        pthread_mutex_unlock(&g_lock);
         if (c->on_tick) c->on_tick(c);
+        pthread_mutex_lock(&g_lock);
+        g_runner_active_name[0] = '\0';
+        pthread_mutex_unlock(&g_lock);
         /* If on_tick didn't call supervisor_tick itself, stamp it now so we
          * don't busy-fire — byte-identical to the old inline sweep semantics
          * (works for on_tick==NULL period-driven children too). */
@@ -610,6 +627,7 @@ static void run_due_ticks(void)
             atomic_store(&c->last_tick_us, platform_time_monotonic_us());
             atomic_fetch_add(&c->ticks_run, 1u);
         }
+        atomic_store(&c->tick_running, false);
         /* Heartbeat the runner BETWEEN children so a long batch of children
          * never trips the runner deadline — only a single wedged tick does. */
         atomic_store(&g_runner_contract.last_tick_us,
@@ -690,7 +708,9 @@ static void sweep_once(void)
          * executes on_tick + stamps last_tick/ticks_run. The sweep never runs
          * a child callback itself, so no child's I/O can freeze this thread.
          * (Idempotent: re-marking an already-pending child is a no-op.) */
-        if (period_window_us > 0 && (now - last_tick) >= period_window_us) {
+        if (period_window_us > 0 &&
+            !atomic_load(&c->tick_running) &&
+            (now - last_tick) >= period_window_us) {
             atomic_store(&c->tick_pending, true);
         }
 
@@ -1015,6 +1035,16 @@ bool supervisor_tick_runner_running(void)
     return atomic_load(&g_runner_running);
 }
 
+const char *supervisor_active_callback_name(void)
+{
+    static _Thread_local char name[SUPERVISOR_NAME_MAX];
+    pthread_mutex_lock(&g_lock);
+    snprintf(name, sizeof(name), "%s",
+             g_runner_active_name[0] ? g_runner_active_name : "none");
+    pthread_mutex_unlock(&g_lock);
+    return name;
+}
+
 /* ── Introspection ─────────────────────────────────────────────────── */
 
 int supervisor_child_count_total(void)
@@ -1094,6 +1124,8 @@ bool supervisor_dump_state_json(struct json_value *out, const char *key)
                       supervisor_tick_runner_last_hb_age_us());
     json_push_kv_int (out, "tick_runner_stall_fires",
                       (int64_t)atomic_load(&g_runner_contract.stall_fires));
+    json_push_kv_str(out, "active_callback",
+                     supervisor_active_callback_name());
     /* Progress-policy debt, at the root where an operator reads it first:
      * how many supervised children have no answer to "how would anyone know
      * if this stopped achieving anything?". Floored (shrink-only) by

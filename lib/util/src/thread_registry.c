@@ -82,19 +82,20 @@ int thread_registry_spawn(const char *name,
     strncpy(g_entries[slot].name, name ? name : "?",
             sizeof(g_entries[slot].name) - 1);
     g_entries[slot].name[sizeof(g_entries[slot].name) - 1] = '\0';
-    pthread_mutex_unlock(&g_mu);
-
+    /* Keep g_mu held across create + tid publication. A very short-lived
+     * child can reach trampoline unregister immediately; without this barrier
+     * it observes an uninitialised tid, misses its slot, and strands an active
+     * registry entry forever. The child merely blocks on g_mu until its tid is
+     * fully published. */
     pthread_t tid;
     int rc = pthread_create(&tid, NULL, thread_registry_trampoline, ta);
     if (rc != 0) {
-        pthread_mutex_lock(&g_mu);
         g_entries[slot].active = false;
         pthread_mutex_unlock(&g_mu);
         free(ta);
         return rc;
     }
 
-    pthread_mutex_lock(&g_mu);
     g_entries[slot].tid = tid;
     pthread_mutex_unlock(&g_mu);
 
@@ -167,6 +168,43 @@ int thread_registry_join_all(int timeout_sec)
         }
     }
     return failed;
+}
+
+void thread_registry_join_all_owned(void)
+{
+    for (int i = 0; i < ZCL_THREAD_REGISTRY_CAP; i++) {
+        pthread_mutex_lock(&g_mu);
+        bool active = g_entries[i].active;
+        pthread_t tid = g_entries[i].tid;
+        char name[sizeof(g_entries[i].name)];
+        if (active) memcpy(name, g_entries[i].name, sizeof(name));
+        pthread_mutex_unlock(&g_mu);
+        if (!active)
+            continue;
+
+        fprintf(stderr,
+                "[thread_registry] retaining ownership while joining '%s'\n",
+                name);
+        int rc;
+        do {
+            rc = pthread_join(tid, NULL);
+        } while (rc == EINTR);
+
+        if (rc != 0 && rc != ESRCH && rc != EINVAL) {
+            fprintf(stderr,
+                    "[thread_registry] blocking join of '%s' failed: "
+                    "rc=%d: %s\n",
+                    name, rc, strerror(rc));
+            /* Keep the registry entry active. The caller's shutdown watchdog
+             * remains responsible for a truthful unclean process exit; we
+             * must not manufacture a successful ownership handoff. */
+            continue;
+        }
+
+        pthread_mutex_lock(&g_mu);
+        g_entries[i].active = false;
+        pthread_mutex_unlock(&g_mu);
+    }
 }
 
 int thread_registry_live_count(void)

@@ -159,9 +159,11 @@ int t_boot_shutdown_persistence_order_contract(void)
         char *supervisor_stop = strstr(buf, "supervisor_stop();");
         char *stages_stop = strstr(buf,
             "staged_sync_supervisor_shutdown_stages();");
-        char *wal_checkpoint = strstr(buf, "node_db_wal_checkpoint(svc->node_db)");
+        char *wal_checkpoint = strstr(
+            buf, "db_service_wal_checkpoint(svc->db_service)");
         char *thread_join = strstr(buf, "thread_registry_join_all(2)");
-        char *marker = strstr(buf, "boot_shutdown_marker_write_clean(svc->datadir);");
+        char *marker = strstr(
+            buf, "boot_shutdown_marker_write_clean(svc->datadir)");
         char *fast = strstr(buf, "shutdown_persist_fast_restart_state(svc);");
         ASSERT(network_stop != NULL);
         ASSERT(health_stop != NULL);
@@ -181,6 +183,7 @@ int t_boot_shutdown_persistence_order_contract(void)
         ASSERT(supervisor_stop < stages_stop);
         ASSERT(stages_stop < wal_checkpoint);
         ASSERT(stages_stop < thread_join);
+        ASSERT(thread_join < wal_checkpoint);
         ASSERT(count_occurrences(buf,
                    "staged_sync_supervisor_shutdown_stages();") == 1);
         /* checkpoint precedes the marker (marker binds a checkpointed DB) */

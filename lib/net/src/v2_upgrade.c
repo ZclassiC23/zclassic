@@ -54,7 +54,10 @@ bool connman_request_v2_upgrade(struct connman *cm, struct p2p_node *node)
         (void)addrman_add(&cm->manager.addrman, &node->addr, &source, 0);
     }
 
-    node->disconnect = true;
+    (void)p2p_node_request_disconnect(
+        node, P2P_DISCONNECT_V2_UPGRADE,
+        P2P_DISCONNECT_SOURCE_DIAL_SCHEDULER,
+        node->endpoint_generation);
     LOG_INFO("net", "peer %s advertised v2 transport; capability persisted "
              "and controlled Noise reconnect requested", node->addr_name);
     return true;

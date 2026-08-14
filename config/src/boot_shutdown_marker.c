@@ -69,6 +69,23 @@ static bool boot_shutdown_marker_path(char *out, size_t out_n,
     return n >= 0 && (size_t)n < out_n;
 }
 
+static bool marker_write_all(int fd, const char *buf, size_t len)
+{
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = write(fd, buf + off, len - off);
+        if (n < 0) {
+            if (errno == EINTR)
+                continue;
+            return false;
+        }
+        if (n == 0)
+            return false;
+        off += (size_t)n;
+    }
+    return true;
+}
+
 /* ── Pure format/parse/decide helpers ─────────────────────────────── */
 
 int boot_shutdown_marker_format(char *buf, size_t n, int64_t unix_seconds,
@@ -504,8 +521,7 @@ bool boot_shutdown_marker_write_clean(const char *datadir)
     if (fd < 0)
         return false;
     bool ok = false;
-    ssize_t w = write(fd, content, (size_t)clen);
-    if (w == (ssize_t)clen && fsync(fd) == 0)
+    if (marker_write_all(fd, content, (size_t)clen) && fsync(fd) == 0)
         ok = true;
     if (close(fd) != 0)
         ok = false;
@@ -518,11 +534,31 @@ bool boot_shutdown_marker_write_clean(const char *datadir)
         return false;
     }
 
-    /* Best-effort directory fsync so the rename is durable. */
+    /* The marker is a durability claim, so its directory fsync is mandatory. */
     int dfd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
-    if (dfd >= 0) {
-        (void)fsync(dfd);
-        close(dfd);
-    }
-    return true;
+    if (dfd < 0)
+        return false;
+    ok = fsync(dfd) == 0;
+    if (close(dfd) != 0)
+        ok = false;
+    return ok;
+}
+
+bool boot_shutdown_marker_remove_clean(const char *datadir)
+{
+    char path[1024];
+    if (!boot_shutdown_marker_path(path, sizeof(path), datadir,
+                                   ZCL_SHUTDOWN_MARKER_NAME))
+        return false;
+
+    if (unlink(path) != 0 && errno != ENOENT)
+        return false;
+
+    int dfd = open(datadir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    if (dfd < 0)
+        return false;
+    bool ok = fsync(dfd) == 0;
+    if (close(dfd) != 0)
+        ok = false;
+    return ok;
 }

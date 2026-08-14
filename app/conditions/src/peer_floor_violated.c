@@ -110,13 +110,18 @@ static enum condition_remedy_result remedy_peer_floor_violated(void)
         struct p2p_node *n = cm->manager.nodes[i];
         if (n && !n->inbound && !n->disconnect &&
             n->state < PEER_HANDSHAKE_COMPLETE) {
-            n->disconnect = true;
+            (void)p2p_node_request_disconnect(
+                n, P2P_DISCONNECT_POLICY_ROTATION,
+                P2P_DISCONNECT_SOURCE_PEER_POLICY, n->endpoint_generation);
             outbound_dropped++;
         }
         if (n && n->inbound && !n->disconnect) {
             inbound_seen++;
             if (inbound_seen > 2) {
-                n->disconnect = true;
+                (void)p2p_node_request_disconnect(
+                    n, P2P_DISCONNECT_POLICY_ROTATION,
+                    P2P_DISCONNECT_SOURCE_PEER_POLICY,
+                    n->endpoint_generation);
                 inbound_dropped++;
             }
         }

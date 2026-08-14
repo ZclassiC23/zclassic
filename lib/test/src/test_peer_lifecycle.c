@@ -334,6 +334,10 @@ static int test_peer_lifecycle_counters(void)
         peer_lifecycle_note_handshake_complete(&node);
         peer_lifecycle_note_active(&node);
         peer_lifecycle_note_cache_skipped(&node, "save_advisory");
+        node.endpoint_generation = 78;
+        ASSERT(p2p_node_request_disconnect(
+            &node, P2P_DISCONNECT_PONG_TIMEOUT,
+            P2P_DISCONNECT_SOURCE_KEEPALIVE, node.endpoint_generation));
         event_log_init();
         g_lifecycle_disconnect_events = 0;
         g_lifecycle_disconnect_payload[0] = '\0';
@@ -353,6 +357,9 @@ static int test_peer_lifecycle_counters(void)
         ASSERT(s.cache_skipped == 1);
         ASSERT(s.magicbean_handshakes == 0);
         ASSERT(s.zcl23_handshakes == 1);
+        ASSERT(s.disconnect_reason_counts[P2P_DISCONNECT_PONG_TIMEOUT] == 1);
+        ASSERT(s.disconnect_source_counts[P2P_DISCONNECT_SOURCE_KEEPALIVE] == 1);
+        ASSERT(s.max_endpoint_generation == 78);
         ASSERT(g_lifecycle_disconnect_events == 1);
         ASSERT(strstr(g_lifecycle_disconnect_payload,
                       "disconnect addr=198.51.100.7:8033") != NULL);
@@ -381,6 +388,13 @@ static int test_peer_lifecycle_counters(void)
                                       "legacy_magicbean_handshakes")) == 0);
         ASSERT(json_get_int(json_get(addnode, "zclassic23_handshakes")) == 1);
         ASSERT(json_get_int(json_get(addnode, "zclassic_c23_handshakes")) == 1);
+        const struct json_value *summary = json_get(&dump, "summary");
+        const struct json_value *causes =
+            summary ? json_get(summary, "causal_disconnects") : NULL;
+        ASSERT(causes &&
+               json_get_int(json_get(causes, "pong_timeout")) == 1);
+        ASSERT(summary &&
+               json_get_int(json_get(summary, "max_endpoint_generation")) == 78);
         json_free(&dump);
     } TEST_END
     return failures;

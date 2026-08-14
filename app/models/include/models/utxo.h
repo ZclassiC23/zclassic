@@ -99,6 +99,10 @@ int db_utxo_repair_missing_heights_from_tx_index(struct node_db *ndb);
  * Used after bulk chainstate import where the UTXO model is the source of
  * truth and the wallet/explorer tables are read models. */
 bool db_utxo_rebuild_wallet_and_address_caches(struct node_db *ndb);
+/* Same rebuild statements, but the caller already owns an open node.db
+ * transaction. Used when mirror rows, caches, commitment, and cursor must
+ * become visible at one commit boundary. */
+bool db_utxo_rebuild_wallet_and_address_caches_in_txn(struct node_db *ndb);
 
 /* Re-derive the addresses + wallet_utxos cache rows for a SINGLE address_hash
  * from the authoritative `utxos` table. Used by the incremental (delta) mirror

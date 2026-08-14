@@ -35,6 +35,9 @@ struct peer_lifecycle_summary {
     int64_t legacy_compatible_handshakes;
     int64_t zcl23_handshakes;
     int64_t pre_handshake_disconnects;
+    int64_t disconnect_reason_counts[P2P_DISCONNECT_REASON_COUNT];
+    int64_t disconnect_source_counts[P2P_DISCONNECT_SOURCE_COUNT];
+    uint64_t max_endpoint_generation;
 };
 
 const char *peer_lifecycle_source_name(enum peer_lifecycle_source source);
