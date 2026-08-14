@@ -34,7 +34,7 @@ struct peer_survey {
     int total;
     int inbound;
     int outbound;
-    int ready;      /* state == "handshake_complete" or "active" */
+    int ready;      /* handshaked operational states, including sync/snapshot */
     int zcl23;
     int magicbean;
     int max_height; /* max "startingheight" across all peers */

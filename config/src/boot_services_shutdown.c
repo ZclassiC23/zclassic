@@ -25,6 +25,7 @@
 #include "event/event.h"
 #include "net/msgprocessor.h"
 #include "validation/process_block.h"
+#include "validation/process_block_invalidate.h"
 #include "validation/txmempool.h"
 #include "validation/main_state.h"
 #include "wallet/wallet.h"
@@ -227,6 +228,7 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
 
     atomic_store(svc->running, false);
     process_block_set_gap_fill_kick(NULL, NULL);
+    process_block_set_mempool_restore_hook(NULL, NULL);
     process_block_set_tip_publication_hooks(NULL, NULL, NULL);
     g_shutdown_requested = 1;
     thread_registry_request_shutdown();

@@ -17,8 +17,8 @@ DHT_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 # P2P reconnects pass the production reachable-port policy; use two of its
 # explicit test-safe ports rather than arbitrary high ports that only the
 # initial operator-directed -connect dial may bypass.
-A_PORT=20022; A_RPC=39211; A_FS=39212; A_HTTPS=39213
-B_PORT=18033; B_RPC=39221; B_FS=39222; B_HTTPS=39223
+A_PORT=20022; A_RPC=29211; A_FS=29212; A_HTTPS=29213
+B_PORT=18033; B_RPC=29221; B_FS=29222; B_HTTPS=29223
 DEAD_SINK=39999
 DHT_WAIT="${DHT_WAIT:-90}"
 DHT_PACKAGEHOST="${DHT_PACKAGEHOST:-0}"
@@ -121,7 +121,12 @@ try:
     for text in sys.argv[1:]:
         sock=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
         sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        sock.bind(("0.0.0.0",int(text)))
+        try:
+            sock.bind(("0.0.0.0",int(text)))
+        except OSError as exc:
+            print(f"port {text}: {exc}",file=sys.stderr)
+            sock.close()
+            raise SystemExit(1)
         sockets.append(sock)
 finally:
     for sock in sockets:
@@ -693,8 +698,8 @@ declare -a DDS RPCS PORTS FSPORTS HTTPSPORTS SEEDS PUBS NODES PIDS DOCS
 DDS=("$DHT_DD_A" "$DHT_DD_B")
 RPCS=("$A_RPC" "$B_RPC")
 PORTS=("$A_PORT" "$B_PORT" 20023 20024 20025 20026 20027)
-FSPORTS=("$A_FS" "$B_FS" 39232 39242 39252 39262 39272)
-HTTPSPORTS=("$A_HTTPS" "$B_HTTPS" 39233 39243 39253 39263 39273)
+FSPORTS=("$A_FS" "$B_FS" 29232 29242 29252 29262 29272)
+HTTPSPORTS=("$A_HTTPS" "$B_HTTPS" 29233 29243 29253 29263 29273)
 SEEDS=("$SEED_A" "$SEED_B"
   3333333333333333333333333333333333333333333333333333333333333333
   4444444444444444444444444444444444444444444444444444444444444444
@@ -703,13 +708,13 @@ SEEDS=("$SEED_A" "$SEED_B"
   7777777777777777777777777777777777777777777777777777777777777777)
 PUBS=("$PUB_A" "$PUB_B")
 for port in 20023 20024 20025 20026 20027 \
-    39231 39232 39233 39241 39242 39243 39251 39252 39253 \
-    39261 39262 39263 39271 39272 39273; do
+    29231 29232 29233 29241 29242 29243 29251 29252 29253 \
+    29261 29262 29263 29271 29272 29273; do
     dht_assert_port "$port"
 done
 for i in 2 3 4 5 6; do
     DDS[$i]="$DHT_WORK/node-$i"
-    RPCS[$i]=$((39211 + i * 10))
+    RPCS[$i]=$((29211 + i * 10))
     mkdir -p "${DDS[$i]}"
     seed_file="$DHT_WORK/master-$i.hex"
     install -m 600 /dev/null "$seed_file"

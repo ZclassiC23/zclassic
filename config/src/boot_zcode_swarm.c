@@ -697,6 +697,7 @@ static void boot_zcode_swarm_periodic(struct msg_processor *mp,
         boot_zcode_work_drain_admissions(wall);
         boot_zcode_work_drain_cancels(wall);
         boot_zcode_work_publish_results(wall);
+        (void)vcs_zcode_work_node_requeue_results(s_work, wall);
         boot_zcode_work_observe_results(wall);
         /* A result observed above derives RECEIPT_VERIFIED. Project readiness
          * in the same supervised turn instead of imposing another timer

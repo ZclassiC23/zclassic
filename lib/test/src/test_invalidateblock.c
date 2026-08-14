@@ -53,6 +53,37 @@
  * skips BLOCK_FAILED entries. Declared in process_block_core.c. */
 struct block_index *find_most_work_chain(struct main_state *ms);
 
+static int g_restore_hook_calls;
+static bool g_restore_hook_context_ok;
+static struct block_index *g_restore_hook_first;
+static struct block_index *g_restore_hook_old_tip;
+static enum process_block_mempool_segment_action g_restore_hook_action;
+
+static bool fake_mempool_restore(
+    void *ctx,
+    struct block_index *first_disconnected,
+    struct block_index *old_active_tip,
+    enum process_block_mempool_segment_action action,
+    struct process_block_mempool_restore_result *out)
+{
+    g_restore_hook_context_ok = ctx == &g_restore_hook_calls;
+    g_restore_hook_calls++;
+    g_restore_hook_first = first_disconnected;
+    g_restore_hook_old_tip = old_active_tip;
+    g_restore_hook_action = action;
+    if (out) {
+        out->blocks_read = 1;
+        out->txs_attempted = 1;
+        if (action == PROCESS_BLOCK_MEMPOOL_RESTORE_DISCONNECTED) {
+            out->txs_accepted = 1;
+            out->txs_relayed = 1;
+        } else {
+            out->txs_removed = 1;
+        }
+    }
+    return true;
+}
+
 /* Build a heap block_index at `height` with `work`, owned hash from
  * `seed`, prev link `prev`, and clean (valid+have-data) status. Inserts
  * into the block_map. Returns the pindex. */
@@ -273,7 +304,107 @@ int test_invalidateblock(void)
         main_state_free(&ms);
     }
 
-    /* ── 7. Canonical tip FLOOR: refuse a below-tip higher-work fork ──
+    /* ── 7. Hash identity: duplicate active object still disconnects ──
+     *
+     * Snapshot seeding and header ingestion may retain distinct block_index
+     * objects for the same block hash. The block map resolves `target`, while
+     * the active-chain slot contains `active_twin`. invalidateblock is
+     * hash-addressed and must retreat through the active object's parent;
+     * pointer-only containment leaves a FAILED active tip published while
+     * reporting success (physical matrix regression, 2026-08-14). */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+
+        struct block_index *g = mk_idx(&ms, 0, 1, 0x00, NULL);
+        struct block_index *target = mk_idx(&ms, 1, 10, 0x0A, g);
+        struct block_index active_twin = *target;
+        active_twin.hashBlock = *target->phashBlock;
+        active_twin.phashBlock = &active_twin.hashBlock;
+        active_twin.pprev = g;
+        ms.pindex_best_header = &active_twin;
+
+        active_chain_move_window_tip(&ms.chain_active, g);
+        active_chain_move_window_tip(&ms.chain_active, &active_twin);
+        IB_CHECK("same-hash fixture: pointer containment differs",
+                 !active_chain_contains(&ms.chain_active, target));
+        IB_CHECK("same-hash fixture: active and target hashes agree",
+                 uint256_eq(active_twin.phashBlock, target->phashBlock));
+
+        size_t marked_children = 0;
+        process_block_mark_invalid(&ms, target, &marked_children);
+        IB_CHECK("same-hash active object: live twin is marked failed",
+                 (active_twin.nStatus & BLOCK_FAILED_VALID) != 0);
+        bool disconnected = process_block_disconnect_to_parent(
+            NULL, &ms, NULL, NULL, target, NULL);
+        IB_CHECK("same-hash active object: disconnect succeeds",
+                 disconnected);
+        IB_CHECK("same-hash active object: tip retreats to parent",
+                 active_chain_height(&ms.chain_active) == 0 &&
+                 active_chain_tip(&ms.chain_active) == g);
+        size_t cleared = 0;
+        process_block_clear_invalid(&ms, target, &cleared);
+        IB_CHECK("same-hash active object: reconsider clears live twin",
+                 (active_twin.nStatus & BLOCK_FAILED_ANY_MASK) == 0);
+
+        free_idx(g); free_idx(target);
+        main_state_free(&ms);
+    }
+
+    /* ── 8. Full operator path dispatches post-unwind mempool restore ── */
+    {
+        struct main_state ms;
+        memset(&ms, 0, sizeof(ms));
+        main_state_init(&ms);
+        struct block_index *g = mk_idx(&ms, 0, 1, 0x00, NULL);
+        struct block_index *tip = mk_idx(&ms, 1, 10, 0x0A, g);
+        active_chain_move_window_tip(&ms.chain_active, tip);
+        ms.pindex_best_header = tip;
+
+        g_restore_hook_calls = 0;
+        g_restore_hook_context_ok = false;
+        g_restore_hook_first = NULL;
+        g_restore_hook_old_tip = NULL;
+        process_block_set_mempool_restore_hook(fake_mempool_restore,
+                                                &g_restore_hook_calls);
+        IB_CHECK("mempool hook: full invalidate succeeds",
+                 process_block_invalidate(&ms, tip->phashBlock, NULL) ==
+                     INVALIDATE_OK);
+        IB_CHECK("mempool hook: called exactly once after active disconnect",
+                 g_restore_hook_calls == 1);
+        IB_CHECK("mempool hook: context survives dispatch",
+                 g_restore_hook_context_ok);
+        IB_CHECK("mempool hook: exact disconnected segment named",
+                 g_restore_hook_first == tip && g_restore_hook_old_tip == tip);
+        IB_CHECK("mempool hook: invalidate requests restore action",
+                 g_restore_hook_action ==
+                     PROCESS_BLOCK_MEMPOOL_RESTORE_DISCONNECTED);
+        IB_CHECK("mempool hook: failed ancestry retracts best header",
+                 ms.pindex_best_header == g);
+        /* Production's reducer reconnect repopulates the raw window before the
+         * reconsider-side exact-block mempool reconciliation. Mirror that
+         * post-reducer observation in this controller-free unit fixture. */
+        IB_CHECK("mempool hook: model reducer reconnect window",
+                 active_chain_move_window_tip(&ms.chain_active, tip));
+        IB_CHECK("mempool hook: reconsider succeeds",
+                 process_block_reconsider(&ms, tip->phashBlock, NULL) ==
+                     RECONSIDER_OK);
+        IB_CHECK("mempool hook: reconsider dispatches second action",
+                 g_restore_hook_calls == 2 &&
+                     g_restore_hook_action ==
+                         PROCESS_BLOCK_MEMPOOL_REMOVE_RECONNECTED);
+        IB_CHECK("mempool hook: reconnected segment named exactly",
+                 g_restore_hook_first == tip && g_restore_hook_old_tip == tip);
+        IB_CHECK("mempool hook: reconsider rebuilds best header",
+                 ms.pindex_best_header == tip);
+        process_block_set_mempool_restore_hook(NULL, NULL);
+
+        free_idx(g); free_idx(tip);
+        main_state_free(&ms);
+    }
+
+    /* ── 9. Canonical tip FLOOR: refuse a below-tip higher-work fork ──
      *
      * The exact never-stuck wound (process_block_core.c:106-120): a
      * stale-import fork tip at a LOWER height but HIGHER nChainWork (bad

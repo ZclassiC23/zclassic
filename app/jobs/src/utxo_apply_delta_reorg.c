@@ -385,12 +385,20 @@ bool utxo_apply_reorg_unwind_if_needed(sqlite3 *db,
 
     struct block_index *active = active_chain_at(&ms->chain_active, C - 1);
     if (!active || !active->phashBlock) {
-        /* Chain shorter than our cursor at C-1: the stage owns the tip, so
-         * there is simply no fork to disconnect here yet — a no-op. */
-        return true;
-    }
-    if (uint256_eq(&recorded, active->phashBlock))
+        /* A missing slot or shorter raw window alone is NOT a branch verdict:
+         * boot/resume deliberately permits the visible window to lag durable
+         * reducer rows.  An operator invalidation supplies the missing fact by
+         * marking the exact recorded block hash FAILED before retracting the
+         * window.  Only that hash-bound verdict converts absence into a known
+         * divergence; otherwise preserve the sparse-window HOLD contract. */
+        struct block_index *recorded_owner =
+            block_map_find(&ms->map_block_index, &recorded);
+        if (!recorded_owner || !block_has_any_failure(recorded_owner))
+            return true;
+        /* Explicitly failed recorded block: continue as a mismatch. */
+    } else if (uint256_eq(&recorded, active->phashBlock)) {
         return true;  /* no divergence */
+    }
 
     /* Walk DOWN to the fork point F: the highest height where our recorded
      * branch_hash still matches the active chain. Disconnect (F, C-1].

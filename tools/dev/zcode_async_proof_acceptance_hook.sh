@@ -488,12 +488,98 @@ zap_start_node() {
 }
 
 zap_connect() {
-    local from="$1" to="$2"
-    dht_rpc "${DDS[$from]}" "${RPCS[$from]}" addnode \
-        "\"127.0.0.1:${PORTS[$to]}\"" '"onetry"' >/dev/null || true
-    dht_wait_auth "${DDS[$from]}" "${RPCS[$from]}" 1 &&
-        dht_wait_auth "${DDS[$to]}" "${RPCS[$to]}" 1 ||
-        dht_die "async proof nodes $from/$to did not authenticate"
+    local from="$1" to="$2" deadline status_from status_to
+    local enabled_from enabled_to find_result find_ok
+    local auth_from auth_to accepted_from accepted_to started rearmed
+    case "${ZAP_CONNECT_SKIP_ONETRY:-0}" in
+        0)
+            dht_rpc "${DDS[$from]}" "${RPCS[$from]}" addnode \
+                "\"127.0.0.1:${PORTS[$to]}\"" '"onetry"' >/dev/null || true
+            ;;
+        1) ;;
+        *) dht_die "invalid ZAP_CONNECT_SKIP_ONETRY value" ;;
+    esac
+    case "${ZAP_CONNECT_DIRECTED_REARM:-0}" in
+        0|1) ;;
+        *) dht_die "invalid ZAP_CONNECT_DIRECTED_REARM value" ;;
+    esac
+
+    # P2P addnode establishes the transport path, but contacts.v2 is
+    # authenticated HISTORY rather than current DHT reachability.  Admit an
+    # actual lookup so a freshly restarted composition root resolves the
+    # peer's accepted ZENDP record and performs a new Noise/delegation
+    # exchange.  Without demand, this helper merely waited for unrelated
+    # background package work to happen to open the overlay connection.
+    # RPC readiness precedes composition-root startup.  Wait for the DHT to
+    # be enabled so the lookup cannot be honestly refused as unavailable and
+    # then leave the authentication wait with no admitted demand to service.
+    enabled_from=False
+    enabled_to=False
+    deadline=$(( $(date +%s) + DHT_WAIT ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        status_from="$(dht_status "${DDS[$from]}" "${RPCS[$from]}" 2>/dev/null || true)"
+        status_to="$(dht_status "${DDS[$to]}" "${RPCS[$to]}" 2>/dev/null || true)"
+        enabled_from="$(printf '%s' "$status_from" | dht_jget \
+            'd.get("data",{}).get("enabled",False)' 2>/dev/null || true)"
+        enabled_to="$(printf '%s' "$status_to" | dht_jget \
+            'd.get("data",{}).get("enabled",False)' 2>/dev/null || true)"
+        [ "$enabled_from" = True ] && [ "$enabled_to" = True ] && break
+        sleep 0.5
+    done
+    [ "$enabled_from" = True ] ||
+        dht_die "async proof node $from DHT did not enable"
+    [ "$enabled_to" = True ] ||
+        dht_die "async proof node $to DHT did not enable"
+    find_result="$(dht_native "${DDS[$from]}" "${RPCS[$from]}" \
+        zcode network find begin \
+        --input="{\"node_id\":\"${NODES[$to]}\"}" || true)"
+    find_ok="$(printf '%s' "$find_result" | dht_jget \
+        'd.get("ok",False)' 2>/dev/null || true)"
+    [ "$find_ok" = True ] ||
+        dht_die "async proof lookup $from/$to was not admitted: $find_result"
+
+    # Capability learning deliberately tears down the first plaintext P2P
+    # connection and replaces it with Noise. A lookup admitted in that small
+    # interval is correctly bounded, but its reachability request belonged to
+    # the retired transport and is not replayed automatically. Observe both
+    # peers jointly and re-arm one fresh lookup after the transport transition
+    # has had time to settle. The verdict remains fail-closed on an actual
+    # authenticated session plus an accepted frame at both ends.
+    started="$(date +%s)"
+    deadline=$((started + DHT_WAIT))
+    rearmed=0
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        status_from="$(dht_status "${DDS[$from]}" "${RPCS[$from]}" 2>/dev/null || true)"
+        status_to="$(dht_status "${DDS[$to]}" "${RPCS[$to]}" 2>/dev/null || true)"
+        auth_from="$(printf '%s' "$status_from" | dht_jget \
+            'd.get("data",{}).get("connected_authenticated",0)' 2>/dev/null || true)"
+        auth_to="$(printf '%s' "$status_to" | dht_jget \
+            'd.get("data",{}).get("connected_authenticated",0)' 2>/dev/null || true)"
+        accepted_from="$(printf '%s' "$status_from" | dht_jget \
+            'd.get("data",{}).get("frames_accepted",0)' 2>/dev/null || true)"
+        accepted_to="$(printf '%s' "$status_to" | dht_jget \
+            'd.get("data",{}).get("frames_accepted",0)' 2>/dev/null || true)"
+        if [ "${auth_from:-0}" -ge 1 ] && [ "${auth_to:-0}" -ge 1 ] &&
+           [ "${accepted_from:-0}" -ge 1 ] && [ "${accepted_to:-0}" -ge 1 ]; then
+            return 0
+        fi
+        if [ "$rearmed" -eq 0 ] &&
+           [ $(( $(date +%s) - started )) -ge 3 ]; then
+            find_result="$(dht_native "${DDS[$from]}" "${RPCS[$from]}" \
+                zcode network find begin \
+                --input="{\"node_id\":\"${NODES[$to]}\"}" 2>/dev/null || true)"
+            if [ "${ZAP_CONNECT_DIRECTED_REARM:-0}" = 0 ]; then
+                find_result="$(dht_native "${DDS[$to]}" "${RPCS[$to]}" \
+                    zcode network find begin \
+                    --input="{\"node_id\":\"${NODES[$from]}\"}" 2>/dev/null || true)"
+            fi
+            rearmed=1
+        fi
+        sleep 0.5
+    done
+    dht_die "async proof nodes $from/$to did not authenticate "\
+"(from auth=${auth_from:-0} accepted=${accepted_from:-0}; "\
+"to auth=${auth_to:-0} accepted=${accepted_to:-0})"
 }
 
 # The scaling campaign sources these canonical helpers after the same seven-

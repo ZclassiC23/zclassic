@@ -67,6 +67,7 @@ static bool ua_select_idle_reason_is_anomaly(
     case UA_SELECT_IDLE_ACTIVE_CHAIN_BODILESS:
     case UA_SELECT_IDLE_NO_SCRIPT_HASH:
     case UA_SELECT_IDLE_INDEXED_BODY_MISSING:
+    case UA_SELECT_IDLE_BLOCK_FAILED:
     case UA_SELECT_IDLE_STAGE_READ_FAILED:
         return false;
     }
@@ -116,6 +117,8 @@ const char *utxo_apply_select_idle_reason_name(
         return "indexed_body_hash_mismatch";
     case UA_SELECT_IDLE_PARENT_MISMATCH:
         return "parent_mismatch";
+    case UA_SELECT_IDLE_BLOCK_FAILED:
+        return "block_failed";
     case UA_SELECT_IDLE_STAGE_READ_FAILED:
         return "stage_read_failed";
     }
@@ -313,6 +316,18 @@ static struct block_index *hash_bound_fallback(
         if (why) *why = UA_SELECT_IDLE_HEIGHT_MISMATCH;
         return NULL;
     }
+    /* A height/hash-bound upstream verdict proves what was validated; it does
+     * not override a later FAILED verdict on that block.  In particular,
+     * invalidateblock first rewinds the UTXO cursor and then this same drain
+     * batch can revisit the stale script/proof rows.  Returning the failed map
+     * owner here immediately reapplied the disconnected block, consumed its
+     * restored inputs again, and made mempool resurrection fail with
+     * MISSING_INPUTS.  FAILED is hash identity, so also consult a same-hash map
+     * owner when the candidate came from another in-RAM identity. */
+    if (block_has_any_failure(bi)) {
+        if (why) *why = UA_SELECT_IDLE_BLOCK_FAILED;
+        return NULL;
+    }
     bool indexed_parent_ok =
         indexed_candidate_extends_visible_parent(ms, bi, height) ||
         indexed_candidate_extends_durable_parent(db, bi, height);
@@ -350,7 +365,12 @@ struct block_index *utxo_apply_select_apply_block(
     }
 
     struct block_index *bi = active_chain_at(&ms->chain_active, height);
-    if (bi && (bi->nStatus & BLOCK_HAVE_DATA)) {
+    struct block_index *map_bi = bi && bi->phashBlock
+        ? block_map_find(&ms->map_block_index, bi->phashBlock) : NULL;
+    bool failed = bi && (block_has_any_failure(bi) ||
+        (map_bi && map_bi->nHeight == bi->nHeight &&
+         block_has_any_failure(map_bi)));
+    if (bi && !failed && (bi->nStatus & BLOCK_HAVE_DATA)) {
         utxo_apply_select_idle_blocker_clear();
         return bi;
     }
@@ -358,9 +378,10 @@ struct block_index *utxo_apply_select_apply_block(
     atomic_fetch_add(&g_ua_window_miss_total, 1);
     atomic_store(&g_ua_window_miss_height, (int64_t)height);
 
-    enum utxo_apply_select_idle_reason why =
-        bi ? UA_SELECT_IDLE_ACTIVE_CHAIN_BODILESS
-           : UA_SELECT_IDLE_ACTIVE_CHAIN_MISSING;
+    enum utxo_apply_select_idle_reason why = failed
+        ? UA_SELECT_IDLE_BLOCK_FAILED
+        : (bi ? UA_SELECT_IDLE_ACTIVE_CHAIN_BODILESS
+              : UA_SELECT_IDLE_ACTIVE_CHAIN_MISSING);
     struct block_index *fallback = hash_bound_fallback(db, ms, height, sv_row,
                                                        &why);
     if (!fallback) {

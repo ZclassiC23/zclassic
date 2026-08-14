@@ -438,6 +438,60 @@ int test_coins_applied_frontier(void)
                           fnd && fr == L.n);
             }
 
+            /* OPERATOR DISCONNECT / SHORTER-WINDOW REORG.  invalidateblock
+             * first retracts the raw active window to the target's parent, so
+             * there is deliberately no active slot at the old applied height
+             * C-1.  That absence must drive the same inverse-delta path as a
+             * same-height competing winner; treating it as an unknown/no-op
+             * leaves both coins and the durable cursor above the invalidated
+             * block.  Pin the decrease before reconnecting L's tip. */
+            CAF_CHECK("short disconnect: old tip is hash-addressable",
+                      block_map_insert(&ms.map_block_index,
+                                       L.blocks[L.n - 1].phashBlock,
+                                       &L.blocks[L.n - 1]));
+            L.blocks[L.n - 1].nStatus |= BLOCK_FAILED_VALID;
+            CAF_CHECK("short disconnect: failed verdict is exact old tip",
+                      block_has_any_failure(&L.blocks[L.n - 1]));
+            CAF_CHECK("short disconnect: retract active window one block",
+                      active_chain_move_window_tip(
+                          &ms.chain_active, &L.blocks[L.n - 2]));
+            {
+                stage_t *probe = stage_create("utxo_apply", caf_noop_step, NULL);
+                CAF_CHECK("short disconnect: probe stage_create", probe != NULL);
+                _Atomic uint64_t unwound_n = 0;
+                _Atomic int64_t blocked_t = 0;
+                progress_store_tx_lock();
+                bool unwound = utxo_apply_reorg_unwind_if_needed(
+                    pdb, probe, &ms, &unwound_n, &blocked_t);
+                progress_store_tx_unlock();
+                CAF_CHECK("short disconnect: unwind succeeds", unwound);
+                CAF_CHECK("short disconnect: unwind counted once",
+                          (uint64_t)unwound_n == 1);
+                CAF_CHECK("short disconnect: frontier == cursor at parent+1",
+                          frontier_eq_cursor(pdb));
+                int32_t fr = -999; bool fnd = false;
+                (void)coins_kv_get_applied_height(pdb, &fr, &fnd);
+                CAF_CHECK("short disconnect: frontier retreats exactly one",
+                          fnd && fr == L.n - 1);
+                if (probe) stage_destroy(probe);
+            }
+            L.blocks[L.n - 1].nStatus &= ~(unsigned)BLOCK_FAILED_ANY_MASK;
+            CAF_CHECK("short disconnect: reconsider old tip",
+                      !block_has_any_failure(&L.blocks[L.n - 1]));
+            CAF_CHECK("short disconnect: restore active L tip",
+                      active_chain_move_window_tip(
+                          &ms.chain_active, &L.blocks[L.n - 1]));
+            CAF_CHECK("short disconnect: re-apply disconnected tip",
+                      utxo_apply_stage_drain(100) >= 1);
+            CAF_CHECK("short disconnect: reconnect restores frontier",
+                      frontier_eq_cursor(pdb));
+            {
+                int32_t fr = -1; bool fnd = false;
+                (void)coins_kv_get_applied_height(pdb, &fr, &fnd);
+                CAF_CHECK("short disconnect: frontier returns to L tip+1",
+                          fnd && fr == L.n);
+            }
+
             /* (3) REORG REWIND: install heavier W on active_chain, extend
              * proof_validate. L and W share only genesis (h0, tag 0x00) and
              * diverge at h1, so the fork point is 0 and the unwind pulls the
@@ -458,12 +512,9 @@ int test_coins_applied_frontier(void)
              *   2. re-introducing a MONOTONIC FLOOR in the setter → the floor
              *      blocks the plain-set decrease, leaving frontier at 4 while the
              *      cursor drops to 1 → frontier != cursor, frd != 1.
-             * (A strictly-shorter-winner sub-case cannot pin this in this
-             * harness: the stage-side reorg only
-             * fires when a competing block occupies the old tip height C-1, so a
-             * winner shorter than the applied tip never triggers the unwind; and
-             * these branches always fork at genesis. The unwind-alone snapshot is
-             * the robust decrease pin.) */
+             * The strictly-shorter operator-disconnect case is pinned above;
+             * this second snapshot retains coverage for a same-height branch
+             * replacement whose fork is genesis.) */
             int32_t pre_reorg_frontier = -1; bool pre_found = false;
             (void)coins_kv_get_applied_height(pdb, &pre_reorg_frontier,
                                               &pre_found);

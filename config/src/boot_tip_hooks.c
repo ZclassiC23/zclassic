@@ -14,18 +14,163 @@
  */
 
 #include "config/boot_internal.h"
+#include "validation/accept_to_mempool.h"
 #include "validation/process_block.h"
+#include "validation/process_block_invalidate.h"
+#include "storage/disk_block_io.h"
 #include "services/chain_state_service.h"
 #include "services/chain_evidence_authority_service.h"
 #include "services/chain_tip.h"          /* chain_set_active_tip, TIP_FROM_* (ZCL_TESTING paths) */
 #include "services/gap_fill_service.h"
 #include "validation/mirror_consensus.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
+#include "util/util.h"  /* GetDataDir(true): net-specific block body root */
+
+#include <stdlib.h>
 
 static void boot_gap_fill_kick(void *ctx)
 {
     (void)ctx;
     gap_fill_kick();
+}
+
+static bool boot_process_block_restore_mempool(
+    void *ctx,
+    struct block_index *first_disconnected,
+    struct block_index *old_active_tip,
+    enum process_block_mempool_segment_action action,
+    struct process_block_mempool_restore_result *out)
+{
+    struct boot_svc_ctx *svc = ctx;
+    if (out)
+        memset(out, 0, sizeof(*out));
+    if (!svc || !svc->mempool || !svc->coins_tip || !svc->state ||
+        !svc->params || !svc->datadir || !first_disconnected ||
+        !old_active_tip || !first_disconnected->phashBlock ||
+        old_active_tip->nHeight < first_disconnected->nHeight ||
+        (action != PROCESS_BLOCK_MEMPOOL_RESTORE_DISCONNECTED &&
+         action != PROCESS_BLOCK_MEMPOOL_REMOVE_RECONNECTED))
+        return false;
+
+    int depth = old_active_tip->nHeight - first_disconnected->nHeight + 1;
+    struct block_index **path = zcl_malloc(
+        (size_t)depth * sizeof(*path), "invalidate_mempool_path");
+    if (!path)
+        return false;
+
+    struct block_index *walk = old_active_tip;
+    for (int i = depth - 1; i >= 0; i--) {
+        if (!walk || walk->nHeight != first_disconnected->nHeight + i) {
+            free(path);
+            return false;
+        }
+        path[i] = walk;
+        walk = walk->pprev;
+    }
+    if (!path[0]->phashBlock ||
+        !uint256_eq(path[0]->phashBlock, first_disconnected->phashBlock)) {
+        free(path);
+        return false;
+    }
+
+    bool complete = true;
+    char net_datadir[2048] = {0};
+    GetDataDir(true, net_datadir, sizeof(net_datadir));
+    const char *body_datadir = net_datadir[0] ? net_datadir : svc->datadir;
+    for (int i = 0; i < depth; i++) {
+        /* chain[] may name a bodiless snapshot/header twin.  The block map is
+         * the durable body/status owner for this exact hash; resolve through
+         * it before pread, while retaining the active path only as the segment
+         * identity proof above. */
+        struct block_index *body_index = path[i]->phashBlock
+            ? block_map_find(&svc->state->map_block_index,
+                             path[i]->phashBlock)
+            : NULL;
+        if (!body_index)
+            body_index = path[i];
+        struct block blk;
+        block_init(&blk);
+        if (!read_block_from_disk_index_pread(
+                &blk, body_index, body_datadir)) {
+            LOG_WARN("validation",
+                     "%s: cannot read block h=%d for mempool reconciliation",
+                     action == PROCESS_BLOCK_MEMPOOL_RESTORE_DISCONNECTED
+                         ? "invalidate" : "reconsider",
+                     path[i]->nHeight);
+            block_free(&blk);
+            complete = false;
+            break;
+        }
+        if (out)
+            out->blocks_read++;
+
+        /* The reducer inverse changed these exact coins without passing
+         * through coins_view_cache::batch_write.  Drop stale cache entries
+         * before the ordinary admission gate proves inputs against coins_kv. */
+        for (size_t t = 0; t < blk.num_vtx; t++) {
+            struct transaction *tx = &blk.vtx[t];
+            (void)coins_view_cache_invalidate(svc->coins_tip, &tx->hash);
+            if (!transaction_is_coinbase(tx)) {
+                for (size_t v = 0; v < tx->num_vin; v++)
+                    (void)coins_view_cache_invalidate(
+                        svc->coins_tip, &tx->vin[v].prevout.hash);
+            }
+        }
+
+        if (action == PROCESS_BLOCK_MEMPOOL_REMOVE_RECONNECTED) {
+            for (size_t t = 0; t < blk.num_vtx; t++) {
+                struct transaction *tx = &blk.vtx[t];
+                if (transaction_is_coinbase(tx))
+                    continue;
+                if (out) {
+                    out->txs_attempted++;
+                    if (tx_mempool_exists(svc->mempool, &tx->hash))
+                        out->txs_removed++;
+                }
+            }
+            tx_mempool_remove_for_block(svc->mempool, blk.vtx, blk.num_vtx,
+                                         (unsigned int)path[i]->nHeight);
+            block_free(&blk);
+            continue;
+        }
+
+        for (size_t t = 0; t < blk.num_vtx; t++) {
+            struct transaction *tx = &blk.vtx[t];
+            if (transaction_is_coinbase(tx))
+                continue;
+            if (out)
+                out->txs_attempted++;
+            char detail[96] = {0};
+            enum mempool_accept_result ar = accept_to_mempool_detailed(
+                svc->mempool, svc->coins_tip, svc->state, svc->params, tx,
+                detail, sizeof(detail));
+            if (ar == MEMPOOL_ACCEPT_OK || ar == MEMPOOL_ACCEPT_DUPLICATE) {
+                if (out)
+                    out->txs_accepted++;
+                if (svc->connman) {
+                    connman_relay_transaction(svc->connman, &tx->hash);
+                    if (out)
+                        out->txs_relayed++;
+                }
+                continue;
+            }
+
+            char txid[65];
+            uint256_get_hex(&tx->hash, txid);
+            if (out)
+                out->txs_rejected++;
+            complete = false;
+            LOG_WARN("validation",
+                     "invalidate: disconnected tx mempool restore refused "
+                     "h=%d txid=%s result=%d detail=%s",
+                     path[i]->nHeight, txid, (int)ar,
+                     detail[0] ? detail : "none");
+        }
+        block_free(&blk);
+    }
+    free(path);
+    return complete;
 }
 
 static enum process_block_tip_publish_result
@@ -200,6 +345,8 @@ static enum process_block_tip_publish_result boot_process_block_clear_tip(
 void boot_register_process_block_hooks(struct boot_svc_ctx *svc)
 {
     process_block_set_gap_fill_kick(boot_gap_fill_kick, svc);
+    process_block_set_mempool_restore_hook(
+        boot_process_block_restore_mempool, svc);
     process_block_set_tip_publication_hooks(boot_process_block_commit_tip,
                                             boot_process_block_clear_tip,
                                             svc);

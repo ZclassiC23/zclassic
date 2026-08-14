@@ -404,11 +404,26 @@ static bool async_select_peer(
         VCS_ZCODE_WORK_NODE_MAX_PEERS];
     size_t count = vcs_zcode_work_node_capable_peers(
         work, now, peers, capabilities, VCS_ZCODE_WORK_NODE_MAX_PEERS);
-    for (size_t pass = 0; pass < 2; pass++) {
+    size_t passes = retry ? 2 : 1;
+    for (size_t pass = 0; pass < passes; pass++) {
         for (size_t i = 0; i < count; i++) {
-            if ((pass == 0 && retry && peers[i] == event->peer_id) ||
-                !async_capability_allows(&capabilities[i], job, work_kind))
+            /* An expired request must move to a different physical worker:
+             * the prior worker may have finished and lost its RESULT, while
+             * its in-memory track intentionally retains no result bytes to
+             * replay. */
+            if (retry && peers[i] == event->peer_id)
                 continue;
+            /* Prefer signed free headroom.  On the second pass, a different
+             * peer may be probed despite stale signed zero headroom.  This
+             * grants no work authority: the receiving worker independently
+             * admits, returns BUSY, or refuses the exact request. */
+            uint16_t headroom = capabilities[i].queue_headroom;
+            if (retry && pass == 1 && headroom == 0)
+                capabilities[i].queue_headroom = 1;
+            bool eligible = async_capability_allows(
+                &capabilities[i], job, work_kind);
+            capabilities[i].queue_headroom = headroom;
+            if (!eligible) continue;
             *peer_out = peers[i];
             *capability_out = capabilities[i];
             return true;

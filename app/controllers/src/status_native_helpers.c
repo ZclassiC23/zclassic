@@ -335,7 +335,11 @@ void status_peer_survey(const struct json_value *peers,
             if (state_value && state_value->type == JSON_STR) {
                 const char *state = json_get_str(state_value);
                 if (strcmp(state, "handshake_complete") == 0 ||
-                    strcmp(state, "active") == 0)
+                    strcmp(state, "active") == 0 ||
+                    strcmp(state, "syncing_headers") == 0 ||
+                    strcmp(state, "syncing_blocks") == 0 ||
+                    strcmp(state, "snapshot_serving") == 0 ||
+                    strcmp(state, "snapshot_receiving") == 0)
                     s.ready++;
             } else {
                 s.ready_known = false;

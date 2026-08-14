@@ -49,7 +49,7 @@ RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 MKT_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
 # Fresh block vs the siblings (market: 395xx quads + 20030/20031 + 39999,
-# onion: 396xx quads + 20040/20041 + 39998, dht: 39211-39273, science:
+# onion: 396xx quads + 20040/20041 + 39998, dht: 29211-29273, science:
 # 39111-39123, p2p 20022-20027 + 18033) and vs this host's
 # zclassic23-live instance (39311/39312).
 A_PORT=20050; A_RPC=39711; A_FS=39712; A_HTTPS=39713

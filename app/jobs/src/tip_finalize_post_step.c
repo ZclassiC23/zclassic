@@ -178,6 +178,71 @@ static void sha3_window_tripwire_at_boundary(const struct block_index *pindex_ne
         wi, memcmp(digest, g_sha3_windows[wi].hash, sizeof(digest)) == 0);
 }
 
+/* Publish the reducer-authored coins generation and remove transactions that
+ * the connected block confirmed. Both operations are idempotent, and both
+ * must run even when another authority path published this exact tip before
+ * tip_finalize reached its durable row. Keep them under cs_main as one seam:
+ * accept_to_mempool_detailed uses the same lock through validation and insert,
+ * so a transaction cannot be admitted between the cache invalidation and the
+ * confirmed-transaction removal pass. */
+static void tip_finalize_reconcile_block(struct block_index *pindex_new,
+                                         const struct block *blk)
+{
+    struct main_state *main_state = app_runtime_main_state();
+    struct coins_view_cache *coins_tip = app_runtime_coins_tip();
+    struct tx_mempool *mempool = app_runtime_mempool();
+    if (main_state)
+        zcl_mutex_lock(&main_state->cs_main);
+    if (coins_tip) {
+        for (size_t i = 0; i < blk->num_vtx; i++) {
+            const struct transaction *tx = &blk->vtx[i];
+            (void)coins_view_cache_invalidate(coins_tip, &tx->hash);
+            if (!transaction_is_coinbase(tx)) {
+                for (size_t j = 0; j < tx->num_vin; j++)
+                    (void)coins_view_cache_invalidate(
+                        coins_tip, &tx->vin[j].prevout.hash);
+            }
+        }
+    }
+    if (mempool)
+        tx_mempool_remove_for_block(mempool,
+            blk->vtx, blk->num_vtx,
+            (unsigned int)pindex_new->nHeight);
+    if (main_state)
+        zcl_mutex_unlock(&main_state->cs_main);
+}
+
+bool tip_finalize_run_mempool_reconcile(struct block_index *pindex_new)
+{
+    if (!pindex_new) {
+        LOG_WARN("tip_finalize", "mempool reconcile refused NULL block index");
+        return false;
+    }
+
+    char datadir[2048];
+    GetDataDir(true, datadir, sizeof(datadir));
+
+    struct block owned;
+    struct block_parse_handle handle;
+    const struct block *blk = NULL;
+    bool borrowed = false;
+    if (!stage_acquire_block_view(&owned, &handle, &blk, &borrowed,
+                                  pindex_new, pindex_new->nHeight, datadir,
+                                  NULL, NULL)) {
+        LOG_WARN("tip_finalize",
+                 "mempool reconcile skipped h=%d have_data=%d: "
+                 "body unreadable; confirmed transactions remain deferred",
+                 pindex_new->nHeight,
+                 (pindex_new->nStatus & BLOCK_HAVE_DATA) ? 1 : 0);
+        block_free(&owned);
+        return false;
+    }
+
+    tip_finalize_reconcile_block(pindex_new, blk);
+    stage_release_block_view(&owned, &handle, borrowed);
+    return true;
+}
+
 void tip_finalize_run_post_finalize(struct block_index *pindex_new)
 {
     if (!pindex_new)
@@ -402,30 +467,7 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
      * live and newly-created txids can remain absent. Invalidate exactly the
      * keys this finalized block changed; the next read resolves through the
      * canonical coins_kv path. */
-    {
-        struct main_state *main_state = app_runtime_main_state();
-        struct coins_view_cache *coins_tip = app_runtime_coins_tip();
-        struct tx_mempool *mempool = app_runtime_mempool();
-        if (main_state)
-            zcl_mutex_lock(&main_state->cs_main);
-        if (coins_tip) {
-            for (size_t i = 0; i < blk->num_vtx; i++) {
-                const struct transaction *tx = &blk->vtx[i];
-                (void)coins_view_cache_invalidate(coins_tip, &tx->hash);
-                if (!transaction_is_coinbase(tx)) {
-                    for (size_t j = 0; j < tx->num_vin; j++)
-                        (void)coins_view_cache_invalidate(
-                            coins_tip, &tx->vin[j].prevout.hash);
-                }
-            }
-        }
-        if (mempool)
-            tx_mempool_remove_for_block(mempool,
-                blk->vtx, blk->num_vtx,
-                (unsigned int)pindex_new->nHeight);
-        if (main_state)
-            zcl_mutex_unlock(&main_state->cs_main);
-    }
+    tip_finalize_reconcile_block(pindex_new, blk);
 
     /* Projection-deferred DIAGNOSTIC.
      * The reducer consensus path does NOT write the derived block/tx SQLite

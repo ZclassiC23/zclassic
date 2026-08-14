@@ -2154,7 +2154,7 @@ t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
 	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
 
-.PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling sovereign-source-roundtrip
+.PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
 
@@ -2199,6 +2199,15 @@ zcode-async-proof-acceptance: zclassic23 zcl-rpc
 zcode-async-proof-scaling: zclassic23 zcl-rpc
 	@DHT_PACKAGEHOST=1 DHT_BUILDWORKERS=1 DHT_KEEP=1 \
 	  DHT_AFTER_SPARSE_HOOK="$(CURDIR)/tools/dev/zcode_async_proof_scaling_hook.sh" \
+	  bash tools/dev/zcode_dht_acceptance.sh
+
+# Permanent physical adversarial campaign for the repaired mempool/coins/
+# finalization ownership boundary.  It composes the existing authenticated
+# full-node harness and its confined proof workers; no parallel lifecycle,
+# transport, CAS, or acceptance framework is introduced.
+public-node-coin-generation-matrix: zclassic23 zcl-rpc
+	@DHT_PACKAGEHOST=1 DHT_BUILDWORKERS=1 DHT_KEEP=1 \
+	  DHT_AFTER_SPARSE_HOOK="$(CURDIR)/tools/dev/public_node_coin_generation_matrix_hook.sh" \
 	  bash tools/dev/zcode_dht_acceptance.sh
 
 # Hermetic P2P source-publication proof. The exact group emits one canonical

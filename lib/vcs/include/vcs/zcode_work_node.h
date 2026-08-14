@@ -80,6 +80,11 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_cancel(
 enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_result(
     struct vcs_zcode_work_node *node, uint64_t peer,
     const struct vcs_zcode_work_result_v1 *result);
+/* RESULT has no transport acknowledgement. Retain the exact verified frame
+ * and requeue it at a bounded interval until the request's signed deadline;
+ * the requester accepts an exact duplicate idempotently. */
+size_t vcs_zcode_work_node_requeue_results(
+    struct vcs_zcode_work_node *node, int64_t now);
 enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_progress(
     struct vcs_zcode_work_node *node, uint64_t peer,
     const struct vcs_zcode_work_progress_v1 *progress);

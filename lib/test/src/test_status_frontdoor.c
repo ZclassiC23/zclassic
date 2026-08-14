@@ -18,6 +18,7 @@
  * hang forever: the holder auto-releases at its ceiling). */
 
 #include "controllers/status_frontdoor.h"
+#include "controllers/status_native_helpers.h"
 #include "jobs/reducer_frontier.h"
 #include "storage/progress_store.h"
 
@@ -193,6 +194,46 @@ static int test_completes_under_held_lock(void)
     return failures;
 }
 
+static int test_peer_survey_counts_sync_states_as_ready(void)
+{
+    static const char *const operational[] = {
+        "handshake_complete", "active", "syncing_headers",
+        "syncing_blocks", "snapshot_serving", "snapshot_receiving",
+    };
+    static const char *const terminal[] = {
+        "connected", "stale", "disconnecting", "banned",
+    };
+    struct json_value peers = {0};
+    struct peer_survey survey;
+
+    printf("status_frontdoor: peer survey keeps sync states relay-ready... ");
+    json_set_array(&peers);
+    for (size_t i = 0; i < sizeof(operational) / sizeof(operational[0]); i++) {
+        struct json_value peer = {0};
+        json_set_object(&peer);
+        json_push_kv_str(&peer, "state", operational[i]);
+        json_push_back(&peers, &peer);
+        json_free(&peer);
+    }
+    for (size_t i = 0; i < sizeof(terminal) / sizeof(terminal[0]); i++) {
+        struct json_value peer = {0};
+        json_set_object(&peer);
+        json_push_kv_str(&peer, "state", terminal[i]);
+        json_push_back(&peers, &peer);
+        json_free(&peer);
+    }
+
+    status_peer_survey(&peers, &survey);
+    json_free(&peers);
+    if (!survey.ready_known || survey.ready != 6) {
+        printf("FAIL (ready_known=%d ready=%d want=6)\n",
+               survey.ready_known, survey.ready);
+        return 1;
+    }
+    printf("OK\n");
+    return 0;
+}
+
 int test_status_frontdoor(void);
 int test_status_frontdoor(void)
 {
@@ -200,5 +241,6 @@ int test_status_frontdoor(void)
     int failures = 0;
     failures += test_basic_shape();
     failures += test_completes_under_held_lock();
+    failures += test_peer_survey_counts_sync_states_as_ready();
     return failures;
 }

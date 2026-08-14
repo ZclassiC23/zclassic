@@ -1496,6 +1496,7 @@ static int test_zd_work_node_duplicate_sessions(void)
             &request, requester_secret, requester_key));
         ASSERT_EQ(vcs_zcode_work_node_submit(requester, 11, &request, 1000),
                   VCS_ZCODE_WORK_NODE_OK);
+        struct vcs_zcode_work_request_v1 retry = request;
         struct vcs_zcode_work_capability_v1 effective;
         ASSERT(vcs_zcode_work_node_peer_capability(
             requester, 12, 1000, &effective));
@@ -1514,6 +1515,31 @@ static int test_zd_work_node_duplicate_sessions(void)
         ASSERT(vcs_zcode_work_node_peer_capability(
             requester, 12, 1100, &effective));
         ASSERT_EQ(effective.queue_headroom, 1);
+
+        /* A lost result and capacity-refresh frame leave the alternate
+         * worker's last signed headroom at zero.  Once the original exact
+         * lease expires, the requester may transmit that same immutable
+         * binding to the alternate peer; the worker still owns admission. */
+        capability.queue_headroom = 0;
+        capability.expires_unix = 2100;
+        ASSERT(vcs_zcode_work_capability_seal(
+            &capability, worker_secret, worker_key));
+        ASSERT(vcs_zcode_work_node_set_local_capability(worker, &capability));
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            worker, 22, &peer, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 12, frame, frame_len, 1100),
+            VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_peer_capability(
+            requester, 12, 1100, &effective));
+        ASSERT_EQ(effective.queue_headroom, 0);
+        retry.deadline_unix = 1200;
+        ASSERT(vcs_zcode_work_request_seal(
+            &retry, requester_secret, requester_key));
+        ASSERT_EQ(vcs_zcode_work_node_submit(requester, 12, &retry, 1100),
+                  VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            requester, 12, &peer, frame, &frame_len));
         vcs_zcode_work_node_free(requester);
         vcs_zcode_work_node_free(worker);
         PASS();
@@ -1881,11 +1907,22 @@ static int test_zd_work_node(void)
             requester, 11, frame, frame_len, 1001), VCS_ZCODE_WORK_NODE_OK);
         ASSERT_EQ(vcs_zcode_work_node_handle_frame(
             requester, 11, frame, frame_len, 1001),
-                  VCS_ZCODE_WORK_NODE_REPLAY);
+                  VCS_ZCODE_WORK_NODE_OK);
         struct vcs_zcode_work_result_v1 accepted;
         ASSERT(vcs_zcode_work_node_next_result(
             requester, &peer_out, &accepted));
         ASSERT(vcs_zcode_work_result_verify(&request, &accepted, worker_key));
+        ASSERT(!vcs_zcode_work_node_next_result(
+            requester, &peer_out, &accepted));
+        ASSERT_EQ(vcs_zcode_work_node_requeue_results(worker, 1001), 0);
+        ASSERT_EQ(vcs_zcode_work_node_requeue_results(worker, 1005), 0);
+        ASSERT_EQ(vcs_zcode_work_node_requeue_results(worker, 1006), 1);
+        ASSERT(vcs_zcode_work_node_next_outbound(
+            worker, 22, &peer_out, frame, &frame_len));
+        ASSERT_EQ(vcs_zcode_work_node_handle_frame(
+            requester, 11, frame, frame_len, 1006), VCS_ZCODE_WORK_NODE_OK);
+        ASSERT(!vcs_zcode_work_node_next_result(
+            requester, &peer_out, &accepted));
 
         request.request_id = 701;
         ASSERT(vcs_zcode_work_request_seal(
@@ -2100,7 +2137,7 @@ static int test_zd_work_node_three(void)
         ASSERT_EQ(vcs_zcode_work_node_handle_frame(
             a, 12, frame, frame_len, 1101), VCS_ZCODE_WORK_NODE_OK);
         ASSERT_EQ(vcs_zcode_work_node_handle_frame(
-            a, 12, frame, frame_len, 1101), VCS_ZCODE_WORK_NODE_REPLAY);
+            a, 12, frame, frame_len, 1101), VCS_ZCODE_WORK_NODE_OK);
         struct vcs_zcode_work_result_v1 accepted;
         ASSERT(vcs_zcode_work_node_next_result(a, &peer, &accepted));
         ASSERT(vcs_zcode_work_result_verify(&c_request, &accepted, c_key));

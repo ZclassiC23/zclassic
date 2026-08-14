@@ -884,9 +884,9 @@ static struct block_index *headers_start_from_locator(
             if (!found || !found->phashBlock)
                 continue;
 
-            if (active_chain_contains(chain, found) ||
-                uint256_eq(found->phashBlock,
-                           &params->consensus.hashGenesisBlock)) {
+            struct block_index *active = active_chain_at(chain, found->nHeight);
+            if ((active && active->phashBlock && uint256_eq(active->phashBlock, found->phashBlock)) ||
+                uint256_eq(found->phashBlock, &params->consensus.hashGenesisBlock)) {
                 pindex = found;
                 break;
             }

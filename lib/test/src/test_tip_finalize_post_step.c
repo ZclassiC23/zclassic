@@ -14,10 +14,12 @@
  *   5. MMR append                       — asserted (num_leaves + 1)
  *   6. MMB append                       — asserted (num_leaves + 1)
  *
- * The missing-body branch used to skip ALL six effects silently; it now
- * logs a WARN. The negative cases pin the skip behaviour: no side effect
- * may run when the body is absent (HAVE_DATA clear) or unreadable
- * (HAVE_DATA set, file missing). */
+ * The mempool-only entry point pins the idempotent authority-race repair: it
+ * removes confirmed transactions without repeating wallet/MMR/MMB effects.
+ * The missing-body branch used to skip ALL six effects silently; it now logs
+ * a WARN. The negative cases pin the skip behaviour: no side effect may run
+ * when the body is absent (HAVE_DATA clear) or unreadable (HAVE_DATA set,
+ * file missing). */
 
 #include "test/test_core.h"
 #include "util/util.h"
@@ -38,6 +40,7 @@
 /* Internal to app/jobs/src (tip_finalize_post_step.h is not on the
  * include path by design); declare the entry point directly. */
 extern void tip_finalize_run_post_finalize(struct block_index *pindex_new);
+extern bool tip_finalize_run_mempool_reconcile(struct block_index *pindex_new);
 
 static uint64_t tp_mmr_leaves(void)
 {
@@ -225,6 +228,27 @@ int test_tip_finalize_post_step(void)
              w->best_block_height == 1);
     TP_CHECK("MMR: one leaf appended", tp_mmr_leaves() == mmr0 + 1);
     TP_CHECK("MMB: one leaf appended", tp_mmb_leaves() == mmb0 + 1);
+
+    /* Another authority path may publish this same tip before the reducer's
+     * durable row. The repair must remove confirmed transactions without
+     * replaying non-idempotent post-finalize effects. */
+    w->sapling_notes[0].spent = false;
+    w->best_block_height = 0;
+    TP_CHECK("re-arm mempool for authority-race reconcile",
+             tp_pool_add(&blk.vtx[1]));
+    mmr0 = tp_mmr_leaves();
+    mmb0 = tp_mmb_leaves();
+    TP_CHECK("mempool-only: body reconcile succeeded",
+             tip_finalize_run_mempool_reconcile(&bi));
+    TP_CHECK("mempool-only: confirmed tx removed",
+             !tx_mempool_exists(&g_tp_pool, &blk.vtx[1].hash));
+    TP_CHECK("mempool-only: note remains unspent",
+             w->sapling_notes[0].spent == false);
+    TP_CHECK("mempool-only: wallet height unchanged",
+             w->best_block_height == 0);
+    TP_CHECK("mempool-only: MMR unchanged", tp_mmr_leaves() == mmr0);
+    TP_CHECK("mempool-only: MMB unchanged", tp_mmb_leaves() == mmb0);
+    w->best_block_height = 1;
 
     /* ── Negative: HAVE_DATA absent → diagnosed skip, zero effects ── */
     w->sapling_notes[0].spent = false;

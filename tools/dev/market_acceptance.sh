@@ -25,7 +25,7 @@ RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 
 MKT_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
-# Fresh block vs the siblings (dht: 39211-39273, science: 39111-39123,
+# Fresh block vs the siblings (dht: 29211-29273, science: 39111-39123,
 # p2p 20022-20027 + 18033) and vs this host's zclassic23-live instance,
 # which already owns 39311/39312 — the refuse-set check caught it.
 # P2P reconnects pass the production reachable-port policy only for

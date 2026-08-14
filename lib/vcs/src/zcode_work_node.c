@@ -31,7 +31,10 @@ struct work_track {
     uint16_t worker_slot;
     uint64_t lease_generation;
     int64_t worker_capability_expires;
+    int64_t result_last_queued;
+    bool has_result;
     struct vcs_zcode_work_request_v1 request;
+    struct vcs_zcode_work_result_v1 result;
 };
 
 struct work_slot {
@@ -513,6 +516,38 @@ static struct work_track *work_add_track(struct vcs_zcode_work_node *node)
     return NULL;
 }
 
+static bool work_same_result(const struct vcs_zcode_work_result_v1 *a,
+                             const struct vcs_zcode_work_result_v1 *b)
+{
+    struct vcs_zcode_work_swarm_message ma = {
+        .type = VCS_ZCODE_WORK_SWARM_RESULT, .body.result = *a,
+    };
+    struct vcs_zcode_work_swarm_message mb = {
+        .type = VCS_ZCODE_WORK_SWARM_RESULT, .body.result = *b,
+    };
+    uint8_t wa[VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES];
+    uint8_t wb[VCS_ZCODE_WORK_SWARM_MAX_WIRE_BYTES];
+    size_t la = 0, lb = 0;
+    return vcs_zcode_work_swarm_serialize(&ma, wa, sizeof(wa), &la) &&
+        vcs_zcode_work_swarm_serialize(&mb, wb, sizeof(wb), &lb) &&
+        la == lb && memcmp(wa, wb, la) == 0;
+}
+
+static bool work_has_expired_outbound_binding(
+    const struct vcs_zcode_work_node *node,
+    const struct vcs_zcode_work_request_v1 *request)
+{
+    for (size_t i = 0; i < sizeof(node->tracks) / sizeof(node->tracks[0]); i++) {
+        const struct work_track *track = &node->tracks[i];
+        if (track->used && !track->inbound && track->expired &&
+            !track->cancelled &&
+            track->request.request_id == request->request_id &&
+            work_same_action_binding(&track->request, request))
+            return true;
+    }
+    return false;
+}
+
 static void work_remove_queued_action(struct vcs_zcode_work_node *node,
                                       const uint8_t action_root[32])
 {
@@ -550,10 +585,23 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_submit(
         existing->admission_disposition == VCS_ZCODE_WORK_ADMISSION_BUSY &&
         node->peers[peer_at].capability.expires_unix >
             existing->worker_capability_expires;
+    bool expired_cross_peer_retry = !existing && peer_at >= 0 &&
+        work_has_expired_outbound_binding(node, request);
     if (result == VCS_ZCODE_WORK_NODE_OK && !existing) {
-        struct vcs_zcode_work_capability_v1 effective =
-            work_effective_capability(node, peer_at);
-        if (!work_capability_allows(&effective, request, now))
+        bool allowed;
+        if (expired_cross_peer_retry) {
+            /* The old peer's signed lease is over.  A different peer still
+             * enforces its own live capacity on receipt, so stale signed
+             * zero headroom must not prevent sending this exact immutable
+             * retry forever.  All other signed limits remain mandatory. */
+            allowed = work_capability_matches(
+                &node->peers[peer_at].capability, request, now);
+        } else {
+            struct vcs_zcode_work_capability_v1 effective =
+                work_effective_capability(node, peer_at);
+            allowed = work_capability_allows(&effective, request, now);
+        }
+        if (!allowed)
             result = VCS_ZCODE_WORK_NODE_CAPABILITY_MISMATCH;
     }
     else if (result == VCS_ZCODE_WORK_NODE_OK && capacity_retry) {
@@ -681,6 +729,9 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_result(
                 break;
             }
             recipient->finished = true;
+            recipient->has_result = true;
+            recipient->result = message.body.result;
+            recipient->result_last_queued = 0;
         }
         if (result == VCS_ZCODE_WORK_NODE_OK)
             memset(&node->slots[track->worker_slot], 0,
@@ -688,6 +739,41 @@ enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_result(
     }
     pthread_mutex_unlock(&node->lock);
     return result;
+}
+
+size_t vcs_zcode_work_node_requeue_results(
+    struct vcs_zcode_work_node *node, int64_t now)
+{
+    if (!node || now < 0) return 0;
+    pthread_mutex_lock(&node->lock);
+    size_t queued = 0;
+    for (size_t i = 0;
+         i < sizeof(node->tracks) / sizeof(node->tracks[0]); i++) {
+        struct work_track *track = &node->tracks[i];
+        if (!track->used || !track->inbound || !track->finished ||
+            !track->has_result || track->cancelled ||
+            now >= track->request.deadline_unix)
+            continue;
+        /* The initial publish already queued one frame. Stamp it without
+         * creating an immediate duplicate, then retry every five seconds.
+         * A missing session does not consume the retry interval. */
+        if (track->result_last_queued == 0) {
+            track->result_last_queued = now;
+            continue;
+        }
+        if (now - track->result_last_queued < 5 ||
+            work_peer_slot(node, track->peer) < 0)
+            continue;
+        struct vcs_zcode_work_swarm_message message = {
+            .type = VCS_ZCODE_WORK_SWARM_RESULT,
+            .body.result = track->result,
+        };
+        if (!work_queue_frame(node, track->peer, &message)) continue;
+        track->result_last_queued = now;
+        queued++;
+    }
+    pthread_mutex_unlock(&node->lock);
+    return queued;
 }
 
 enum vcs_zcode_work_node_result vcs_zcode_work_node_publish_progress(
@@ -892,8 +978,15 @@ static enum vcs_zcode_work_node_result work_handle_result(
     if (!track) return VCS_ZCODE_WORK_NODE_UNREQUESTED;
     if (track->expired || now >= track->request.deadline_unix)
         return VCS_ZCODE_WORK_NODE_LEASE_EXPIRED;
-    if (track->finished || track->cancelled)
+    if (track->finished || track->cancelled) {
+        if (track->finished && !track->cancelled && track->has_result &&
+            vcs_zcode_work_result_verify(
+                &track->request, result_row,
+                node->peers[peer_at].capability.signer_pubkey) &&
+            work_same_result(&track->result, result_row))
+            return VCS_ZCODE_WORK_NODE_OK;
         return VCS_ZCODE_WORK_NODE_REPLAY;
+    }
     if (!node->peers[peer_at].has_capability ||
         now >= node->peers[peer_at].capability.expires_unix)
         return VCS_ZCODE_WORK_NODE_CAPABILITY_STALE;
@@ -909,6 +1002,8 @@ static enum vcs_zcode_work_node_result work_handle_result(
     node->results[slot].result = *result_row;
     node->result_count++;
     track->finished = true;
+    track->has_result = true;
+    track->result = *result_row;
     return VCS_ZCODE_WORK_NODE_OK;
 }
 

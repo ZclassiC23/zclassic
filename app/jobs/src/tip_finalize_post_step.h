@@ -30,6 +30,13 @@ struct block_index;
  * public app_runtime_* accessors and individually NULL-guarded. */
 void tip_finalize_run_post_finalize(struct block_index *pindex_new);
 
+/* Reconcile the connected block with the live coins cache and mempool only.
+ * This is the mandatory idempotent subset of post-finalize work: callers use
+ * it when another authority path has already published the same tip, so the
+ * one-time wallet/MMR/MMB effects must not be repeated. The block body is
+ * acquired and released under the same rules as the full post step. */
+bool tip_finalize_run_mempool_reconcile(struct block_index *pindex_new);
+
 /* ── SHA3 golden-window corroboration tripwire (OBSERVE-ONLY) ─────────────
  *
  * At every 1000-block window boundary the post-finalize step recomputes the

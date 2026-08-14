@@ -501,13 +501,25 @@ int test_getheaders_serve_pow_dedup(void)
         msg_processor_init(&mp, &ms, NULL, NULL, cp, dir, &g_pd_nm, NULL);
 
         if (seeded) {
-            /* Genesis-equivalent entry 0 is the validated active tip;
-             * 1..3 are the header-only zone the serve path walks. */
+            /* A same-hash twin of genesis-equivalent entry 0 is the validated
+             * active tip, while the block map retains bi[0].  This is the
+             * restart shape where locator lookup and chain[] own different
+             * block_index objects for the same block.  Entries 1..3 are the
+             * header-only zone the serve path must still walk. */
             bi[0]->nStatus |= BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
             bi[0]->nTx = 1;
             bi[0]->nChainTx = 1;
-            PD_CHECK("B: active tip parked at entry 0",
-                     active_chain_move_window_tip(&ms.chain_active, bi[0]));
+            struct block_index active_twin;
+            block_index_init(&active_twin);
+            active_twin.phashBlock = bi[0]->phashBlock;
+            active_twin.nHeight = bi[0]->nHeight;
+            active_twin.nStatus = bi[0]->nStatus;
+            active_twin.nTx = bi[0]->nTx;
+            active_twin.nChainTx = bi[0]->nChainTx;
+            active_twin.nChainWork = bi[0]->nChainWork;
+            PD_CHECK("B: active tip parked at same-hash entry-0 twin",
+                     active_chain_move_window_tip(&ms.chain_active,
+                                                  &active_twin));
             ms.pindex_best_header = bi[3];
 
             struct p2p_node node;

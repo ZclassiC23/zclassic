@@ -338,6 +338,15 @@ zaps_run_parallel() {
     for slot in "$@"; do zaps_finish "$slot"; done
 }
 
+# The public-node coin-generation matrix composes these measurement and
+# immutable-action helpers with the same DHT/full-node owner.  Returning here
+# keeps one implementation of resource snapshots, proof admission, and
+# receipt completion without making the scaling campaign a second lifecycle
+# authority.
+if [ "${ZAPS_HELPERS_ONLY:-0}" = 1 ]; then
+    return 0
+fi
+
 # Collapse the discovery fixture to three equal full nodes.  The processes,
 # flags, and topology are identical; only immutable task ownership varies.
 ZAP_A="$ORIGIN"; ZAP_B="$NEXT"; ZAP_C="$TARGET"

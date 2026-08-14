@@ -1654,6 +1654,53 @@ int test_tip_finalize_stage(void)
     }
 
     {
+        /* INVALIDATED SUCCESSOR HOLD.  Reproduce the physical-node race where
+         * chain[] has already retreated below block[2], but the durable
+         * finalized-hash table can still resolve block[2]'s FAILED map owner.
+         * The generous best-header scan must not re-expose it, and the
+         * tip-finalize self-heal must not use it as the lookahead witness.
+         * Doing either would run post-finalize for the invalidated block,
+         * remove its resurrected transactions, and oscillate on every tick. */
+        char dir[256]; struct main_state ms; struct synth_chain_tf sc;
+        TF_CHECK("failed_successor: setup",
+                 tf_setup("failed_successor", 3, TF_FAIL_NONE, -1,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        TF_CHECK("failed_successor: finalize clean height 0",
+                 tip_finalize_stage_drain(1) == 1 &&
+                 tip_finalize_stage_cursor() == 1);
+        sc.blocks[2].nStatus |= BLOCK_FAILED_VALID;
+        ms.pindex_best_header = &sc.blocks[3];
+        TF_CHECK("failed_successor: retreat active window below failed block",
+                 active_chain_move_window_tip(&ms.chain_active,
+                                              &sc.blocks[1]));
+        TF_CHECK("failed_successor: durable-hash candidate holds",
+                 tip_finalize_stage_step_once() == JOB_IDLE);
+        TF_CHECK("failed_successor: cursor remains before invalidated successor",
+                 tip_finalize_stage_cursor() == 1);
+        TF_CHECK("failed_successor: failed block not re-exposed in chain window",
+                 active_chain_at(&ms.chain_active, 2) == NULL);
+        TF_CHECK("failed_successor: successor_pending counter fired",
+                 tip_finalize_stage_successor_pending_total() == 1);
+        {
+            int ok = -1, depth = -1; int64_t utxos = -1; char status[32];
+            TF_CHECK("failed_successor: no finalized junk row at held height",
+                     log_row_at(progress_store_db(), 1, &ok, status,
+                                sizeof(status), &depth, &utxos) == false);
+            struct json_value v;
+            json_init(&v);
+            char buf[1536];
+            bool dumped = tip_finalize_dump_state_json(&v, NULL);
+            size_t n = dumped ? json_write(&v, buf, sizeof(buf)) : 0;
+            TF_CHECK("failed_successor: dump names block_failed",
+                     n > 0 && n < sizeof(buf) &&
+                     strstr(buf, "\"last_precondition_reason\":"
+                                 "\"block_failed\"") != NULL);
+            json_free(&v);
+        }
+        tf_teardown(dir, &ms, &sc);
+    }
+
+    {
         /* HEADER-ONLY CANONICAL-SUCCESSOR FINALIZE (deadlock-cure step 3).
          * The precondition hold above (best_header unset) proves tip_finalize
          * HOLDS at height 1 when the lookahead successor block[2] is body-

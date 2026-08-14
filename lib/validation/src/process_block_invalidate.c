@@ -36,6 +36,7 @@
 #include "process_block_internal.h"
 
 #include <stddef.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
@@ -65,6 +66,36 @@ const char *reconsider_result_name(enum reconsider_result r)
     return "?";
 }
 
+static pthread_mutex_t g_mempool_restore_lock = PTHREAD_MUTEX_INITIALIZER;
+static process_block_mempool_restore_fn g_mempool_restore_hook;
+static void *g_mempool_restore_ctx;
+
+void process_block_set_mempool_restore_hook(
+    process_block_mempool_restore_fn fn, void *ctx)
+{
+    pthread_mutex_lock(&g_mempool_restore_lock);
+    g_mempool_restore_hook = fn;
+    g_mempool_restore_ctx = ctx;
+    pthread_mutex_unlock(&g_mempool_restore_lock);
+}
+
+static bool process_block_reconcile_mempool_segment(
+    struct block_index *first,
+    struct block_index *last,
+    enum process_block_mempool_segment_action action,
+    struct process_block_mempool_restore_result *out)
+{
+    process_block_mempool_restore_fn fn;
+    void *ctx;
+    pthread_mutex_lock(&g_mempool_restore_lock);
+    fn = g_mempool_restore_hook;
+    ctx = g_mempool_restore_ctx;
+    pthread_mutex_unlock(&g_mempool_restore_lock);
+    if (!fn)
+        return true;
+    return fn(ctx, first, last, action, out);
+}
+
 /* Persist a single pindex's current nStatus to the event-sourced projection.
  * Tests without a wired runtime keep their historical in-memory-only seam. */
 static bool invalidate_persist_pindex(const struct block_index *p)
@@ -77,6 +108,65 @@ static bool invalidate_persist_pindex(const struct block_index *p)
 }
 
 /* ── Pure core ───────────────────────────────────────────────────── */
+
+static bool invalidate_same_block(const struct block_index *a,
+                                  const struct block_index *b)
+{
+    return a && b && a->nHeight == b->nHeight && a->phashBlock &&
+           b->phashBlock && uint256_eq(a->phashBlock, b->phashBlock);
+}
+
+/* Snapshot/header ingestion may retain more than one block_index object for
+ * the same consensus block.  block_map_find names the durable status owner,
+ * while chain[] and pindex_best_header ancestry can still name live twins.
+ * Keep their in-process FAILED view coherent so the have-data window cannot
+ * re-expose an invalidated hash through an unmarked twin immediately after an
+ * unwind.  Only the map owner is persisted; boot derives the live objects from
+ * that durable status again.  These extra identities deliberately do not
+ * affect the public marked/cleared counts, which count durable map entries. */
+static void invalidate_mark_live_twins(struct main_state *ms,
+                                       struct block_index *target)
+{
+    if (!ms || !target)
+        return;
+
+    struct block_index *active =
+        active_chain_at(&ms->chain_active, target->nHeight);
+    if (active != target && invalidate_same_block(active, target))
+        active->nStatus |= BLOCK_FAILED_VALID;
+
+    struct block_index *header_twin =
+        ms->pindex_best_header &&
+                ms->pindex_best_header->nHeight >= target->nHeight
+            ? block_index_get_ancestor(ms->pindex_best_header,
+                                       target->nHeight)
+            : NULL;
+    if (header_twin != target && header_twin != active &&
+        invalidate_same_block(header_twin, target))
+        header_twin->nStatus |= BLOCK_FAILED_VALID;
+}
+
+static void invalidate_clear_live_twins(struct main_state *ms,
+                                        struct block_index *target)
+{
+    if (!ms || !target)
+        return;
+
+    struct block_index *active =
+        active_chain_at(&ms->chain_active, target->nHeight);
+    if (active != target && invalidate_same_block(active, target))
+        active->nStatus &= ~(unsigned)BLOCK_FAILED_ANY_MASK;
+
+    struct block_index *header_twin =
+        ms->pindex_best_header &&
+                ms->pindex_best_header->nHeight >= target->nHeight
+            ? block_index_get_ancestor(ms->pindex_best_header,
+                                       target->nHeight)
+            : NULL;
+    if (header_twin != target && header_twin != active &&
+        invalidate_same_block(header_twin, target))
+        header_twin->nStatus &= ~(unsigned)BLOCK_FAILED_ANY_MASK;
+}
 
 void process_block_mark_invalid(struct main_state *ms,
                                 struct block_index *target,
@@ -94,6 +184,7 @@ void process_block_mark_invalid(struct main_state *ms,
      * restores the block to fully-selectable without having to recompute
      * how far validation had previously progressed. */
     target->nStatus |= BLOCK_FAILED_VALID;
+    invalidate_mark_live_twins(ms, target);
 
     /* Propagate BLOCK_FAILED_CHILD to every descendant. Reuse the same
      * height-sorted single-pass walk the chain-advance failure path uses.
@@ -132,6 +223,7 @@ void process_block_clear_invalid(struct main_state *ms,
         target->nStatus &= ~(unsigned)BLOCK_FAILED_ANY_MASK;
         cleared++;
     }
+    invalidate_clear_live_twins(ms, target);
 
     /* Clear failure marks on every descendant of the target. A block is
      * a descendant if its pprev chain reaches target. We bound the walk
@@ -180,9 +272,17 @@ bool process_block_disconnect_to_parent(struct validation_state *state,
     (void)datadir;
     if (!ms || !target) return false;
 
-    /* If the target is not on the active chain there is nothing to roll
-     * back — the FAILED mark + activation kick handle a fork tip. */
-    if (!active_chain_contains(&ms->chain_active, target))
+    /* Block identity is its hash, not its block_index pointer. Snapshot and
+     * header-ingest paths may legitimately retain distinct block_index
+     * objects for the same block (the bde617a7e window-extension case). An
+     * operator invalidates the hash-addressed block, so compare the active
+     * slot by hash and retreat through the ACTIVE object's parent. Pointer
+     * identity here made invalidateblock report OK while leaving the failed
+     * active tip published. */
+    struct block_index *active =
+        active_chain_at(&ms->chain_active, target->nHeight);
+    if (!active || !active->phashBlock || !target->phashBlock ||
+        !uint256_eq(active->phashBlock, target->phashBlock))
         return true;
 
     /* The STAGE owns the coins.db / UTXO unwind. Drive the stage-side reorg
@@ -195,15 +295,13 @@ bool process_block_disconnect_to_parent(struct validation_state *state,
      * boundary emitting the inverse-delta events, deletes the stale
      * log/delta rows, and rewinds the stage cursors to the invalidated
      * height — the byte-exact stage analogue of the legacy undo restore. */
-    struct block_index *parent = target->pprev; /* != NULL: non-genesis */
+    struct block_index *parent = active->pprev; /* != NULL: non-genesis */
     if (!active_chain_move_window_tip(&ms->chain_active, parent)) {
         LOG_RETURN(false, "validation",
                    "invalidate: stage-unwind cursor move to parent "
                    "(h=%d) failed for target h=%d",
                    parent ? parent->nHeight : -1, target->nHeight);
     }
-    /* Drive the stage inverse-delta unwind to convergence. */
-    (void)reducer_kick(process_block_activation_controller());
     return true;
 }
 
@@ -238,6 +336,12 @@ enum invalidate_result process_block_invalidate(struct main_state *ms,
     char hex[65];
     uint256_get_hex(target->phashBlock ? target->phashBlock : hash, hex);
     int tip_h_before = active_chain_height(&ms->chain_active);
+    struct block_index *active_target =
+        active_chain_at(&ms->chain_active, target->nHeight);
+    bool target_was_active = invalidate_same_block(active_target, target);
+    struct block_index *old_active_tip = target_was_active
+        ? active_chain_at(&ms->chain_active, tip_h_before)
+        : NULL;
     fprintf(stderr, // obs-ok:invalidate-begin
             "[invalidate] h=%d hash=%s tip=%d: marking FAILED_VALID + "
             "disconnect-and-reorg\n", target->nHeight, hex, tip_h_before);
@@ -270,17 +374,34 @@ enum invalidate_result process_block_invalidate(struct main_state *ms,
      * disconnected to target's parent before activation can pick the next-best
      * fork. With the FAILED mark already visible, the reducer kick cannot
      * reselect the invalidated block. */
-    if (ctl && ctl->coins_tip &&
-        active_chain_contains(&ms->chain_active, target)) {
+    {
         struct validation_state vs;
         validation_state_init(&vs);
-        if (!process_block_disconnect_to_parent(&vs, ms, ctl->coins_tip,
-                                                 ctl->params, target,
-                                                 ctl->datadir)) {
+        if (!process_block_disconnect_to_parent(
+                &vs, ms, ctl ? ctl->coins_tip : NULL,
+                ctl ? ctl->params : NULL, target,
+                ctl ? ctl->datadir : NULL)) {
             LOG_RETURN(INVALIDATE_DISCONNECT_FAIL, "validation",
                         "invalidate: could not disconnect active chain "
                         "below h=%d", target->nHeight);
         }
+    }
+
+    /* pindex_best_header is an input to every reducer stage's window
+     * extender.  Once its ancestry contains the just-failed active hash it is
+     * no longer a valid header frontier: leaving it in place lets a stale live
+     * identity at that height repopulate chain[] during the same kick.  Pin the
+     * header frontier to the retained active parent.  reconsiderblock rebuilds
+     * the best eligible header before its reconnect kick below. */
+    if (target_was_active && active_target && active_target->pprev) {
+        struct block_index *header_at_target =
+            ms->pindex_best_header &&
+                    ms->pindex_best_header->nHeight >= target->nHeight
+                ? block_index_get_ancestor(ms->pindex_best_header,
+                                           target->nHeight)
+                : NULL;
+        if (invalidate_same_block(header_at_target, target))
+            ms->pindex_best_header = active_target->pprev;
     }
 
     /* Kick the engine so the next-best fully-valid chain is reconnected.
@@ -288,6 +409,33 @@ enum invalidate_result process_block_invalidate(struct main_state *ms,
      * pipeline through reducer_kick. */
     if (ctl)
         (void)reducer_kick(ctl);
+
+    /* Bitcoin-Core-compatible mempool resurrection belongs AFTER the staged
+     * coin unwind: only now do the disconnected transactions' inputs exist in
+     * the authoritative coins view again.  The boot hook reads exact block
+     * bytes, runs the ordinary full mempool gate, and relays only accepted
+     * transactions.  An off-active-chain invalidation has no disconnected
+     * segment and therefore no resurrection work. */
+    if (target_was_active && old_active_tip) {
+        struct process_block_mempool_restore_result mr = {0};
+        if (!process_block_reconcile_mempool_segment(
+                target, old_active_tip,
+                PROCESS_BLOCK_MEMPOOL_RESTORE_DISCONNECTED, &mr)) {
+            LOG_WARN("validation",
+                     "invalidate: mempool restore incomplete first_h=%d "
+                     "old_tip_h=%d blocks=%zu attempted=%zu accepted=%zu "
+                     "relayed=%zu rejected=%zu",
+                     target->nHeight, old_active_tip->nHeight, mr.blocks_read,
+                     mr.txs_attempted, mr.txs_accepted, mr.txs_relayed,
+                     mr.txs_rejected);
+        } else {
+            LOG_INFO("validation",
+                     "invalidate: mempool restore blocks=%zu attempted=%zu "
+                     "accepted=%zu relayed=%zu rejected=%zu",
+                     mr.blocks_read, mr.txs_attempted, mr.txs_accepted,
+                     mr.txs_relayed, mr.txs_rejected);
+        }
+    }
 
     int tip_h_after = active_chain_height(&ms->chain_active);
     fprintf(stderr, // obs-ok:invalidate-done
@@ -342,8 +490,42 @@ enum reconsider_result process_block_reconsider(struct main_state *ms,
      * The reducer re-walks via reducer_kick (the stage forward-apply that
      * mirrors connect_block). */
     struct chain_activation_controller *ctl = process_block_activation_controller();
+    struct block_index *best_header = active_chain_most_work_candidate(
+        &ms->chain_active, &ms->map_block_index);
+    if (best_header && !block_has_any_failure(best_header))
+        ms->pindex_best_header = best_header;
     if (ctl)
         (void)reducer_kick(ctl);
+
+    /* Regtest's at-tip authority shortcut can reconnect the exact staged block
+     * without running tip_finalize_run_post_finalize again.  Reconcile the
+     * active segment explicitly after the reducer proves it reconnected: read
+     * the exact block bytes in the app hook, invalidate their coin-cache keys,
+     * and remove only transactions confirmed by those bytes. */
+    struct block_index *new_active_tip =
+        active_chain_at(&ms->chain_active,
+                        active_chain_height(&ms->chain_active));
+    struct block_index *reconnected_target =
+        new_active_tip && new_active_tip->nHeight >= target->nHeight
+            ? block_index_get_ancestor(new_active_tip, target->nHeight)
+            : NULL;
+    if (invalidate_same_block(reconnected_target, target)) {
+        struct process_block_mempool_restore_result mr = {0};
+        if (!process_block_reconcile_mempool_segment(
+                reconnected_target, new_active_tip,
+                PROCESS_BLOCK_MEMPOOL_REMOVE_RECONNECTED, &mr)) {
+            LOG_WARN("validation",
+                     "reconsider: mempool reconcile incomplete first_h=%d "
+                     "new_tip_h=%d blocks=%zu attempted=%zu removed=%zu",
+                     target->nHeight, new_active_tip->nHeight, mr.blocks_read,
+                     mr.txs_attempted, mr.txs_removed);
+        } else {
+            LOG_INFO("validation",
+                     "reconsider: mempool reconcile blocks=%zu attempted=%zu "
+                     "removed=%zu",
+                     mr.blocks_read, mr.txs_attempted, mr.txs_removed);
+        }
+    }
 
     int tip_h = active_chain_height(&ms->chain_active);
     fprintf(stderr, // obs-ok:reconsider-done

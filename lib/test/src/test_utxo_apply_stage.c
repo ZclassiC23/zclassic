@@ -958,7 +958,14 @@ int test_utxo_apply_stage(void)
                                           sc.blocks[1].phashBlock));
         UV_CHECK("hash_fallback: h0 applies through active window",
                  utxo_apply_stage_step_once() == JOB_ADVANCED);
-        UV_CHECK("hash_fallback: h1 applies through hash-bound fallback",
+        sc.blocks[1].nStatus |= BLOCK_FAILED_VALID;
+        UV_CHECK("hash_fallback: failed h1 verdict cannot be reapplied",
+                 utxo_apply_stage_step_once() == JOB_IDLE &&
+                     utxo_apply_stage_cursor() == 1 &&
+                     uv_dump_has("\"select_idle_reason\":\"block_failed\"") &&
+                     uv_dump_has("\"hash_bound_fallback_total\":0"));
+        sc.blocks[1].nStatus &= ~(unsigned)BLOCK_FAILED_ANY_MASK;
+        UV_CHECK("hash_fallback: reconsidered h1 applies through hash-bound fallback",
                  utxo_apply_stage_step_once() == JOB_ADVANCED);
         UV_CHECK("hash_fallback: cursor at 2",
                  utxo_apply_stage_cursor() == 2);

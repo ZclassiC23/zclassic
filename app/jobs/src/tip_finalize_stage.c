@@ -16,6 +16,7 @@
 #include "tip_finalize_stage_observe.h"
 #include "tip_finalize_batch_drain.h"
 #include "tip_finalize_provable_tip.h"
+#include "tip_finalize_visible_body.h"
 
 #include "chain/chain.h"
 #include "core/arith_uint256.h"
@@ -29,7 +30,6 @@
 
 #include <pthread.h>
 #include <sqlite3.h>
-#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -70,23 +70,6 @@ static int reorg_depth_from(struct block_index *old_tip,
         depth++;
     }
     return depth > 0 ? depth : 1;
-}
-
-/* Returns the specific precondition that fails, or NULL if all pass.
- * The derived bool (reason == NULL) is the finalize-gate verdict. Set:
- *   block_missing       — no candidate block_index for this height
- *   have_data_missing   — body not on disk (BLOCK_HAVE_DATA clear)
- *   not_script_valid    — validity below BLOCK_VALID_SCRIPTS (script stall)
- *   not_header_valid    — validity below BLOCK_VALID_HEADER */
-static const char *precondition_block_reason(const struct block_index *bi)
-{
-    if (!bi) return "block_missing";
-    if (!(bi->nStatus & BLOCK_HAVE_DATA)) return "have_data_missing";
-    if ((bi->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_SCRIPTS)
-        return "not_script_valid";
-    if ((bi->nStatus & BLOCK_VALID_MASK) < BLOCK_VALID_HEADER)
-        return "not_header_valid";
-    return NULL;
 }
 
 /* HEADER-ONLY canonical-successor witness (deadlock cure `a35ca0c8f`).
@@ -176,8 +159,16 @@ static bool finalized_row_active_match(sqlite3 *db, int row_height,
 
     struct main_state *ms = g_ms;
     struct block_index *active = ms ? active_chain_at(&ms->chain_active, row_height + 1) : NULL;
-    if (!active || !active->phashBlock)
+    if (!active || !active->phashBlock) {
+        /* Missing/short windows occur during legitimate boot/resume and stay
+         * unknown.  invalidateblock first marks this row's exact successor
+         * hash FAILED, which is the explicit evidence that absence means a
+         * disconnect rather than window lag. */
+        struct block_index *recorded_owner = ms
+            ? block_map_find(&ms->map_block_index, &row.tip_hash) : NULL;
+        if (recorded_owner && block_has_any_failure(recorded_owner)) *out_known = true;
         return true;
+    }
     *out_known = true;
     *out_matches = uint256_eq(&row.tip_hash, active->phashBlock);
     return true;
@@ -404,10 +395,14 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
      * branch above returned first) — a LINEAR one-block lookahead extension.
      * Two outcomes are NOT the same and must be handled differently:
      *
-     *  (a) TRANSIENT (block_missing / have_data_missing / not_script_valid /
-     *      not_header_valid): the successor H+1 has simply not finished the
-     *      body_persist -> script_validate -> utxo_apply pipeline yet. H is
-     *      genuinely finalizable; we are only missing its lookahead witness.
+     *  (a) HOLD (block_missing / block_failed / have_data_missing /
+     *      not_script_valid / not_header_valid): the successor H+1 is not an
+     *      eligible canonical witness yet.  A failed successor is especially
+     *      important here: invalidateblock may retract chain[] while the
+     *      durable finalized-hash row still resolves that exact map owner.
+     *      Re-finalizing through it would republish the failed block, run its
+     *      post-finalize mempool removal, and oscillate back to the rewind.
+     *      H is genuinely finalizable only once an eligible successor exists.
      *      We must NOT advance the cursor — advancing strands H forever
      *      because anchor_cursor_to_authority is MONOTONIC (never pulls back),
      *      producing a finalize-frontier oscillation. Return JOB_IDLE:
@@ -421,7 +416,7 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
      *      Persist the precondition_failed ok=0 row, count it, emit the
      *      reject, and ADVANCE past it so the pipeline cannot deadlock on an
      *      unfinalizable lighter candidate. */
-    const char *transient_reason = precondition_block_reason(new_tip);
+    const char *transient_reason = tip_finalize_precondition_block_reason(new_tip);
     /* not_script_valid from the block_index mirror is NOT authoritative: the bit
      * can drift CLEAR on a restored datadir while the reducer's hash-bound
      * script_validate_log still proves THIS block's scripts were verified. When
@@ -594,6 +589,17 @@ static job_result_t step_finalize(struct stage_step_ctx *c)
          * whole header graph when a peer re-delivers the tip header. */
         tip_finalize_observe_update_last_advance(new_tip->nHeight,
                                                  new_tip->phashBlock->data);
+    } else if (new_tip->nStatus & BLOCK_HAVE_DATA) {
+        /* An at-tip authority path may have published this exact block before
+         * the reducer writes its finalized row. The wallet/MMR/MMB effects are
+         * one-shot and remain gated by publish, but cache invalidation and
+         * confirmed-tx removal are idempotent and mandatory. Skipping them
+         * leaves an already-confirmed transaction live in the mempool. */
+        int64_t tf_post_t0 = platform_time_monotonic_us();
+        tip_finalize_run_mempool_reconcile(new_tip);
+        reducer_stage_profile_observe_us(
+            REDUCER_PROFILE_TIP_FINALIZE, RPF_TF_POST_FINALIZE_US,
+            (uint64_t)(platform_time_monotonic_us() - tf_post_t0));
     }
     /* O(1) watermark advance (or full-fold fallback on any doubt) — see
      * tf_advance_provable_tip. reorg rewind always takes the full path above. */
@@ -631,6 +637,7 @@ bool tip_finalize_stage_init(struct main_state *ms)
 
     pthread_mutex_lock(&g_lock);
     tip_finalize_observe_init();
+    tip_finalize_visible_body_reset();
     /* Drop any volatile utxo_apply SUM cache from a prior lifecycle: the next
      * finalize re-seeds it from the full SUM (this datadir's own durable rows). */
     utxo_apply_sum_through_reset();
@@ -739,6 +746,7 @@ job_result_t tip_finalize_stage_step_once(void)
      * the honest 0 (unchanged served value) and the advance path takes over. */
     if (!reducer_frontier_provable_tip_is_published())
         tf_refresh_provable_tip(db);
+    tip_finalize_reconcile_visible_cursor_body(db, g_stage, g_ms);
     job_result_t r = stage_run_once(g_stage, db);
     progress_store_tx_unlock();
     return r;
@@ -748,6 +756,7 @@ void tip_finalize_stage_shutdown(void)
 {
     tip_finalize_evidence_clear();
     pthread_mutex_lock(&g_lock);
+    tip_finalize_visible_body_reset();
     if (g_stage) {
         stage_destroy(g_stage);
         g_stage = NULL;
