@@ -2,6 +2,8 @@
 
 #include "encoding/qr.h"
 #include "presentation/canvas.h"
+#include "presentation/model.h"
+#include "presentation/model_render.h"
 #include "presentation/presentation.h"
 #include "presentation/zclassic_brand.h"
 #include "views/qr_popup.h"
@@ -218,6 +220,106 @@ int test_qr(void)
     QR_CHECK("presentation uses stable desktop application identity",
              strcmp(ZCL_PRESENT_APPLICATION_ID,
                     "org.zclassic.ZClassic23") == 0);
+
+    struct zcl_present_model_v1 visual;
+    zcl_present_model_init_v1(&visual, ZCL_PRESENT_MODEL_PROGRESS);
+    (void)snprintf(visual.request_id, sizeof(visual.request_id),
+                   "reproduce-42");
+    (void)snprintf(visual.title, sizeof(visual.title),
+                   "Independent reproduction");
+    (void)snprintf(visual.summary, sizeof(visual.summary),
+                   "Builder two is reproducing the exact candidate bytes.");
+    visual.item_count = 1;
+    visual.items[0].kind = ZCL_PRESENT_ITEM_PROGRESS;
+    visual.items[0].status = ZCL_PRESENT_STATUS_INFO;
+    visual.items[0].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+    visual.items[0].numerator = 7;
+    visual.items[0].denominator = 10;
+    (void)snprintf(visual.items[0].id, sizeof(visual.items[0].id),
+                   "builder-two");
+    (void)snprintf(visual.items[0].label, sizeof(visual.items[0].label),
+                   "Builder two");
+    (void)snprintf(visual.items[0].value, sizeof(visual.items[0].value),
+                   "Compiling");
+    visual.action_count = 1;
+    visual.actions[0].kind = ZCL_PRESENT_ACTION_CLOSE;
+    (void)snprintf(visual.actions[0].id, sizeof(visual.actions[0].id),
+                   "close");
+    (void)snprintf(visual.actions[0].label,
+                   sizeof(visual.actions[0].label), "Close");
+    QR_CHECK("renderer-neutral progress model validates",
+             zcl_present_model_validate_v1(&visual, why, sizeof(why)));
+
+    uint8_t model_wire[ZCL_PRESENT_MODEL_WIRE_MAX];
+    size_t model_wire_len = 0;
+    struct zcl_present_model_v1 decoded;
+    QR_CHECK("visual model encodes without structure padding",
+             zcl_present_model_encode_v1(
+                 &visual, model_wire, sizeof(model_wire), &model_wire_len,
+                 why, sizeof(why)) && model_wire_len > 0);
+    QR_CHECK("visual model round-trips exactly",
+             zcl_present_model_decode_v1(
+                 model_wire, model_wire_len, &decoded, why, sizeof(why)) &&
+             decoded.kind == visual.kind &&
+             decoded.item_count == 1 &&
+             decoded.items[0].numerator == 7 &&
+             decoded.items[0].denominator == 10 &&
+             strcmp(decoded.items[0].value, "Compiling") == 0);
+    QR_CHECK("visual model rejects trailing wire bytes",
+             model_wire_len + 1u < sizeof(model_wire) &&
+             !zcl_present_model_decode_v1(
+                 model_wire, model_wire_len + 1u, &decoded,
+                 why, sizeof(why)));
+
+    struct zcl_present_model_v1 confirmation;
+    zcl_present_model_init_v1(&confirmation,
+                              ZCL_PRESENT_MODEL_CONFIRMATION);
+    (void)snprintf(confirmation.request_id,
+                   sizeof(confirmation.request_id), "publish-7");
+    (void)snprintf(confirmation.title, sizeof(confirmation.title),
+                   "Publish exact candidate?");
+    memset(confirmation.exact_root, 'a', ZCL_PRESENT_MODEL_ROOT_MAX);
+    confirmation.exact_root[ZCL_PRESENT_MODEL_ROOT_MAX] = '\0';
+    confirmation.action_count = 2;
+    confirmation.actions[0].kind = ZCL_PRESENT_ACTION_CONFIRM;
+    (void)snprintf(confirmation.actions[0].id,
+                   sizeof(confirmation.actions[0].id), "confirm");
+    (void)snprintf(confirmation.actions[0].label,
+                   sizeof(confirmation.actions[0].label), "Publish");
+    confirmation.actions[1].kind = ZCL_PRESENT_ACTION_CANCEL;
+    (void)snprintf(confirmation.actions[1].id,
+                   sizeof(confirmation.actions[1].id), "cancel");
+    (void)snprintf(confirmation.actions[1].label,
+                   sizeof(confirmation.actions[1].label), "Cancel");
+    QR_CHECK("exact confirmation binds a root and two explicit actions",
+             zcl_present_model_validate_v1(
+                 &confirmation, why, sizeof(why)));
+    confirmation.exact_root[0] = '\0';
+    QR_CHECK("rootless publication confirmation fails closed",
+             !zcl_present_model_validate_v1(
+                 &confirmation, why, sizeof(why)));
+
+    struct zcl_present_model_bitmap_v1 visual_bitmap;
+    QR_CHECK("renderer-neutral progress card becomes native RGB pixels",
+             zcl_present_model_render_v1(
+                 &visual, &visual_bitmap, why, sizeof(why)) &&
+             visual_bitmap.pixels &&
+             visual_bitmap.width == ZCL_PRESENT_MODEL_BITMAP_WIDTH &&
+             visual_bitmap.height == ZCL_PRESENT_MODEL_BITMAP_HEIGHT);
+    bool visual_has_orange = false;
+    bool visual_has_info = false;
+    for (size_t i = 0; visual_bitmap.pixels &&
+         i < ZCL_PRESENT_MODEL_BITMAP_BYTES; i += 3u) {
+        visual_has_orange |= visual_bitmap.pixels[i] == 0xc8 &&
+            visual_bitmap.pixels[i + 1u] == 0x70 &&
+            visual_bitmap.pixels[i + 2u] == 0x35;
+        visual_has_info |= visual_bitmap.pixels[i] == 0x32 &&
+            visual_bitmap.pixels[i + 1u] == 0x68 &&
+            visual_bitmap.pixels[i + 2u] == 0x91;
+    }
+    QR_CHECK("native model pixels preserve brand and semantic status",
+             visual_has_orange && visual_has_info);
+    zcl_present_model_bitmap_free_v1(&visual_bitmap);
 
     qr_matrix_free(&second);
     qr_matrix_free(&first);

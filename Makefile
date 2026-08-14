@@ -1042,17 +1042,21 @@ check-vendor-provenance:
 	@sha256sum --check vendor/x11/SHA256SUMS
 
 # Reusable native presentation package. This deliberately has a tiny source
-# closure: three project TUs plus pinned RGFW headers, with no node/app objects.
+# closure: five project TUs plus pinned RGFW headers, with no node/app objects.
 PRESENTATION_BUILD_DIR := build/presentation
 PRESENTATION_PACKAGE_CFLAGS := -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
-	-Ilib/presentation/include -Ivendor/x11/include
+	-Ilib/presentation/include -Ilib/base/include -Ivendor/x11/include
 PRESENTATION_PACKAGE_SRCS := \
 	lib/presentation/src/presentation.c \
 	lib/presentation/src/canvas.c \
+	lib/presentation/src/model.c \
+	lib/presentation/src/model_render.c \
 	lib/presentation/src/zclassic_brand.c
 PRESENTATION_PACKAGE_OBJS := \
 	$(PRESENTATION_BUILD_DIR)/presentation.o \
 	$(PRESENTATION_BUILD_DIR)/canvas.o \
+	$(PRESENTATION_BUILD_DIR)/model.o \
+	$(PRESENTATION_BUILD_DIR)/model_render.o \
 	$(PRESENTATION_BUILD_DIR)/zclassic_brand.o
 PRESENTATION_PACKAGE_ARCHIVE := build/lib/libzclpresentation.a
 PRESENTATION_DEMO_BIN := $(PRESENTATION_BUILD_DIR)/bitmap-demo
@@ -1126,6 +1130,25 @@ $(PRESENTATION_BUILD_DIR)/canvas.o: \
 		lib/presentation/src/canvas.c \
 		-o $(PRESENTATION_BUILD_DIR)/canvas.o
 
+$(PRESENTATION_BUILD_DIR)/model.o: \
+	lib/presentation/src/model.c \
+	lib/presentation/include/presentation/model.h \
+	lib/base/include/base/serialize_le.h
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/model.c \
+		-o $(PRESENTATION_BUILD_DIR)/model.o
+
+$(PRESENTATION_BUILD_DIR)/model_render.o: \
+	lib/presentation/src/model_render.c \
+	lib/presentation/include/presentation/model_render.h \
+	lib/presentation/include/presentation/model.h \
+	lib/presentation/include/presentation/canvas.h
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/model_render.c \
+		-o $(PRESENTATION_BUILD_DIR)/model_render.o
+
 $(PRESENTATION_PACKAGE_ARCHIVE): $(PRESENTATION_PACKAGE_OBJS) \
 	$(PRESENTATION_PROVENANCE_STAMP)
 	@mkdir -p build/lib
@@ -1175,9 +1198,11 @@ presentation-portability: presentation-demo
 	@if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then \
 		mkdir -p $(PRESENTATION_BUILD_DIR)/windows; \
 		x86_64-w64-mingw32-gcc -std=c2x -O2 -Wall -Wextra -Werror \
-			-pedantic -Ilib/presentation/include \
+			-pedantic -Ilib/presentation/include -Ilib/base/include \
 			lib/presentation/src/presentation.c \
 			lib/presentation/src/canvas.c \
+			lib/presentation/src/model.c \
+			lib/presentation/src/model_render.c \
 			lib/presentation/src/zclassic_brand.c \
 			lib/presentation/examples/bitmap_demo.c \
 			-luser32 -lgdi32 -lshell32 -lole32 \

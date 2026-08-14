@@ -8,7 +8,16 @@ render into the same pixel contract without acquiring wallet, network,
 filesystem, or process-launch authority.
 
 The stable window surface is `include/presentation/presentation.h`. The
-companion `include/presentation/canvas.h` is a bounded caller-owned RGB canvas
+renderer-neutral agent surface is
+`lib/presentation/include/presentation/model.h`: a closed,
+bounded document for status, tables, progress, charts, timelines, code diffs,
+evidence graphs, choices, confirmations, forms, canvases, and QR cards. Its
+wire format carries inert text, fractions, graph edges, exact-root labels, and
+bounded action IDs—never callbacks, executable names, paths, sockets, wallet
+objects, or native handles. A returned action is only an observation; the full
+node must independently recheck its root and policy before acting.
+
+The companion `include/presentation/canvas.h` is a bounded caller-owned RGB canvas
 with clipped rectangles, lines, alpha logo blits, and embedded Basic Latin
 text. It is the reusable layer for deposit cards, current balances, metadata,
 and small software-rendered graphs. RGFW is a private implementation detail,
