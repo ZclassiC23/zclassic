@@ -90,6 +90,22 @@ int syncdiag_cases_agent_interface(void)
             json_get(&interface, "runtime_identity");
         const struct json_value *development_loop =
             json_get(&interface, "development_loop");
+        const struct json_value *visual_instruments =
+            json_get(&interface, "native_visual_instruments");
+        const struct json_value *visual_loop =
+            json_get(&interface, "native_visual_loop");
+        const struct json_value *visual_qr =
+            find_object_with_str(visual_instruments, "name", "qr");
+        const struct json_value *visual_status =
+            find_object_with_str(visual_instruments, "name", "node_status");
+        const struct json_value *visual_diff =
+            find_object_with_str(visual_instruments, "name", "code_change");
+        const struct json_value *visual_progress =
+            find_object_with_str(visual_instruments, "name",
+                                 "reproduction_progress");
+        const struct json_value *visual_confirmation =
+            find_object_with_str(visual_instruments, "name",
+                                 "publication_confirmation");
         const struct json_value *availability =
             json_get(&interface, "runtime_availability");
         const struct json_value *availability_methods =
@@ -202,6 +218,35 @@ int syncdiag_cases_agent_interface(void)
         ok = ok && development_loop &&
             strcmp(json_get_str(json_get(development_loop, "database")),
                    "zclassic23 dbquery <SELECT>") == 0;
+        ok = ok && visual_instruments &&
+            json_size(visual_instruments) == 5;
+        ok = ok && visual_qr &&
+            strcmp(json_get_str(json_get(visual_qr, "native")),
+                   "zclassic23 app qr show '<bounded-payload>'") == 0;
+        ok = ok && visual_status &&
+            strcmp(json_get_str(json_get(visual_status, "native")),
+                   "zclassic23 app presentation status") == 0;
+        ok = ok && visual_diff &&
+            strstr(json_get_str(json_get(visual_diff, "native")),
+                   "app presentation code-change") != NULL;
+        ok = ok && visual_progress &&
+            strstr(json_get_str(json_get(visual_progress, "native")),
+                   "app presentation reproduction") != NULL;
+        ok = ok && visual_confirmation &&
+            strstr(json_get_str(json_get(visual_confirmation, "native")),
+                   "app presentation publication-confirm") != NULL;
+        ok = ok && visual_loop &&
+            strcmp(json_get_str(json_get(visual_loop, "schema")),
+                   "zcl.agent_visual_loop.v1") == 0;
+        ok = ok && visual_loop &&
+            !json_get_bool(json_get(visual_loop, "browser_required"));
+        ok = ok && visual_loop &&
+            strstr(json_get_str(json_get(visual_loop, "authority_rule")),
+                   "visual host owns none") != NULL;
+        ok = ok && visual_loop &&
+            strstr(json_get_str(json_get(visual_loop,
+                                         "generic_model_policy")),
+                   "not the configured-agent path") != NULL;
         ok = ok && machine &&
             strcmp(json_get_str(json_get(machine, "schema")),
                    "zcl.agent_machine_contract.v2") == 0;
