@@ -369,6 +369,55 @@ int test_qr(void)
     json_free(&health_facts);
     json_free(&status_facts);
 
+    static const uint8_t code_before[] =
+        "#include \"presentation/model.h\"\n"
+        "int exact_value(void) {\n"
+        "    return 1;\n"
+        "}\n";
+    static const uint8_t code_after[] =
+        "#include \"presentation/model.h\"\n"
+        "int exact_value(void) {\n"
+        "    return 2;\n"
+        "}\n";
+    char root_a[65], root_b[65], tree_root[65];
+    memset(root_a, 'a', 64u); root_a[64] = '\0';
+    memset(root_b, 'b', 64u); root_b[64] = '\0';
+    memset(tree_root, 'c', 64u); tree_root[64] = '\0';
+    struct zcl_present_model_v1 code_model;
+    QR_CHECK("exact C facts build a provenance-labeled code-change model",
+             zcl_native_presentation_code_change_model_from_facts(
+                 code_before, sizeof(code_before) - 1u,
+                 code_after, sizeof(code_after) - 1u,
+                 "tools/command/native_qr_command.c", "return two",
+                 "returned one", "returns two", root_a, root_b, tree_root,
+                 &code_model, why, sizeof(why)) &&
+             code_model.kind == ZCL_PRESENT_MODEL_CODE_DIFF &&
+             strcmp(code_model.exact_root, tree_root) == 0 &&
+             strncmp(code_model.items[0].label, "AGENT SUMMARY - ", 16) == 0 &&
+             strncmp(code_model.items[3].label, "LOCAL OBSERVATION - ", 20) == 0);
+    bool caught_remove = false, caught_add = false, caught_include = false;
+    for (uint32_t i = 0; i < code_model.item_count; i++) {
+        caught_remove |= code_model.items[i].kind ==
+                         ZCL_PRESENT_ITEM_DIFF_REMOVE &&
+                         strcmp(code_model.items[i].value, "    return 1;") == 0;
+        caught_add |= code_model.items[i].kind == ZCL_PRESENT_ITEM_DIFF_ADD &&
+                      strcmp(code_model.items[i].value, "    return 2;") == 0;
+        caught_include |= strcmp(code_model.items[i].id, "dependencies") == 0 &&
+                          strcmp(code_model.items[i].value,
+                                 "presentation/model.h") == 0;
+    }
+    QR_CHECK("code-change diff catches the semantic mutant in exact bytes",
+             caught_remove && caught_add);
+    QR_CHECK("candidate dependency row comes from exact include bytes",
+             caught_include);
+    QR_CHECK("unchanged candidate bytes cannot masquerade as a code change",
+             !zcl_native_presentation_code_change_model_from_facts(
+                 code_before, sizeof(code_before) - 1u,
+                 code_before, sizeof(code_before) - 1u,
+                 "tools/command/native_qr_command.c", "return two",
+                 "returned one", "returns two", root_a, root_a, tree_root,
+                 &code_model, why, sizeof(why)));
+
     struct json_value work_dump;
     json_init(&work_dump);
     vcs_zcode_work_node_set_global(NULL);

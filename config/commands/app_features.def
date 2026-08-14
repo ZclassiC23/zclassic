@@ -170,6 +170,30 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_presentation_status)
 
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.code-change", "app.presentation", "",
+    "Show an exact ZVCS-backed C code change in a native window",
+    "Loads and rederives two immutable ZVCS source manifests, verifies the "
+    "selected C blob at each exact address, and computes a bounded before/after "
+    "diff, affected test route, and candidate include tokens inside ZClassic23. "
+    "Requested/before/after behavior prose is visibly labeled AGENT SUMMARY; "
+    "source paths, roots, diff lines, test routes, includes, and byte counts are "
+    "labeled LOCAL OBSERVATION. The presentation host receives only the inert "
+    "model and no source-store or software authority.", 0,
+    "presentation,native,code,diff,zvcs,source,tests,dependencies,agent",
+    "zcl.app_presentation_code_change.input.v1",
+    "zcl.app_presentation_code_change.v1",
+    "workspace,before_root,candidate_root,path,requested_behavior,before_behavior,after_behavior",
+    "workspace,before_root,candidate_root,path,requested_behavior,before_behavior,after_behavior",
+    "zclassic23 app presentation code-change --input='<exact-roots-and-summaries>'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_code_change)
+
 /* ── Blog (ZBLG) ─────────────────────────────────────────────────── */
 
 ZCL_COMMAND_READY_COMMAND(

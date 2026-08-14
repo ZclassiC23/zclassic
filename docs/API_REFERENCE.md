@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 691 |
+| Registry entries (branches + leaves) | 692 |
 | Top-level roots | 11 |
 | Branches | 162 |
-| Leaves (dispatchable command paths) | 529 |
-| … `ready` (live handler in this build) | 475 |
+| Leaves (dispatchable command paths) | 530 |
+| … `ready` (live handler in this build) | 476 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 24 |
-| Leaves with `effect=mutate` | 177 |
+| Leaves with `effect=mutate` | 178 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 112 |
 
@@ -93,7 +93,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 64 | 19 | 45 |
+| `config/commands/app_features.def` | 65 | 19 | 46 |
 | `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 55 | 13 | 42 |
@@ -589,6 +589,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `app presentation show` | ready | mutate / app-write / operator · fast/low | **`kind`**, **`request_id`**, **`title`**, `summary`, `exact_root`, `items`, `actions` | `zcl.app_presentation_show.v1` | `zclassic23 app presentation show --input='<bounded-model>'` | Show a bounded renderer-neutral model in a native C23 window |
 | `app presentation status` | ready | mutate / app-write / operator · fast/low | none | `zcl.app_presentation_status.v1` | `zclassic23 app presentation status` | Show canonical node facts in a native C23 status card |
+| `app presentation code-change` | ready | mutate / app-write / operator · fast/low | **`workspace`**, **`before_root`**, **`candidate_root`**, **`path`**, **`requested_behavior`**, **`before_behavior`**, **`after_behavior`** | `zcl.app_presentation_code_change.v1` | `zclassic23 app presentation code-change --input='<exact-roots-and-summaries>'` | Show an exact ZVCS-backed C code change in a native window |
 
 #### `app.blog` — Blog
 
