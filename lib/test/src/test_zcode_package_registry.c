@@ -349,9 +349,9 @@ static bool registry_dogfood_consumer(
 
     char source_arg[PATH_MAX + 64u], recipe_arg[PATH_MAX + 64u];
     char name_arg[VCS_PACKAGE_RELEASE_NAME_MAX + 64u];
-    char profile_arg[80], emit_arg[PATH_MAX + 32u], lock_arg[96];
+    char profile_arg[80], cpu_arg[64], emit_arg[PATH_MAX + 32u], lock_arg[96];
     char dep_args[REGISTRY_DOGFOOD_MAX_DEPS][PATH_MAX + 96u];
-    const char *argv[REGISTRY_DOGFOOD_MAX_DEPS + 12u];
+    const char *argv[REGISTRY_DOGFOOD_MAX_DEPS + 13u];
     size_t argc = 0;
     if (ok) {
         char lock_hex[65];
@@ -368,6 +368,8 @@ static bool registry_dogfood_consumer(
                           "--zbuild-package-name=%s", expected->name);
         int pn = snprintf(profile_arg, sizeof(profile_arg),
                           "--zbuild-package-profile=quick");
+        int cn = snprintf(cpu_arg, sizeof(cpu_arg),
+                          "--zbuild-package-max-cpu-seconds=600");
         int en = snprintf(emit_arg, sizeof(emit_arg), "--emit=%s", emit_dir);
         int ln = snprintf(lock_arg, sizeof(lock_arg),
                           "--lock-root=%s", lock_hex);
@@ -375,6 +377,7 @@ static bool registry_dogfood_consumer(
              rn > 0 && (size_t)rn < sizeof(recipe_arg) &&
              nn > 0 && (size_t)nn < sizeof(name_arg) &&
              pn > 0 && (size_t)pn < sizeof(profile_arg) &&
+             cn > 0 && (size_t)cn < sizeof(cpu_arg) &&
              en > 0 && (size_t)en < sizeof(emit_arg) &&
              ln > 0 && (size_t)ln < sizeof(lock_arg);
     }
@@ -385,6 +388,7 @@ static bool registry_dogfood_consumer(
         argv[argc++] = recipe_arg;
         argv[argc++] = name_arg;
         argv[argc++] = profile_arg;
+        argv[argc++] = cpu_arg;
         argv[argc++] = emit_arg;
         argv[argc++] = lock_arg;
         for (size_t i = 0; ok && i + 1u < prepared.lock.count; i++) {

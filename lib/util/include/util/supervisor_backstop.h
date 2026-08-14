@@ -154,6 +154,14 @@ bool supervisor_backstop_test_check_staged(
     uint64_t sweep_hb, uint64_t boot_progress, int boot_stage,
     int64_t now_us, int64_t serving_threshold_us);
 
+/* True when the watcher itself was unable to observe the process for an
+ * entire freeze budget. Production rebases its episode after such a gap:
+ * SIGSTOP/host suspension is not continuous evidence that the supervisor
+ * thread was wedged. A watcher that keeps polling while the supervisor is
+ * frozen still fires at the unchanged threshold. */
+bool supervisor_backstop_test_observation_gap(
+    int64_t previous_poll_us, int64_t now_us, int64_t freeze_threshold_us);
+
 /* Force the boot stage the staged decision reads instead of the real
  * boot_stage_current(), so a test_poll-based escalation test is
  * deterministic regardless of how far the test binary's own boot

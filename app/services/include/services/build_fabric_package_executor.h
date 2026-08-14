@@ -19,12 +19,13 @@ struct build_fabric_package_execution {
     struct vcs_package_lock lock;
     char dep_dirs[VCS_PACKAGE_BUILD_MAX_DEPS][BUILD_FABRIC_PACKAGE_PATH_MAX];
     size_t dep_count;
-    const char *argv[11u + VCS_PACKAGE_BUILD_MAX_DEPS];
+    const char *argv[12u + VCS_PACKAGE_BUILD_MAX_DEPS];
     char source_root_hex[65];
     char source_arg[BUILD_FABRIC_PACKAGE_PATH_MAX + 32];
     char recipe_arg[BUILD_FABRIC_PACKAGE_PATH_MAX + 32];
     char name_arg[VCS_PACKAGE_RELEASE_NAME_MAX + 32u];
     char profile_arg[64];
+    char cpu_arg[64];
     char emit_arg[BUILD_FABRIC_PACKAGE_PATH_MAX + 16];
     char lock_arg[96];
     char dep_args[VCS_PACKAGE_BUILD_MAX_DEPS]

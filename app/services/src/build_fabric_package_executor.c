@@ -275,6 +275,9 @@ struct zcl_result build_fabric_package_prepare(
     (void)snprintf(out->profile_arg, sizeof(out->profile_arg),
                    "--zbuild-package-profile=%s",
                    standard ? "standard" : "quick");
+    (void)snprintf(out->cpu_arg, sizeof(out->cpu_arg),
+                   "--zbuild-package-max-cpu-seconds=%u",
+                   task->max_cpu_seconds);
     (void)snprintf(out->emit_arg, sizeof(out->emit_arg), "--emit=%s", emit_dir);
     (void)snprintf(out->lock_arg, sizeof(out->lock_arg),
                    "--lock-root=%s", lock_hex);
@@ -285,6 +288,7 @@ struct zcl_result build_fabric_package_prepare(
     out->argv[n++] = out->recipe_arg;
     out->argv[n++] = out->name_arg;
     out->argv[n++] = out->profile_arg;
+    out->argv[n++] = out->cpu_arg;
     out->argv[n++] = out->emit_arg;
     out->argv[n++] = out->lock_arg;
     for (size_t i = 0; i < out->dep_count; i++) {

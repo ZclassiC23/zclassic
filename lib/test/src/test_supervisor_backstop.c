@@ -242,7 +242,40 @@ int test_supervisor_backstop(void)
                 SUPERVISOR_BACKSTOP_BOOT_FREEZE_US, serving_bar));
     }
 
-    /* ── dump_state_json shape ─────────────────────────────────────── */
+    /* Watcher observation gap: process suspension is not a wedge. The
+     * production watcher must distinguish a supervisor thread that stays
+     * frozen while the watcher continues to poll from SIGSTOP/host suspend,
+     * where the watcher itself made no observations for the entire budget. */
+    {
+        int64_t threshold = SUPERVISOR_BACKSTOP_DEFAULT_FREEZE_US;
+        BS_CHECK("ordinary poll cadence is continuous observation",
+            !supervisor_backstop_test_observation_gap(
+                5 * 1000000LL, 10 * 1000000LL, threshold));
+        BS_CHECK("whole-budget watcher absence names an observation gap",
+            supervisor_backstop_test_observation_gap(
+                5 * 1000000LL, 35 * 1000000LL, threshold));
+        BS_CHECK("disabled threshold never classifies a suspension",
+            !supervisor_backstop_test_observation_gap(
+                5 * 1000000LL, 1000 * 1000000LL, 0));
+
+        struct supervisor_backstop_state st = {0};
+        (void)supervisor_backstop_test_check_staged(
+            &st, 7, 100, BOOT_STAGE_READY, 5 * 1000000LL, threshold);
+        /* Mirror production's rebase after the watcher itself was absent. */
+        if (supervisor_backstop_test_observation_gap(
+                5 * 1000000LL, 105 * 1000000LL, threshold))
+            st.initialized = false;
+        BS_CHECK("process suspension rebases instead of false-firing",
+            !supervisor_backstop_test_check_staged(
+                &st, 7, 100, BOOT_STAGE_READY,
+                105 * 1000000LL, threshold));
+        BS_CHECK("continuously observed post-resume wedge remains bounded",
+            supervisor_backstop_test_check_staged(
+                &st, 7, 100, BOOT_STAGE_READY,
+                135 * 1000000LL, threshold));
+    }
+
+    /* dump_state_json shape. */
     {
         struct json_value out;
         json_init(&out);

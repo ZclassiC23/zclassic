@@ -35,6 +35,7 @@
 #define BFW_PATH_MAX 4096
 #define BFW_CAPTURE_MAX 4096
 #define BFW_EXEC_TIMEOUT_MS 125000
+#define BFW_PACKAGE_WALL_TIMEOUT_MS 605000
 #define BFW_FUZZ_CPU_CEILING_SECONDS 580u
 #define BFW_FUZZ_TIMEOUT_CEILING_MS 585000
 
@@ -580,10 +581,10 @@ struct zcl_result build_fabric_worker_execute(
             bounded = BFW_FUZZ_TIMEOUT_CEILING_MS;
         execute_timeout = (int)bounded;
     } else if (package_action) {
-        uint64_t bounded = (uint64_t)zcode_task.max_cpu_seconds * 1000u +
-                           UINT64_C(5000);
-        if (bounded > 605000u) bounded = 605000u;
-        execute_timeout = (int)bounded;
+        /* max_cpu_seconds is enforced as aggregate child CPU by the package
+         * verifier. It is not a wall budget: converting it to one false-kills
+         * healthy work whenever a loaded host deschedules the sandbox. */
+        execute_timeout = BFW_PACKAGE_WALL_TIMEOUT_MS;
     }
     struct bfw_cancel_context cancel_context = {
         .ndb = ndb,

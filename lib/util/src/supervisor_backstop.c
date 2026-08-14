@@ -124,6 +124,21 @@ static bool backstop_decide_staged(struct supervisor_backstop_state *st,
     return backstop_decide(st, liveness, now_us, budget);
 }
 
+/* A freeze declaration requires a continuous series of watcher observations.
+ * CLOCK_MONOTONIC advances while a process is SIGSTOPed or a host is
+ * suspended, but the watcher cannot establish which thread was healthy over
+ * that unobserved interval. Rebase instead of converting an observation gap
+ * into evidence against the supervisor. Genuine supervisor wedges remain
+ * bounded because this watcher continues polling throughout them. */
+static bool backstop_observation_gap(int64_t previous_poll_us,
+                                     int64_t now_us,
+                                     int64_t freeze_threshold_us)
+{
+    return previous_poll_us > 0 && now_us > previous_poll_us &&
+           freeze_threshold_us > 0 &&
+           now_us - previous_poll_us >= freeze_threshold_us;
+}
+
 #ifdef ZCL_TESTING
 bool supervisor_backstop_test_check(struct supervisor_backstop_state *state,
                                     uint64_t heartbeat, int64_t now_us,
@@ -139,6 +154,13 @@ bool supervisor_backstop_test_check_staged(
 {
     return backstop_decide_staged(state, sweep_hb, boot_progress, boot_stage,
                                   now_us, serving_threshold_us, NULL);
+}
+
+bool supervisor_backstop_test_observation_gap(
+    int64_t previous_poll_us, int64_t now_us, int64_t freeze_threshold_us)
+{
+    return backstop_observation_gap(previous_poll_us, now_us,
+                                    freeze_threshold_us);
 }
 
 void supervisor_backstop_test_force_boot_stage(int boot_stage)
@@ -184,6 +206,7 @@ static void *backstop_thread_main(void *arg)
     st.already_fired = false;
     st.last_heartbeat = 0;
     st.last_change_us = 0;
+    int64_t last_poll_us = 0;
 
     while (!atomic_load(&g_stop_requested) &&
            !thread_registry_shutdown_requested()) {
@@ -193,6 +216,15 @@ static void *backstop_thread_main(void *arg)
         int64_t  now       = platform_time_monotonic_us();
         int64_t  freeze_us = atomic_load(&g_freeze_threshold_us);
         int64_t  budget_us = freeze_us;
+
+        if (backstop_observation_gap(last_poll_us, now, freeze_us)) {
+            /* The whole process (including this watcher) was unobserved for
+             * a complete serving budget. Seed a fresh episode from the
+             * current facts; never turn SIGSTOP or host suspend into a
+             * supervisor-failure assertion. */
+            st.initialized = false;
+        }
+        last_poll_us = now;
 
         if (backstop_decide_staged(&st, hb, bp, stg, now, freeze_us,
                                    &budget_us)) {

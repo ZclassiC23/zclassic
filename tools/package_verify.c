@@ -119,6 +119,7 @@
 #include <sys/stat.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
+#include <sys/resource.h>
 #include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
@@ -193,6 +194,7 @@ static void pv_usage(FILE *out)
         "           --zbuild-package-recipe=<abs-file>\n"
         "           --zbuild-package-name=<publisher/package>\n"
         "           --zbuild-package-profile=<quick|standard>\n"
+        "           --zbuild-package-max-cpu-seconds=<1..600>\n"
         "           --emit=<abs-dir> --lock-root=<64hex>\n"
         "           [--dep=<64hex>,<installed-dir>]...\n"
         "           --require-full-isolation\n"
@@ -446,11 +448,24 @@ struct pv_perf_metrics {
     uint64_t test_processes;
     uint64_t other_processes;
     uint64_t child_wall_us;
+    uint64_t child_cpu_us;
     uint64_t compiler_wall_us;
     uint64_t test_wall_us;
 };
 
 static struct pv_perf_metrics g_pv_perf;
+static uint64_t g_pv_cpu_budget_us;
+static uint64_t g_pv_cpu_used_us;
+
+static uint64_t pv_rusage_cpu_us(const struct rusage *usage)
+{
+    return usage
+        ? (uint64_t)usage->ru_utime.tv_sec * UINT64_C(1000000) +
+          (uint64_t)usage->ru_utime.tv_usec +
+          (uint64_t)usage->ru_stime.tv_sec * UINT64_C(1000000) +
+          (uint64_t)usage->ru_stime.tv_usec
+        : 0;
+}
 
 static void pv_perf_record(const char *program, uint64_t elapsed_us)
 {
@@ -583,6 +598,14 @@ static struct pv_run pv_run_child(const char *const argv[],
 {
     struct pv_run r;
     memset(&r, 0, sizeof(r));
+    if (g_pv_cpu_budget_us && g_pv_cpu_used_us >= g_pv_cpu_budget_us) {
+        r.launched = true;
+        r.timed_out = true;
+        (void)snprintf(r.stderr_buf, sizeof(r.stderr_buf),
+                       "aggregate CPU budget exhausted");
+        r.stderr_len = strlen(r.stderr_buf);
+        return r;
+    }
     int64_t perf_started_ns = clock_now_monotonic_ns();
     /* Rebase absolute caps into "current usage + the caller's budget": NPROC
      * is session-wide per uid (see the PV_COMPILE_NPROC comment), and AS is
@@ -591,12 +614,21 @@ static struct pv_run pv_run_child(const char *const argv[],
      * land on top of it, not replace it. */
     struct os_sandbox_rlimits rebased;
     if (limits && (limits->nproc != OS_SANDBOX_RLIMIT_KEEP ||
-                   limits->as_bytes != OS_SANDBOX_RLIMIT_KEEP)) {
+                   limits->as_bytes != OS_SANDBOX_RLIMIT_KEEP ||
+                   g_pv_cpu_budget_us != 0)) {
         rebased = *limits;
         if (limits->nproc != OS_SANDBOX_RLIMIT_KEEP)
             rebased.nproc = pv_uid_task_count() + limits->nproc;
         if (limits->as_bytes != OS_SANDBOX_RLIMIT_KEEP)
             rebased.as_bytes = pv_process_vsize_bytes() + limits->as_bytes;
+        if (g_pv_cpu_budget_us) {
+            uint64_t remaining = g_pv_cpu_budget_us - g_pv_cpu_used_us;
+            uint64_t seconds = (remaining + UINT64_C(999999)) /
+                               UINT64_C(1000000);
+            if (rebased.cpu_seconds == OS_SANDBOX_RLIMIT_KEEP ||
+                rebased.cpu_seconds > seconds)
+                rebased.cpu_seconds = seconds;
+        }
         limits = &rebased;
     }
     int out_pipe[2] = { -1, -1 };
@@ -683,8 +715,10 @@ static struct pv_run pv_run_child(const char *const argv[],
     size_t out_len = 0, err_len = 0;
     int status = 0;
     bool reaped = false;
+    struct rusage usage;
+    memset(&usage, 0, sizeof(usage));
     for (;;) {
-        pid_t w = waitpid(pid, &status, WNOHANG);
+        pid_t w = wait4(pid, &status, WNOHANG, &usage);
         if (w == pid) {
             reaped = true;
             break;
@@ -710,7 +744,7 @@ static struct pv_run pv_run_child(const char *const argv[],
         }
         if (clock_now_monotonic_ns() >= deadline) {
             kill(pid, SIGKILL);
-            waitpid(pid, &status, 0);
+            (void)wait4(pid, &status, 0, &usage);
             reaped = true;
             r.timed_out = true;
             break;
@@ -755,6 +789,13 @@ static struct pv_run pv_run_child(const char *const argv[],
     r.stderr_buf[err_len] = '\0';
     r.stdout_len = out_len;
     r.stderr_len = err_len;
+    uint64_t cpu_us = reaped ? pv_rusage_cpu_us(&usage) : 0;
+    g_pv_perf.child_cpu_us += cpu_us;
+    if (g_pv_cpu_budget_us) {
+        g_pv_cpu_used_us += cpu_us;
+        if (g_pv_cpu_used_us > g_pv_cpu_budget_us)
+            r.timed_out = true;
+    }
     (void)reaped;
     if (!r.timed_out) {
         if (WIFEXITED(status)) {
@@ -1606,6 +1647,7 @@ int main(int argc, char **argv)
     const char *candidate_recipe_arg = NULL;
     const char *candidate_name = NULL;
     const char *candidate_profile = NULL;
+    const char *candidate_cpu_arg = NULL;
     bool require_full_isolation = false;
     struct pv_emit_dep emit_deps[PV_EMIT_MAX_DEPS];
     size_t emit_dep_count = 0;
@@ -1631,6 +1673,8 @@ int main(int argc, char **argv)
             candidate_name = argv[i] + 22;
         else if (strncmp(argv[i], "--zbuild-package-profile=", 25) == 0)
             candidate_profile = argv[i] + 25;
+        else if (strncmp(argv[i], "--zbuild-package-max-cpu-seconds=", 33) == 0)
+            candidate_cpu_arg = argv[i] + 33;
         else if (strncmp(argv[i], "--dep=", 6) == 0) {
             /* <64 hex>,<install dir> — the hex is fixed-width, so the comma
              * position is unambiguous even if the path contains commas. */
@@ -1697,11 +1741,19 @@ int main(int argc, char **argv)
     bool candidate_mode = candidate_source_arg != NULL ||
                           candidate_recipe_arg != NULL ||
                           candidate_name != NULL ||
-                          candidate_profile != NULL;
+                          candidate_profile != NULL ||
+                          candidate_cpu_arg != NULL;
     bool standard_profile = candidate_profile &&
                             strcmp(candidate_profile, "standard") == 0;
     bool known_candidate_profile = candidate_profile &&
         (standard_profile || strcmp(candidate_profile, "quick") == 0);
+    char *candidate_cpu_end = NULL;
+    errno = 0;
+    unsigned long long candidate_cpu_seconds = candidate_cpu_arg
+        ? strtoull(candidate_cpu_arg, &candidate_cpu_end, 10) : 0;
+    bool candidate_cpu_valid = candidate_cpu_arg && candidate_cpu_arg[0] &&
+        candidate_cpu_end && *candidate_cpu_end == '\0' && errno == 0 &&
+        candidate_cpu_seconds >= 1 && candidate_cpu_seconds <= 600;
     /* The modes are mutually exclusive: an emit run signs nothing, so a
      * key would only invite the belief that its output was attested.
      * --reproduce-against belongs to emit mode: it is the byte-identity
@@ -1714,12 +1766,15 @@ int main(int argc, char **argv)
     bool candidate_shape = candidate_mode && root_hex && !store_dir &&
         !key_path && emit_dir && lock_root_hex && candidate_source_arg &&
         candidate_recipe_arg && candidate_name && candidate_name[0] &&
-        known_candidate_profile &&
+        known_candidate_profile && candidate_cpu_valid &&
         !reproduce_path && require_full_isolation;
     if (!normal_shape && !candidate_shape) {
         pv_usage(stderr);
         return 2;
     }
+    if (candidate_shape)
+        g_pv_cpu_budget_us = (uint64_t)candidate_cpu_seconds *
+                             UINT64_C(1000000);
     uint8_t emit_lock_root[32] = { 0 };
     if (emit_dir && !zcl_hex_decode(lock_root_hex, emit_lock_root, 32)) {
         fprintf(stderr, "%s: --lock-root wants 64 hex chars\n", PV_LOG);
@@ -2804,6 +2859,7 @@ int main(int argc, char **argv)
             printf("zbuild-package-perf=v1 processes=%llu "
                    "compiler_processes=%llu test_processes=%llu "
                    "other_processes=%llu child_wall_us=%llu "
+                   "child_cpu_us=%llu "
                    "compiler_wall_us=%llu test_wall_us=%llu "
                    "source_bytes=%llu output_bytes=%llu\n",
                    (unsigned long long)g_pv_perf.processes,
@@ -2811,6 +2867,7 @@ int main(int argc, char **argv)
                    (unsigned long long)g_pv_perf.test_processes,
                    (unsigned long long)g_pv_perf.other_processes,
                    (unsigned long long)g_pv_perf.child_wall_us,
+                   (unsigned long long)g_pv_perf.child_cpu_us,
                    (unsigned long long)g_pv_perf.compiler_wall_us,
                    (unsigned long long)g_pv_perf.test_wall_us,
                    (unsigned long long)source_bytes,
