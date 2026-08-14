@@ -23,6 +23,83 @@ beta_native() {
     dht_native "${DDS[$role]}" "${RPCS[$role]}" -regtest "$@"
 }
 
+BETA_VISUAL_AGENT_REQUESTS=0
+BETA_VISUAL_HUMAN_ACTIONS=0
+BETA_VISUAL_BROWSER_DELTA=0
+BETA_VISUAL_PLAN_IDENTITY=""
+BETA_VISUAL_ENABLED=false
+
+beta_browser_snapshot() {
+    ps -eo pid=,comm= | awk '
+        { name=tolower($2) }
+        name ~ /^(firefox|chrome|chromium|brave|webkit)/ {
+            print $1 ":" $2
+        }' | sort
+}
+
+if [ "${C23_BETA_NATIVE_UI_JOURNEY:-0}" = 1 ]; then
+    [ -x "${C23_BETA_NATIVE_UI_DRIVER:-}" ] ||
+        beta_die "native UI journey driver is unavailable"
+    BETA_VISUAL_ENABLED=true
+    BETA_VISUAL_BROWSERS_BEFORE="$(beta_browser_snapshot)"
+    : >"$DHT_WORK/native-ui-agent-requests"
+    : >"$DHT_WORK/native-ui-human-actions"
+fi
+
+beta_visual_assert_reply() {
+    local label="$1" reply="$2"
+    [ "$(printf '%s' "$reply" | beta_jget 'd.get("ok",False)' 2>/dev/null || true)" = True ] &&
+    [ "$(printf '%s' "$reply" | beta_jget 'd.get("data",{}).get("launched",False)' 2>/dev/null || true)" = True ] &&
+    [ "$(printf '%s' "$reply" | beta_jget 'd.get("data",{}).get("resident_host",False)' 2>/dev/null || true)" = True ] &&
+    [ "$(printf '%s' "$reply" | beta_jget 'd.get("data",{}).get("authority","")' 2>/dev/null || true)" = display-only ] ||
+        beta_die "$label did not use the display-only resident host: $reply"
+}
+
+beta_visual_confirm_publication() {
+    local role="$1" input="$2" expected_plan="$3"
+    local reply_file="$DHT_WORK/native-publication-confirm.json"
+    local pid reply decision plan_identity expected_identity
+    expected_identity="$(printf '%s' "$expected_plan" | beta_jget \
+        'd["data"]["plan_token"]')"
+    beta_native "$role" app presentation publication-confirm \
+        --input="$input" >"$reply_file" 2>&1 &
+    pid="$!"
+    "$C23_BETA_NATIVE_UI_DRIVER" \
+        --title='Publish this exact package locally?' --key=1 \
+        --timeout-ms=5000 >/dev/null || {
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            beta_die "exact package publication decision was not delivered"
+        }
+    wait "$pid" || beta_die "native package publication confirmation failed"
+    reply="$(<"$reply_file")"
+    beta_visual_assert_reply "package publication confirmation" "$reply"
+    decision="$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("human_decision","")')"
+    plan_identity="$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("plan_identity","")')"
+    [ "$decision" = CONFIRM ] && [ "$plan_identity" = "$expected_identity" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("privileged_action_performed",True)')" = False ] ||
+        beta_die "human decision was not bound to the exact inert plan"
+    printf '%s\n' "$plan_identity" >"$DHT_WORK/native-ui-plan-identity"
+    printf '%s\n' confirmation >>"$DHT_WORK/native-ui-agent-requests"
+    printf '%s\n' confirm >>"$DHT_WORK/native-ui-human-actions"
+}
+
+beta_visual_reproduction() {
+    local role="$1" action="$2" phase="$3" reply
+    [ "$BETA_VISUAL_ENABLED" = true ] || return 0
+    reply="$(beta_native "$role" app presentation reproduction \
+        --input="{\"action_id\":\"$action\"}")"
+    beta_visual_assert_reply "reproduction progress ($phase)" "$reply"
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("action_id","")')" = "$action" ] ||
+        beta_die "reproduction view lost its exact action identity"
+    printf '%s\n' "reproduction-$phase" \
+        >>"$DHT_WORK/native-ui-agent-requests"
+}
+
 BETA_NAMESPACE="zclassic23.package"
 BETA_BASE_ROOT="7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe"
 BETA_SHA3_ROOT="ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e"
@@ -411,6 +488,11 @@ beta_seal_publish() {
     plan="$(beta_native "$role" zcode create \
         --input="{\"mode\":\"plan\",\"release_hex\":\"$release\",\"manifest_hex\":\"$manifest\",\"recipe_hex\":\"$recipe\",\"dir\":\"$dir\",\"day\":$day}")"
     beta_ok "$label create plan" "$plan"
+    local publish_input
+    publish_input="{\"release_hex\":\"$release\",\"manifest_hex\":\"$manifest\",\"recipe_hex\":\"$recipe\",\"dir\":\"$dir\"}"
+    if [ "$BETA_VISUAL_ENABLED" = true ] && [ "$label" = v2 ]; then
+        beta_visual_confirm_publication "$role" "$publish_input" "$plan"
+    fi
     commit="$(beta_native "$role" zcode create \
         --input="{\"mode\":\"commit\",\"release_hex\":\"$release\",\"manifest_hex\":\"$manifest\",\"recipe_hex\":\"$recipe\",\"dir\":\"$dir\",\"day\":$day}")"
     beta_ok "$label create commit" "$commit"
@@ -511,14 +593,14 @@ beta_pin() {
 beta_fetch_pin() {
     local role="$1" root="$2" transport="$3" fetched imported
     fetched="$(beta_native "$role" zcode package fetch \
-        --input="{\"root\":\"$transport\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}")"
+        --input="{\"root\":\"$transport\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}" || true)"
     beta_ok "role $role fetch $transport" "$fetched"
     [ "$(printf '%s' "$fetched" | beta_jget 'd["data"].get("live",False)')" = True ] ||
         beta_die "role $role did not route fetch through its live daemon"
     beta_wait_complete "$role" "$transport" ||
         beta_die "role $role did not complete $transport"
     imported="$(beta_native "$role" zcode package fetch \
-        --input="{\"root\":\"$transport\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}")"
+        --input="{\"root\":\"$transport\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}" || true)"
     beta_ok "role $role import $transport" "$imported"
     [ "$(printf '%s' "$imported" | beta_jget 'd["data"].get("reconstructed",False)')" = True ] ||
         beta_die "role $role did not reconstruct signed carrier $transport"
@@ -867,6 +949,18 @@ V2_ARCHIVE="${DDS[$BETA_C]}/zcode/installed/$BETA_V2_ROOT/lib/libsha3-note.a"
 V2_ARTIFACT="$(openssl dgst -sha3-256 "$V2_ARCHIVE" | awk '{print $NF}')"
 [ "$V2_ARTIFACT" != "$C_ARTIFACT" ] ||
     beta_die "v2 semantic implementation edit did not change its archive"
+V2_APP_BIN="$DHT_WORK/sha3-note-v2"
+cc -std=c23 -O2 -march=x86-64 -mtune=generic -Wall -Wextra -Werror \
+    -I"${DDS[$BETA_C]}/zcode/installed/$BETA_V2_ROOT/include" \
+    -I"${DDS[$BETA_C]}/zcode/installed/$BETA_BASE_ROOT/include" \
+    -I"${DDS[$BETA_C]}/zcode/installed/$BETA_SHA3_ROOT/include" \
+    "$APP_SOURCE/app/main.c" "$V2_ARCHIVE" \
+    "${DDS[$BETA_C]}/zcode/installed/$BETA_SHA3_ROOT/lib/libsha3.a" \
+    "${DDS[$BETA_C]}/zcode/installed/$BETA_BASE_ROOT/lib/libbase.a" \
+    -o "$V2_APP_BIN"
+V2_APP_OUTPUT="$("$V2_APP_BIN" hello)"
+[ "$V2_APP_OUTPUT" = "$BETA_EXPECTED_NOTE" ] ||
+    beta_die "confirmed v2 package could not be used by its consumer"
 
 beta_note "v3 moves the same offline author identity to interchangeable C"
 python3 - "$APP_SOURCE/include/stranger/note.h" <<'PY'
@@ -1002,7 +1096,11 @@ REVERT_RECEIPT="$BETA_BUILD_RECEIPT"
 # signer, or process topology. Its standard profile also proves an inert
 # importer cannot acquire execution/evidence authority merely by fetching.
 beta_note "installed nodes obtain two signer-owned reproduction receipts"
+if [ "$BETA_VISUAL_ENABLED" = true ]; then
+    ZAP_PROGRESS_OBSERVER=beta_visual_reproduction
+fi
 source "$SCRIPT_DIR/zcode_async_proof_acceptance_hook.sh"
+unset ZAP_PROGRESS_OBSERVER
 
 # C remains live at the end of the shared hook. D is an interchangeable full
 # node and may have been stopped by later lease scenarios; restart it only to
@@ -1014,6 +1112,23 @@ D_SIGNER="$(zap_sql_value "$ZAP_D" "SELECT w.signer_pubkey FROM build_actions a 
 [ "$C_SIGNER" != "$D_SIGNER" ] ||
     beta_die "installed reproduction report lost its two distinct signers"
 
+if [ "$BETA_VISUAL_ENABLED" = true ]; then
+    BETA_VISUAL_BROWSERS_AFTER="$(beta_browser_snapshot)"
+    [ "$BETA_VISUAL_BROWSERS_BEFORE" = "$BETA_VISUAL_BROWSERS_AFTER" ] || {
+        BETA_VISUAL_BROWSER_DELTA=1
+        beta_die "browser process set changed during installed package journey"
+    }
+    BETA_VISUAL_AGENT_REQUESTS="$(wc -l \
+        <"$DHT_WORK/native-ui-agent-requests" | tr -d ' ')"
+    BETA_VISUAL_HUMAN_ACTIONS="$(wc -l \
+        <"$DHT_WORK/native-ui-human-actions" | tr -d ' ')"
+    BETA_VISUAL_PLAN_IDENTITY="$(<"$DHT_WORK/native-ui-plan-identity")"
+    [ "$BETA_VISUAL_AGENT_REQUESTS" -eq 3 ] &&
+    [ "$BETA_VISUAL_HUMAN_ACTIONS" -eq 1 ] &&
+    [ "$BETA_VISUAL_PLAN_IDENTITY" = "$BETA_V2_RELEASE_ID" ] ||
+        beta_die "native journey action accounting or exact plan binding drifted"
+fi
+
 printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_stretch.v1\",\"verdict\":\"PASS\",\"second_package_root\":\"$BETA_SECOND_ROOT\",\"second_transport_root\":\"$BETA_SECOND_TRANSPORT\",\"second_release_id\":\"$BETA_SECOND_RELEASE_ID\",\"second_recipe_root\":\"$BETA_SECOND_RECIPE_ROOT\",\"second_dependency_lock_root\":\"$BETA_SECOND_LOCK_ROOT\",\"second_api_capsule_root\":\"$BETA_SECOND_API_ROOT\",\"second_author_pubkey\":\"$SECOND_AUTHOR_PUB\",\"authors_distinct\":true,\"shared_dependency_root\":\"$BETA_BASE_ROOT\",\"shared_dependency_receipt\":\"$C_BASE_RECEIPT\",\"shared_dependency_artifact_root\":\"$C_BASE_ARTIFACT\",\"shared_dependency_physical_builds_on_consumer\":1,\"shared_dependency_receipt_reused\":true,\"downstream_applications\":2,\"package_build_target\":\"linux-x86_64\",\"package_cpu_runtime_proof\":\"$PACKAGE_CPU_RUNTIME_PROOF\",\"first_standalone_output\":\"$FIRST_SHARED_APP_OUTPUT\",\"second_build_receipt_id\":\"$SECOND_RECEIPT\",\"second_artifact_root\":\"$SECOND_ARTIFACT\",\"second_objects_transferred\":$SECOND_TRANSFERRED_OBJECTS,\"second_bytes_transferred\":$SECOND_TRANSFERRED_BYTES,\"second_standalone_output\":\"$SECOND_APP_OUTPUT\",\"compiled_registry_admission\":false,\"second_publisher_store_removed\":true,\"alternate_provider_refetch\":true}"
 
-printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_installed.v1\",\"verdict\":\"PASS\",\"installed_binary\":\"$C23_BETA_INSTALL_BIN/zclassic23\",\"repository_source_used_by_consumers\":false,\"package_root\":\"$BETA_PACKAGE_ROOT\",\"dependency_roots\":[\"$BETA_BASE_ROOT\",\"$BETA_SHA3_ROOT\"],\"author_pubkey\":\"$AUTHOR_PUB\",\"build_receipt_id\":\"$C_RECEIPT\",\"artifact_root\":\"$C_ARTIFACT\",\"fetch_inert\":true,\"explicit_builds\":2,\"publisher_disappearance_survived\":true,\"standalone_output\":\"$APP_OUTPUT\",\"updates\":{\"v1\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"recipe_root\":\"$BETA_V1_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V1_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V1_API_ROOT\",\"artifact_root\":\"$C_ARTIFACT\"},\"v2\":{\"package_root\":\"$BETA_V2_ROOT\",\"transport_root\":\"$BETA_V2_TRANSPORT\",\"release_id\":\"$BETA_V2_RELEASE_ID\",\"recipe_root\":\"$BETA_V2_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V2_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V2_API_ROOT\",\"artifact_root\":\"$V2_ARTIFACT\",\"objects_requested\":$V2_REQUESTED_OBJECTS,\"objects_transferred\":$V2_TRANSFERRED_OBJECTS,\"objects_reused\":$V2_REUSED_OBJECTS,\"bytes_requested\":$V2_REQUESTED_BYTES,\"bytes_transferred\":$V2_TRANSFERRED_BYTES,\"bytes_reused\":$V2_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"v3\":{\"package_root\":\"$BETA_V3_ROOT\",\"transport_root\":\"$BETA_V3_TRANSPORT\",\"release_id\":\"$BETA_V3_RELEASE_ID\",\"recipe_root\":\"$BETA_V3_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V3_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V3_API_ROOT\",\"artifact_root\":\"$V3_ARTIFACT\",\"objects_requested\":$V3_REQUESTED_OBJECTS,\"objects_transferred\":$V3_TRANSFERRED_OBJECTS,\"objects_reused\":$V3_REUSED_OBJECTS,\"bytes_requested\":$V3_REQUESTED_BYTES,\"bytes_transferred\":$V3_TRANSFERRED_BYTES,\"bytes_reused\":$V3_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"revert\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"bytes_transferred\":0,\"packages_rebuilt\":0,\"packages_reused\":3,\"prior_evidence_reused\":3,\"build_receipt_id\":\"$REVERT_RECEIPT\"},\"v1_fetchable_after_v3\":true,\"author_sequence_is_advisory\":true,\"exact_root_local_policy\":true},\"signed_reproduction\":{\"actions\":[\"$C_STANDARD_ACTION\",\"$D_STANDARD_ACTION\"],\"output_root\":\"$C_OUTPUT\",\"signers\":[\"$C_SIGNER\",\"$D_SIGNER\"],\"distinct_signers\":2,\"requester_executed\":false}}"
+printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_installed.v1\",\"verdict\":\"PASS\",\"installed_binary\":\"$C23_BETA_INSTALL_BIN/zclassic23\",\"repository_source_used_by_consumers\":false,\"package_root\":\"$BETA_PACKAGE_ROOT\",\"dependency_roots\":[\"$BETA_BASE_ROOT\",\"$BETA_SHA3_ROOT\"],\"author_pubkey\":\"$AUTHOR_PUB\",\"build_receipt_id\":\"$C_RECEIPT\",\"artifact_root\":\"$C_ARTIFACT\",\"fetch_inert\":true,\"explicit_builds\":2,\"publisher_disappearance_survived\":true,\"standalone_output\":\"$APP_OUTPUT\",\"native_package_change_journey\":{\"enabled\":$BETA_VISUAL_ENABLED,\"agent_visual_requests\":$BETA_VISUAL_AGENT_REQUESTS,\"human_actions\":$BETA_VISUAL_HUMAN_ACTIONS,\"browser_process_delta\":$BETA_VISUAL_BROWSER_DELTA,\"display_authority\":\"none\",\"confirmed_plan_identity\":\"$BETA_VISUAL_PLAN_IDENTITY\",\"published_package_root\":\"$BETA_V2_ROOT\",\"consumer_output\":\"$V2_APP_OUTPUT\"},\"updates\":{\"v1\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"recipe_root\":\"$BETA_V1_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V1_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V1_API_ROOT\",\"artifact_root\":\"$C_ARTIFACT\"},\"v2\":{\"package_root\":\"$BETA_V2_ROOT\",\"transport_root\":\"$BETA_V2_TRANSPORT\",\"release_id\":\"$BETA_V2_RELEASE_ID\",\"recipe_root\":\"$BETA_V2_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V2_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V2_API_ROOT\",\"artifact_root\":\"$V2_ARTIFACT\",\"objects_requested\":$V2_REQUESTED_OBJECTS,\"objects_transferred\":$V2_TRANSFERRED_OBJECTS,\"objects_reused\":$V2_REUSED_OBJECTS,\"bytes_requested\":$V2_REQUESTED_BYTES,\"bytes_transferred\":$V2_TRANSFERRED_BYTES,\"bytes_reused\":$V2_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"v3\":{\"package_root\":\"$BETA_V3_ROOT\",\"transport_root\":\"$BETA_V3_TRANSPORT\",\"release_id\":\"$BETA_V3_RELEASE_ID\",\"recipe_root\":\"$BETA_V3_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V3_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V3_API_ROOT\",\"artifact_root\":\"$V3_ARTIFACT\",\"objects_requested\":$V3_REQUESTED_OBJECTS,\"objects_transferred\":$V3_TRANSFERRED_OBJECTS,\"objects_reused\":$V3_REUSED_OBJECTS,\"bytes_requested\":$V3_REQUESTED_BYTES,\"bytes_transferred\":$V3_TRANSFERRED_BYTES,\"bytes_reused\":$V3_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"revert\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"bytes_transferred\":0,\"packages_rebuilt\":0,\"packages_reused\":3,\"prior_evidence_reused\":3,\"build_receipt_id\":\"$REVERT_RECEIPT\"},\"v1_fetchable_after_v3\":true,\"author_sequence_is_advisory\":true,\"exact_root_local_policy\":true},\"signed_reproduction\":{\"actions\":[\"$C_STANDARD_ACTION\",\"$D_STANDARD_ACTION\"],\"output_root\":\"$C_OUTPUT\",\"signers\":[\"$C_SIGNER\",\"$D_SIGNER\"],\"distinct_signers\":2,\"requester_executed\":false}}"

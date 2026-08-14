@@ -548,6 +548,11 @@ dht_note "async proof: B imports inert bytes while C and D reproduce one standar
 zap_submit "$ZAP_A" 6 "Change x to six for independent reproduction" 600 standard
 STANDARD_ACTION="$ZAP_ACTION"; STANDARD_REPRO_ACTION="$ZAP_REPRO_ACTION"
 STANDARD_MS="$ZAP_FOREGROUND_MS"
+if [ -n "${ZAP_PROGRESS_OBSERVER:-}" ]; then
+    declare -F "$ZAP_PROGRESS_OBSERVER" >/dev/null ||
+        dht_die "configured standard progress observer is unavailable"
+    "$ZAP_PROGRESS_OBSERVER" "$ZAP_A" "$STANDARD_ACTION" submitted
+fi
 STANDARD_CONTEXT="$(zap_wait_context_root "$ZAP_A" "$STANDARD_ACTION")" ||
     dht_die "standard action never bound its content carrier"
 zap_publish_context_provider "$ZAP_A" "$STANDARD_CONTEXT"
@@ -559,6 +564,9 @@ zap_wait_reproduction_ready "$ZAP_A" "$STANDARD_ACTION" \
         zap_dump_failure "$ZAP_A" "$STANDARD_REPRO_ACTION"
         dht_die "C and D did not satisfy the standard reproduction policy"
     }
+if [ -n "${ZAP_PROGRESS_OBSERVER:-}" ]; then
+    "$ZAP_PROGRESS_OBSERVER" "$ZAP_A" "$STANDARD_ACTION" ready
+fi
 
 C_STANDARD_ACTION="$(zap_sql_value "$ZAP_C" "SELECT action_id FROM build_actions WHERE action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION') AND state IN ('ACCEPTED','CACHE_HIT')")"
 D_STANDARD_ACTION="$(zap_sql_value "$ZAP_D" "SELECT action_id FROM build_actions WHERE action_id IN ('$STANDARD_ACTION','$STANDARD_REPRO_ACTION') AND state IN ('ACCEPTED','CACHE_HIT')")"

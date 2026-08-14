@@ -2245,8 +2245,10 @@ native-agent-ui-alpha:
 	@$(MAKE) --no-print-directory native-agent-ui-physical-acceptance
 	@$(MAKE) --no-print-directory t-fast-exact \
 	  ONLY='test_qr,test_syncdiag_rpc,test_zcode_publish'
-	@$(MAKE) --no-print-directory c23-commons-installed-acceptance
-	@printf '%s\n' '{"schema":"zcl.native_agent_ui_alpha.v1","verdict":"PASS","renderer_neutral_model":true,"resident_same_binary_host":true,"bounded_keyboard_pagination":true,"progress_host_restart_resume":true,"configured_agent_typed_views":true,"typed_qr":true,"typed_status":true,"typed_code_diff":true,"typed_reproduction_progress":true,"exact_publication_confirmation":true,"visual_authority":"none","authored_ux":"c23","browser_required":false,"headless_refusal_named":true,"stranger_beta_green":true}'
+	@C23_BETA_NATIVE_UI_JOURNEY=1 \
+	  C23_BETA_NATIVE_UI_DRIVER="$(CURDIR)/$(NATIVE_UI_DRIVER_BIN)" \
+	  $(MAKE) --no-print-directory c23-commons-installed-acceptance
+	@printf '%s\n' '{"schema":"zcl.native_agent_ui_alpha.v1","verdict":"PASS","renderer_neutral_model":true,"resident_same_binary_host":true,"bounded_keyboard_pagination":true,"progress_host_restart_resume":true,"configured_agent_typed_views":true,"typed_qr":true,"typed_status":true,"typed_code_diff":true,"typed_reproduction_progress":true,"exact_publication_confirmation":true,"installed_package_change_journey":true,"agent_visual_requests":3,"human_actions":1,"visual_authority":"none","authored_ux":"c23","browser_required":false,"headless_refusal_named":true,"stranger_beta_green":true}'
 
 # Measurement-only scaling campaign over the same three interchangeable full
 # nodes.  It creates no lifecycle/cache authority beyond canonical immutable
