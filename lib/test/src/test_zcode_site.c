@@ -518,6 +518,8 @@ static int t_routes_and_agreement(const char *dd)
              strstr(r, "What it does") &&
              strstr(r, "Try it") &&
              strstr(r, "Change it") &&
+             strstr(r, "Tell your agent") &&
+             !strstr(r, "Workshop") &&
              strstr(r, "What changed") &&
              strstr(r, "Verify") &&
              strstr(r, "Use and share") &&

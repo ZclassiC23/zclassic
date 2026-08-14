@@ -41,7 +41,16 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
         nqr_fail(reply, "TITLE_TOO_LARGE", "title exceeds 80 bytes");
         return;
     }
-    struct zcl_result launched = ui_present_qr_launch(payload, title);
+    int64_t started_us = platform_time_monotonic_us();
+    struct ui_present_host_result host;
+    struct zcl_result launched = ui_present_host_submit_qr(
+        payload, title, &host);
+    bool cold_fallback = false;
+    if (!launched.ok) {
+        launched = ui_present_qr_launch(payload, title);
+        cold_fallback = launched.ok;
+    }
+    int64_t handoff_us = platform_time_monotonic_us() - started_us;
     if (!launched.ok) {
         nqr_fail(reply, "QR_LAUNCH_FAILED", launched.message);
         return;
@@ -50,6 +59,14 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
     (void)json_push_kv_str(&reply->data, "presentation_kind", "qr");
     (void)json_push_kv_int(&reply->data, "payload_bytes",
                            (int64_t)payload_len);
+    (void)json_push_kv_int(&reply->data, "launch_handoff_us", handoff_us);
+    (void)json_push_kv_bool(&reply->data, "resident_host",
+                            !cold_fallback && host.resident_host);
+    (void)json_push_kv_bool(&reply->data, "host_reused",
+                            !cold_fallback && host.host_reused);
+    (void)json_push_kv_int(&reply->data, "window_ready_us",
+                           cold_fallback ? -1 : host.ready_us);
+    (void)json_push_kv_str(&reply->data, "authority", "display-only");
     (void)json_push_kv_str(&reply->data, "backend",
                            zcl_present_backend_name());
     (void)json_push_kv_str(&reply->data, "platform",

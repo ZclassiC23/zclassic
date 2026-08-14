@@ -26,6 +26,13 @@ struct zcl_result ui_present_host_submit(
     bool wait_for_event,
     struct ui_present_host_result *result);
 
+/* Preserve the proven QR compositor while sharing the resident transport.
+ * Payload/title bytes are length-framed and remain inert display input. */
+struct zcl_result ui_present_host_submit_qr(
+    const char *payload,
+    const char *title,
+    struct ui_present_host_result *result);
+
 /* Private exact-argv entry point dispatched before node initialization. */
 int ui_present_host_main(void);
 

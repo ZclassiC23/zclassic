@@ -105,9 +105,10 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_COMMAND(
     "app.qr.show", "app.qr", "", "Show a payload as a native QR window",
-    "Launches a detached same-binary portable C QR window and returns "
-    "immediately. The bounded payload crosses the process boundary through "
-    "stdin, never argv, environment, node transport, logs, or the result. The "
+    "Launches a portable C QR window through the warm same-binary presentation "
+    "host, retaining the detached reviewed child as a portable fallback. The "
+    "bounded payload crosses only length-framed local IPC or framed stdin, "
+    "never argv, environment, node transport, logs, or the result. The "
     "window copies with C, closes with Escape/Q, and uses an integer-scaled "
     "four-module quiet zone for reliable scanning. RGFW and the QR encoder are "
     "pinned permissive source in this repository.", 0,

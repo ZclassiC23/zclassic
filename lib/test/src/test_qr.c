@@ -9,6 +9,7 @@
 #include "presentation/zclassic_brand.h"
 #include "views/qr_popup.h"
 #include "views/ui_present.h"
+#include "views/ui_present_host.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -222,6 +223,18 @@ int test_qr(void)
              !zcl_present_window_run_actions_v1(
                  &present, ZCL_PRESENT_WINDOW_ACTIONS_MAX + 1u,
                  NULL, NULL, &bounded_event, why, sizeof(why)));
+    struct ui_present_host_result host_result;
+    struct zcl_result empty_host_qr = ui_present_host_submit_qr(
+        "", "Empty", &host_result);
+    QR_CHECK("resident QR framing rejects an empty payload",
+             !empty_host_qr.ok);
+    char oversized_qr[ZCL_QR_MAX_PAYLOAD + 2u];
+    memset(oversized_qr, 'x', sizeof(oversized_qr) - 1u);
+    oversized_qr[sizeof(oversized_qr) - 1u] = '\0';
+    struct zcl_result oversized_host_qr = ui_present_host_submit_qr(
+        oversized_qr, "Oversized", &host_result);
+    QR_CHECK("resident QR framing rejects oversized bytes",
+             !oversized_host_qr.ok);
     QR_CHECK("presentation backend is the pinned software backend",
              strcmp(zcl_present_backend_name(), "rgfw-1.8.1-software") == 0);
     QR_CHECK("presentation uses stable desktop application identity",

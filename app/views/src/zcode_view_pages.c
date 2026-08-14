@@ -210,10 +210,11 @@ size_t zcode_view_package(const struct zcode_view_package_input *in,
         "success, failure, time, and resource limits as package facts.</p>"
         "</section>"
         "<section class='card'><h2>Change it</h2>"
-        "<p>This installed page is read-only. It cannot run an agent, edit "
-        "source, accept a candidate, or publish a successor. Those actions "
-        "remain unavailable until an authenticated Workshop flow is "
-        "present.</p></section>",
+        "<p>This installed compatibility page is read-only. Tell your agent "
+        "what you want to change; typed native commands perform the work and "
+        "summon bounded native C23 views when you need to inspect, compare, "
+        "choose, or confirm something. This page never gains software "
+        "authority.</p></section>",
         safe_name, safe_semver, safe_semver);
     if (n > 0) off += (size_t)n;
 

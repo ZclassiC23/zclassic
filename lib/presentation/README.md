@@ -30,11 +30,14 @@ The full binary's resident boundary is
 `app/views/src/ui_present_host.c`. On Linux it binds a per-user, per-display
 abstract AF_UNIX endpoint (no socket path or canonical datadir), accepts only
 same-UID peers, and forks disposable window workers from one warm exact-binary
-parent. The first software blit is acknowledged separately from a later
-numbered action/dismissal event. The event carries no authority: the calling
+parent. QR cards and renderer-neutral models share this transport without
+changing their separate deterministic compositors. The first software blit is
+acknowledged separately from a later numbered action/dismissal event. The event
+carries no authority: the calling
 node or agent command must recheck the exact root, authentication, capability,
-local policy, and plan/commit state. The host imports no wallet, Internet,
-package execution, publication, deployment, or consensus surface. Other
+local policy, and plan/commit state. This early-dispatch host code path opens
+no Internet socket or canonical datadir and calls no wallet, package execution,
+publication, deployment, or consensus surface. Other
 desktop platforms retain the existing same-binary native cold path while the
 resident transport is ported; the renderer/model library itself remains
 cross-linked on Linux, Windows, and macOS.
