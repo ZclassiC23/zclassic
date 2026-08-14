@@ -27,6 +27,7 @@
 #if defined(__linux__)
 #include <poll.h>
 #include <sys/socket.h>
+#include <sys/prctl.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -300,6 +301,16 @@ static int ui_host_worker(int listener, int client, uint16_t flags,
     if (!shown) ui_host_send_rejected(client, UI_HOST_PHASE_READY, nonce);
     close(client);
     return shown ? 0 : 1;
+}
+
+/* A window worker owns only pixels and input, but it must not outlive the
+ * resident display host that owns its bounded session table. Bind the child
+ * before any window is created and close the fork/prctl race by rechecking the
+ * exact parent PID afterwards. */
+static bool ui_host_worker_bind_parent(pid_t expected_parent)
+{
+    return prctl(PR_SET_PDEATHSIG, SIGTERM) == 0 &&
+           getppid() == expected_parent;
 }
 
 struct ui_host_session {
@@ -580,10 +591,13 @@ int ui_present_host_main(void)
                 view_replaced = ui_host_session_replace(sessions,
                                                         request_id);
         }
+        pid_t expected_parent = getpid();
         pid_t worker = fork();
-        if (worker == 0)
+        if (worker == 0) {
+            if (!ui_host_worker_bind_parent(expected_parent)) _exit(1);
             _exit(ui_host_worker(listener, client, flags, view_replaced,
                                  wire, wire_len, nonce));
+        }
         if (worker < 0 ||
             (replaceable &&
              !ui_host_session_remember(sessions, request_id, worker))) {

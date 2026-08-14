@@ -2246,7 +2246,7 @@ native-agent-ui-alpha:
 	@$(MAKE) --no-print-directory t-fast-exact \
 	  ONLY='test_qr,test_zcode_publish'
 	@$(MAKE) --no-print-directory c23-commons-installed-acceptance
-	@printf '%s\n' '{"schema":"zcl.native_agent_ui_alpha.v1","verdict":"PASS","renderer_neutral_model":true,"resident_same_binary_host":true,"bounded_keyboard_pagination":true,"typed_qr":true,"typed_status":true,"typed_code_diff":true,"typed_reproduction_progress":true,"exact_publication_confirmation":true,"visual_authority":"none","authored_ux":"c23","browser_required":false,"headless_refusal_named":true,"stranger_beta_green":true}'
+	@printf '%s\n' '{"schema":"zcl.native_agent_ui_alpha.v1","verdict":"PASS","renderer_neutral_model":true,"resident_same_binary_host":true,"bounded_keyboard_pagination":true,"progress_host_restart_resume":true,"typed_qr":true,"typed_status":true,"typed_code_diff":true,"typed_reproduction_progress":true,"exact_publication_confirmation":true,"visual_authority":"none","authored_ux":"c23","browser_required":false,"headless_refusal_named":true,"stranger_beta_green":true}'
 
 # Measurement-only scaling campaign over the same three interchangeable full
 # nodes.  It creates no lifecycle/cache authority beyond canonical immutable

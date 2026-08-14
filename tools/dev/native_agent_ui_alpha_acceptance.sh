@@ -30,6 +30,27 @@ host_pids() {
             *"XDG_RUNTIME_DIR=$RUNTIME_DIR"*) printf '%s\n' "${proc##*/}" ;;
         esac
     done
+    return 0
+}
+
+host_parent_pids() {
+    local pid children
+    while IFS= read -r pid; do
+        [ -r "/proc/$pid/task/$pid/children" ] || continue
+        children="$(<"/proc/$pid/task/$pid/children")"
+        [ -n "$children" ] && printf '%s\n' "$pid"
+    done < <(host_pids)
+    return 0
+}
+
+wait_for_host_exit() {
+    local attempt remaining
+    for attempt in $(seq 1 100); do
+        remaining="$(host_pids)"
+        [ -z "$remaining" ] && return 0
+        sleep 0.02
+    done
+    return 1
 }
 
 cleanup() {
@@ -72,12 +93,14 @@ json_int() {
 timed_command() {
     local output_name="$1" elapsed_name="$2"
     shift 2
-    local started finished command_output
+    local started finished command_output command_rc=0
     started="$(date +%s%N)"
-    command_output="$("$@")"
+    command_output="$("$@")" || command_rc="$?"
     finished="$(date +%s%N)"
     printf -v "$output_name" '%s' "$command_output"
     printf -v "$elapsed_name" '%s' "$(( (finished - started) / 1000 ))"
+    [ "$command_rc" -eq 0 ] ||
+        fail "typed presentation command failed rc=$command_rc: $command_output"
 }
 
 assert_display_reply() {
@@ -142,9 +165,18 @@ for step in $(seq 1 20); do
     timed_command PROGRESS_REPLY PROGRESS_TOTAL_US \
         "$NODE_BIN" app presentation show --input="$PROGRESS_MODEL"
     assert_display_reply "$PROGRESS_REPLY"
-    json_has "$PROGRESS_REPLY" '"host_reused":true' ||
-        fail "warm presentation request did not reuse the resident host"
-    if [ "$step" -gt 1 ]; then
+    if [ "$step" -eq 11 ]; then
+        json_has "$PROGRESS_REPLY" '"host_reused":false' ||
+            fail "progress did not cold-resume through a fresh host"
+        json_has "$PROGRESS_REPLY" '"view_replaced":false' ||
+            fail "fresh host claimed authority over the prior display"
+        HOST_RESTART_TOTAL_US="$PROGRESS_TOTAL_US"
+        HOST_RESTART_HANDOFF_US="$(json_int "$PROGRESS_REPLY" launch_handoff_us)"
+    else
+        json_has "$PROGRESS_REPLY" '"host_reused":true' ||
+            fail "warm presentation request did not reuse the resident host"
+    fi
+    if [ "$step" -gt 1 ] && [ "$step" -ne 11 ]; then
         json_has "$PROGRESS_REPLY" '"view_replaced":true' ||
             fail "live progress update did not replace its exact prior view"
     fi
@@ -153,6 +185,21 @@ for step in $(seq 1 20); do
     [ -n "$PROGRESS_HANDOFF_US" ] ||
         fail "progress reply omitted launch_handoff_us"
     printf '%s\n' "$PROGRESS_HANDOFF_US" >> "$HANDOFFS"
+    if [ "$step" -eq 10 ]; then
+        HOST_PARENT_PID="$(host_parent_pids)"
+        [ -n "$HOST_PARENT_PID" ] ||
+            fail "resident presentation parent could not be identified"
+        case "$HOST_PARENT_PID" in
+            *$'\n'*) fail "multiple resident presentation parents found" ;;
+        esac
+        echo "native-agent-ui-alpha: stopping resident host $HOST_PARENT_PID" >&2
+        kill "$HOST_PARENT_PID" ||
+            fail "resident presentation parent could not be stopped"
+        echo "native-agent-ui-alpha: resident host signal delivered" >&2
+        wait_for_host_exit ||
+            fail "display worker survived its resident host"
+        echo "native-agent-ui-alpha: resident host and worker exited" >&2
+    fi
 done
 "$DRIVER_BIN" --title='Alpha reproduction progress' --key=escape \
     --timeout-ms=3000 >/dev/null
@@ -170,6 +217,11 @@ UPDATE_TOTAL_US="$(tail -1 "$LATENCIES")"
 UPDATE_HANDOFF_US="$(tail -1 "$HANDOFFS")"
 [ "$UPDATE_HANDOFF_US" -le 50000 ] ||
     fail "resident progress update ${UPDATE_HANDOFF_US}us exceeds 50000us"
+[ -n "${HOST_RESTART_TOTAL_US:-}" ] &&
+    [ -n "${HOST_RESTART_HANDOFF_US:-}" ] ||
+    fail "progress host-restart sample was incomplete"
+[ "$HOST_RESTART_TOTAL_US" -le 500000 ] ||
+    fail "progress host restart ${HOST_RESTART_TOTAL_US}us exceeds 500000us"
 
 # An interactive model blocks only for one bounded action. The physical driver
 # clicks inside action zero; the command must return its ID and exact root, but
@@ -216,4 +268,4 @@ AFTER_BROWSERS="$(browser_snapshot)"
 READY_P95_US="$(printf '%s\n' "$PROGRESS_REPLY" | sed -n \
     's/.*"window_ready_us":[[:space:]]*\([-0-9][0-9]*\).*/\1/p' | tail -1)"
 printf '%s\n' \
-    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"code_diff\":true,\"bounded_keyboard_pagination\":true,\"live_reproduction_progress\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_us\":$UPDATE_TOTAL_US,\"update_handoff_us\":$UPDATE_HANDOFF_US,\"last_worker_ready_us\":${READY_P95_US:--1}}"
+    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"code_diff\":true,\"bounded_keyboard_pagination\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"update_total_us\":$UPDATE_TOTAL_US,\"update_handoff_us\":$UPDATE_HANDOFF_US,\"last_worker_ready_us\":${READY_P95_US:--1}}"

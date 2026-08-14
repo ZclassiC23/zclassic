@@ -46,7 +46,10 @@ Non-interactive models with the same bounded request ID replace only their
 prior display worker, so an agent can publish live reproduction/progress
 frames without accumulating windows or putting authority in the visual
 process. Child ownership is reaped before replacement, preventing PID reuse
-from redirecting the replacement signal. The event
+from redirecting the replacement signal. Linux display workers also bind a
+parent-death signal before creating a window, so a crashed resident host cannot
+leave orphan instruments behind; the authoritative caller can resubmit the
+same exact request ID and latest inert progress frame to a fresh host. The event
 carries no authority: the calling
 node or agent command must recheck the exact root, authentication, capability,
 local policy, and plan/commit state. This early-dispatch host code path opens
