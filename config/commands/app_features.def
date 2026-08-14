@@ -216,6 +216,31 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_presentation_reproduction)
 
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.publication-confirm", "app.presentation", "",
+    "Ask for an exact local package-publication decision in native C23",
+    "Re-runs the ordinary read-only ZCODE package publication plan over the "
+    "exact signed release, manifest, recipe, and local chunk source. Only a "
+    "ready plan receives ZClassic23-authored confirmation chrome and fixed "
+    "Confirm/Cancel actions. The returned human decision is bound to the "
+    "exact plan and view identities. This command cannot publish; the "
+    "separate commit command independently re-validates current inputs and "
+    "policy before any local-store effect.", 0,
+    "presentation,native,confirmation,publication,package,plan,human",
+    "zcl.zcode_publish_plan.input.v1",
+    "zcl.app_presentation_publication_confirm.v1",
+    "release_hex,manifest_hex,recipe_hex,dir,datadir", "",
+    "zclassic23 app presentation publication-confirm --input='"
+    "{\"release_hex\":\"..\",\"manifest_hex\":\"..\","
+    "\"recipe_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_publication_confirm)
+
 /* ── Blog (ZBLG) ─────────────────────────────────────────────────── */
 
 ZCL_COMMAND_READY_COMMAND(

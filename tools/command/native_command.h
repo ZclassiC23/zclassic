@@ -366,6 +366,8 @@ void zcl_native_handle_presentation_code_change(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_reproduction(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_presentation_publication_confirm(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 bool zcl_native_presentation_dumpstate(
     const char *name, const char *key, struct json_value *out);
 bool zcl_native_presentation_status_model_from_facts(
@@ -381,6 +383,9 @@ bool zcl_native_presentation_code_change_model_from_facts(
     struct zcl_present_model_v1 *model, char *why, size_t why_cap);
 bool zcl_native_presentation_reproduction_model_from_facts(
     const struct json_value *facts, struct zcl_present_model_v1 *model,
+    char *why, size_t why_cap);
+bool zcl_native_presentation_publication_confirm_model_from_plan(
+    const struct json_value *plan, struct zcl_present_model_v1 *model,
     char *why, size_t why_cap);
 
 /* Shared renderer-neutral handoff used by canonical instrument builders.

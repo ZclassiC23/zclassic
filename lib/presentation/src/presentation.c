@@ -3,6 +3,8 @@
 
 #include "presentation/presentation.h"
 
+#include "presentation/model_render.h"
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -203,6 +205,55 @@ static bool present_scale_bitmap(const struct zcl_present_window_v1 *request,
     return true;
 }
 
+bool zcl_present_window_action_at_v1(
+    uint32_t source_width, uint32_t source_height,
+    int32_t target_width, int32_t target_height,
+    int32_t mouse_x, int32_t mouse_y, uint32_t action_count,
+    uint32_t *action_index)
+{
+    if (!action_index || source_width == 0 || source_height == 0 ||
+        target_width <= 0 || target_height <= 0 || mouse_x < 0 ||
+        mouse_y < 0 || action_count == 0 ||
+        action_count > ZCL_PRESENT_WINDOW_ACTIONS_MAX)
+        return false;
+    uint32_t draw_width = (uint32_t)target_width;
+    uint32_t draw_height = (uint32_t)((uint64_t)draw_width * source_height /
+                                      source_width);
+    if (draw_height > (uint32_t)target_height) {
+        draw_height = (uint32_t)target_height;
+        draw_width = (uint32_t)((uint64_t)draw_height * source_width /
+                                source_height);
+    }
+    if (draw_width == 0 || draw_height == 0) return false;
+    uint32_t x0 = ((uint32_t)target_width - draw_width) / 2u;
+    uint32_t y0 = ((uint32_t)target_height - draw_height) / 2u;
+    if ((uint32_t)mouse_x < x0 || (uint32_t)mouse_y < y0 ||
+        (uint32_t)mouse_x >= x0 + draw_width ||
+        (uint32_t)mouse_y >= y0 + draw_height)
+        return false;
+    uint32_t source_x = (uint32_t)((uint64_t)((uint32_t)mouse_x - x0) *
+                                   source_width / draw_width);
+    uint32_t source_y = (uint32_t)((uint64_t)((uint32_t)mouse_y - y0) *
+                                   source_height / draw_height);
+    if (source_x < ZCL_PRESENT_MODEL_ACTION_X ||
+        source_x >= ZCL_PRESENT_MODEL_ACTION_X +
+                    ZCL_PRESENT_MODEL_ACTION_WIDTH ||
+        source_y < ZCL_PRESENT_MODEL_ACTION_Y ||
+        source_y >= ZCL_PRESENT_MODEL_ACTION_Y +
+                    ZCL_PRESENT_MODEL_ACTION_HEIGHT)
+        return false;
+    uint32_t width = (ZCL_PRESENT_MODEL_ACTION_WIDTH -
+                      ZCL_PRESENT_MODEL_ACTION_GAP * (action_count - 1u)) /
+                     action_count;
+    uint32_t local_x = source_x - ZCL_PRESENT_MODEL_ACTION_X;
+    uint32_t stride = width + ZCL_PRESENT_MODEL_ACTION_GAP;
+    uint32_t candidate = local_x / stride;
+    if (candidate >= action_count || local_x % stride >= width)
+        return false;
+    *action_index = candidate;
+    return true;
+}
+
 bool zcl_present_window_run_actions_v1(
     const struct zcl_present_window_v1 *request,
     uint32_t action_count,
@@ -304,6 +355,23 @@ bool zcl_present_window_run_actions_v1(
                 RGFW_window_blitSurface(window, surface);
             } else if (event.type == RGFW_windowRefresh) {
                 RGFW_window_blitSurface(window, surface);
+            }
+            if (event.type == RGFW_mouseButtonPressed &&
+                event.button.value == RGFW_mouseLeft) {
+                i32 window_width = 0, window_height = 0;
+                i32 mouse_x = 0, mouse_y = 0;
+                uint32_t action = UINT32_MAX;
+                (void)RGFW_window_getSize(window, &window_width,
+                                          &window_height);
+                if (RGFW_window_getMouse(window, &mouse_x, &mouse_y) &&
+                    zcl_present_window_action_at_v1(
+                        request->width, request->height,
+                        window_width, window_height, mouse_x, mouse_y,
+                        action_count, &action)) {
+                    result->outcome = ZCL_PRESENT_WINDOW_ACTION;
+                    result->action_index = action;
+                    RGFW_window_setShouldClose(window, RGFW_TRUE);
+                }
             }
             if (event.type != RGFW_keyPressed) continue;
             if (event.key.value == RGFW_q)

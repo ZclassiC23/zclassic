@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 693 |
+| Registry entries (branches + leaves) | 694 |
 | Top-level roots | 11 |
 | Branches | 162 |
-| Leaves (dispatchable command paths) | 531 |
-| … `ready` (live handler in this build) | 477 |
+| Leaves (dispatchable command paths) | 532 |
+| … `ready` (live handler in this build) | 478 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 24 |
-| Leaves with `effect=mutate` | 179 |
+| Leaves with `effect=mutate` | 180 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 112 |
 
@@ -93,7 +93,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 66 | 19 | 47 |
+| `config/commands/app_features.def` | 67 | 19 | 48 |
 | `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 55 | 13 | 42 |
@@ -591,6 +591,7 @@ represented by its children's sections.
 | `app presentation status` | ready | mutate / app-write / operator · fast/low | none | `zcl.app_presentation_status.v1` | `zclassic23 app presentation status` | Show canonical node facts in a native C23 status card |
 | `app presentation code-change` | ready | mutate / app-write / operator · fast/low | **`workspace`**, **`before_root`**, **`candidate_root`**, **`path`**, **`requested_behavior`**, **`before_behavior`**, **`after_behavior`** | `zcl.app_presentation_code_change.v1` | `zclassic23 app presentation code-change --input='<exact-roots-and-summaries>'` | Show an exact ZVCS-backed C code change in a native window |
 | `app presentation reproduction` | ready | mutate / app-write / operator · fast/low | **`action_id`** | `zcl.app_presentation_reproduction.v1` | `zclassic23 app presentation reproduction --input='{"action_id":"<64hex>"}'` | Show live independent-reproduction progress in one native window |
+| `app presentation publication-confirm` | ready | mutate / app-write / operator · foreground/moderate | `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `datadir` | `zcl.app_presentation_publication_confirm.v1` | `zclassic23 app presentation publication-confirm --input='{"release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Ask for an exact local package-publication decision in native C23 |
 
 #### `app.blog` — Blog
 

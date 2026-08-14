@@ -131,17 +131,20 @@ static void render_actions(struct zcl_present_canvas *canvas,
                            const struct zcl_present_model_v1 *model)
 {
     if (model->action_count == 0) return;
-    int32_t y = 650;
-    uint32_t gap = 12u;
-    uint32_t total_gap = gap * (model->action_count - 1u);
-    uint32_t width = (636u - total_gap) / model->action_count;
+    int32_t y = ZCL_PRESENT_MODEL_ACTION_Y;
+    uint32_t total_gap = ZCL_PRESENT_MODEL_ACTION_GAP *
+                         (model->action_count - 1u);
+    uint32_t width = (ZCL_PRESENT_MODEL_ACTION_WIDTH - total_gap) /
+                     model->action_count;
     for (uint32_t i = 0; i < model->action_count; i++) {
-        int32_t x = 42 + (int32_t)(i * (width + gap));
+        int32_t x = ZCL_PRESENT_MODEL_ACTION_X +
+                    (int32_t)(i * (width + ZCL_PRESENT_MODEL_ACTION_GAP));
         bool decisive = model->actions[i].kind == ZCL_PRESENT_ACTION_CONFIRM ||
                         model->actions[i].kind == ZCL_PRESENT_ACTION_SUBMIT;
         struct zcl_present_color fill = decisive ? ORANGE : PANEL;
         struct zcl_present_color text = decisive ? PAPER : INK;
-        zcl_present_canvas_fill_rect(canvas, x, y, width, 42u, fill);
+        zcl_present_canvas_fill_rect(canvas, x, y, width,
+                                     ZCL_PRESENT_MODEL_ACTION_HEIGHT, fill);
         char numbered[64];
         (void)snprintf(numbered, sizeof(numbered), "%u  %s", i + 1u,
                        model->actions[i].label);

@@ -84,6 +84,15 @@ bool zcl_present_window_run_actions_v1(
     struct zcl_present_window_event_v1 *event,
     char *error, size_t error_cap);
 
+/* Deterministic hit test for the standard renderer-neutral model action row.
+ * Window pixels are aspect-fit, so letterboxing and resize are accounted for
+ * before an action index is returned. */
+bool zcl_present_window_action_at_v1(
+    uint32_t source_width, uint32_t source_height,
+    int32_t target_width, int32_t target_height,
+    int32_t mouse_x, int32_t mouse_y, uint32_t action_count,
+    uint32_t *action_index);
+
 /* Stable diagnostic labels; neither string implies graphics acceleration. */
 const char *zcl_present_backend_name(void);
 const char *zcl_present_platform_name(void);

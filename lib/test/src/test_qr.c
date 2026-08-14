@@ -241,6 +241,22 @@ int test_qr(void)
              !zcl_present_window_run_actions_v1(
                  &present, ZCL_PRESENT_WINDOW_ACTIONS_MAX + 1u,
                  NULL, NULL, &bounded_event, why, sizeof(why)));
+    uint32_t clicked_action = UINT32_MAX;
+    QR_CHECK("native confirmation click selects the first exact action",
+             zcl_present_window_action_at_v1(
+                 720, 720, 720, 720, 100, 670, 2, &clicked_action) &&
+             clicked_action == 0);
+    QR_CHECK("resized confirmation click selects the second exact action",
+             zcl_present_window_action_at_v1(
+                 720, 720, 1440, 1440, 1100, 1340, 2,
+                 &clicked_action) && clicked_action == 1);
+    QR_CHECK("action gap and letterbox clicks return no decision",
+             !zcl_present_window_action_at_v1(
+                 720, 720, 720, 720, 360, 670, 2,
+                 &clicked_action) &&
+             !zcl_present_window_action_at_v1(
+                 720, 720, 1000, 720, 100, 670, 2,
+                 &clicked_action));
     struct ui_present_host_result host_result;
     struct zcl_result empty_host_qr = ui_present_host_submit_qr(
         "", "Empty", &host_result);
@@ -433,6 +449,54 @@ int test_qr(void)
                  "tools/command/native_qr_command.c", "return two",
                  "returned one", "returns two", root_a, root_a, tree_root,
                  &code_model, why, sizeof(why)));
+
+    struct json_value publication_plan, publication_release;
+    struct json_value publication_package;
+    json_init(&publication_plan); json_set_object(&publication_plan);
+    json_push_kv_bool(&publication_plan, "valid", true);
+    json_push_kv_bool(&publication_plan, "ready_to_commit", true);
+    json_push_kv_str(&publication_plan, "plan_token", root_a);
+    json_init(&publication_release); json_set_object(&publication_release);
+    json_push_kv_str(&publication_release, "name", "stranger/hello-c23");
+    json_push_kv_str(&publication_release, "semver", "1.0.0");
+    json_push_kv_str(&publication_release, "license", "Apache-2.0");
+    json_push_kv(&publication_plan, "release", &publication_release);
+    json_free(&publication_release);
+    json_init(&publication_package); json_set_object(&publication_package);
+    json_push_kv_str(&publication_package, "package_root", root_b);
+    json_push_kv_int(&publication_package, "files", 3);
+    json_push_kv_int(&publication_package, "bytes", 4096);
+    json_push_kv_int(&publication_package, "chunks", 3);
+    json_push_kv_bool(&publication_package, "chunks_checked", true);
+    json_push_kv(&publication_plan, "package", &publication_package);
+    json_free(&publication_package);
+    struct zcl_present_model_v1 publication_model;
+    QR_CHECK("canonical package plan builds exact inert confirmation",
+             zcl_native_presentation_publication_confirm_model_from_plan(
+                 &publication_plan, &publication_model,
+                 why, sizeof(why)) &&
+             publication_model.kind == ZCL_PRESENT_MODEL_CONFIRMATION &&
+             strcmp(publication_model.exact_root, root_a) == 0 &&
+             publication_model.action_count == 2 &&
+             publication_model.actions[0].kind ==
+                 ZCL_PRESENT_ACTION_CONFIRM &&
+             publication_model.actions[1].kind ==
+                 ZCL_PRESENT_ACTION_CANCEL);
+    QR_CHECK("confirmation chrome and effect text are ZClassic23-authored",
+             strcmp(publication_model.actions[0].label,
+                    "Confirm exact local publication") == 0 &&
+             strcmp(publication_model.actions[1].label,
+                    "Cancel - make no change") == 0 &&
+             strncmp(publication_model.items[0].label,
+                     "LOCAL OBSERVATION - ", 20) == 0 &&
+             strstr(publication_model.summary, "HUMAN DECISION - ") != NULL);
+    json_free(&publication_plan);
+    json_init(&publication_plan); json_set_object(&publication_plan);
+    QR_CHECK("agent facts alone cannot fabricate a ready confirmation",
+             !zcl_native_presentation_publication_confirm_model_from_plan(
+                 &publication_plan, &publication_model,
+                 why, sizeof(why)));
+    json_free(&publication_plan);
 
     struct json_value reproduction_facts;
     qr_reproduction_facts(&reproduction_facts, root_a, tree_root, root_b,
