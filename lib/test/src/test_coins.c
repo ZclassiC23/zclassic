@@ -4,6 +4,34 @@
 #include "coins/undo.h"
 #include "storage/coins_view_sqlite.h"
 
+struct mutable_coins_backing {
+    struct uint256 txid;
+    struct coins coins;
+    bool present;
+};
+
+static bool mutable_backing_get(void *self, const struct uint256 *txid,
+                                struct coins *out)
+{
+    struct mutable_coins_backing *b = self;
+    if (!b->present || !uint256_eq(txid, &b->txid))
+        return false;
+    coins_copy(out, &b->coins);
+    return true;
+}
+
+static bool mutable_backing_have(void *self, const struct uint256 *txid)
+{
+    struct mutable_coins_backing *b = self;
+    return b->present && uint256_eq(txid, &b->txid) &&
+           !coins_is_pruned(&b->coins);
+}
+
+static struct coins_view_vtable mutable_backing_vtable = {
+    .get_coins = mutable_backing_get,
+    .have_coins = mutable_backing_have,
+};
+
 int test_coins(void)
 {
     int failures = 0;
@@ -435,6 +463,48 @@ int test_coins(void)
         ok = ok && !coins_view_cache_have_coins(&cache, &unknown);
 
         coins_view_cache_free(&cache);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    /* A process-lifetime cache over canonical coins_kv must not retain an
+     * output from the generation before a finalized block spent it. */
+    printf("coins_view_cache: committed backing generation invalidates... ");
+    {
+        struct mutable_coins_backing backing;
+        memset(&backing, 0, sizeof(backing));
+        memset(backing.txid.data, 0x4A, sizeof(backing.txid.data));
+        coins_init(&backing.coins);
+        bool ok = coins_alloc(&backing.coins, 1);
+        backing.coins.vout[0].value = 1250000000;
+        uint8_t pk[] = {0x51};
+        script_set(&backing.coins.vout[0].script_pub_key, pk, sizeof(pk));
+        backing.present = true;
+
+        struct coins_view view = {
+            .vtable = &mutable_backing_vtable,
+            .impl = &backing,
+        };
+        struct coins_view_cache cache;
+        coins_view_cache_init(&cache, &view);
+
+        /* Populate the clean read-through entry, then commit its spend in the
+         * independent backing authority. Before invalidation this is exactly
+         * the stale generation that admitted A a second time. */
+        ok = ok && coins_view_cache_have_coins(&cache, &backing.txid);
+        struct coins loaded;
+        coins_init(&loaded);
+        ok = ok && coins_view_cache_get_coins(&cache, &backing.txid, &loaded);
+        coins_free(&loaded);
+        backing.present = false;
+        ok = ok && coins_view_cache_have_coins(&cache, &backing.txid);
+
+        ok = ok && coins_view_cache_invalidate(&cache, &backing.txid);
+        ok = ok && !coins_view_cache_have_coins(&cache, &backing.txid);
+        ok = ok && coins_map_count(&cache.cache_coins) == 0;
+
+        coins_view_cache_free(&cache);
+        coins_free(&backing.coins);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

@@ -252,6 +252,16 @@ bool coins_view_cache_get_coins(struct coins_view_cache *c,
 bool coins_view_cache_have_coins(struct coins_view_cache *c,
                                  const struct uint256 *txid);
 
+/* Forget one clean or dirty cached generation so the next lookup resolves
+ * against the backing authority. The caller owns publication ordering: call
+ * only after the backing mutation commits. This is required when a cache is
+ * layered over a store (such as live coins_kv) that is authored independently
+ * rather than through this cache's batch_write path. Returns true iff an entry
+ * was present. cached_coins_usage is intentionally conservative and retains
+ * its high-water accounting until a full cache reset. */
+bool coins_view_cache_invalidate(struct coins_view_cache *c,
+                                 const struct uint256 *txid);
+
 /* Best block this cache is synced to. Lazily pulls it from the backing view
  * the first time while hash_block is still null, then returns the cached
  * value. */

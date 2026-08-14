@@ -174,31 +174,47 @@ enum mempool_accept_result accept_to_mempool_detailed(
      *    (verify_script) lives here because it needs each prevout's
      *    scriptPubKey + value from the view. */
     int64_t fee = 0;
-    if (!coins_view_cache_have_inputs(coins_tip, tx))
+
+    /* Serialize the input-dependent decision and final insertion with tip
+     * publication. A second delivery can begin validation while this tx is
+     * being mined; without this ownership boundary it may finish after the
+     * finalized-block path removes the first copy and reinsert the now-
+     * confirmed transaction using the pre-connect cache generation. If we
+     * win the lock first, finalize removes our entry. If finalize wins, it
+     * invalidates changed cache keys first and this recheck fails closed. */
+    zcl_mutex_lock(&main_state->cs_main);
+    if (!coins_view_cache_have_inputs(coins_tip, tx)) {
+        zcl_mutex_unlock(&main_state->cs_main);
         return MEMPOOL_ACCEPT_MISSING_INPUTS;
+    }
     if (!coins_view_cache_have_joinsplit_requirements(coins_tip, tx)) {
         mempool_accept_detail(detail_out, detail_cap,
                               "shielded-requirements-missing");
+        zcl_mutex_unlock(&main_state->cs_main);
         return MEMPOOL_ACCEPT_INVALID;
     }
 
     int64_t value_in = coins_view_cache_get_value_in(coins_tip, tx);
     if (value_in < 0) {
         mempool_accept_detail(detail_out, detail_cap, "input-value-invalid");
+        zcl_mutex_unlock(&main_state->cs_main);
         return MEMPOOL_ACCEPT_INVALID;
     }
 
     int64_t value_out = transaction_get_value_out(tx);
     if (value_out < 0 || value_in < value_out) {
         mempool_accept_detail(detail_out, detail_cap, "value-balance-invalid");
+        zcl_mutex_unlock(&main_state->cs_main);
         return MEMPOOL_ACCEPT_INVALID;
     }
 
     fee = value_in - value_out;
 
     int64_t min_relay_fee = pool->min_relay_fee;
-    if (min_relay_fee > 0 && fee < min_relay_fee)
+    if (min_relay_fee > 0 && fee < min_relay_fee) {
+        zcl_mutex_unlock(&main_state->cs_main);
         return MEMPOOL_ACCEPT_BELOW_FEE;
+    }
 
     /* Transparent scriptSig verification — a bad-sig tx is rejected here,
      * BEFORE add+relay. */
@@ -208,6 +224,7 @@ enum mempool_accept_result accept_to_mempool_detailed(
         if (!missing_inputs)
             mempool_accept_detail(detail_out, detail_cap,
                                   "transparent-script-invalid");
+        zcl_mutex_unlock(&main_state->cs_main);
         return missing_inputs ? MEMPOOL_ACCEPT_MISSING_INPUTS
                               : MEMPOOL_ACCEPT_INVALID;
     }
@@ -224,14 +241,27 @@ enum mempool_accept_result accept_to_mempool_detailed(
      * staging copy; omitting the success-path free leaked one full transaction
      * per accepted relay and made sustained traffic an unbounded heap leak. */
     mempool_entry_free(&entry);
-    if (!added)
-        return MEMPOOL_ACCEPT_INTERNAL_ERROR;
+    if (!added) {
+        /* A concurrent delivery of this exact immutable transaction may have
+         * won the locked insertion after our optimistic exists probe. Report
+         * the durable owner accurately; any other insertion failure remains
+         * an internal error. */
+        enum mempool_accept_result race_result = tx_mempool_exists(pool, &hash)
+            ? MEMPOOL_ACCEPT_DUPLICATE
+            : MEMPOOL_ACCEPT_INTERNAL_ERROR;
+        zcl_mutex_unlock(&main_state->cs_main);
+        return race_result;
+    }
 
     /* The post-add policy hook may evict synchronously after limits are
      * recomputed. Never report success/relay a candidate no longer owned by
      * the mempool. */
-    if (!tx_mempool_exists(pool, &hash))
+    if (!tx_mempool_exists(pool, &hash)) {
+        zcl_mutex_unlock(&main_state->cs_main);
         return MEMPOOL_ACCEPT_INTERNAL_ERROR;
+    }
+
+    zcl_mutex_unlock(&main_state->cs_main);
 
     return MEMPOOL_ACCEPT_OK;
 }

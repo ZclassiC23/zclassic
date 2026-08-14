@@ -131,6 +131,36 @@ int test_mempool(void)
         if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
     }
 
+    printf("txmempool exact insertion has one locked owner... ");
+    {
+        struct tx_mempool pool;
+        tx_mempool_init(&pool, 1000);
+
+        struct transaction tx;
+        transaction_init(&tx);
+        transaction_alloc(&tx, 0, 1);
+        tx.vout[0].value = COIN_VALUE;
+        transaction_compute_hash(&tx);
+
+        struct mempool_entry entry;
+        mempool_entry_init(&entry, &tx, 0, 1700000000, 0, 100,
+                           true, false, 0);
+        bool first = tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+        /* No transparent input exists to make the conflict map accidentally
+         * deduplicate this case: exact txid arbitration must happen inside
+         * the insertion lock itself. */
+        bool second = tx_mempool_add_unchecked(&pool, &tx.hash, &entry);
+        bool ok = first && !second && tx_mempool_size(&pool) == 1;
+        tx_mempool_remove_for_block(&pool, &tx, 1, 130);
+        ok = ok && tx_mempool_size(&pool) == 0;
+        ok = ok && !tx_mempool_exists(&pool, &tx.hash);
+
+        mempool_entry_free(&entry);
+        transaction_free(&tx);
+        tx_mempool_free(&pool);
+        if (ok) printf("OK\n"); else { printf("FAIL\n"); failures++; }
+    }
+
     printf("txmempool remove... ");
     {
         struct tx_mempool pool;

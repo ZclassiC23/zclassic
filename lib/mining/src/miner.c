@@ -62,7 +62,8 @@ void block_template_free(struct block_template *bt)
     bt->num_entries = 0;
 }
 
-struct block_template *create_new_block(const struct script *coinbase_script,
+static struct block_template *create_new_block_locked(
+                                         const struct script *coinbase_script,
                                          struct main_state *ms,
                                          struct coins_view_cache *coins_tip,
                                          struct tx_mempool *mempool,
@@ -200,6 +201,27 @@ struct block_template *create_new_block(const struct script *coinbase_script,
 
     block_compute_merkle_root(&bt->block);
 
+    return bt;
+}
+
+struct block_template *create_new_block(const struct script *coinbase_script,
+                                         struct main_state *ms,
+                                         struct coins_view_cache *coins_tip,
+                                         struct tx_mempool *mempool,
+                                         const struct chain_params *params)
+{
+    if (!ms)
+        return NULL;
+    /* A template is one coherent projection of tip + mempool + coins. Tip
+     * finalize uses this same ownership lock while it publishes the new
+     * coins generation and removes confirmed entries, so selection can see
+     * either side of that transition but never a mixture. */
+    zcl_mutex_lock(&ms->cs_main);
+    zcl_mutex_lock(&mempool->cs);
+    struct block_template *bt = create_new_block_locked(
+        coinbase_script, ms, coins_tip, mempool, params);
+    zcl_mutex_unlock(&mempool->cs);
+    zcl_mutex_unlock(&ms->cs_main);
     return bt;
 }
 

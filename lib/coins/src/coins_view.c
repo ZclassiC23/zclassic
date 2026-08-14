@@ -247,6 +247,14 @@ bool coins_view_cache_have_coins(struct coins_view_cache *c,
     return has;
 }
 
+bool coins_view_cache_invalidate(struct coins_view_cache *c,
+                                 const struct uint256 *txid)
+{
+    if (!c || !txid)
+        return false;
+    return coins_map_erase(&c->cache_coins, txid);
+}
+
 void coins_view_cache_get_best_block(struct coins_view_cache *c,
                                      struct uint256 *out)
 {

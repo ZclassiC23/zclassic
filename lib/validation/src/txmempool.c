@@ -280,6 +280,20 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
 {
     zcl_mutex_lock(&pool->cs);
 
+    /* The caller's optimistic exists check is deliberately outside this
+     * critical section because script/proof verification can be expensive.
+     * It is therefore only an early-out, never the ownership boundary. Two
+     * peer threads can validate the same exact transaction concurrently and
+     * both reach this function. The locked insertion must arbitrate exact
+     * txid ownership or both copies enter the array; remove_for_block then
+     * removes only one and the survivor can be mined again at the next
+     * height. Keep this check before input-conflict classification: an exact
+     * duplicate is idempotent, not a malicious double spend. */
+    if (find_entry_by_hash(pool, hash) >= 0) {
+        zcl_mutex_unlock(&pool->cs);
+        return false;
+    }
+
     /* Mempool size limit: 300MB total, prevents OOM from tx flooding.
      * Matches Bitcoin Core's default -maxmempool=300. */
     if (pool->total_tx_size + entry->tx_size > 300 * 1024 * 1024) {
@@ -366,7 +380,6 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
     pool->txs_updated++;
     pool->total_tx_size += entry->tx_size;
 
-    (void)hash;
     zcl_mutex_unlock(&pool->cs);
 
     /* Fire the policy hook *after* releasing the lock so the

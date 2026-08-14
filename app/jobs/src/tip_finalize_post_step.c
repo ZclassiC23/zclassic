@@ -29,6 +29,7 @@
 #include "core/uint256.h"
 #include "models/database.h"            /* struct node_db */
 #include "chain/mmr.h"                  /* MMR_COMMITMENT_INTERVAL boundary */
+#include "coins/coins_view.h"           /* live coins_kv cache publication */
 #include "primitives/block.h"
 #include "primitives/transaction.h"
 #include "storage/coins_kv.h"           /* coins_kv_commitment + boundary root */
@@ -393,13 +394,37 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
         }
     }
 
-    /* Remove confirmed transactions from mempool */
+    /* Publish the committed coins_kv generation to the long-lived read cache
+     * before any later relay or block-template selection can consult it. The
+     * reducer authors coins_kv directly (not through coins_tip.batch_write),
+     * so cache entries loaded while this block was in the mempool otherwise
+     * retain the pre-connect generation forever: spent parents still look
+     * live and newly-created txids can remain absent. Invalidate exactly the
+     * keys this finalized block changed; the next read resolves through the
+     * canonical coins_kv path. */
     {
+        struct main_state *main_state = app_runtime_main_state();
+        struct coins_view_cache *coins_tip = app_runtime_coins_tip();
         struct tx_mempool *mempool = app_runtime_mempool();
+        if (main_state)
+            zcl_mutex_lock(&main_state->cs_main);
+        if (coins_tip) {
+            for (size_t i = 0; i < blk->num_vtx; i++) {
+                const struct transaction *tx = &blk->vtx[i];
+                (void)coins_view_cache_invalidate(coins_tip, &tx->hash);
+                if (!transaction_is_coinbase(tx)) {
+                    for (size_t j = 0; j < tx->num_vin; j++)
+                        (void)coins_view_cache_invalidate(
+                            coins_tip, &tx->vin[j].prevout.hash);
+                }
+            }
+        }
         if (mempool)
             tx_mempool_remove_for_block(mempool,
                 blk->vtx, blk->num_vtx,
                 (unsigned int)pindex_new->nHeight);
+        if (main_state)
+            zcl_mutex_unlock(&main_state->cs_main);
     }
 
     /* Projection-deferred DIAGNOSTIC.
