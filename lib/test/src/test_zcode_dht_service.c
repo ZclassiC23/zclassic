@@ -1390,6 +1390,45 @@ static int test_record_transport_and_restart(void) {
     ASSERT(pump(b, a, 1, 2, 1001, NULL, NULL));
     ASSERT(pump(a, b, 2, 1, 1001, NULL, NULL));
 
+    /* A provider record remains usable across an exact Noise reconnect as
+     * soon as the replacement transport is admitted.  The accepting side
+     * rechecks the cached signed delegation and its Noise-static binding;
+     * it does not wait for a later periodic sweep or bootstrap reply. */
+    struct vcs_zcode_dht_record reconnect_provider;
+    ASSERT(fixture_provider_record(
+        adir, genesis, 0x7a, &reconnect_provider));
+    ASSERT_EQ(vcs_zcode_dht_service_record_admit(
+                  b, &reconnect_provider, test_time(1001)),
+              VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    struct vcs_zcode_dht_record_selector reconnect_selector = {
+        .kind = VCS_ZCODE_DHT_RECORD_PROVIDER};
+    (void)snprintf(reconnect_selector.namespace_name,
+                   sizeof(reconnect_selector.namespace_name), "science");
+    memcpy(reconnect_selector.root, reconnect_provider.transport_root, 32);
+    struct vcs_zcode_dht_provider_route reconnect_route;
+    ASSERT(vcs_zcode_dht_service_provider_route(
+        b, 1001, &reconnect_selector, &reconnect_route));
+    ASSERT_EQ(reconnect_route.authenticated_count, 1);
+    vcs_zcode_dht_service_session_close(b, 1, 42, test_time(1001));
+    ASSERT(vcs_zcode_dht_service_provider_route(
+        b, 1001, &reconnect_selector, &reconnect_route));
+    ASSERT_EQ(reconnect_route.authenticated_count, 0);
+    as.generation = bs.generation = 43;
+    as.connection_serial = 3;
+    bs.connection_serial = 4;
+    memset(transcript, 0x56, sizeof(transcript));
+    memcpy(as.transcript_hash, transcript, 32);
+    memcpy(bs.transcript_hash, transcript, 32);
+    ASSERT(vcs_zcode_dht_service_session_open(
+        b, 1, &bs, test_time(1001)));
+    ASSERT(vcs_zcode_dht_service_provider_route(
+        b, 1001, &reconnect_selector, &reconnect_route));
+    ASSERT_EQ(reconnect_route.authenticated_count, 1);
+    ASSERT(vcs_zcode_dht_service_session_open(
+        a, 2, &as, test_time(1001)));
+    ASSERT(pump(a, b, 2, 1, 1001, NULL, NULL));
+    ASSERT(pump(b, a, 1, 2, 1001, NULL, NULL));
+
     struct vcs_zcode_dht_publish_spec publish;
     memset(&publish, 0, sizeof(publish));
     publish.kind = VCS_ZCODE_DHT_RECORD_POINTER;
@@ -1459,10 +1498,10 @@ static int test_record_transport_and_restart(void) {
         b, discovery, test_time(1002), &discovery_result));
     ASSERT_EQ(discovery_result.state,
               VCS_ZCODE_DHT_RECORD_OPERATION_PENDING);
-    as.generation = bs.generation = 43;
-    as.connection_serial = 3;
-    bs.connection_serial = 4;
-    memset(transcript, 0x56, sizeof(transcript));
+    as.generation = bs.generation = 44;
+    as.connection_serial = 5;
+    bs.connection_serial = 6;
+    memset(transcript, 0x57, sizeof(transcript));
     memcpy(as.transcript_hash, transcript, 32);
     memcpy(bs.transcript_hash, transcript, 32);
     ASSERT(vcs_zcode_dht_service_session_open(b, 1, &bs,
@@ -2989,13 +3028,9 @@ int test_zcode_dht_service(void) {
                                          .connection_serial = 10};
     memcpy(tied.remote_static, bnoise, 32);
     memcpy(tied.transcript_hash, transcript3, 32);
-    ASSERT(vcs_zcode_dht_service_session_open(a, 4, &tied,
-                                              test_time(1007)));
-    ASSERT(signed_find(bdir, 44, transcript3, 0xe2, 0x7e, oversized,
-                       sizeof(oversized), &forged_len));
-    ASSERT(!vcs_zcode_dht_service_handle_frame(
-        a, 4, oversized, forged_len, test_time(1007), &rejected));
-    ASSERT_EQ(rejected, VCS_ZCODE_DHT_REJECT_SESSION);
+    /* The cached delegation binds the equal-serial replacement before it
+     * can send a DHT frame, so the higher peer ID is rejected at admission
+     * instead of surviving until frame authentication. */
     ASSERT(!vcs_zcode_dht_service_session_open(a, 4, &tied,
                                                test_time(1007)));
     vcs_zcode_dht_service_status(a, &ast);
@@ -3032,14 +3067,16 @@ int test_zcode_dht_service(void) {
      * deadline and the still-live exact connection cannot immediately claim
      * it again. Session freshness follows the local serial, never numeric
      * ordering of the transcript-derived generation token. */
-    ASSERT(vcs_zcode_dht_service_session_open(a, 900, &as,
+    struct vcs_zcode_dht_session unknown = as;
+    memset(unknown.remote_static, 0x99, sizeof(unknown.remote_static));
+    ASSERT(vcs_zcode_dht_service_session_open(a, 900, &unknown,
                                               test_time(1011)));
     vcs_zcode_dht_service_tick(a, test_time(1026));
     vcs_zcode_dht_service_status(a, &ast);
     ASSERT_EQ(ast.unauthenticated_expired, 1);
-    ASSERT(!vcs_zcode_dht_service_session_open(a, 900, &as,
+    ASSERT(!vcs_zcode_dht_service_session_open(a, 900, &unknown,
                                                test_time(1026)));
-    struct vcs_zcode_dht_session high_token = as;
+    struct vcs_zcode_dht_session high_token = unknown;
     high_token.generation = UINT64_MAX;
     high_token.connection_serial = 20;
     ASSERT(vcs_zcode_dht_service_session_open(a, 901, &high_token,
@@ -3057,12 +3094,12 @@ int test_zcode_dht_service(void) {
     /* Peer session slots are reusable after disconnect; churn cannot
      * permanently exhaust the 64-session authentication budget. */
     for (uint64_t i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PEERS; i++)
-      ASSERT(vcs_zcode_dht_service_session_open(a, 100 + i, &as,
+      ASSERT(vcs_zcode_dht_service_session_open(a, 100 + i, &unknown,
                                                 test_time(1028)));
-    ASSERT(!vcs_zcode_dht_service_session_open(a, 1000, &as,
+    ASSERT(!vcs_zcode_dht_service_session_open(a, 1000, &unknown,
                                                test_time(1028)));
     vcs_zcode_dht_service_session_close(a, 100, 42, test_time(1028));
-    ASSERT(vcs_zcode_dht_service_session_open(a, 1000, &as,
+    ASSERT(vcs_zcode_dht_service_session_open(a, 1000, &unknown,
                                               test_time(1028)));
 
     vcs_zcode_dht_service_free(a, test_time(1009));

@@ -130,6 +130,9 @@ bool boot_zcode_dht_revalidate(void);
 
 /* See AGENTS.md "Adding state introspection". Reentrant-safe. */
 bool boot_zcode_dht_dump_state_json(struct json_value *out, const char *key);
+/* Renderer for the lock-owned service snapshot; caller owns synchronization. */
+void boot_zcode_dht_status_json(
+    struct json_value *out, const struct vcs_zcode_dht_service *service);
 void boot_zcode_dht_register_rpc(struct rpc_table *table);
 void boot_zcode_package_register_rpc(struct rpc_table *table);
 

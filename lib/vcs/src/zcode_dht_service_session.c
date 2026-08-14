@@ -22,6 +22,52 @@ static uint32_t session_query_count(
   return count;
 }
 
+/* A replacement Noise connection can be bound immediately to an already
+ * verified routing-table contact.  Requiring another DHT request/response
+ * first creates an asymmetric reconnect window: the dialing side is
+ * authenticated while the accepting side still cannot route a provider
+ * record naming that exact node.  The cached delegation is signed, remains
+ * chain-checked, and is accepted only when its Noise static key matches the
+ * newly established transport byte-for-byte. */
+static bool session_authenticate_cached_contact(
+    struct vcs_zcode_dht_service *service, struct service_peer *peer,
+    struct vcs_zcode_dht_time now) {
+  if (!service || !peer || !service->table)
+    return false;
+  for (size_t bucket = 0; bucket < VCS_ZCODE_DHT_BUCKET_COUNT; bucket++)
+    for (size_t slot = 0; slot < service->table->bucket_sizes[bucket]; slot++) {
+      const struct vcs_zcode_dht_contact *contact =
+          &service->table->buckets[bucket][slot];
+      if (memcmp(contact->noise_static_pubkey,
+                 peer->session.remote_static, 32) != 0)
+        continue;
+      struct vcs_zcode_dht_delegation delegation;
+      if (vcs_zcode_dht_delegation_decode(
+              &delegation, contact->delegation_wire,
+              VCS_ZCODE_DHT_DELEGATION_WIRE_BYTES) !=
+              VCS_ZCODE_DHT_DELEGATION_OK ||
+          vcs_zcode_dht_delegation_verify(
+              &delegation, service->genesis, peer->session.remote_static,
+              0, NULL, now.wall_unix) != VCS_ZCODE_DHT_DELEGATION_OK ||
+          (service->chain_verify &&
+           !service->chain_verify(service->chain_ctx, &delegation)))
+        return false;
+      peer->authenticated = true;
+      memcpy(peer->node_id, contact->node_id, 32);
+      peer->contact = *contact;
+      if (!vcs_zcode_dht_service_retain_unique_node_session(
+              service, peer, now))
+        return false;
+      (void)vcs_zcode_dht_table_touch(
+          service->table, contact->node_id, (int64_t)now.wall_unix);
+      if (!service->persistence_dirty)
+        service->dirty_since_mono = now.monotonic_s;
+      service->persistence_dirty = true;
+      return true;
+    }
+  return false;
+}
+
 static bool retired_contains(const struct vcs_zcode_dht_service *service,
                              uint64_t peer_id, uint64_t generation,
                              uint64_t connection_serial) {
@@ -128,6 +174,9 @@ bool vcs_zcode_dht_service_session_open(
   peer->opened_mono = now.monotonic_s;
   peer->rate_tokens = VCS_ZCODE_DHT_SERVICE_RATE_BURST;
   peer->rate_refill_mono = now.monotonic_s;
+  (void)session_authenticate_cached_contact(service, peer, now);
+  if (!peer->used || !peer->connected)
+    return false;
   if (session_query_count(service) <
       VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES)
     (void)vcs_zcode_dht_service_send_find(

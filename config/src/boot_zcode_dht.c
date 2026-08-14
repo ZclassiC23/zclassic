@@ -3,7 +3,6 @@
 
 #include "config/boot_zcode_dht.h"
 
-#include "base/hex.h"
 #include "config/boot_internal.h"
 #include "config/boot_zcode_dht_access.h"
 #include "config/boot_zcode_dht_chain.h"
@@ -20,7 +19,6 @@
 #include "validation/chainstate.h"
 #include "vcs/zcode_dht_service.h"
 #include "vcs/package_store.h"
-#include "json/json.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -44,132 +42,6 @@ static struct vcs_zcode_dht_time dht_now(void) {
       .monotonic_s = (uint64_t)(platform_time_monotonic_ms() / 1000),
   };
   return now;
-}
-static void dht_status_json_locked(struct json_value *out) {
-  struct vcs_zcode_dht_service_status status;
-  vcs_zcode_dht_service_status(g_dht, &status);
-  char node_id[65] = {0};
-  if (status.enabled)
-    zcl_hex_encode(status.local_node_id, 32, node_id);
-  json_set_object(out);
-  json_push_kv_bool(out, "enabled", status.enabled);
-  json_push_kv_str(out, "disabled_reason", status.disabled_reason);
-  json_push_kv_str(out, "local_node_id", node_id);
-  json_push_kv_int(out, "k", VCS_ZCODE_DHT_K);
-  json_push_kv_int(out, "alpha", VCS_ZCODE_DHT_ALPHA);
-  json_push_kv_int(out, "max_contacts", VCS_ZCODE_DHT_MAX_CONTACTS);
-  json_push_kv_int(out, "max_authenticated_peers", VCS_ZCODE_DHT_SERVICE_MAX_PEERS);
-  json_push_kv_int(out, "max_queued_lookups", VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS);
-  json_push_kv_int(out, "max_active_queries", VCS_ZCODE_DHT_SERVICE_MAX_ACTIVE_QUERIES);
-  json_push_kv_int(out, "max_lookup_candidates", VCS_ZCODE_DHT_SERVICE_MAX_CANDIDATES);
-  json_push_kv_int(out, "lookup_ceiling_seconds", VCS_ZCODE_DHT_LOOKUP_CEILING_S);
-  json_push_kv_int(out, "replay_entries_per_peer", VCS_ZCODE_DHT_SERVICE_REPLAY_PER_PEER);
-  json_push_kv_int(out, "replay_retention_seconds", VCS_ZCODE_DHT_SERVICE_REPLAY_SECONDS);
-  json_push_kv_int(out, "inbound_rate_per_second", VCS_ZCODE_DHT_SERVICE_RATE_PER_SECOND);
-  json_push_kv_int(out, "inbound_rate_burst", VCS_ZCODE_DHT_SERVICE_RATE_BURST);
-  json_push_kv_int(out, "max_outbound_frames", VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND);
-  json_push_kv_int(out, "max_record_operations", VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS);
-  json_push_kv_int(out, "max_records_per_peer", VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER);
-  json_push_kv_int(out, "contacts", status.contacts);
-  json_push_kv_int(out, "buckets_used", status.buckets_used);
-  json_push_kv_int(out, "connected_authenticated", status.connected_authenticated);
-  json_push_kv_int(out, "cold_contacts", status.cold_contacts);
-  json_push_kv_int(out, "pending_probes", status.pending_probes);
-  static const char *const probe_names[] = {
-      "waiting", "in_flight", "responded", "failed", "expired"};
-  struct json_value probes;
-  json_init(&probes);
-  json_set_object(&probes);
-  for (int i = 0; i < VCS_ZCODE_DHT_PROBE_STATE_COUNT; i++)
-    json_push_kv_int(&probes, probe_names[i],
-                     (int64_t)status.probe_transitions[i]);
-  json_push_kv(out, "probe_transitions", &probes);
-  json_free(&probes);
-  json_push_kv_int(out, "active_queries", status.active_queries);
-  json_push_kv_int(out, "queued_lookups", status.queued_lookups);
-  json_push_kv_int(out, "outbound_queued", status.outbound_queued);
-  json_push_kv_int(out, "frames_accepted", (int64_t)status.frames_accepted);
-  struct json_value rejected;
-  json_init(&rejected);
-  json_set_object(&rejected);
-  for (int i = 0; i < VCS_ZCODE_DHT_REJECT_COUNT; i++)
-    json_push_kv_int(&rejected, vcs_zcode_dht_reject_reason_string(i),
-                     (int64_t)status.frames_rejected[i]);
-  json_push_kv(out, "frames_rejected", &rejected);
-  json_free(&rejected);
-  json_push_kv_int(out, "find_node_received",
-                   (int64_t)status.find_node_received);
-  json_push_kv_int(out, "nodes_received", (int64_t)status.nodes_received);
-  json_push_kv_int(out, "find_node_sent", (int64_t)status.find_node_sent);
-  json_push_kv_int(out, "nodes_sent", (int64_t)status.nodes_sent);
-  json_push_kv_int(out, "find_record_received",
-                   (int64_t)status.find_record_received);
-  json_push_kv_int(out, "records_received",
-                   (int64_t)status.records_received);
-  json_push_kv_int(out, "store_record_received",
-                   (int64_t)status.store_record_received);
-  json_push_kv_int(out, "store_result_received",
-                   (int64_t)status.store_result_received);
-  json_push_kv_int(out, "find_record_sent",
-                   (int64_t)status.find_record_sent);
-  json_push_kv_int(out, "records_sent", (int64_t)status.records_sent);
-  json_push_kv_int(out, "store_record_sent",
-                   (int64_t)status.store_record_sent);
-  json_push_kv_int(out, "store_result_sent",
-                   (int64_t)status.store_result_sent);
-  json_push_kv_int(out, "signed_records", status.signed_records);
-  json_push_kv_int(out, "active_record_operations",
-                   status.active_record_operations);
-  json_push_kv_int(out, "publication_intents", status.publication_intents);
-  json_push_kv_int(out, "active_publications", status.active_publications);
-  json_push_kv_int(out, "unauthenticated_expired",
-                   (int64_t)status.unauthenticated_expired);
-  json_push_kv_int(out, "duplicate_sessions_retired",
-                   (int64_t)status.duplicate_sessions_retired);
-  json_push_kv_int(out, "lookup_rounds", (int64_t)status.lookup_rounds);
-  json_push_kv_int(out, "lookup_xor_progress",
-                   (int64_t)status.lookup_xor_progress);
-  json_push_kv_int(out, "lookup_queue_wait_seconds",
-                   (int64_t)status.lookup_queue_wait_s);
-  static const char *const candidate_names[] = {
-      "unverified", "unreachable", "authenticated", "queried",
-      "in_flight", "responded", "failed"};
-  struct json_value shortlist;
-  json_init(&shortlist);
-  json_set_object(&shortlist);
-  for (int i = 0; i < VCS_ZCODE_DHT_CANDIDATE_STATE_COUNT; i++)
-    json_push_kv_int(&shortlist, candidate_names[i],
-                     (int64_t)status.lookup_shortlist_states[i]);
-  json_push_kv(out, "lookup_shortlist", &shortlist);
-  json_free(&shortlist);
-  static const char *const termination_names[] = {
-      "none", "target_authenticated", "shortlist_stable", "timeout",
-      "no_authenticated_result"};
-  struct json_value terminations;
-  json_init(&terminations);
-  json_set_object(&terminations);
-  for (int i = 0; i < VCS_ZCODE_DHT_TERMINATION_COUNT; i++)
-    json_push_kv_int(&terminations, termination_names[i],
-                     (int64_t)status.lookup_terminations[i]);
-  json_push_kv(out, "lookup_terminations", &terminations);
-  json_free(&terminations);
-  struct json_value chain;
-  json_init(&chain);
-  boot_zcode_dht_chain_dump_json(&chain);
-  json_push_kv(out, "chain_authorization", &chain);
-  json_free(&chain);
-  struct json_value reachability;
-  json_init(&reachability);
-  boot_zcode_dht_reachability_dump_json(&reachability);
-  json_push_kv(out, "reachability", &reachability);
-  json_free(&reachability);
-  json_push_kv_bool(out, "persistence_loaded", status.persistence_loaded);
-  json_push_kv_bool(out, "persistence_dirty", status.persistence_dirty);
-  json_push_kv_int(out, "persistence_load_count",
-                   (int64_t)status.persistence_load_count);
-  json_push_kv_int(out, "persistence_save_count",
-                   (int64_t)status.persistence_save_count);
-  json_push_kv_str(out, "last_error", status.last_error);
 }
 static void dht_lock(void) {
   if (atomic_load_explicit(&g_dht_lock_state, memory_order_acquire) != 2) {
@@ -334,6 +206,53 @@ static bool dht_snapshot(struct p2p_node *node,
   memcpy(out->remote_static, snapshot.remote_static, 32);
   memcpy(out->transcript_hash, snapshot.transcript_hash, 32);
   return out->established;
+}
+
+/* Provider routing is user-driven and must not wait behind the independent
+ * periodic membership sweep. Snapshot every currently ready P2P transport
+ * without the DHT lock, then admit those exact sessions before evaluating a
+ * provider record. Cached signed delegations make reconnect admission
+ * immediate while the ordinary bootstrap exchange refreshes them. */
+static void dht_refresh_ready_sessions(void) {
+  struct msg_processor *mp = NULL;
+  uint64_t generation = 0;
+  dht_lock();
+  if (g_dht && g_dht_svc) {
+    mp = g_dht_svc->msg_processor;
+    generation = g_dht_generation;
+  }
+  zcl_mutex_unlock(&g_dht_lock);
+  if (!mp || !mp->net_mgr)
+    return;
+
+  struct p2p_node *nodes[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
+  struct vcs_zcode_dht_session sessions[VCS_ZCODE_DHT_SERVICE_MAX_PEERS];
+  bool ready[VCS_ZCODE_DHT_SERVICE_MAX_PEERS] = {false};
+  size_t count = 0;
+  zcl_mutex_lock(&mp->net_mgr->cs_nodes);
+  for (size_t i = 0;
+       i < mp->net_mgr->num_nodes &&
+       count < VCS_ZCODE_DHT_SERVICE_MAX_PEERS; i++) {
+    struct p2p_node *node = mp->net_mgr->nodes[i];
+    if (!boot_zcode_dht_peer_ready(node))
+      continue;
+    nodes[count++] = node;
+    p2p_node_add_ref(node);
+  }
+  zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
+  for (size_t i = 0; i < count; i++)
+    ready[i] = dht_snapshot(nodes[i], &sessions[i]);
+
+  struct vcs_zcode_dht_time now = dht_now();
+  dht_lock();
+  if (g_dht && generation == g_dht_generation)
+    for (size_t i = 0; i < count; i++)
+      if (ready[i])
+        (void)vcs_zcode_dht_service_session_open(
+            g_dht, (uint64_t)nodes[i]->id + 1, &sessions[i], now);
+  zcl_mutex_unlock(&g_dht_lock);
+  for (size_t i = 0; i < count; i++)
+    p2p_node_release(nodes[i]);
 }
 static enum peer_offence dht_offence(enum vcs_zcode_dht_reject_reason reason) {
   if (reason == VCS_ZCODE_DHT_REJECT_RATE || reason == VCS_ZCODE_DHT_REJECT_CAP)
@@ -734,6 +653,7 @@ bool boot_zcode_dht_provider_route(
     struct vcs_zcode_dht_provider_route *out) {
   if (!selector || !out)
     return false;
+  dht_refresh_ready_sessions();
   dht_lock();
   bool ok = g_dht && vcs_zcode_dht_service_provider_route(
                          g_dht, wall_now, selector, out);
@@ -773,7 +693,7 @@ bool boot_zcode_dht_dump_state_json(struct json_value *out, const char *key) {
     return false;
   }
   dht_lock();
-  dht_status_json_locked(out);
+  boot_zcode_dht_status_json(out, g_dht);
   zcl_mutex_unlock(&g_dht_lock);
   boot_zcode_dht_possession_append_json(
       out, (uint64_t)(platform_time_monotonic_ms() / 1000));
