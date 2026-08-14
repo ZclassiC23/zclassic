@@ -5,8 +5,6 @@
 #include "views/ui_present_host.h"
 #include "views/ui_present_host_transport.h"
 
-#include "base/serialize_le.h"
-#include "encoding/qr.h"
 #include "platform/os_proc.h"
 #include "platform/time_compat.h"
 #include "presentation/model_render.h"
@@ -171,6 +169,44 @@ static bool ui_host_worker_model(int client, uint16_t flags,
         LOG_WARN("presentation.host", "visual model rejected: %s", why);
         return false;
     }
+    if (model.kind == ZCL_PRESENT_MODEL_QR_CARD) {
+        struct qr_popup_card card;
+        char payload[ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX + 1u];
+        if (!qr_popup_card_render(&model, &card, why, sizeof(why)) ||
+            !zcl_present_model_qr_payload_v1(&model, payload,
+                                             why, sizeof(why))) {
+            qr_popup_card_free(&card);
+            LOG_WARN("presentation.host", "QR model render failed: %s", why);
+            return false;
+        }
+        uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
+        if (!zcl_present_zclassic_icon_rgba(icon, sizeof(icon))) {
+            qr_popup_card_free(&card);
+            LOG_WARN("presentation.host", "QR window icon is unavailable");
+            return false;
+        }
+        char title[ZCL_PRESENT_TITLE_MAX + 1u];
+        const char *kind = card.is_deposit ? "Deposit ZCL" : model.title;
+        (void)snprintf(title, sizeof(title),
+                       "ZClassic23 — %s — C copies, Esc closes", kind);
+        struct zcl_present_window_v1 window = {
+            .struct_size = sizeof(window),
+            .abi_version = ZCL_PRESENT_ABI_V1,
+            .title = title,
+            .pixels = card.pixels,
+            .width = card.width,
+            .height = card.height,
+            .pixel_format = ZCL_PRESENT_RGB8,
+            .icon_rgba = icon,
+            .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
+            .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
+            .copy_text = payload,
+        };
+        bool shown = ui_host_show_window(client, flags, view_replaced,
+                                         &window, 0, nonce);
+        qr_popup_card_free(&card);
+        return shown;
+    }
     uint32_t page_count = 0;
     if (!zcl_present_model_page_count_v1(&model, &page_count,
                                          why, sizeof(why))) {
@@ -223,81 +259,14 @@ static bool ui_host_worker_model(int client, uint16_t flags,
     return shown;
 }
 
-static bool ui_host_qr_decode(const uint8_t *wire, uint32_t wire_len,
-                              char payload[ZCL_QR_MAX_PAYLOAD + 1u],
-                              char title[81])
-{
-    if (wire_len < 4u) return false;
-    uint16_t payload_len = zcl_read_u16_le(wire);
-    uint16_t title_len = zcl_read_u16_le(wire + 2u);
-    if (payload_len == 0 || payload_len > ZCL_QR_MAX_PAYLOAD ||
-        title_len > 80u ||
-        wire_len != 4u + (uint32_t)payload_len + (uint32_t)title_len)
-        return false;
-    memcpy(payload, wire + 4u, payload_len);
-    payload[payload_len] = '\0';
-    memcpy(title, wire + 4u + payload_len, title_len);
-    title[title_len] = '\0';
-    return memchr(payload, '\0', payload_len) == NULL &&
-           memchr(title, '\0', title_len) == NULL;
-}
-
-static bool ui_host_worker_qr(int client, const uint8_t *wire,
-                              uint32_t wire_len,
-                              const uint8_t nonce[UI_HOST_NONCE_BYTES])
-{
-    char payload[ZCL_QR_MAX_PAYLOAD + 1u];
-    char requested_title[81];
-    if (!ui_host_qr_decode(wire, wire_len, payload, requested_title)) {
-        LOG_WARN("presentation.host", "length-framed QR request is invalid");
-        return false;
-    }
-    struct qr_popup_card card;
-    char why[192];
-    if (!qr_popup_card_render(payload, requested_title, &card,
-                              why, sizeof(why))) {
-        LOG_WARN("presentation.host", "QR card render failed: %s", why);
-        return false;
-    }
-    uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
-    if (!zcl_present_zclassic_icon_rgba(icon, sizeof(icon))) {
-        qr_popup_card_free(&card);
-        LOG_WARN("presentation.host", "QR window icon is unavailable");
-        return false;
-    }
-    char title[ZCL_PRESENT_TITLE_MAX + 1u];
-    const char *kind = card.is_deposit ? "Deposit ZCL" :
-        (requested_title[0] ? requested_title : "QR Code");
-    (void)snprintf(title, sizeof(title),
-                   "ZClassic23 — %s — C copies, Esc closes", kind);
-    struct zcl_present_window_v1 window = {
-        .struct_size = sizeof(window),
-        .abi_version = ZCL_PRESENT_ABI_V1,
-        .title = title,
-        .pixels = card.pixels,
-        .width = card.width,
-        .height = card.height,
-        .pixel_format = ZCL_PRESENT_RGB8,
-        .icon_rgba = icon,
-        .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
-        .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
-        .copy_text = payload,
-    };
-    bool shown = ui_host_show_window(client, 0, false, &window, 0, nonce);
-    qr_popup_card_free(&card);
-    return shown;
-}
-
 static int ui_host_worker(int listener, int client, uint16_t flags,
                           bool view_replaced, const uint8_t *wire,
                           uint32_t wire_len,
                           const uint8_t nonce[UI_HOST_NONCE_BYTES])
 {
     close(listener);
-    bool shown = flags & UI_HOST_FLAG_QR_CARD
-        ? ui_host_worker_qr(client, wire, wire_len, nonce)
-        : ui_host_worker_model(client, flags, view_replaced, wire, wire_len,
-                               nonce);
+    bool shown = ui_host_worker_model(client, flags, view_replaced,
+                                      wire, wire_len, nonce);
     if (!shown) ui_host_send_rejected(client, UI_HOST_PHASE_READY, nonce);
     close(client);
     return shown ? 0 : 1;
@@ -485,35 +454,6 @@ struct zcl_result ui_present_host_submit(
 #endif
 }
 
-struct zcl_result ui_present_host_submit_qr(
-    const char *payload,
-    const char *title,
-    struct ui_present_host_result *result)
-{
-    if (!result) return ZCL_ERR(-1, "presentation host result is missing");
-    *result = (struct ui_present_host_result){
-        .action_index = UINT32_MAX,
-    };
-    size_t payload_len = payload
-        ? strnlen(payload, ZCL_QR_MAX_PAYLOAD + 1u) : 0;
-    size_t title_len = title ? strnlen(title, 81u) : 0;
-    if (payload_len == 0 || payload_len > ZCL_QR_MAX_PAYLOAD)
-        return ZCL_ERR(-1, "QR payload is empty or exceeds 2048 bytes");
-    if (title_len > 80u)
-        return ZCL_ERR(-1, "QR title exceeds 80 bytes");
-#if !defined(__linux__)
-    return ZCL_ERR(-1, "resident presentation host is not yet available on this platform");
-#else
-    uint8_t wire[4u + ZCL_QR_MAX_PAYLOAD + 80u];
-    zcl_write_u16_le(wire, (uint16_t)payload_len);
-    zcl_write_u16_le(wire + 2u, (uint16_t)title_len);
-    memcpy(wire + 4u, payload, payload_len);
-    if (title_len > 0) memcpy(wire + 4u + payload_len, title, title_len);
-    return ui_host_submit_wire(wire, 4u + payload_len + title_len,
-                               UI_HOST_FLAG_QR_CARD, result);
-#endif
-}
-
 int ui_present_host_main(void)
 {
 #if !defined(__linux__)
@@ -565,32 +505,29 @@ int ui_present_host_main(void)
         bool replaceable = false;
         bool view_replaced = false;
         char request_id[ZCL_PRESENT_MODEL_ID_MAX + 1u] = {0};
-        if (!(flags & UI_HOST_FLAG_QR_CARD)) {
-            struct zcl_present_model_v1 model;
-            char why[192];
-            if (!zcl_present_model_decode_v1(wire, wire_len, &model,
-                                             why, sizeof(why)) ||
-                (!!(flags & UI_HOST_FLAG_WAIT_EVENT) !=
-                 (model.action_count > 0))) {
-                LOG_WARN("presentation.host",
-                         "resident visual request rejected before fork");
-                ui_host_send_rejected(client, UI_HOST_PHASE_READY, nonce);
-                close(client);
-                continue;
-            }
-            replaceable = model.action_count == 0;
-            (void)snprintf(request_id, sizeof(request_id), "%s",
-                           model.request_id);
-            if (replaceable &&
-                !ui_host_session_has_slot(sessions, request_id)) {
-                ui_host_send_rejected(client, UI_HOST_PHASE_READY, nonce);
-                close(client);
-                continue;
-            }
-            if (replaceable)
-                view_replaced = ui_host_session_replace(sessions,
-                                                        request_id);
+        struct zcl_present_model_v1 model;
+        char why[192];
+        if (!zcl_present_model_decode_v1(wire, wire_len, &model,
+                                         why, sizeof(why)) ||
+            (!!(flags & UI_HOST_FLAG_WAIT_EVENT) !=
+             (model.action_count > 0))) {
+            LOG_WARN("presentation.host",
+                     "resident visual request rejected before fork");
+            ui_host_send_rejected(client, UI_HOST_PHASE_READY, nonce);
+            close(client);
+            continue;
         }
+        replaceable = model.action_count == 0;
+        (void)snprintf(request_id, sizeof(request_id), "%s",
+                       model.request_id);
+        if (replaceable &&
+            !ui_host_session_has_slot(sessions, request_id)) {
+            ui_host_send_rejected(client, UI_HOST_PHASE_READY, nonce);
+            close(client);
+            continue;
+        }
+        if (replaceable)
+            view_replaced = ui_host_session_replace(sessions, request_id);
         pid_t expected_parent = getpid();
         pid_t worker = fork();
         if (worker == 0) {

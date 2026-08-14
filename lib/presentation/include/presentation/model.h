@@ -22,6 +22,9 @@ extern "C" {
 #define ZCL_PRESENT_MODEL_ID_MAX 32u
 #define ZCL_PRESENT_MODEL_LABEL_MAX 80u
 #define ZCL_PRESENT_MODEL_VALUE_MAX 256u
+#define ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX 2048u
+#define ZCL_PRESENT_MODEL_QR_CHUNKS_MAX \
+    (ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX / ZCL_PRESENT_MODEL_VALUE_MAX)
 #define ZCL_PRESENT_MODEL_ACTION_LABEL_MAX 48u
 #define ZCL_PRESENT_MODEL_PARENT_NONE UINT16_MAX
 
@@ -119,6 +122,18 @@ struct zcl_present_model_v1 {
 
 void zcl_present_model_init_v1(struct zcl_present_model_v1 *model,
                                enum zcl_present_model_kind kind);
+
+/* QR payloads use one closed model shape: one to eight ordered text chunks.
+ * This keeps the full 2 KiB payload inside the existing bounded model ABI,
+ * rather than maintaining a second presentation wire protocol. */
+bool zcl_present_model_qr_from_payload_v1(
+    const char *payload, const char *title,
+    struct zcl_present_model_v1 *model,
+    char *error, size_t error_cap);
+bool zcl_present_model_qr_payload_v1(
+    const struct zcl_present_model_v1 *model,
+    char payload[ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX + 1u],
+    char *error, size_t error_cap);
 
 bool zcl_present_model_validate_v1(const struct zcl_present_model_v1 *model,
                                    char *error, size_t error_cap);

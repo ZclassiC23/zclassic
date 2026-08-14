@@ -10,7 +10,6 @@
 #include "presentation/zclassic_brand.h"
 #include "views/qr_popup.h"
 #include "views/ui_present.h"
-#include "views/ui_present_host.h"
 #include "vcs/zcode_work_node.h"
 
 #include <stdio.h>
@@ -114,25 +113,6 @@ int test_qr(void)
     QR_CHECK("oversized payload is rejected",
              !qr_matrix_encode(oversized, &rejected, why, sizeof(why)));
 
-    struct ui_present_qr_request request;
-    static const char wire[] =
-        "{\"payload\":\"zclassic:t1stdin?amount=0.01\","
-        "\"title\":\"Deposit\"}";
-    QR_CHECK("presentation stdin request parses",
-             ui_present_qr_request_parse(wire, sizeof(wire) - 1u, &request,
-                                         why, sizeof(why)));
-    QR_CHECK("presentation payload survives JSON framing",
-             strcmp(request.payload,
-                    "zclassic:t1stdin?amount=0.01") == 0);
-    QR_CHECK("presentation title survives JSON framing",
-             strcmp(request.title, "Deposit") == 0);
-    QR_CHECK("malformed presentation request is rejected",
-             !ui_present_qr_request_parse("not-json", 8u, &request,
-                                          why, sizeof(why)));
-    QR_CHECK("empty presentation request is rejected",
-             !ui_present_qr_request_parse("", 0, &request,
-                                          why, sizeof(why)));
-
     uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
     QR_CHECK("canonical ZClassic window icon expands",
              zcl_present_zclassic_icon_rgba(icon, sizeof(icon)));
@@ -177,11 +157,15 @@ int test_qr(void)
              balance_width ==
                  zcl_present_canvas_text_width("balance", 7u, 16u));
 
+    struct zcl_present_model_v1 deposit_model;
+    QR_CHECK("deposit payload becomes one bounded QR visual model",
+             zcl_present_model_qr_from_payload_v1(
+                 "zclassic:t1QRNativeC23?label=phone&amount=0.01000000",
+                 "ignored fixture title", &deposit_model,
+                 why, sizeof(why)));
     struct qr_popup_card deposit_card;
     QR_CHECK("ZCL URI composes as a branded deposit card",
-             qr_popup_card_render(
-                 "zclassic:t1QRNativeC23?label=phone&amount=0.01000000",
-                 "ignored fixture title", &deposit_card,
+             qr_popup_card_render(&deposit_model, &deposit_card,
                  why, sizeof(why)));
     QR_CHECK("deposit card identifies exact address and amount",
              deposit_card.is_deposit &&
@@ -205,10 +189,15 @@ int test_qr(void)
              card_has_orange);
     qr_popup_card_free(&deposit_card);
 
+    struct zcl_present_model_v1 generic_model;
+    QR_CHECK("generic payload becomes the same closed QR model shape",
+             zcl_present_model_qr_from_payload_v1(
+                 "generic metadata", "Metadata", &generic_model,
+                 why, sizeof(why)));
     struct qr_popup_card generic_card;
     QR_CHECK("non-payment text stays explicitly generic",
-             qr_popup_card_render("generic metadata", "Metadata",
-                                  &generic_card, why, sizeof(why)) &&
+             qr_popup_card_render(&generic_model, &generic_card,
+                                  why, sizeof(why)) &&
              !generic_card.is_deposit &&
              strcmp(generic_card.address, "generic metadata") == 0);
     qr_popup_card_free(&generic_card);
@@ -257,18 +246,32 @@ int test_qr(void)
              !zcl_present_window_action_at_v1(
                  720, 720, 1000, 720, 100, 670, 2,
                  &clicked_action));
-    struct ui_present_host_result host_result;
-    struct zcl_result empty_host_qr = ui_present_host_submit_qr(
-        "", "Empty", &host_result);
-    QR_CHECK("resident QR framing rejects an empty payload",
-             !empty_host_qr.ok);
+    struct zcl_present_model_v1 rejected_qr;
+    QR_CHECK("shared QR model rejects an empty payload",
+             !zcl_present_model_qr_from_payload_v1(
+                 "", "Empty", &rejected_qr, why, sizeof(why)));
     char oversized_qr[ZCL_QR_MAX_PAYLOAD + 2u];
     memset(oversized_qr, 'x', sizeof(oversized_qr) - 1u);
     oversized_qr[sizeof(oversized_qr) - 1u] = '\0';
-    struct zcl_result oversized_host_qr = ui_present_host_submit_qr(
-        oversized_qr, "Oversized", &host_result);
-    QR_CHECK("resident QR framing rejects oversized bytes",
-             !oversized_host_qr.ok);
+    QR_CHECK("shared QR model rejects oversized bytes",
+             !zcl_present_model_qr_from_payload_v1(
+                 oversized_qr, "Oversized", &rejected_qr,
+                 why, sizeof(why)));
+    char max_qr[ZCL_QR_MAX_PAYLOAD + 1u];
+    memset(max_qr, 'q', sizeof(max_qr) - 1u);
+    max_qr[sizeof(max_qr) - 1u] = '\0';
+    char recovered_qr[ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX + 1u];
+    QR_CHECK("maximum QR bytes use all ordered model chunks",
+             zcl_present_model_qr_from_payload_v1(
+                 max_qr, "Maximum", &rejected_qr, why, sizeof(why)) &&
+             rejected_qr.item_count == ZCL_PRESENT_MODEL_QR_CHUNKS_MAX &&
+             zcl_present_model_qr_payload_v1(
+                 &rejected_qr, recovered_qr, why, sizeof(why)) &&
+             strcmp(recovered_qr, max_qr) == 0);
+    rejected_qr.items[1].id[0] = 'x';
+    QR_CHECK("reordered QR payload chunks fail closed",
+             !zcl_present_model_validate_v1(
+                 &rejected_qr, why, sizeof(why)));
     QR_CHECK("presentation backend is the pinned software backend",
              strcmp(zcl_present_backend_name(), "rgfw-1.8.1-software") == 0);
     QR_CHECK("presentation uses stable desktop application identity",

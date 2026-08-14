@@ -8,12 +8,11 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define UI_HOST_PROTOCOL_VERSION 2u
+#define UI_HOST_PROTOCOL_VERSION 3u
 #define UI_HOST_REQUEST_BYTES 32u
 #define UI_HOST_REPLY_BYTES 40u
 #define UI_HOST_NONCE_BYTES 16u
 #define UI_HOST_FLAG_WAIT_EVENT 1u
-#define UI_HOST_FLAG_QR_CARD 2u
 #define UI_HOST_PHASE_READY 1u
 #define UI_HOST_PHASE_EVENT 2u
 #define UI_HOST_STATUS_OK 0u

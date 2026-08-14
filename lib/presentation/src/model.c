@@ -125,6 +125,103 @@ static bool confirmation_shape(const struct zcl_present_model_v1 *model)
     return confirm && cancel;
 }
 
+static bool qr_shape(const struct zcl_present_model_v1 *model)
+{
+    if (model->kind != ZCL_PRESENT_MODEL_QR_CARD) return true;
+    if (model->item_count == 0 ||
+        model->item_count > ZCL_PRESENT_MODEL_QR_CHUNKS_MAX ||
+        model->action_count != 0 || model->exact_root[0])
+        return false;
+    size_t total = 0;
+    for (uint32_t i = 0; i < model->item_count; i++) {
+        const struct zcl_present_model_item_v1 *item = &model->items[i];
+        char expected[ZCL_PRESENT_MODEL_ID_MAX + 1u];
+        (void)snprintf(expected, sizeof(expected), "payload-%u", i);
+        size_t length = 0;
+        if (item->kind != ZCL_PRESENT_ITEM_TEXT ||
+            item->status != ZCL_PRESENT_STATUS_NEUTRAL ||
+            item->parent_index != ZCL_PRESENT_MODEL_PARENT_NONE ||
+            item->flags != 0 || item->numerator != 0 ||
+            item->denominator != 0 || item->label[0] ||
+            strcmp(item->id, expected) != 0 ||
+            !bounded_length(item->value, ZCL_PRESENT_MODEL_VALUE_MAX,
+                            &length) || length == 0 ||
+            (i + 1u < model->item_count &&
+             length != ZCL_PRESENT_MODEL_VALUE_MAX) ||
+            total + length > ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX)
+            return false;
+        total += length;
+    }
+    return total > 0;
+}
+
+bool zcl_present_model_qr_from_payload_v1(
+    const char *payload, const char *title,
+    struct zcl_present_model_v1 *model,
+    char *error, size_t error_cap)
+{
+    if (!model)
+        return model_error(error, error_cap,
+                           "QR visual model output is missing");
+    size_t payload_len = 0;
+    if (!bounded_length(payload, ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX,
+                        &payload_len) || payload_len == 0)
+        return model_error(error, error_cap,
+                           "QR payload is empty or exceeds 2048 bytes");
+    size_t title_len = 0;
+    if (!title || !title[0]) title = "QR Code";
+    if (!bounded_length(title, ZCL_PRESENT_MODEL_TITLE_MAX, &title_len) ||
+        title_len == 0)
+        return model_error(error, error_cap,
+                           "QR title is empty or oversized");
+
+    zcl_present_model_init_v1(model, ZCL_PRESENT_MODEL_QR_CARD);
+    (void)snprintf(model->request_id, sizeof(model->request_id), "qr-card");
+    memcpy(model->title, title, title_len + 1u);
+    (void)snprintf(model->summary, sizeof(model->summary),
+                   "Scan or copy the exact payload");
+    model->item_count = (uint32_t)(
+        (payload_len + ZCL_PRESENT_MODEL_VALUE_MAX - 1u) /
+        ZCL_PRESENT_MODEL_VALUE_MAX);
+    size_t offset = 0;
+    for (uint32_t i = 0; i < model->item_count; i++) {
+        struct zcl_present_model_item_v1 *item = &model->items[i];
+        size_t length = payload_len - offset;
+        if (length > ZCL_PRESENT_MODEL_VALUE_MAX)
+            length = ZCL_PRESENT_MODEL_VALUE_MAX;
+        item->kind = ZCL_PRESENT_ITEM_TEXT;
+        item->parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+        (void)snprintf(item->id, sizeof(item->id), "payload-%u", i);
+        memcpy(item->value, payload + offset, length);
+        item->value[length] = '\0';
+        offset += length;
+    }
+    return zcl_present_model_validate_v1(model, error, error_cap);
+}
+
+bool zcl_present_model_qr_payload_v1(
+    const struct zcl_present_model_v1 *model,
+    char payload[ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX + 1u],
+    char *error, size_t error_cap)
+{
+    if (!payload)
+        return model_error(error, error_cap,
+                           "QR payload output is missing");
+    payload[0] = '\0';
+    if (!model || !qr_shape(model))
+        return model_error(error, error_cap,
+                           "QR visual model shape is invalid");
+    size_t used = 0;
+    for (uint32_t i = 0; i < model->item_count; i++) {
+        size_t length = strlen(model->items[i].value);
+        memcpy(payload + used, model->items[i].value, length);
+        used += length;
+    }
+    payload[used] = '\0';
+    if (error && error_cap > 0) error[0] = '\0';
+    return true;
+}
+
 bool zcl_present_model_validate_v1(const struct zcl_present_model_v1 *model,
                                    char *error, size_t error_cap)
 {
@@ -193,6 +290,9 @@ bool zcl_present_model_validate_v1(const struct zcl_present_model_v1 *model,
     if (!confirmation_shape(model))
         return model_error(error, error_cap,
                            "confirmation must bind one root and confirm/cancel");
+    if (!qr_shape(model))
+        return model_error(error, error_cap,
+                           "QR model must contain ordered payload chunks only");
     if (error && error_cap > 0) error[0] = '\0';
     return true;
 }

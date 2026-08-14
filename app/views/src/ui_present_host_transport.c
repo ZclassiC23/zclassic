@@ -82,8 +82,8 @@ static socklen_t ui_host_address(struct sockaddr_un *address)
     memset(address, 0, sizeof(*address));
     address->sun_family = AF_UNIX;
     int length = snprintf(address->sun_path, sizeof(address->sun_path),
-                          "%s/host-%08x.sock", directory,
-                          ui_host_display_hash());
+                          "%s/host-v%u-%08x.sock", directory,
+                          UI_HOST_PROTOCOL_VERSION, ui_host_display_hash());
     if (length <= 0 || (size_t)length >= sizeof(address->sun_path)) return 0;
     return (socklen_t)(offsetof(struct sockaddr_un, sun_path) +
                        (size_t)length + 1u);
@@ -188,10 +188,7 @@ bool ui_host_transport_parse_request_header(
     memcpy(nonce, in + 16u, UI_HOST_NONCE_BYTES);
     uint8_t any = 0;
     for (size_t i = 0; i < UI_HOST_NONCE_BYTES; i++) any |= nonce[i];
-    return any != 0 &&
-           (*flags & ~(UI_HOST_FLAG_WAIT_EVENT | UI_HOST_FLAG_QR_CARD)) == 0 &&
-           !((*flags & UI_HOST_FLAG_WAIT_EVENT) &&
-             (*flags & UI_HOST_FLAG_QR_CARD)) &&
+    return any != 0 && (*flags & ~UI_HOST_FLAG_WAIT_EVENT) == 0 &&
            *model_len > 0 && *model_len <= ZCL_PRESENT_MODEL_WIRE_MAX;
 }
 

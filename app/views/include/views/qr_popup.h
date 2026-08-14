@@ -4,6 +4,8 @@
 #ifndef ZCL_VIEWS_QR_POPUP_H
 #define ZCL_VIEWS_QR_POPUP_H
 
+#include "presentation/model.h"
+
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -22,17 +24,11 @@ struct qr_popup_card {
     char amount[64];
 };
 
-/* Compose the exact pixels shown by qr_popup_show(). The caller owns pixels
- * and releases them with qr_popup_card_free(). This separated compositor is
- * what keeps visual iteration and deterministic tests out of the window loop. */
-bool qr_popup_card_render(const char *payload, const char *title,
+/* Compose the QR specialization of the shared bounded visual model. The
+ * caller owns pixels and releases them with qr_popup_card_free(). */
+bool qr_popup_card_render(const struct zcl_present_model_v1 *model,
                           struct qr_popup_card *out,
                           char *error, size_t error_cap);
 void qr_popup_card_free(struct qr_popup_card *card);
-
-/* Opens one detached-process desktop window through lib/presentation and runs
- * until the user closes it. No node, wallet, or network state is touched. */
-bool qr_popup_show(const char *payload, const char *title,
-                   char *error, size_t error_cap);
 
 #endif

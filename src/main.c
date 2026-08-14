@@ -152,10 +152,8 @@ int main(int argc, char **argv)
      * payload arrives later on stdin, never in process-visible argv. Dispatch
      * before argument parsing and node initialization so the child owns only
      * its reviewed UI backend and exits when its window closes. */
-    if (argc == 2 && strcmp(argv[1], "--ui-present-child=qr") == 0)
-        return ui_present_child_main("qr");
     if (argc == 2 && strcmp(argv[1], "--ui-present-child=model") == 0)
-        return ui_present_child_main("model");
+        return ui_present_child_main();
     if (argc == 2 && strcmp(argv[1], "--ui-present-host") == 0)
         return ui_present_host_main();
 

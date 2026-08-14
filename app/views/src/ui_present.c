@@ -286,95 +286,6 @@ bool ui_present_model_from_json(const struct json_value *input,
     return zcl_present_model_validate_v1(out, error, error_cap);
 }
 
-bool ui_present_qr_request_parse(const char *raw, size_t raw_len,
-                                 struct ui_present_qr_request *out,
-                                 char *error, size_t error_cap)
-{
-    if (!raw || !out || raw_len == 0 || raw_len > UI_PRESENT_REQUEST_MAX) {
-        ui_present_error(error, error_cap,
-                         "presentation request is empty or oversized");
-        return false;
-    }
-
-    struct json_value request;
-    json_init(&request);
-    if (!json_read(&request, raw, raw_len) || request.type != JSON_OBJ) {
-        json_free(&request);
-        ui_present_error(error, error_cap,
-                         "presentation request is not a JSON object");
-        return false;
-    }
-
-    const char *payload = json_get_str(json_get(&request, "payload"));
-    const char *title = json_get_str(json_get(&request, "title"));
-    if (!payload || !payload[0]) {
-        json_free(&request);
-        ui_present_error(error, error_cap,
-                         "presentation payload must be a non-empty string");
-        return false;
-    }
-    size_t payload_len = strnlen(payload, ZCL_QR_MAX_PAYLOAD + 1u);
-    if (payload_len > ZCL_QR_MAX_PAYLOAD) {
-        json_free(&request);
-        ui_present_error(error, error_cap,
-                         "presentation payload exceeds the QR limit");
-        return false;
-    }
-    size_t title_len = title ? strnlen(title, UI_PRESENT_TITLE_MAX + 1u) : 0;
-    if (title_len > UI_PRESENT_TITLE_MAX) {
-        json_free(&request);
-        ui_present_error(error, error_cap,
-                         "presentation title exceeds the title limit");
-        return false;
-    }
-
-    memcpy(out->payload, payload, payload_len + 1u);
-    if (title_len > 0) memcpy(out->title, title, title_len);
-    out->title[title_len] = '\0';
-    json_free(&request);
-    if (error && error_cap > 0) error[0] = '\0';
-    return true;
-}
-
-struct zcl_result ui_present_qr_launch(const char *payload,
-                                        const char *title)
-{
-    if (!payload || !payload[0])
-        return ZCL_ERR(-1, "ui_present_qr_launch: empty payload");
-
-    struct json_value request;
-    json_init(&request);
-    json_set_object(&request);
-    bool built = json_push_kv_str(&request, "payload", payload);
-    if (built && title && title[0])
-        built = json_push_kv_str(&request, "title", title);
-    if (!built) {
-        json_free(&request);
-        return ZCL_ERR(-1, "ui_present_qr_launch: request encoding failed");
-    }
-
-    char wire[UI_PRESENT_REQUEST_MAX + 1u];
-    size_t wire_len = json_write(&request, wire, sizeof(wire));
-    json_free(&request);
-    if (wire_len >= sizeof(wire))
-        return ZCL_ERR(-1,
-                       "ui_present_qr_launch: encoded request exceeds %u bytes",
-                       UI_PRESENT_REQUEST_MAX);
-
-    char executable[PATH_MAX];
-    if (!os_proc_exe_path(executable, sizeof(executable)))
-        return ZCL_ERR(-errno,
-                       "ui_present_qr_launch: executable path unavailable: %s",
-                       strerror(errno));
-
-    const char *argv[] = {
-        executable,
-        "--ui-present-child=qr",
-        NULL,
-    };
-    return zcl_spawn_detached_input(argv, wire, wire_len, NULL);
-}
-
 struct zcl_result ui_present_model_launch(
     const struct zcl_present_model_v1 *model)
 {
@@ -405,51 +316,62 @@ static bool ui_present_model_show(const uint8_t *wire, size_t wire_len,
     if (!zcl_present_model_decode_v1(wire, wire_len, &model,
                                      error, error_cap))
         return false; // raw-return-ok:model decoder supplied bounded error
-    struct zcl_present_model_bitmap_v1 bitmap;
-    if (!zcl_present_model_render_v1(&model, &bitmap, error, error_cap))
+    struct zcl_present_model_bitmap_v1 bitmap = {0};
+    struct qr_popup_card qr_card = {0};
+    char qr_payload[ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX + 1u] = {0};
+    bool is_qr = model.kind == ZCL_PRESENT_MODEL_QR_CARD;
+    if (is_qr) {
+        if (!qr_popup_card_render(&model, &qr_card, error, error_cap) ||
+            !zcl_present_model_qr_payload_v1(&model, qr_payload,
+                                             error, error_cap)) {
+            qr_popup_card_free(&qr_card);
+            return false;
+        }
+    } else if (!zcl_present_model_render_v1(&model, &bitmap,
+                                            error, error_cap)) {
         return false; // raw-return-ok:model renderer supplied bounded error
+    }
     uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
     if (!zcl_present_zclassic_icon_rgba(icon, sizeof(icon))) {
-        zcl_present_model_bitmap_free_v1(&bitmap);
+        if (is_qr) qr_popup_card_free(&qr_card);
+        else zcl_present_model_bitmap_free_v1(&bitmap);
         ui_present_error(error, error_cap,
                          "ZClassic presentation icon is unavailable");
         return false;
     }
     char title[ZCL_PRESENT_TITLE_MAX + 1u];
-    (void)snprintf(title, sizeof(title), "ZClassic23 — %s",
-                   model.title);
+    if (is_qr) {
+        const char *kind = qr_card.is_deposit ? "Deposit ZCL" : model.title;
+        (void)snprintf(title, sizeof(title),
+                       "ZClassic23 — %s — C copies, Esc closes", kind);
+    } else {
+        (void)snprintf(title, sizeof(title), "ZClassic23 — %s", model.title);
+    }
     struct zcl_present_window_v1 request = {
         .struct_size = sizeof(request),
         .abi_version = ZCL_PRESENT_ABI_V1,
         .title = title,
-        .pixels = bitmap.pixels,
-        .width = bitmap.width,
-        .height = bitmap.height,
+        .pixels = is_qr ? qr_card.pixels : bitmap.pixels,
+        .width = is_qr ? qr_card.width : bitmap.width,
+        .height = is_qr ? qr_card.height : bitmap.height,
         .pixel_format = ZCL_PRESENT_RGB8,
         .icon_rgba = icon,
         .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
         .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
-        .copy_text = model.exact_root[0] ? model.exact_root : NULL,
+        .copy_text = is_qr ? qr_payload :
+            (model.exact_root[0] ? model.exact_root : NULL),
     };
     bool shown = zcl_present_window_run_v1(&request, error, error_cap);
-    zcl_present_model_bitmap_free_v1(&bitmap);
+    if (is_qr) qr_popup_card_free(&qr_card);
+    else zcl_present_model_bitmap_free_v1(&bitmap);
     return shown;
 }
 
-int ui_present_child_main(const char *kind)
+int ui_present_child_main(void)
 {
-    bool is_qr = kind && strcmp(kind, "qr") == 0;
-    bool is_model = kind && strcmp(kind, "model") == 0;
-    if (!is_qr && !is_model) {
-        (void)fprintf(stderr, "Unsupported presentation kind.\n"); // obs-ok:detached-child-terminal-diagnostic
-        return 2;
-    }
-
     uint8_t raw[ZCL_PRESENT_MODEL_WIRE_MAX + 1u];
-    size_t request_max = is_model ? ZCL_PRESENT_MODEL_WIRE_MAX
-                                  : UI_PRESENT_REQUEST_MAX;
     size_t used = 0;
-    while (used <= request_max) {
+    while (used <= ZCL_PRESENT_MODEL_WIRE_MAX) {
         ssize_t nr = read(STDIN_FILENO, raw + used, sizeof(raw) - used);
         if (nr > 0) {
             used += (size_t)nr;
@@ -460,28 +382,13 @@ int ui_present_child_main(const char *kind)
         (void)fprintf(stderr, "Could not read presentation request.\n"); // obs-ok:detached-child-terminal-diagnostic
         return 2;
     }
-    if (used > request_max) {
+    if (used > ZCL_PRESENT_MODEL_WIRE_MAX) {
         (void)fprintf(stderr, "Presentation request is oversized.\n"); // obs-ok:detached-child-terminal-diagnostic
         return 2;
     }
 
     char why[192];
-    if (is_model) {
-        if (!ui_present_model_show(raw, used, why, sizeof(why))) {
-            (void)fprintf(stderr, "Presentation window failed: %s\n", why); // obs-ok:detached-child-terminal-diagnostic
-            return 1;
-        }
-        return 0;
-    }
-
-    struct ui_present_qr_request request;
-    memset(&request, 0, sizeof(request));
-    if (!ui_present_qr_request_parse((const char *)raw, used, &request,
-                                     why, sizeof(why))) {
-        (void)fprintf(stderr, "Presentation request rejected: %s\n", why); // obs-ok:detached-child-terminal-diagnostic
-        return 2;
-    }
-    if (!qr_popup_show(request.payload, request.title, why, sizeof(why))) {
+    if (!ui_present_model_show(raw, used, why, sizeof(why))) {
         (void)fprintf(stderr, "Presentation window failed: %s\n", why); // obs-ok:detached-child-terminal-diagnostic
         return 1;
     }

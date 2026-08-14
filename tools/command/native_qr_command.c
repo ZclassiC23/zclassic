@@ -2,7 +2,6 @@
  * Purpose: typed local command for native QR presentation. */
 
 #include "command/native_command.h"
-#include "encoding/qr.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
 #include "presentation/presentation.h"
@@ -32,13 +31,21 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
         nqr_fail(reply, "MISSING_PAYLOAD", "payload must be a non-empty string");
         return;
     }
-    size_t payload_len = strnlen(payload, ZCL_QR_MAX_PAYLOAD + 1u);
-    if (payload_len > ZCL_QR_MAX_PAYLOAD) {
+    size_t payload_len = strnlen(
+        payload, ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX + 1u);
+    if (payload_len > ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX) {
         nqr_fail(reply, "PAYLOAD_TOO_LARGE", "payload exceeds 2048 bytes");
         return;
     }
     if (title && strnlen(title, 81u) > 80u) {
         nqr_fail(reply, "TITLE_TOO_LARGE", "title exceeds 80 bytes");
+        return;
+    }
+    struct zcl_present_model_v1 model;
+    char model_why[192];
+    if (!zcl_present_model_qr_from_payload_v1(
+            payload, title, &model, model_why, sizeof(model_why))) {
+        nqr_fail(reply, "INVALID_QR_MODEL", model_why);
         return;
     }
     char display_why[96];
@@ -48,11 +55,10 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
     }
     int64_t started_us = platform_time_monotonic_us();
     struct ui_present_host_result host;
-    struct zcl_result launched = ui_present_host_submit_qr(
-        payload, title, &host);
+    struct zcl_result launched = ui_present_host_submit(&model, false, &host);
     bool cold_fallback = false;
     if (!launched.ok) {
-        launched = ui_present_qr_launch(payload, title);
+        launched = ui_present_model_launch(&model);
         cold_fallback = launched.ok;
     }
     int64_t handoff_us = platform_time_monotonic_us() - started_us;
@@ -69,7 +75,8 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
                             !cold_fallback && host.resident_host);
     (void)json_push_kv_bool(&reply->data, "host_reused",
                             !cold_fallback && host.host_reused);
-    (void)json_push_kv_bool(&reply->data, "view_replaced", false);
+    (void)json_push_kv_bool(&reply->data, "view_replaced",
+                            !cold_fallback && host.view_replaced);
     (void)json_push_kv_int(&reply->data, "window_ready_us",
                            cold_fallback ? -1 : host.ready_us);
     (void)json_push_kv_str(&reply->data, "authority", "display-only");

@@ -6,7 +6,6 @@
 #include "base/safe_alloc.h"
 #include "encoding/qr.h"
 #include "presentation/canvas.h"
-#include "presentation/presentation.h"
 #include "presentation/zclassic_brand.h"
 
 #include <stdio.h>
@@ -126,16 +125,20 @@ static void blit_qr(struct zcl_present_canvas *canvas, const uint8_t *qr,
     }
 }
 
-bool qr_popup_card_render(const char *payload, const char *title,
+bool qr_popup_card_render(const struct zcl_present_model_v1 *model,
                           struct qr_popup_card *out,
                           char *error, size_t error_cap)
 {
-    (void)title;
     if (!out) {
         popup_error(error, error_cap, "missing QR deposit card output");
         return false;
     }
     *out = (struct qr_popup_card){0};
+
+    char payload[ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX + 1u];
+    if (!zcl_present_model_qr_payload_v1(model, payload,
+                                         error, error_cap))
+        return false;
 
     struct qr_matrix matrix;
     if (!qr_matrix_encode(payload, &matrix, error, error_cap))
@@ -228,43 +231,4 @@ void qr_popup_card_free(struct qr_popup_card *card)
     if (!card) return;
     free(card->pixels);
     *card = (struct qr_popup_card){0};
-}
-
-bool qr_popup_show(const char *payload, const char *title,
-                   char *error, size_t error_cap)
-{
-    struct qr_popup_card card;
-    if (!qr_popup_card_render(payload, title, &card, error, error_cap))
-        return false; // raw-return-ok:compositor supplied bounded caller error
-
-    uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
-    if (!zcl_present_zclassic_icon_rgba(icon, sizeof(icon))) {
-        qr_popup_card_free(&card);
-        if (error && error_cap > 0)
-            (void)snprintf(error, error_cap,
-                           "ZClassic presentation icon is unavailable");
-        return false;
-    }
-
-    char window_title[ZCL_PRESENT_TITLE_MAX + 1u];
-    const char *kind = card.is_deposit ? "Deposit ZCL" :
-                       (title && title[0] ? title : "QR Code");
-    (void)snprintf(window_title, sizeof(window_title),
-                   "ZClassic23 — %s — C copies, Esc closes", kind);
-    struct zcl_present_window_v1 request = {
-        .struct_size = sizeof(request),
-        .abi_version = ZCL_PRESENT_ABI_V1,
-        .title = window_title,
-        .pixels = card.pixels,
-        .width = card.width,
-        .height = card.height,
-        .pixel_format = ZCL_PRESENT_RGB8,
-        .icon_rgba = icon,
-        .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
-        .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
-        .copy_text = payload,
-    };
-    bool shown = zcl_present_window_run_v1(&request, error, error_cap);
-    qr_popup_card_free(&card);
-    return shown;
 }
