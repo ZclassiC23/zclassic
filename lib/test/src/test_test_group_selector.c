@@ -295,6 +295,16 @@ static int test_process_sensitive_groups_are_catalog_exclusive(void)
          * the 20 ms contract into a scheduler-contention measurement. */
         ASSERT(zcl_test_group_requires_exclusive_run(
             "test_vcs_core"));
+        /* Sandbox lint shards retain a bounded parallel lane of their own;
+         * they are not smuggled into this serial predicate. */
+        ASSERT(!zcl_test_group_requires_exclusive_run(
+            "test_make_lint_gates_shard_01"));
+        ASSERT(lint_gates_group_requires_quiet_pool(
+            "test_make_lint_gates_shard_01"));
+        ASSERT(lint_gates_group_requires_quiet_pool(
+            "test_make_lint_gates_shard_08"));
+        ASSERT(!lint_gates_group_requires_quiet_pool(
+            "test_make_lint_gates_realroot"));
         /* This compares forced-pool and serial routing back-to-back. The
          * worker pool must not introduce a different producer population
          * between those two measurements. */

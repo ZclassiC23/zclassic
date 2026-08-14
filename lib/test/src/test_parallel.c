@@ -243,9 +243,10 @@ static int count_skip_markers(const char *path)
  *
  * That group is `make_lint_gates`. Its ~114 sibling checks live in
  * `make_lint_gates_shard_NN` and `make_lint_gates_realroot`, which never touch
- * the real tree and MUST stay pool-eligible — the whole point of the split.
- * The pre-pass ordering is also what lets the shards build their private
- * reflink-or-copy sandboxes from a quiet tree.
+ * the real tree. The eight source-copy shards stay parallel in a bounded quiet
+ * phase; realroot and the rest of the suite use the general pool. The pre-pass
+ * ordering is also what lets the shards build their private reflink-or-copy
+ * sandboxes from a quiet tree.
  *
  * The policy itself lives in test_make_lint_gates.c next to the entry table
  * that makes it true, and is asserted in both directions by the
@@ -265,6 +266,11 @@ static bool group_requires_exclusive_run(const char *name)
 {
     if (group_requires_exclusive_repo(name)) return true;
     return zcl_test_group_requires_exclusive_run(name);
+}
+
+static bool group_requires_quiet_pool(const char *name)
+{
+    return lint_gates_group_requires_quiet_pool(name);
 }
 
 /* Params-heavy opt-in gate. These groups load the multi-MB Sapling Groth16
@@ -329,7 +335,8 @@ static bool exact_selector_set_valid(const char *selectors,
 }
 
 static void run_group_exclusive(size_t idx, pid_t parent_pid,
-                                struct group_result *results)
+                                struct group_result *results,
+                                int timeout_secs, bool verbose)
 {
     char out_path[128];
     make_tempfile_path(out_path, sizeof(out_path), idx, parent_pid);
@@ -349,11 +356,26 @@ static void run_group_exclusive(size_t idx, pid_t parent_pid,
     }
 
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno == EINTR) continue;
-        perror("test_parallel: exclusive waitpid");
-        status = 1;
-        break;
+    bool killed = false;
+    for (;;) {
+        pid_t done = waitpid(pid, &status, WNOHANG);
+        if (done == pid) break;
+        if (done < 0 && errno == EINTR) continue;
+        if (done < 0) {
+            perror("test_parallel: exclusive waitpid");
+            status = 1;
+            break;
+        }
+        time_t now = platform_time_wall_time_t();
+        if (!killed && now - results[idx].start > timeout_secs) {
+            if (verbose)
+                printf("[timeout ] [%zu] %s (after %ds)\n",
+                       idx, g_groups[idx].name, timeout_secs);
+            (void)kill(pid, SIGKILL);
+            killed = true;
+        }
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
+        nanosleep(&ts, NULL);
     }
 
     results[idx].status = status;
@@ -367,6 +389,120 @@ static void run_group_exclusive(size_t idx, pid_t parent_pid,
     memcpy(results[idx].out_path, out_path, sizeof(results[idx].out_path));
     time_t now = platform_time_wall_time_t();
     results[idx].wall_seconds = (double)(now - results[idx].start);
+}
+
+enum pool_phase {
+    POOL_PHASE_QUIET_LINT = 1,
+    POOL_PHASE_GENERAL = 2,
+};
+
+static bool pool_phase_selects(enum pool_phase phase, const char *name)
+{
+    bool quiet = group_requires_quiet_pool(name);
+    return phase == POOL_PHASE_QUIET_LINT ? quiet : !quiet;
+}
+
+/* Run one bounded parallel phase. The quiet lint phase and general phase use
+ * the same fork, timeout, capture, and accounting machinery; only group
+ * admission differs. That makes isolation a scheduling fact, never a timeout
+ * exemption or a second test runner. */
+static bool run_parallel_phase(
+    enum pool_phase phase, struct child_slot *slots, int jobs,
+    pid_t parent_pid, struct group_result *results, int timeout_secs,
+    bool verbose, size_t *reaped)
+{
+    size_t remaining = 0;
+    for (size_t i = 0; i < g_num_groups; i++)
+        if (results[i].status == -1 &&
+            pool_phase_selects(phase, g_groups[i].name))
+            remaining++;
+    size_t next_idx = 0;
+    while (remaining > 0) {
+        while (next_idx < g_num_groups) {
+            if (results[next_idx].status != -1 ||
+                !pool_phase_selects(phase, g_groups[next_idx].name)) {
+                next_idx++;
+                continue;
+            }
+            int slot = find_free_slot(slots, jobs);
+            if (slot < 0) break;
+            make_tempfile_path(slots[slot].out_path,
+                               sizeof(slots[slot].out_path),
+                               next_idx, parent_pid);
+            results[next_idx].start = platform_time_wall_time_t();
+            pid_t pid = fork();
+            if (pid < 0) {
+                perror("test_parallel: fork");
+                return false;
+            }
+            if (pid == 0) {
+                child_run(next_idx, slots[slot].out_path);
+                _exit(2);
+            }
+            slots[slot].pid = pid;
+            slots[slot].group_idx = next_idx;
+            if (verbose) {
+                const char *label = phase == POOL_PHASE_QUIET_LINT
+                    ? "quiet" : "dispatch";
+                printf("[%-8s] [%zu/%zu] pid=%d %s\n",
+                       label, next_idx + 1, g_num_groups, pid,
+                       g_groups[next_idx].name);
+            }
+            next_idx++;
+        }
+
+        time_t now_tick = platform_time_wall_time_t();
+        for (int i = 0; i < jobs; i++) {
+            if (slots[i].pid == 0) continue;
+            size_t idx = slots[i].group_idx;
+            if (now_tick - results[idx].start <= timeout_secs) continue;
+            if (verbose)
+                printf("[timeout ] [%zu] %s (after %ds)\n",
+                       idx, g_groups[idx].name, timeout_secs);
+            (void)kill(slots[i].pid, SIGKILL);
+        }
+
+        int status = 0;
+        pid_t done = waitpid(-1, &status, WNOHANG);
+        if (done == 0) {
+            struct timespec ts = {
+                .tv_sec = 0, .tv_nsec = 10 * 1000 * 1000,
+            };
+            nanosleep(&ts, NULL);
+            continue;
+        }
+        if (done < 0) {
+            if (errno == EINTR) continue;
+            perror("test_parallel: waitpid");
+            return false;
+        }
+        int slot = find_slot_by_pid(slots, jobs, done);
+        if (slot < 0) continue;
+        size_t idx = slots[slot].group_idx;
+        results[idx].status = status;
+        if (WIFSIGNALED(status)) {
+            results[idx].signaled = 1;
+            results[idx].exit_code = WTERMSIG(status);
+        } else {
+            results[idx].signaled = 0;
+            results[idx].exit_code = WIFEXITED(status)
+                ? WEXITSTATUS(status) : -1;
+        }
+        memcpy(results[idx].out_path, slots[slot].out_path,
+               sizeof(results[idx].out_path));
+        time_t now = platform_time_wall_time_t();
+        results[idx].wall_seconds = (double)(now - results[idx].start);
+        if (verbose)
+            printf("[done    ] [%zu] %s (%s, %.0fs)\n",
+                   idx, g_groups[idx].name,
+                   results[idx].signaled ? "SIGNALED" :
+                   (results[idx].exit_code == 0 ? "PASS" : "FAIL"),
+                   results[idx].wall_seconds);
+        slots[slot].pid = 0;
+        remaining--;
+        (*reaped)++;
+    }
+    return true;
 }
 
 /* What a run actually DID, as opposed to what it concluded. Carried to both the
@@ -841,111 +977,30 @@ int main(int argc, char **argv)
         if (verbose)
             printf("[exclusive] [%zu/%zu] %s\n",
                    i + 1, g_num_groups, g_groups[i].name);
-        run_group_exclusive(i, parent_pid, results);
+        run_group_exclusive(i, parent_pid, results, timeout_secs, verbose);
         reaped++;
     }
 
-    size_t next_idx = 0;
-
-    while (reaped < g_num_groups) {
-        /* Dispatch as many children as we have free slots and
-         * remaining groups. */
-        while (next_idx < g_num_groups) {
-            if (results[next_idx].status != -1) {
-                next_idx++;
-                continue;
-            }
-            int slot = find_free_slot(slots, jobs);
-            if (slot < 0) break;
-
-            make_tempfile_path(slots[slot].out_path,
-                               sizeof(slots[slot].out_path),
-                               next_idx, parent_pid);
-            results[next_idx].start = platform_time_wall_time_t();
-
-            pid_t pid = fork();
-            if (pid < 0) {
-                perror("test_parallel: fork");
-                break;
-            }
-            if (pid == 0) {
-                child_run(next_idx, slots[slot].out_path);
-                _exit(2); /* unreachable */
-            }
-            slots[slot].pid = pid;
-            slots[slot].group_idx = next_idx;
-            if (verbose) {
-                printf("[dispatch] [%zu/%zu] pid=%d %s\n",
-                       next_idx + 1, g_num_groups, pid,
-                       g_groups[next_idx].name);
-            }
-            next_idx++;
-        }
-
-        /* Enforce the per-group timeout by SIGKILLing any slot whose
-         * child has been running longer than `timeout_secs`. The kill
-         * flows into the normal reap path below. */
-        time_t now_tick = platform_time_wall_time_t();
+    int quiet_jobs = jobs < 8 ? jobs : 8;
+    bool phases_ok = run_parallel_phase(
+        POOL_PHASE_QUIET_LINT, slots, quiet_jobs, parent_pid, results,
+        timeout_secs, verbose, &reaped);
+    if (phases_ok)
+        phases_ok = run_parallel_phase(
+            POOL_PHASE_GENERAL, slots, jobs, parent_pid, results,
+            timeout_secs, verbose, &reaped);
+    if (!phases_ok || reaped != g_num_groups) {
         for (int i = 0; i < jobs; i++) {
-            if (slots[i].pid == 0) continue;
-            if (now_tick - results[slots[i].group_idx].start > timeout_secs) {
-                if (verbose) {
-                    printf("[timeout ] [%zu] %s (after %ds)\n",
-                           slots[i].group_idx,
-                           g_groups[slots[i].group_idx].name,
-                           timeout_secs);
-                }
-                kill(slots[i].pid, SIGKILL);
-            }
+            if (slots[i].pid <= 0) continue;
+            (void)kill(slots[i].pid, SIGKILL);
+            while (waitpid(slots[i].pid, NULL, 0) < 0 && errno == EINTR) {}
         }
-
-        /* Wait for any child to finish with a 10 ms poll ceiling. Focused
-         * simulator groups commonly finish in under 1 ms; the old one-second
-         * sleep made their public `make t-fast ONLY=...` path three orders of
-         * magnitude slower than the test itself. 100 wakeups/s is negligible
-         * beside compilation/crypto work and keeps timeout enforcement more
-         * responsive for the full suite too. */
-        int status = 0;
-        pid_t done = waitpid(-1, &status, WNOHANG);
-        if (done == 0) {
-            struct timespec ts = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
-            nanosleep(&ts, NULL);
-            continue;
-        }
-        if (done < 0) {
-            if (errno == EINTR) continue;
-            perror("test_parallel: waitpid");
-            break;
-        }
-        int slot = find_slot_by_pid(slots, jobs, done);
-        if (slot < 0) {
-            /* Unknown pid — ignore. */
-            continue;
-        }
-        size_t idx = slots[slot].group_idx;
-        results[idx].status = status;
-        if (WIFSIGNALED(status)) {
-            results[idx].signaled = 1;
-            results[idx].exit_code = WTERMSIG(status);
-        } else {
-            results[idx].signaled = 0;
-            results[idx].exit_code = WIFEXITED(status) ? WEXITSTATUS(status) : -1;
-        }
-        memcpy(results[idx].out_path, slots[slot].out_path,
-               sizeof(results[idx].out_path));
-        time_t now = platform_time_wall_time_t();
-        results[idx].wall_seconds = (double)(now - results[idx].start);
-
-        if (verbose) {
-            printf("[done    ] [%zu] %s (%s, %.0fs)\n",
-                   idx, g_groups[idx].name,
-                   results[idx].signaled ? "SIGNALED" :
-                   (results[idx].exit_code == 0 ? "PASS" : "FAIL"),
-                   results[idx].wall_seconds);
-        }
-
-        slots[slot].pid = 0;
-        reaped++;
+        fprintf(stderr, "test_parallel: bounded phase scheduler failed\n");
+        testcache_close(tc);
+        free(probes);
+        free(slots);
+        free(results);
+        return 1;
     }
 
     /* All children reaped. Full-suite green output is intentionally compact:
