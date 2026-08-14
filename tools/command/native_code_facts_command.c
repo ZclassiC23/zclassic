@@ -119,7 +119,10 @@ void zcl_native_handle_code_facts(const struct zcl_command_request *request,
                                   struct zcl_command_reply *reply)
 {
     const char *root = facts_source_root(request);
-    struct codeindex *ci = codeindex_open(root);
+    /* This census consumes only indexed source rows. Exact source freshness is
+     * required, but compiler depfile movement cannot change its answer and
+     * must not tax the warm diagnostic latency budget. */
+    struct codeindex *ci = codeindex_open_source_view(root);
     if (!ci) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "CODEINDEX_OPEN",

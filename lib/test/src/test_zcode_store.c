@@ -1793,6 +1793,54 @@ static int t_store_dump_state(void)
     return failures;
 }
 
+/* A live daemon may be receiving verified chunks while one-shot commands
+ * inspect the same datadir. Recovery includes orphan GC, so the second open
+ * must serialize with manifest/CAS writes without denying the offline reader
+ * shape used by existing package commands. */
+static int t_store_serialized_recovery(void)
+{
+    int failures = 0;
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_store", "serialized_recovery");
+    const char *paths[] = { "one.c", "two.c" };
+    const size_t lens[] = { 311, 509 };
+    struct zs_pkg p;
+    ZS_CHECK("serialized recovery: fixture builds",
+             zs_make_package(&p, 2, paths, lens, 0xc1));
+    struct vcs_package_store *resident = vcs_package_store_open(
+        dd, VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+    ZS_CHECK("serialized recovery: resident opens", resident != NULL);
+    ZS_CHECK("serialized recovery: resident stages manifest",
+             resident && vcs_package_store_put_manifest(
+                 resident, p.wire, p.wire_len, NULL) == VCS_PACKAGE_STORE_OK);
+
+    struct vcs_package_store *observer = vcs_package_store_open(
+        dd, VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+    struct vcs_package_store_status observed;
+    ZS_CHECK("serialized recovery: observer sees staged package",
+             observer &&
+             vcs_package_store_package_status(observer, p.root, &observed) &&
+             !observed.complete && observed.present_bytes == 0);
+    vcs_package_store_close(observer);
+
+    struct vcs_package_store_status status;
+    ZS_CHECK("serialized recovery: resident completes after observer",
+             resident && zs_put_all(resident, &p) == VCS_PACKAGE_STORE_OK &&
+             vcs_package_store_package_status(resident, p.root, &status) &&
+             status.complete && status.present_bytes == 820);
+    vcs_package_store_close(resident);
+    resident = vcs_package_store_open(dd,
+                                      VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+    ZS_CHECK("serialized recovery: bytes survive cold recovery",
+             resident &&
+             vcs_package_store_package_status(resident, p.root, &status) &&
+             status.complete && status.present_bytes == 820);
+    vcs_package_store_close(resident);
+    zs_free_package(&p);
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
 int test_zcode_store(void)
 {
     printf("\n=== zcode_store: local content-addressed package store ===\n");
@@ -1811,6 +1859,7 @@ int test_zcode_store(void)
     failures += t_store_releases();
     failures += t_store_blob();
     failures += t_store_work_output();
+    failures += t_store_serialized_recovery();
     failures += t_store_dump_state();
     printf("=== zcode_store complete: %d failure(s) ===\n", failures);
     return failures;

@@ -27,10 +27,11 @@ OS/desktop APIs, not application dependencies. Rendering is software-only and
 does not require OpenGL, GTK, Qt, libqrencode, Python, or a browser.
 
 The full binary's resident boundary is
-`app/views/src/ui_present_host.c`. On Linux it binds a per-user, per-display
-abstract AF_UNIX endpoint (no socket path or canonical datadir), accepts only
-same-UID peers, and forks disposable window workers from one warm exact-binary
-parent. QR cards and renderer-neutral models share this transport without
+`app/views/src/ui_present_host.c`. On Linux it binds a mode-0600 filesystem
+AF_UNIX endpoint inside a validated mode-0700 per-user runtime directory,
+accepts only same-UID peers, binds every reply to a fresh 128-bit request
+nonce, and forks disposable window workers from one warm same-binary parent.
+It never opens the canonical datadir. QR cards and renderer-neutral models share this transport without
 changing their separate deterministic compositors. The first software blit is
 acknowledged separately from a later numbered action/dismissal event.
 Non-interactive models with the same bounded request ID replace only their

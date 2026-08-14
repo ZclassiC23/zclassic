@@ -32,7 +32,11 @@
  * unverified bytes and incomplete packages earn no hosting credit.
  *
  * Crash recovery — RESUMABLE staging (documented choice): at open the
- * store (1) deletes leftover *.zstmp.* temps, (2) reloads committed and
+ * store serializes recovery/GC against manifest and CAS transactions with
+ * an exact-root process lock. A one-shot observer therefore cannot snapshot
+ * "no manifest" and delete chunks the resident writes moments later. Then
+ * the store
+ * (1) deletes leftover *.zstmp.* temps, (2) reloads committed and
  * staged manifests (a staged manifest that fails to parse is discarded
  * with its staging dir, logged), (3) deletes CAS objects no loaded
  * manifest references (orphan GC; also non-hex filenames), then (4)
@@ -195,6 +199,13 @@ uint64_t vcs_package_store_quota_bytes(void);
 struct vcs_package_store *vcs_package_store_open(const char *datadir,
                                                  uint64_t quota_bytes);
 void vcs_package_store_close(struct vcs_package_store *store);
+
+/* Bind a pin/unpin plan token to the exact package status observed under the
+ * store's in-process lock. False means the root is not tracked. Shared by the
+ * resident RPC and the offline native fallback so plan/commit cannot drift. */
+bool vcs_package_store_pin_plan(
+    struct vcs_package_store *store, const uint8_t root[32], bool pinned,
+    struct vcs_package_store_status *status_out, uint8_t token_out[32]);
 
 /* The node-global instance: open_global reads the flags and GetDataDir
  * (base, not network-specific — content is chain-agnostic; chain binding

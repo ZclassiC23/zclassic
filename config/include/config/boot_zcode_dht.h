@@ -131,5 +131,6 @@ bool boot_zcode_dht_revalidate(void);
 /* See AGENTS.md "Adding state introspection". Reentrant-safe. */
 bool boot_zcode_dht_dump_state_json(struct json_value *out, const char *key);
 void boot_zcode_dht_register_rpc(struct rpc_table *table);
+void boot_zcode_package_register_rpc(struct rpc_table *table);
 
 #endif /* ZCL_CONFIG_BOOT_ZCODE_DHT_H */

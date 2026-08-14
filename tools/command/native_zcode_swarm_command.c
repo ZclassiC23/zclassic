@@ -27,10 +27,11 @@
 
 #include "base/hex.h"
 #include "command/native_command.h"
+#include "controllers/rpc_client.h"
+#include "controllers/rpc_params.h"
 
 #include "json/json.h"
 #include "platform/time_compat.h"
-#include "crypto/sha3.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
@@ -38,7 +39,9 @@
 #include "command/native_zcode_discovery.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <unistd.h>
 
 /* Render cap for peer rows (the LIST budget). */
 #define ZW_MAX_PEERS 32u
@@ -374,6 +377,73 @@ void zcl_native_handle_zcode_package_peers(
 
 /* ── zcode package pin / unpin ──────────────────────────────────────── */
 
+/* The one-shot CLI must never open the resident's package store: open runs
+ * recovery + orphan GC and a second process can race the daemon between its
+ * manifest and CAS writes. Route implicit-datadir pin work to the resident.
+ * An explicit input datadir remains the deliberate offline/copy path. */
+static bool zw_pin_via_resident(const struct zcl_command_request *request,
+                                struct zcl_command_reply *reply, bool pinned,
+                                const char *command)
+{
+    if (zw_input_str(request->input, "datadir") ||
+        vcs_package_store_global())
+        return false;
+    const char *datadir = zw_datadir(request);
+    char cookie[4400];
+    int n = datadir ? snprintf(cookie, sizeof(cookie), "%s/.cookie", datadir)
+                     : -1;
+    if (n <= 0 || (size_t)n >= sizeof(cookie) || access(cookie, F_OK) != 0)
+        return false;
+
+    struct rpc_arg_builder args;
+    rpc_arg_builder_init(&args);
+    rpc_arg_builder_push_value(&args, request->input);
+    char *params = rpc_arg_builder_to_json(&args);
+    zcl_native_bridge_ensure_rpc();
+    char *raw = params ? node_rpc_call(
+        pinned ? "zcode_package_pin" : "zcode_package_unpin", params) : NULL;
+    free(params);
+    if (!raw)
+        return false; /* the exclusive store lock makes fallback fail safe */
+
+    struct json_value body;
+    json_init(&body);
+    bool parsed = json_read(&body, raw, strlen(raw)) &&
+                  body.type == JSON_OBJ;
+    free(raw);
+    if (!parsed) {
+        json_free(&body);
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INTERNAL, "BAD_RPC_BODY",
+                               "serialize", false, false,
+                               "resident returned an unreadable pin response",
+                               command);
+        return true;
+    }
+    const struct json_value *data = json_get(&body, "data");
+    if (json_get_bool_or(&body, "ok", false) && data &&
+        data->type == JSON_OBJ) {
+        json_free(&reply->data);
+        json_init(&reply->data);
+        json_copy(&reply->data, data);
+        json_free(&body);
+        return true;
+    }
+    const char *code = json_get_str(json_get(&body, "code"));
+    const char *phase = json_get_str(json_get(&body, "phase"));
+    const char *message = json_get_str(json_get(&body, "message"));
+    zcl_command_reply_fail(
+        reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+        code && code[0] ? code : "PIN_RPC_REFUSED",
+        phase && phase[0] ? phase : "execute",
+        json_get_bool_or(&body, "retryable", false),
+        json_get_bool_or(&body, "mutated", false),
+        message && message[0] ? message : "resident refused pin operation",
+        command);
+    json_free(&body);
+    return true;
+}
+
 static void zw_handle_pin(const struct zcl_command_request *request,
                           struct zcl_command_reply *reply, bool pinned,
                           const char *command)
@@ -381,8 +451,13 @@ static void zw_handle_pin(const struct zcl_command_request *request,
     if (!request || !reply)
         return;
     char zcode_dir[4400];
-    if (!zw_zcode_dir(request, reply, command, zcode_dir))
+    struct vcs_package_store *resident_store = vcs_package_store_global();
+    if (resident_store) {
+        (void)snprintf(zcode_dir, sizeof(zcode_dir), "%s",
+                       "resident-package-store");
+    } else if (!zw_zcode_dir(request, reply, command, zcode_dir)) {
         return;
+    }
     uint8_t root[32];
     if (!zw_root(request, reply, command, root))
         return;
@@ -394,6 +469,8 @@ static void zw_handle_pin(const struct zcl_command_request *request,
                                "mode must be exactly plan or commit", command);
         return;
     }
+    if (zw_pin_via_resident(request, reply, pinned, command))
+        return;
 
     /* A live daemon owns one store and may be writing CAS temp files while
      * this status/plan runs. Borrow that handle for the node's implicit
@@ -403,7 +480,7 @@ static void zw_handle_pin(const struct zcl_command_request *request,
     bool own_store = false;
     struct vcs_package_store *store =
         zw_input_str(request->input, "datadir")
-            ? NULL : vcs_package_store_global();
+            ? NULL : resident_store;
     if (!store) {
         store = vcs_package_store_open(
             zw_datadir(request), vcs_package_store_quota_bytes());
@@ -417,8 +494,9 @@ static void zw_handle_pin(const struct zcl_command_request *request,
         return;
     }
     struct vcs_package_store_status st;
-    memset(&st, 0, sizeof(st));
-    bool have_status = vcs_package_store_package_status(store, root, &st);
+    uint8_t token[32];
+    bool have_status = vcs_package_store_pin_plan(
+        store, root, pinned, &st, token);
     if (!have_status) {
         if (own_store) vcs_package_store_close(store);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
@@ -427,14 +505,6 @@ static void zw_handle_pin(const struct zcl_command_request *request,
                                "package root is not tracked", command);
         return;
     }
-    struct sha3_256_ctx sha;
-    uint8_t token[32], mutation = pinned ? 1 : 0;
-    sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)"zcl.package.pin.plan.v1", 24);
-    sha3_256_write(&sha, root, 32);
-    sha3_256_write(&sha, &mutation, 1);
-    sha3_256_write(&sha, (const uint8_t *)&st, sizeof(st));
-    sha3_256_finalize(&sha, token);
     enum vcs_package_store_result r = VCS_PACKAGE_STORE_OK;
     if (strcmp(mode, "commit") == 0) {
         const char *supplied_hex = zw_input_str(request->input, "plan_token");
