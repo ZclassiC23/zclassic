@@ -35,6 +35,9 @@
 #include "net/msgprocessor.h"
 #include "core/serialize.h"
 #include "util/timedata.h"
+#include "controllers/diagnostics_internal.h"
+#include "controllers/network_controller.h"
+#include "json/json.h"
 #include <string.h>
 #include <stdio.h>
 
@@ -167,11 +170,42 @@ static int test_connman_free_defers_teardown_when_detached(void)
     return failures;
 }
 
+/* Production incident regression: an automatic debug bundle raced orderly
+ * shutdown after connman_free(), reached addrman_diag_dump_state_json, and
+ * dereferenced entries[0] after addrman_free had nulled entries.  A stale
+ * fixture/publication must now degrade to an explicit unavailable snapshot. */
+static int test_addrman_diagnostic_fails_closed_after_teardown(void)
+{
+    int failures = 0;
+    TEST("addrman_shutdown_race: diagnostic refuses torn-down addrman") {
+        struct connman cm;
+        memset(&cm, 0, sizeof(cm));
+        addrman_init(&cm.manager.addrman);
+        addrman_free(&cm.manager.addrman);
+        rpc_net_set_connman(&cm);
+
+        struct json_value out;
+        json_init(&out);
+        json_set_object(&out);
+        ASSERT(addrman_diag_dump_state_json(&out, NULL));
+        const struct json_value *valid = json_get(&out, "snapshot_valid");
+        const struct json_value *reason = json_get(&out, "unavailable_reason");
+        ASSERT(valid && !json_get_bool(valid));
+        ASSERT(reason && strcmp(json_get_str(reason),
+                                "addrman_torn_down") == 0);
+        json_free(&out);
+        rpc_net_set_connman(NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_addrman_shutdown_race(void)
 {
     int failures = 0;
     failures += test_addrman_add_failclosed_on_teardown();
     failures += test_mp_handle_addr_survives_torndown_addrman();
     failures += test_connman_free_defers_teardown_when_detached();
+    failures += test_addrman_diagnostic_fails_closed_after_teardown();
     return failures;
 }

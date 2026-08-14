@@ -21,6 +21,7 @@
 
 #include "controllers/diagnostics_controller.h"
 #include "controllers/diagnostics_internal.h"
+#include "util/log_macros.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -39,10 +40,21 @@ void diagnostics_controller_set_state(struct main_state *ms,
     if (datadir) {
         snprintf(g_diag.datadir, sizeof(g_diag.datadir), "%s", datadir);
     }
-    /* Arm the supervisor-stall debug-bundle auto-capture (idempotent
-     * pointer store; the observer rate-limits and hands the write off to
-     * a detached thread — see diagnostics_debug_bundle.c). */
+    /* Arm the supervisor-stall debug-bundle auto-capture.  The observer
+     * rate-limits and hands the write to one persistent worker which is
+     * explicitly joined during diagnostics_controller_shutdown(). */
     debug_bundle_register_stall_observer();
+}
+
+bool diagnostics_controller_shutdown(void)
+{
+    if (!debug_bundle_shutdown()) {
+        LOG_ERROR("diagnostics",
+                  "capture ownership remains live; controller state retained");
+        return false;
+    }
+    g_diag.main_state = NULL;
+    return true;
 }
 
 const char *diag_datadir(void)

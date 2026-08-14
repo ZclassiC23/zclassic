@@ -24,8 +24,10 @@
  *      thread (for sweep stalls: the supervisor thread that drives every
  *      child's on_tick), so it never writes the bundle inline: it
  *      rate-limits (one capture per DEBUG_BUNDLE_AUTO_MIN_INTERVAL_SECS,
- *      one in flight at a time) and hands off to a detached helper
- *      thread. Every failure on that path is logged and swallowed —
+ *      one in flight at a time) and hands off to one owned worker
+ *      thread. Shutdown disables new captures and joins that worker before
+ *      any dumper dependency is released. Every failure on that path is
+ *      logged and swallowed —
  *      auto-capture can never crash, wedge, or spam the supervisor.
  *
  * Lives here (not diagnostics_registry.c) so that file stays a routing
@@ -61,6 +63,29 @@
  * bundle per interval, so a flapping child cannot fill the datadir.
  * Manual ops.debug.bundle calls are never rate-limited. */
 #define DEBUG_BUNDLE_AUTO_MIN_INTERVAL_SECS 300
+
+/* Owned auto-capture worker.  A previous detached one-shot helper could still
+ * be walking dumpers after connman/node.db teardown; the debug path then
+ * crashed the process it was meant to diagnose.  One persistent joinable
+ * worker gives shutdown an exact ownership boundary. */
+// supervisor-ok:owned-diagnostics-worker — event-driven and idle between
+// captures; shutdown joins it before releasing every dependency it reads.
+static pthread_mutex_t g_bundle_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t  g_bundle_cond = PTHREAD_COND_INITIALIZER;
+static pthread_t       g_auto_thread;
+static bool            g_auto_started = false;
+static bool            g_auto_stop = false;
+static bool            g_auto_pending = false;
+static bool            g_auto_running = false;
+/* Every bundle walk, including synchronous RPC captures, holds one lease.
+ * Shutdown revokes new leases and waits for this count to reach zero before
+ * any dumper dependency may be released. */
+static size_t           g_active_captures = 0;
+static _Atomic bool    g_auto_accepting = false;
+static _Atomic bool    g_auto_shutdown = false;
+static int64_t         g_last_auto_us = 0;
+static char            g_pending_child[SUPERVISOR_NAME_MAX];
+static int             g_pending_reason;
 
 /* ── Bundle document sections ──────────────────────────────────────── */
 
@@ -114,6 +139,14 @@ static void debug_bundle_push_subsystems(struct json_value *root,
 
     size_t total = diagnostics_dumper_count();
     for (size_t i = 0; i < total; i++) {
+        if (atomic_load_explicit(&g_auto_shutdown, memory_order_acquire)) {
+            json_push_kv_bool(root, "capture_incomplete_shutdown", true);
+            LOG_INFO(DBB_SUBSYS,
+                     "bundle capture truncated at dumper %zu/%zu because "
+                     "shutdown owns the remaining dependencies",
+                     i, total);
+            break;
+        }
         const struct diagnostics_dump_entry *e = diagnostics_dumper_at(i);
         if (!e || !e->name || !e->fn)
             continue;
@@ -144,9 +177,31 @@ static void debug_bundle_push_subsystems(struct json_value *root,
 
 /* ── The writer (shared by manual RPC + stall auto-capture) ────────── */
 
-bool debug_bundle_write(const char *trigger, const char *trigger_child,
-                        int trigger_reason,
-                        struct debug_bundle_result *res)
+static bool debug_bundle_capture_enter(void)
+{
+    pthread_mutex_lock(&g_bundle_lock);
+    if (atomic_load_explicit(&g_auto_shutdown, memory_order_acquire)) {
+        pthread_mutex_unlock(&g_bundle_lock);
+        return false;
+    }
+    g_active_captures++;
+    pthread_mutex_unlock(&g_bundle_lock);
+    return true;
+}
+
+static void debug_bundle_capture_leave(void)
+{
+    pthread_mutex_lock(&g_bundle_lock);
+    if (g_active_captures > 0)
+        g_active_captures--;
+    pthread_cond_broadcast(&g_bundle_cond);
+    pthread_mutex_unlock(&g_bundle_lock);
+}
+
+static bool debug_bundle_write_leased(const char *trigger,
+                                      const char *trigger_child,
+                                      int trigger_reason,
+                                      struct debug_bundle_result *res)
 {
     if (!res)
         LOG_FAIL(DBB_SUBSYS, "result out-param is NULL");
@@ -255,6 +310,23 @@ bool debug_bundle_write(const char *trigger, const char *trigger_child,
     return true;
 }
 
+bool debug_bundle_write(const char *trigger, const char *trigger_child,
+                        int trigger_reason,
+                        struct debug_bundle_result *res)
+{
+    if (!debug_bundle_capture_enter()) {
+        if (res)
+            memset(res, 0, sizeof(*res));
+        LOG_WARN(DBB_SUBSYS,
+                 "bundle capture refused: diagnostics are shutting down");
+        return false;
+    }
+    bool ok = debug_bundle_write_leased(trigger, trigger_child,
+                                        trigger_reason, res);
+    debug_bundle_capture_leave();
+    return ok;
+}
+
 /* ── RPC: debugbundle ────────────────────────────────────────────────
  *
  * Backs the `ops.debug.bundle` native command: capture everything the node
@@ -293,25 +365,23 @@ bool diag_rpc_debugbundle(const struct json_value *params, bool help,
 
 /* ── Supervisor-stall auto-capture ─────────────────────────────────── */
 
-static _Atomic int64_t g_last_auto_us = 0;
-static atomic_flag     g_auto_in_progress = ATOMIC_FLAG_INIT;
-/* Hand-off slots, written by the observer while it holds
- * g_auto_in_progress (the flag serializes: only one capture can be
- * pending or running at a time, so the helper thread reads these before
- * any subsequent observer call could overwrite them). */
-static char            g_pending_child[SUPERVISOR_NAME_MAX];
-static int             g_pending_reason;
-
 static void *debug_bundle_auto_thread(void *arg)
 {
     (void)arg;
-    char child[SUPERVISOR_NAME_MAX];
-    memcpy(child, g_pending_child, sizeof(child));
-    int reason = g_pending_reason;
+    pthread_mutex_lock(&g_bundle_lock);
+    while (!g_auto_stop) {
+        while (!g_auto_pending && !g_auto_stop)
+            pthread_cond_wait(&g_bundle_cond, &g_bundle_lock);
+        if (g_auto_stop)
+            break;
 
-    /* A capture requested during shutdown is dropped: bundle writes are
-     * diagnostics, not state, and must not extend the shutdown path. */
-    if (!thread_registry_shutdown_requested()) {
+        char child[SUPERVISOR_NAME_MAX];
+        memcpy(child, g_pending_child, sizeof(child));
+        int reason = g_pending_reason;
+        g_auto_pending = false;
+        g_auto_running = true;
+        pthread_mutex_unlock(&g_bundle_lock);
+
         struct debug_bundle_result res;
         if (debug_bundle_write("supervisor_stall", child, reason, &res)) {
             LOG_INFO(DBB_SUBSYS,
@@ -324,37 +394,42 @@ static void *debug_bundle_auto_thread(void *arg)
         }
         /* The failure path already logged with context inside
          * debug_bundle_write — swallowed here: best-effort by contract. */
+        pthread_mutex_lock(&g_bundle_lock);
+        g_auto_running = false;
+        pthread_cond_broadcast(&g_bundle_cond);
     }
-    atomic_flag_clear_explicit(&g_auto_in_progress, memory_order_release);
+    g_auto_running = false;
+    pthread_cond_broadcast(&g_bundle_cond);
+    pthread_mutex_unlock(&g_bundle_lock);
     return NULL;
 }
 
 void debug_bundle_on_stall(const char *child_name,
                            enum supervisor_stall_reason reason)
 {
-    /* Runs on the detecting thread — for sweep-detected stalls that is the
-     * supervisor thread, which dispatches EVERY child's on_tick. Everything
-     * up to the pthread_create is O(1) atomic work; the bundle write itself
-     * happens on the detached helper. */
-    if (atomic_flag_test_and_set_explicit(&g_auto_in_progress,
-                                          memory_order_acquire))
-        return;   /* a capture is already pending or running */
+    /* Runs on the detecting thread.  Queueing is bounded O(1): one pending or
+     * running capture globally, serviced by the owned worker. */
+    if (!atomic_load_explicit(&g_auto_accepting, memory_order_acquire))
+        return;
+
+    pthread_mutex_lock(&g_bundle_lock);
+    if (g_auto_stop || g_auto_pending || g_auto_running) {
+        pthread_mutex_unlock(&g_bundle_lock);
+        return;
+    }
 
     int64_t now = platform_time_monotonic_us();
-    int64_t last = atomic_load_explicit(&g_last_auto_us,
-                                        memory_order_acquire);
+    int64_t last = g_last_auto_us;
     if (last != 0 &&
         now - last <
             (int64_t)DEBUG_BUNDLE_AUTO_MIN_INTERVAL_SECS * 1000000) {
-        atomic_flag_clear_explicit(&g_auto_in_progress,
-                                   memory_order_release);
+        pthread_mutex_unlock(&g_bundle_lock);
         return;   /* rate-limited */
     }
 
     const char *datadir = diag_datadir();
     if (!datadir || !datadir[0]) {
-        atomic_flag_clear_explicit(&g_auto_in_progress,
-                                   memory_order_release);
+        pthread_mutex_unlock(&g_bundle_lock);
         LOG_WARN(DBB_SUBSYS,
                  "stall auto-capture skipped: datadir not set (child=%s)",
                  child_name ? child_name : "?");
@@ -364,30 +439,78 @@ void debug_bundle_on_stall(const char *child_name,
     snprintf(g_pending_child, sizeof(g_pending_child), "%s",
              child_name ? child_name : "");
     g_pending_reason = (int)reason;
-
-    pthread_attr_t attr;
-    pthread_t tid;
-    bool spawned = false;
-    if (pthread_attr_init(&attr) == 0) {
-        if (pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED) == 0) {
-            /* raw-pthread-ok: one-shot detached capture helper, rate-limited best-effort — must not join the supervised tree it observes. */
-            spawned = pthread_create(&tid, &attr,
-                                     debug_bundle_auto_thread, NULL) == 0;
-        }
-        pthread_attr_destroy(&attr);
-    }
-    if (!spawned) {
-        atomic_flag_clear_explicit(&g_auto_in_progress,
-                                   memory_order_release);
-        LOG_WARN(DBB_SUBSYS,
-                 "stall auto-capture: helper spawn failed (child=%s) — "
-                 "capture dropped", g_pending_child);
-        return;
-    }
-    atomic_store_explicit(&g_last_auto_us, now, memory_order_release);
+    g_auto_pending = true;
+    g_last_auto_us = now;
+    pthread_cond_signal(&g_bundle_cond);
+    pthread_mutex_unlock(&g_bundle_lock);
 }
 
 void debug_bundle_register_stall_observer(void)
 {
+    pthread_mutex_lock(&g_bundle_lock);
+    if (!g_auto_started) {
+        g_auto_stop = false;
+        g_auto_pending = false;
+        g_auto_running = false;
+        atomic_store_explicit(&g_auto_shutdown, false, memory_order_release);
+        /* Persistent diagnostics worker is owned and joined by
+         * debug_bundle_shutdown before any dumper dependency is freed. */
+        /* raw-pthread-ok: locally owned worker with mandatory shutdown join */
+        int rc = pthread_create(&g_auto_thread, NULL,
+                                debug_bundle_auto_thread, NULL);
+        if (rc != 0) {
+            pthread_mutex_unlock(&g_bundle_lock);
+            LOG_WARN(DBB_SUBSYS,
+                     "stall auto-capture worker start failed: %s; automatic "
+                     "bundles disabled", strerror(rc));
+            supervisor_set_stall_observer(NULL);
+            return;
+        }
+        g_auto_started = true;
+    }
+    atomic_store_explicit(&g_auto_accepting, true, memory_order_release);
+    pthread_mutex_unlock(&g_bundle_lock);
     supervisor_set_stall_observer(debug_bundle_on_stall);
+}
+
+bool debug_bundle_shutdown(void)
+{
+    /* Revoke every capture entrypoint first: after this point neither the
+     * observer nor a late RPC can begin walking dumpers.  Then cancel pending
+     * automatic work, join its sole worker, and wait for any manual capture
+     * that already held a lease. */
+    supervisor_set_stall_observer(NULL);
+    atomic_store_explicit(&g_auto_accepting, false, memory_order_release);
+    atomic_store_explicit(&g_auto_shutdown, true, memory_order_release);
+
+    pthread_mutex_lock(&g_bundle_lock);
+    if (!g_auto_started) {
+        while (g_active_captures > 0)
+            pthread_cond_wait(&g_bundle_cond, &g_bundle_lock);
+        pthread_mutex_unlock(&g_bundle_lock);
+        return true;
+    }
+    g_auto_stop = true;
+    g_auto_pending = false;
+    pthread_cond_broadcast(&g_bundle_cond);
+    pthread_mutex_unlock(&g_bundle_lock);
+
+    int rc = pthread_join(g_auto_thread, NULL);
+    if (rc != 0) {
+        LOG_ERROR(DBB_SUBSYS,
+                  "auto-capture worker join failed: %s; refusing to release "
+                  "dumper dependencies", strerror(rc));
+        return false;
+    }
+
+    pthread_mutex_lock(&g_bundle_lock);
+    g_auto_started = false;
+    g_auto_running = false;
+    g_auto_pending = false;
+    while (g_active_captures > 0)
+        pthread_cond_wait(&g_bundle_cond, &g_bundle_lock);
+    pthread_mutex_unlock(&g_bundle_lock);
+    LOG_INFO(DBB_SUBSYS,
+             "auto-capture worker stopped; dumper dependencies may be released");
+    return true;
 }

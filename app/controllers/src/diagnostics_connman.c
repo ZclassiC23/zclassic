@@ -30,6 +30,7 @@
 #include "net/peer_lifecycle.h"
 #include "util/supervisor.h"
 #include "util/timedata.h"
+#include "util/log_macros.h"
 
 #include <string.h>
 
@@ -305,6 +306,18 @@ bool addrman_diag_dump_state_json(struct json_value *out, const char *key)
     if (!am)
         return true;
 
+    /* Fail closed before touching a mutex that teardown may already have
+     * destroyed.  Normal shutdown revokes the published connman and joins the
+     * diagnostics worker first; this guard is the last-resort validation for
+     * malformed fixtures or future lifecycle regressions. */
+    if (!am->entries) {
+        json_push_kv_bool(out, "snapshot_valid", false);
+        json_push_kv_str(out, "unavailable_reason", "addrman_torn_down");
+        LOG_WARN("addrman_diag",
+                 "addrman snapshot refused: entries already released");
+        return true;
+    }
+
     zcl_mutex_lock(&am->cs);
     int64_t size = (int64_t)addrman_size(am);
     int64_t new_count = am->new_count;
@@ -315,12 +328,29 @@ bool addrman_diag_dump_state_json(struct json_value *out, const char *key)
     int64_t idx_live = (int64_t)am->idx_live;
     int64_t idx_tombs = (int64_t)am->idx_tombs;
 
+    bool snapshot_valid = am->entries != NULL && am->id_count >= 0 &&
+        (size_t)am->id_count <= am->entries_cap;
+    if (!snapshot_valid) {
+        zcl_mutex_unlock(&am->cs);
+        json_push_kv_bool(out, "snapshot_valid", false);
+        json_push_kv_str(out, "unavailable_reason",
+                         "addrman_invariant_failed");
+        json_push_kv_int(out, "id_count", id_count);
+        json_push_kv_int(out, "entries_cap", entries_cap);
+        LOG_WARN("addrman_diag",
+                 "addrman snapshot refused: entries=%p id_count=%lld "
+                 "entries_cap=%lld",
+                 (void *)am->entries, (long long)id_count,
+                 (long long)entries_cap);
+        return true;
+    }
+
     struct addrman_bucket_stats stats;
     addrman_get_bucket_stats(am, &stats);
 
     int64_t now = GetAdjustedTime();
     int64_t live = 0, dead = 0;
-    for (int i = 0; i < am->id_count; i++) {
+    for (int64_t i = 0; i < id_count; i++) {
         if (!am->entries[i].used)
             continue;
         if (addr_info_is_terrible(&am->entries[i], now))
@@ -330,6 +360,7 @@ bool addrman_diag_dump_state_json(struct json_value *out, const char *key)
     }
     zcl_mutex_unlock(&am->cs);
 
+    json_push_kv_bool(out, "snapshot_valid", true);
     json_push_kv_int(out, "size", size);
     json_push_kv_int(out, "new_count", new_count);
     json_push_kv_int(out, "tried_count", tried_count);

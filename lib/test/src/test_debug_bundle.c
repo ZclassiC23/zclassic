@@ -19,11 +19,10 @@
  *   (c) no datadir: debug_bundle_write fails cleanly (false, empty path)
  *       rather than writing somewhere surprising.
  *
- * The auto-capture thread hand-off (debug_bundle_on_stall) is deliberately
- * NOT driven here: it is a detached best-effort worker whose timing would
- * make a unit test flaky. Its observer seam is covered deterministically
- * in test_supervisor.c ("process-wide stall observer"), and its rate
- * limit is one static timestamp + one in-flight flag reviewed by reading.
+ * The auto-capture writer is an owned persistent worker.  This group exercises
+ * its deterministic lifecycle (start, stop/join, rejection after revocation,
+ * idempotent stop, restart) without depending on scheduling of an actual
+ * automatic capture.
  * Dumpers run under the same minimal fixture test_health_rollup already
  * uses — every registered dumper must tolerate an unbooted process — so
  * no extra per-subsystem setup is paid here. */
@@ -202,6 +201,29 @@ int test_debug_bundle(void)
 
     if (bundle_path[0]) unlink(bundle_path);
     if (stall_path[0]) unlink(stall_path);
+    DBB_CHECK("shutdown: owned worker joins",
+              diagnostics_controller_shutdown());
+    {
+        struct debug_bundle_result res;
+        DBB_CHECK("shutdown: new manual capture is refused",
+                  !debug_bundle_write("manual", NULL,
+                                      (int)SUPERVISOR_STALL_NONE, &res));
+        DBB_CHECK("shutdown: refused capture returns no path",
+                  res.path[0] == '\0');
+    }
+    DBB_CHECK("shutdown: repeated call is idempotent",
+              diagnostics_controller_shutdown());
+    diagnostics_controller_set_state(NULL, dir); /* restart is supported */
+    {
+        struct debug_bundle_result res;
+        bool ok = debug_bundle_write("manual", NULL,
+                                     (int)SUPERVISOR_STALL_NONE, &res);
+        DBB_CHECK("restart: manual capture is accepted again", ok);
+        if (ok && res.path[0])
+            unlink(res.path);
+    }
+    DBB_CHECK("restart: owned worker joins",
+              diagnostics_controller_shutdown());
     rmdir(dir);
     return failures;
 }
