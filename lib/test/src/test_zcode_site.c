@@ -501,7 +501,9 @@ static int t_routes_and_agreement(const char *dd)
     const char *r = zs_get(dd, "/zcode", &len);
     ZS_CHECK("route /zcode: 200 + landing",
              len > 0 && strstr(r, "HTTP/1.1 200 OK") == r &&
-             strstr(r, "ZCODE Library") && strstr(r, "1") /* counts */);
+             strstr(r, "Build, verify, and share exact C23 software") &&
+             strstr(r, "Browse exact packages") &&
+             strstr(r, "1") /* counts */);
 
     r = zs_get(dd, "/zcode/packages", &len);
     ZS_CHECK("route /zcode/packages: 200 + row",
@@ -513,6 +515,14 @@ static int t_routes_and_agreement(const char *dd)
     r = zs_get(dd, route, &len);
     ZS_CHECK("route /zcode/package/<root>: 200 + envelope + signature",
              len > 0 && strstr(r, "HTTP/1.1 200 OK") == r &&
+             strstr(r, "What it does") &&
+             strstr(r, "Try it") &&
+             strstr(r, "Change it") &&
+             strstr(r, "What changed") &&
+             strstr(r, "Verify") &&
+             strstr(r, "Use and share") &&
+             strstr(r, "No runnable example is published") &&
+             strstr(r, "<details") &&
              strstr(r, "Signed release envelope") &&
              strstr(r, "publisher signature") &&
              strstr(r, "Verifier attestations") &&
