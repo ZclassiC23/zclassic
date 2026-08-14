@@ -550,10 +550,12 @@ both readers: an independent oracle you delete cannot catch a native-reader
 regression.
 
 The canonical x86-64 portable build supplies that old userspace boundary even
-on a newer workstation:
+on a newer workstation. The short operator command and its explicit alias are
+identical:
 
 ```bash
-make c23-portable-release
+make portable                 # recommended: build + old-loader runtime proof
+make c23-portable-release     # same target, explicit name for automation
 # or install the same four audited products
 make c23-portable-install PREFIX="$HOME/.local"
 ```

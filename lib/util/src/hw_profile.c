@@ -26,6 +26,7 @@
 #include "util/hw_profile.h"
 
 #include "util/cpu_topology.h"
+#include "crypto/blake2b.h"
 #include "crypto/sha256.h"
 #include "json/json.h"
 #include "util/log_macros.h"
@@ -501,6 +502,8 @@ bool hw_profile_dump_state_json(struct json_value *out, const char *key)
      * (SHA-NI was compiled out by `#ifdef __SHA__`), so report the transform
      * actually installed right next to the capability bit. */
     json_push_kv_str(&isa, "sha256_transform", sha256_implementation());
+    json_push_kv_str(&isa, "equihash_blake2b_batch",
+                     equihash_blake2b_batch_implementation());
     json_push_kv(out, "isa", &isa);
     json_free(&isa);
 

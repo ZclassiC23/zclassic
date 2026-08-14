@@ -54,8 +54,8 @@ ZCL_WORKTREE_PRIME_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-o
 # archives before entering a nested authoritative Make. On a from-empty clone,
 # do not let this outer parse first bootstrap host-ABI archives that the
 # portable builder would immediately replace.
-ZCL_PORTABLE_FRONTDOOR_GOALS := c23-portable-toolchain c23-portable-release \
-	c23-portable-install c23-commons-installed-acceptance \
+ZCL_PORTABLE_FRONTDOOR_GOALS := portable c23-portable-toolchain \
+	c23-portable-release c23-portable-install c23-commons-installed-acceptance \
 	native-agent-ui-alpha
 ZCL_PORTABLE_FRONTDOOR_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip \
 	$(filter-out $(ZCL_PORTABLE_FRONTDOOR_GOALS),$(MAKECMDGOALS))),,1),)
@@ -3485,13 +3485,13 @@ check-wallet: wallet_check
 spec: spec_zcl
 	ulimit -s unlimited && $(BIN_DIR)/spec_zcl
 
-.PHONY: zclassic23 c23-portable-toolchain c23-portable-release \
+.PHONY: zclassic23 portable c23-portable-toolchain c23-portable-release \
 	c23-portable-install
 zclassic23: $(ZCLASSIC23_BIN)
 
 # Release portability is an explicit, reproducible build input rather than an
 # accidental property of the maintainer's workstation. This path downloads a
-# checksum-pinned Debian 12 glibc 2.36 sysroot, then uses the ordinary host C23
+# checksum-pinned Debian 11 glibc 2.31 sysroot, then uses the ordinary host C23
 # compiler for every linked archive and the node. No container, sudo, Zig, or
 # alternate language toolchain is involved. The portable baseline deliberately
 # selects the default Tor stub so an optional host-built full-Tor archive cannot
@@ -3501,6 +3501,10 @@ c23-portable-toolchain:
 
 c23-portable-release:
 	@tools/scripts/build_c23_portable_release.sh
+
+# Short, memorable release front door. Keep the explicit name above for
+# scripts and old documentation; operators should only need `make portable`.
+portable: c23-portable-release
 
 # Split-debug: CFLAGS carries -g, but the shipped binary stays stripped —
 # the debug payload moves to $@.debug next to the binary and .gnu_debuglink

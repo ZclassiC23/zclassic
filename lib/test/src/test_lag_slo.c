@@ -22,6 +22,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <time.h>
 
 static _Atomic int g_slo_breach_events;
 static _Atomic int g_concurrent_events;
@@ -196,6 +197,58 @@ static int test_legacy_mirror_registers_supervisor_contract(void)
     return failures;
 }
 
+static int test_legacy_mirror_backs_off_when_rpc_is_absent(void)
+{
+    int failures = 0;
+    TEST_CASE("lag_slo: absent legacy RPC backs off instead of busy-looping")
+    {
+        legacy_mirror_sync_reset_for_test();
+        supervisor_reset_for_testing();
+        supervisor_set_tick_ms_for_testing(20);
+        unsetenv("ZCL_MIRROR_SYNC");
+        unsetenv("ZCL_MIRROR_CADENCE_SECS");
+
+        struct legacy_mirror_sync_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = 1, /* closed by contract in this hermetic fixture */
+            .rpc_user = "user",
+            .rpc_password = "pass",
+            .cadence_secs = 1,
+            .enabled = true,
+        };
+        ASSERT(legacy_mirror_sync_init(&cfg, NULL, NULL, NULL, NULL).ok);
+        ASSERT(legacy_mirror_sync_start().ok);
+
+        int observed_period = 1;
+        for (int attempt = 0; attempt < 150; attempt++) {
+            struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+            int n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+            for (int i = 0; i < n; i++) {
+                if (strcmp(snaps[i].name, "chain.legacy_mirror") == 0)
+                    observed_period = snaps[i].period_secs;
+            }
+            if (observed_period > 1)
+                break;
+            struct timespec pause = {
+                .tv_sec = 0,
+                .tv_nsec = 20 * 1000 * 1000,
+            };
+            nanosleep(&pause, NULL);
+        }
+
+        struct legacy_mirror_sync_stats stats = {0};
+        legacy_mirror_sync_stats_snapshot(&stats);
+        ASSERT(stats.rpc_errors >= 1);
+        ASSERT(observed_period >= 2);
+        ASSERT(observed_period <= 300);
+
+        legacy_mirror_sync_stop();
+        legacy_mirror_sync_reset_for_test();
+        supervisor_reset_for_testing();
+    } TEST_END
+    return failures;
+}
+
 /* C2 monitor-extraction pin: the lean monitor's dump_state_json must
  * keep emitting every key that downstream consumers (node_health,
  * metrics, chain_advance_coordinator, deploy_verify.sh, and the native
@@ -275,6 +328,7 @@ int test_lag_slo(void)
     failures += test_slo_breach_observer_fires();
     failures += test_concurrent_catchup_observer_fires();
     failures += test_legacy_mirror_registers_supervisor_contract();
+    failures += test_legacy_mirror_backs_off_when_rpc_is_absent();
     failures += test_dump_shape_is_stable();
     legacy_mirror_sync_reset_for_test();
     supervisor_reset_for_testing();

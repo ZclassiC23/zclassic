@@ -182,7 +182,8 @@
     DIAG_LOCAL("hw_profile", hw_profile_dump_state_json,
                "hardware profile organ: online/physical cores, ram_bytes + ram_class "
                "(low/medium/high), x86 isa {avx2, avx512f/vl/bw/dq, vpclmulqdq, vaes, "
-               "gfni, sha_ni}, storage {rotational, rotational_known}, l3 "
+               "gfni, sha_ni, active SHA-256 and Equihash BLAKE2b tiers}, "
+               "storage {rotational, rotational_known}, l3 "
                "{domain_count, asymmetric, large_domain_id}, derived {verify_workers, "
                "script_batch_cap, sqlite_*_cache_kib, sqlite_*_mmap_bytes}, and "
                "pin_reducer_available (whether -pin-reducer would take effect)"),

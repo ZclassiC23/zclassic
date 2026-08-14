@@ -17,6 +17,7 @@
  * keep the registry clean. */
 
 #include "test/test_core.h"
+#include "supervisors/legacy_mirror_supervisor.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
 #include "json/json.h"
@@ -154,6 +155,24 @@ int test_supervisor(void)
     SUP_CHECK("reason_name(invalid) -> (invalid)",
         strcmp(supervisor_stall_reason_name((enum supervisor_stall_reason)99),
                "(invalid)") == 0);
+
+    /* Optional legacy dependencies are advisory. Prove their failure policy
+     * is bounded without clocks, sockets, or a live zclassicd. */
+    SUP_CHECK("legacy retry uses base while healthy",
+        legacy_mirror_supervisor_backoff_secs(3, 0) == 3);
+    SUP_CHECK("legacy retry backs off exponentially",
+        legacy_mirror_supervisor_backoff_secs(3, 1) == 6 &&
+        legacy_mirror_supervisor_backoff_secs(3, 4) == 48);
+    SUP_CHECK("legacy retry caps at five minutes",
+        legacy_mirror_supervisor_backoff_secs(3, 1000) == 300 &&
+        legacy_mirror_supervisor_backoff_secs(600, 0) == 300);
+    SUP_CHECK("legacy stall diagnostics retain first and powers of two",
+        legacy_mirror_supervisor_should_emit_stall(1) &&
+        legacy_mirror_supervisor_should_emit_stall(2) &&
+        !legacy_mirror_supervisor_should_emit_stall(3) &&
+        legacy_mirror_supervisor_should_emit_stall(1024));
+    SUP_CHECK("legacy stall diagnostics reject zero",
+        !legacy_mirror_supervisor_should_emit_stall(0));
 
     /* ── register / unregister ──────────────────────────────────── */
     supervisor_reset_for_testing();

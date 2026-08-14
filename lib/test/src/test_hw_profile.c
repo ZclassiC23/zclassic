@@ -194,6 +194,11 @@ int test_hw_profile(void)
                   json_get_int(json_get(&v, "ram_bytes")) == ram);
         HWP_CHECK("dump has ram_class", json_get(&v, "ram_class") != NULL);
         HWP_CHECK("dump has isa object", json_get(&v, "isa") != NULL);
+        const struct json_value *isa_dump = json_get(&v, "isa");
+        HWP_CHECK("dump names active SHA-256 transform",
+                  json_get(isa_dump, "sha256_transform") != NULL);
+        HWP_CHECK("dump names active Equihash BLAKE2b batch tier",
+                  json_get(isa_dump, "equihash_blake2b_batch") != NULL);
         HWP_CHECK("dump has storage object", json_get(&v, "storage") != NULL);
         HWP_CHECK("dump has l3 object", json_get(&v, "l3") != NULL);
         HWP_CHECK("dump has derived object", json_get(&v, "derived") != NULL);

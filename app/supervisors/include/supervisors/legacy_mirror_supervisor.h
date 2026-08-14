@@ -4,6 +4,13 @@
 #define ZCL_SUPERVISORS_LEGACY_MIRROR_SUPERVISOR_H
 
 #include <stdbool.h>
+#include <stdint.h>
+
+/* Pure policy helpers used by the supervisor and its deterministic tests.
+ * A missing optional zclassicd must not become a tight retry or log loop. */
+int legacy_mirror_supervisor_backoff_secs(int base_cadence_secs,
+                                          uint32_t consecutive_failures);
+bool legacy_mirror_supervisor_should_emit_stall(uint64_t stall_count);
 
 /* Register (or re-arm) the legacy-mirror sync as a child of the chain
  * supervisor domain, ticking every `cadence_secs` seconds;
