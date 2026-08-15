@@ -114,29 +114,6 @@ static void ui_host_send_rejected(
     (void)ui_host_transport_send_all(fd, reply, sizeof(reply));
 }
 
-static bool ui_host_form_from_model(
-    const struct zcl_present_model_v1 *model,
-    struct zcl_present_window_form_v1 *form)
-{
-    *form = (struct zcl_present_window_form_v1){
-        .struct_size = sizeof(*form),
-        .abi_version = ZCL_PRESENT_ABI_V1,
-        .field_count = model->item_count,
-    };
-    for (uint32_t i = 0; i < model->item_count; i++) {
-        const struct zcl_present_model_item_v1 *item = &model->items[i];
-        struct zcl_present_window_form_field_v1 *field = &form->fields[i];
-        if (item->flags & ZCL_PRESENT_ITEM_REQUIRED)
-            field->flags |= ZCL_PRESENT_WINDOW_FORM_REQUIRED;
-        if (item->flags & ZCL_PRESENT_ITEM_READ_ONLY)
-            field->flags |= ZCL_PRESENT_WINDOW_FORM_READ_ONLY;
-        (void)snprintf(field->value, sizeof(field->value), "%s",
-                       item->value);
-    }
-    char why[128];
-    return zcl_present_window_form_validate_v1(form, why, sizeof(why));
-}
-
 static bool ui_host_show_document(
     int client,
     int replacement_gate,
@@ -165,7 +142,8 @@ static bool ui_host_show_document(
     bool is_form = document->model.kind == ZCL_PRESENT_MODEL_FORM;
     bool is_canvas = document->model.kind == ZCL_PRESENT_MODEL_CANVAS;
     bool controls_ready =
-        (!is_form || ui_host_form_from_model(&document->model, &form)) &&
+        (!is_form || zcl_present_window_form_from_model_v1(
+            &document->model, &form, why, sizeof(why))) &&
         (!is_canvas || zcl_present_window_canvas_from_model_v1(
             &document->model, &canvas, why, sizeof(why)));
     if (!controls_ready)

@@ -200,6 +200,11 @@ bool zcl_present_window_action_focus_step_v1(
 bool zcl_present_window_form_validate_v1(
     const struct zcl_present_window_form_v1 *form,
     char *error, size_t error_cap);
+struct zcl_present_model_v1;
+bool zcl_present_window_form_from_model_v1(
+    const struct zcl_present_model_v1 *model,
+    struct zcl_present_window_form_v1 *form,
+    char *error, size_t error_cap);
 bool zcl_present_window_form_edit_v1(
     struct zcl_present_window_form_v1 *form, uint32_t field_index,
     uint8_t character, bool backspace);
@@ -211,7 +216,6 @@ bool zcl_present_window_form_focus_step_v1(
 bool zcl_present_window_canvas_validate_v1(
     const struct zcl_present_window_canvas_v1 *canvas,
     char *error, size_t error_cap);
-struct zcl_present_model_v1;
 bool zcl_present_window_canvas_from_model_v1(
     const struct zcl_present_model_v1 *model,
     struct zcl_present_window_canvas_v1 *canvas,

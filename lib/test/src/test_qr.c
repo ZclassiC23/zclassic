@@ -707,20 +707,18 @@ int test_qr(void)
     zcl_present_model_bitmap_free_v1(&form_pixels);
     zcl_present_model_bitmap_free_v1(&form_rows_pixels);
 
-    struct zcl_present_window_form_v1 form_state = {
-        .struct_size = sizeof(form_state),
-        .abi_version = ZCL_PRESENT_ABI_V1,
-        .field_count = 2,
-        .fields = {
-            {.flags = ZCL_PRESENT_WINDOW_FORM_REQUIRED, .value = ""},
-            {.flags = ZCL_PRESENT_WINDOW_FORM_READ_ONLY,
-             .value = "immutable-root"},
-        },
-    };
+    struct zcl_present_window_form_v1 form_state;
     uint32_t form_focus = UINT32_MAX;
-    QR_CHECK("form reducer accepts one editable and one read-only field",
-             zcl_present_window_form_validate_v1(
-                 &form_state, why, sizeof(why)));
+    QR_CHECK("shared form bridge preserves exact values and field policy",
+             zcl_present_window_form_from_model_v1(
+                 &form_model, &form_state, why, sizeof(why)) &&
+             form_state.field_count == 2 &&
+             form_state.fields[0].flags ==
+                 ZCL_PRESENT_WINDOW_FORM_REQUIRED &&
+             form_state.fields[0].value[0] == '\0' &&
+             form_state.fields[1].flags ==
+                 ZCL_PRESENT_WINDOW_FORM_READ_ONLY &&
+             strcmp(form_state.fields[1].value, "immutable-root") == 0);
     QR_CHECK("form typing and Backspace change one exact editable value",
              zcl_present_window_form_edit_v1(
                  &form_state, 0, (uint8_t)'A', false) &&
