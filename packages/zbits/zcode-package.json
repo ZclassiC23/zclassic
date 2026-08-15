@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zbits/zbits",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zbits/zbits.h",
+    "src/zbits.c",
+    "tests/test_zbits.c",
+    "zcode-package.json"
+  ]
+}

@@ -121,3 +121,4 @@ package zhtml/zhtml | root 49b8c06f6b3d3fe1d9c3e156c608d38e6faa6f061d899381826d3
 package zutf16/zutf16 | root 3e4362557aec5e38b2128441b1fc48add99f53001982f7c0ba1ecbf26e4d44f4 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zb32/zb32 | root 9e7c443c6dc37f149b4939ef08882bf6f050684c0b33b9d0bf5073b72d0d07a2 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zbuf/zbuf | root 3b34b548c9abad342e6c73aed5dae0b7d023dcfe2d660e2b0f44a37d5a5a8fa3 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zbits/zbits | root eccfb349eb0b6ab90e8c40528243a5193932922b038f700c85a4ff80da05f52b | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
