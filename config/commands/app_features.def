@@ -271,6 +271,32 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
     zcl_native_handle_presentation_publication_confirm)
 
+ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.publication-status", "app.presentation", "",
+    "Show exact package publication progress in native C23",
+    "Reads this node's resident package store, completed carrier-download "
+    "record, local node identity and active signed DHT projection for exact "
+    "package and transport roots. It renders local commit, pointer, provider, "
+    "non-self peer discovery and exact fetched-byte stages separately. Human "
+    "confirmation remains bound to the earlier exact response and is visibly "
+    "not re-derived. The agent supplies identities only; this command cannot "
+    "fetch, commit, publish, or perform another privileged action.", 0,
+    "presentation,native,publication,progress,package,dht,fetch,evidence,agent",
+    "zcl.app_presentation_publication_status.input.v1",
+    "zcl.app_presentation_publication_status.v1",
+    "package_root,transport_root,confirmation_identity,output,page",
+    "package_root,transport_root,confirmation_identity",
+    "zclassic23 app presentation publication-status --input='"
+    "{\"package_root\":\"<64hex>\",\"transport_root\":\"<64hex>\","
+    "\"confirmation_identity\":\"<64hex>\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_publication_status)
+
 /* ── Blog (ZBLG) ─────────────────────────────────────────────────── */
 
 ZCL_COMMAND_READY_COMMAND(

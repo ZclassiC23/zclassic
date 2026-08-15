@@ -19,7 +19,10 @@ static zcl_native_zcode_discovery_test_fn g_test_discover;
 static zcl_native_zcode_discovery_test_fn g_test_route;
 #endif
 
-static bool dht_status_rpc(const char *operation, struct json_value *input,
+static bool discovery_root(const char *hex);
+
+static bool zcode_read_rpc(const char *method, const char *operation,
+                           struct json_value *input,
                            struct json_value *result)
 {
   json_init(result);
@@ -39,7 +42,7 @@ static bool dht_status_rpc(const char *operation, struct json_value *input,
     return false;
   }
   zcl_native_bridge_ensure_rpc();
-  char *raw = node_rpc_call("zcode_dht_status", wire);
+  char *raw = node_rpc_call(method, wire);
   free(wire);
   json_free(&params);
   if (!raw)
@@ -58,7 +61,7 @@ bool zcl_native_zcode_dht_status_read(struct json_value *result)
   struct json_value input;
   json_init(&input);
   json_set_object(&input);
-  bool ok = dht_status_rpc(NULL, &input, result);
+  bool ok = zcode_read_rpc("zcode_dht_status", NULL, &input, result);
   json_free(&input);
   return ok;
 }
@@ -66,7 +69,25 @@ bool zcl_native_zcode_dht_status_read(struct json_value *result)
 bool zcl_native_zcode_records_local(
     struct json_value *selector, struct json_value *result)
 {
-  return selector && result && dht_status_rpc("records", selector, result);
+  return selector && result &&
+         zcode_read_rpc("zcode_dht_status", "records", selector, result);
+}
+
+bool zcl_native_zcode_package_status_read(
+    const char *package_root, const char *transport_root,
+    struct json_value *result)
+{
+  if (!discovery_root(package_root) || !discovery_root(transport_root) ||
+      !result)
+    return false;
+  struct json_value input;
+  json_init(&input);
+  json_set_object(&input);
+  json_push_kv_str(&input, "package_root", package_root);
+  json_push_kv_str(&input, "transport_root", transport_root);
+  bool ok = zcode_read_rpc("zcode_package_status", NULL, &input, result);
+  json_free(&input);
+  return ok;
 }
 
 static bool discovery_root(const char *hex)
@@ -171,7 +192,7 @@ bool zcl_native_zcode_publish_record(
   json_push_kv_int(&input, "sequence", sequence);
   json_push_kv_int(&input, "not_before", not_before);
   json_push_kv_int(&input, "expiry", expiry);
-  if (!dht_status_rpc("publish", &input, &result)) {
+  if (!zcode_read_rpc("zcode_dht_status", "publish", &input, &result)) {
     const char *code = json_get_str(json_get(&result, "code"));
     if (error_out && error_capacity)
       (void)snprintf(error_out, error_capacity, "%s",
@@ -191,7 +212,8 @@ bool zcl_native_zcode_publish_record(
   }
   json_set_str((struct json_value *)json_get(&input, "mode"), "commit");
   json_push_kv_str(&input, "plan_token", token_out);
-  bool committed = dht_status_rpc("publish", &input, &result);
+  bool committed = zcode_read_rpc(
+      "zcode_dht_status", "publish", &input, &result);
   if (!committed && error_out && error_capacity) {
     const char *code = json_get_str(json_get(&result, "code"));
     (void)snprintf(error_out, error_capacity, "%s",

@@ -42,6 +42,82 @@ static void qr_reproduction_facts(struct json_value *facts,
     json_push_kv_str(facts, "state", state);
 }
 
+static void qr_publication_records(struct json_value *projection,
+                                   const char *kind,
+                                   const char *package_root,
+                                   const char *transport_root,
+                                   const char *provider_node_id,
+                                   bool include)
+{
+    json_init(projection); json_set_object(projection);
+    json_push_kv_bool(projection, "local_projection", true);
+    struct json_value records;
+    json_init(&records); json_set_array(&records);
+    if (include) {
+        struct json_value row;
+        json_init(&row); json_set_object(&row);
+        json_push_kv_str(&row, "kind", kind);
+        json_push_kv_str(&row, "record_root", package_root);
+        json_push_kv_str(&row, "namespace", "zclassic23.package");
+        json_push_kv_str(&row, "semantic_root", package_root);
+        json_push_kv_str(&row, "transport_root", transport_root);
+        json_push_kv_str(&row, "provider_node_id", provider_node_id);
+        json_push_back(&records, &row);
+        json_free(&row);
+    }
+    json_push_kv(projection, "records", &records);
+    json_free(&records);
+}
+
+static void qr_publication_facts(struct json_value *facts,
+                                 const char *package_root,
+                                 const char *transport_root,
+                                 const char *confirmation_identity,
+                                 const char *local_node_id,
+                                 const char *record_node_id,
+                                 bool local_complete, bool pointer,
+                                 bool provider, bool download_complete,
+                                 int64_t fetched_bytes)
+{
+    json_init(facts); json_set_object(facts);
+    json_push_kv_str(facts, "schema", "zcl.package_publication_facts.v1");
+    json_push_kv_str(facts, "package_root", package_root);
+    json_push_kv_str(facts, "transport_root", transport_root);
+    json_push_kv_str(facts, "confirmation_identity", confirmation_identity);
+    json_push_kv_str(facts, "local_node_id", local_node_id);
+    json_push_kv_bool(facts, "local_package_committed", local_complete);
+    struct json_value package, local, download;
+    json_init(&package); json_set_object(&package);
+    json_init(&local); json_set_object(&local);
+    json_push_kv_bool(&local, "found", local_complete);
+    json_push_kv_bool(&local, "complete", local_complete);
+    json_push_kv(&package, "local_package", &local);
+    json_free(&local);
+    json_push_kv_bool(&package, "download_found", download_complete);
+    if (download_complete) {
+        json_init(&download); json_set_object(&download);
+        json_push_kv_str(&download, "state", "complete");
+        json_push_kv_int(&download, "present_chunks", 3);
+        json_push_kv_int(&download, "total_chunks", 3);
+        json_push_kv_int(&download, "present_bytes", 4096);
+        json_push_kv_int(&download, "total_bytes", 4096);
+        json_push_kv_int(&download, "fetched_bytes", fetched_bytes);
+        json_push_kv(&package, "download", &download);
+        json_free(&download);
+    }
+    json_push_kv(facts, "package", &package);
+    json_free(&package);
+    struct json_value pointers, providers;
+    qr_publication_records(&pointers, "pointer", package_root,
+                           transport_root, record_node_id, pointer);
+    qr_publication_records(&providers, "provider", package_root,
+                           transport_root, record_node_id, provider);
+    json_push_kv(facts, "pointer_records", &pointers);
+    json_push_kv(facts, "provider_records", &providers);
+    json_free(&pointers);
+    json_free(&providers);
+}
+
 static bool finder_matches(const struct qr_matrix *matrix, uint32_t ox,
                            uint32_t oy)
 {
@@ -648,6 +724,77 @@ int test_qr(void)
                  &publication_plan, &publication_model,
                  why, sizeof(why)));
     json_free(&publication_plan);
+
+    struct json_value publication_facts;
+    struct zcl_present_model_v1 publication_status;
+    qr_publication_facts(&publication_facts, root_b, tree_root, root_a,
+                         root_a, root_a, true, false, false, false, 0);
+    QR_CHECK("local commit alone cannot fabricate network publication",
+             zcl_native_presentation_publication_status_model_from_facts(
+                 &publication_facts, &publication_status,
+                 why, sizeof(why)) &&
+             publication_status.item_count == 6 &&
+             publication_status.items[0].numerator == 0 &&
+             publication_status.items[1].status == ZCL_PRESENT_STATUS_GREEN &&
+             publication_status.items[2].status == ZCL_PRESENT_STATUS_NEUTRAL &&
+             publication_status.items[5].status == ZCL_PRESENT_STATUS_NEUTRAL &&
+             strcmp(publication_status.request_id,
+                    "publish-aaaaaaaaaaaa") == 0);
+    json_free(&publication_facts);
+
+    qr_publication_facts(&publication_facts, root_b, tree_root, root_a,
+                         root_a, root_a, true, true, false, false, 0);
+    QR_CHECK("signed pointer advances only its exact evidence stage",
+             zcl_native_presentation_publication_status_model_from_facts(
+                 &publication_facts, &publication_status,
+                 why, sizeof(why)) &&
+             publication_status.items[2].status == ZCL_PRESENT_STATUS_GREEN &&
+             publication_status.items[3].status == ZCL_PRESENT_STATUS_NEUTRAL &&
+             publication_status.items[4].status == ZCL_PRESENT_STATUS_NEUTRAL);
+    json_free(&publication_facts);
+
+    qr_publication_facts(&publication_facts, root_b, tree_root, root_a,
+                         root_a, root_a, true, true, true, true, 4096);
+    QR_CHECK("self-published records cannot masquerade as peer discovery",
+             zcl_native_presentation_publication_status_model_from_facts(
+                 &publication_facts, &publication_status,
+                 why, sizeof(why)) &&
+             publication_status.items[2].status == ZCL_PRESENT_STATUS_GREEN &&
+             publication_status.items[3].status == ZCL_PRESENT_STATUS_GREEN &&
+             publication_status.items[4].status == ZCL_PRESENT_STATUS_NEUTRAL &&
+             publication_status.items[5].status == ZCL_PRESENT_STATUS_NEUTRAL);
+    json_free(&publication_facts);
+
+    qr_publication_facts(&publication_facts, root_b, tree_root, root_a,
+                         root_a, root_b, true, true, true, false, 0);
+    QR_CHECK("matching non-self signed records prove peer discovery only",
+             zcl_native_presentation_publication_status_model_from_facts(
+                 &publication_facts, &publication_status,
+                 why, sizeof(why)) &&
+             publication_status.items[4].status == ZCL_PRESENT_STATUS_GREEN &&
+             publication_status.items[5].status == ZCL_PRESENT_STATUS_NEUTRAL);
+    json_free(&publication_facts);
+
+    qr_publication_facts(&publication_facts, root_b, tree_root, root_a,
+                         root_a, root_b, true, true, true, true, 4096);
+    QR_CHECK("exact imported peer bytes complete only the final stage",
+             zcl_native_presentation_publication_status_model_from_facts(
+                 &publication_facts, &publication_status,
+                 why, sizeof(why)) &&
+             publication_status.items[5].status == ZCL_PRESENT_STATUS_GREEN &&
+             publication_status.items[5].numerator == 1 &&
+             publication_status.items[0].numerator == 0);
+    json_free(&publication_facts);
+
+    qr_publication_facts(&publication_facts, root_b, tree_root, root_a,
+                         root_a, root_b, true, true, true, true, 0);
+    QR_CHECK("CAS completion without received peer bytes is not a peer fetch",
+             zcl_native_presentation_publication_status_model_from_facts(
+                 &publication_facts, &publication_status,
+                 why, sizeof(why)) &&
+             publication_status.items[4].status == ZCL_PRESENT_STATUS_GREEN &&
+             publication_status.items[5].status == ZCL_PRESENT_STATUS_NEUTRAL);
+    json_free(&publication_facts);
 
     struct json_value reproduction_facts;
     qr_reproduction_facts(&reproduction_facts, root_a, tree_root, root_b,

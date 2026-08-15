@@ -139,6 +139,52 @@ beta_visual_confirm_publication() {
     printf '%s\n' confirm >>"$DHT_WORK/native-ui-human-actions"
 }
 
+beta_visual_publication_status() {
+    local role="$1" root="$2" transport="$3" local_commit="$4"
+    local pointer="$5" provider="$6" discovery="$7" fetch="$8"
+    local dismiss="${9:-false}" reply expected_request confirmation_identity
+    [ "$BETA_VISUAL_ENABLED" = true ] || return 0
+    confirmation_identity="${BETA_VISUAL_PLAN_IDENTITY:-}"
+    if [ -z "$confirmation_identity" ] &&
+       [ -f "$DHT_WORK/native-ui-plan-identity" ]; then
+        confirmation_identity="$(<"$DHT_WORK/native-ui-plan-identity")"
+    fi
+    [ "${#confirmation_identity}" -eq 64 ] ||
+        beta_die "exact publication confirmation identity is unavailable"
+    reply="$(beta_native "$role" app presentation publication-status \
+        --input="{\"package_root\":\"$root\",\"transport_root\":\"$transport\",\"confirmation_identity\":\"$confirmation_identity\"}")"
+    beta_visual_assert_reply "exact publication progress" "$reply"
+    expected_request="publish-${confirmation_identity:0:12}"
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("request_id","")')" = "$expected_request" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("package_root","")')" = "$root" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("transport_root","")')" = "$transport" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("human_confirmation_rederived",True)')" = False ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("local_commit_complete",False)')" = "$local_commit" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("pointer_publication_observed",False)')" = "$pointer" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("provider_publication_observed",False)')" = "$provider" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("peer_discovery_observed",False)')" = "$discovery" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("exact_fetch_observed",False)')" = "$fetch" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("privileged_action_performed",True)')" = False ] ||
+        beta_die "publication progress outran its exact evidence: $reply"
+    if [ "$dismiss" = true ]; then
+        "$C23_BETA_NATIVE_UI_DRIVER" --title='Exact package publication' \
+            --key=escape --timeout-ms=5000 >/dev/null ||
+            beta_die "publication progress was not keyboard reachable"
+    fi
+    printf '%s\n' publication-status \
+        >>"$DHT_WORK/native-ui-agent-requests"
+}
+
 beta_visual_reproduction() {
     local role="$1" action="$2" phase="$3" reply proof_state
     [ "$BETA_VISUAL_ENABLED" = true ] || return 0
@@ -561,6 +607,10 @@ beta_seal_publish() {
     beta_ok "$label create commit" "$commit"
     root="$(printf '%s' "$commit" | beta_jget 'd["data"]["package_root"]')"
     transport="$(printf '%s' "$commit" | beta_jget 'd["data"]["transport_root"]')"
+    if [ "$BETA_VISUAL_ENABLED" = true ] && [ "$label" = v2 ]; then
+        beta_visual_publication_status "$role" "$root" "$transport" \
+            True False False False False
+    fi
     printf '%s %s %s' "$root" "$transport" "$release_id"
 }
 
@@ -626,7 +676,17 @@ beta_publish_package() {
     # separate: POINTER binds package root -> carrier root; PROVIDER names
     # an authenticated peer serving that exact carrier.
     beta_publish_record "$role" pointer "$root" "$transport" "$sequence"
+    if [ "$BETA_VISUAL_ENABLED" = true ] &&
+       [ "${BETA_V2_ROOT:-}" = "$root" ]; then
+        beta_visual_publication_status "$role" "$root" "$transport" \
+            True True False False False
+    fi
     beta_publish_record "$role" provider "$root" "$transport" "$sequence"
+    if [ "$BETA_VISUAL_ENABLED" = true ] &&
+       [ "${BETA_V2_ROOT:-}" = "$root" ]; then
+        beta_visual_publication_status "$role" "$root" "$transport" \
+            True True True False False
+    fi
 }
 
 beta_wait_complete() {
@@ -1002,6 +1062,10 @@ BETA_V2_API_ROOT="$BETA_VERSION_API_ROOT"
 beta_restart "$BETA_D" "$BETA_C"
 beta_publish_package "$BETA_D" "$BETA_V2_ROOT" "$BETA_V2_TRANSPORT" 2
 beta_fetch_pin "$BETA_C" "$BETA_V2_ROOT" "$BETA_V2_TRANSPORT"
+if [ "$BETA_VISUAL_ENABLED" = true ]; then
+    beta_visual_publication_status "$BETA_C" "$BETA_V2_ROOT" \
+        "$BETA_V2_TRANSPORT" True True True True True true
+fi
 V2_REQUESTED_OBJECTS="$BETA_FETCH_REQUESTED_OBJECTS"
 V2_TRANSFERRED_OBJECTS="$BETA_FETCH_TRANSFERRED_OBJECTS"
 V2_REUSED_OBJECTS="$BETA_FETCH_REUSED_OBJECTS"
@@ -1200,7 +1264,7 @@ if [ "$BETA_VISUAL_ENABLED" = true ]; then
     BETA_VISUAL_HUMAN_ACTIONS="$(wc -l \
         <"$DHT_WORK/native-ui-human-actions" | tr -d ' ')"
     BETA_VISUAL_PLAN_IDENTITY="$(<"$DHT_WORK/native-ui-plan-identity")"
-    [ "$BETA_VISUAL_AGENT_REQUESTS" -eq 4 ] &&
+    [ "$BETA_VISUAL_AGENT_REQUESTS" -eq 8 ] &&
     [ "$BETA_VISUAL_HUMAN_ACTIONS" -eq 1 ] &&
     [ "${#BETA_VISUAL_BEFORE_SOURCE_ROOT}" -eq 64 ] &&
     [ "${#BETA_VISUAL_CANDIDATE_SOURCE_ROOT}" -eq 64 ] &&

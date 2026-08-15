@@ -612,6 +612,7 @@ dht_build_helper() {
         "$REPO_ROOT/lib/crypto/src/hmac_sha256.c" \
         "$REPO_ROOT/lib/crypto/src/hkdf_sha256.c" \
         "$REPO_ROOT/lib/crypto/src/chacha20poly1305.c" \
+        "$REPO_ROOT/lib/support/src/log_throttle.c" \
         "$REPO_ROOT/lib/crypto/src/curve25519.c" \
         "$REPO_ROOT/lib/crypto/src/x25519_safe.c" \
         "$REPO_ROOT/lib/crypto/src/random_secret.c" \

@@ -60,6 +60,12 @@ if [ "${C23_BETA_NATIVE_UI_JOURNEY:-0}" = 1 ]; then
         exit 2
     }
     mkdir -m 0700 "$RUN_ROOT/native-ui-runtime"
+    # c23-portable-install deliberately rebuilds build/bin from scratch. Keep
+    # the already-validated input driver inside this guarded run so that clean
+    # product build cannot invalidate the later physical acceptance path.
+    install -m 0755 "$C23_BETA_NATIVE_UI_DRIVER" \
+        "$RUN_ROOT/native-ui-driver"
+    export C23_BETA_NATIVE_UI_DRIVER="$RUN_ROOT/native-ui-driver"
     export XDG_RUNTIME_DIR="$RUN_ROOT/native-ui-runtime"
 fi
 

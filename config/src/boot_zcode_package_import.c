@@ -6,7 +6,7 @@
 #include "json/json.h"
 #include "vcs/package_swarm_node.h"
 
-static void package_download_render(
+void boot_zcode_package_download_render(
     struct json_value *result,
     const struct vcs_swarm_download_status *status)
 {
@@ -55,7 +55,7 @@ void boot_zcode_package_import_render(struct vcs_swarm_engine *engine,
     struct vcs_swarm_download_status status;
     if (engine && vcs_swarm_engine_download_status(
                       engine, transport_root, &status))
-        package_download_render(result, &status);
+        boot_zcode_package_download_render(result, &status);
     if (!engine || fetch_result != VCS_SWARM_FETCH_ALREADY_COMPLETE)
         return;
     struct vcs_package_transport_import imported;

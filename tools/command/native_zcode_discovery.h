@@ -31,6 +31,9 @@ bool zcl_native_zcode_records_discover(
 bool zcl_native_zcode_dht_status_read(struct json_value *result);
 bool zcl_native_zcode_records_local(
     struct json_value *selector, struct json_value *result);
+bool zcl_native_zcode_package_status_read(
+    const char *package_root, const char *transport_root,
+    struct json_value *result);
 
 /* Drive the existing begin/poll/cancel capability under a caller-owned
  * absolute monotonic deadline. Adds no RPC or wire surface. */

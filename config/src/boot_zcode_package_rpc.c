@@ -4,8 +4,12 @@
 #include "config/boot_zcode_dht.h"
 
 #include "command/native_command.h"
+#include "base/hex.h"
 #include "json/json.h"
 #include "rpc/server.h"
+#include "vcs/package_swarm_node.h"
+
+#include <string.h>
 
 static const struct json_value *package_rpc_input(
     const struct json_value *params)
@@ -80,11 +84,59 @@ static bool package_unpin(const struct json_value *params, bool help,
     return package_pin_rpc(params, help, result, false);
 }
 
+/* Read-only exact-root observation for native instruments.  This reuses the
+ * resident store and swarm engine; it neither starts a fetch nor opens the
+ * live store from a second process. */
+static bool package_status(const struct json_value *params, bool help,
+                           struct json_value *result)
+{
+    if (help) {
+        json_set_str(result,
+                     "zcode_package_status {package_root,transport_root}");
+        return true;
+    }
+    const struct json_value *input = package_rpc_input(params);
+    const char *package_hex = input
+        ? json_get_str(json_get(input, "package_root")) : NULL;
+    const char *transport_hex = input
+        ? json_get_str(json_get(input, "transport_root")) : NULL;
+    uint8_t package_root[32], transport_root[32];
+    if (!package_hex || !transport_hex || strlen(package_hex) != 64u ||
+        strlen(transport_hex) != 64u ||
+        !zcl_hex_decode_lower(package_hex, package_root, sizeof(package_root)) ||
+        !zcl_hex_decode_lower(transport_hex, transport_root,
+                              sizeof(transport_root))) {
+        json_set_object(result);
+        json_push_kv_bool(result, "ok", false);
+        json_push_kv_str(result, "code", "INVALID_ROOTS");
+        json_push_kv_str(result, "message",
+                         "package_root and transport_root must be canonical 64-hex roots");
+        return true;
+    }
+
+    struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
+    struct vcs_swarm_download_status download = {0};
+    bool download_found = engine && vcs_swarm_engine_download_status(
+                                        engine, transport_root, &download);
+
+    json_set_object(result);
+    json_push_kv_bool(result, "ok", true);
+    json_push_kv_str(result, "schema", "zcl.package_download_observation.v1");
+    json_push_kv_str(result, "package_root", package_hex);
+    json_push_kv_str(result, "transport_root", transport_hex);
+    json_push_kv_bool(result, "swarm_enabled", engine != NULL);
+    json_push_kv_bool(result, "download_found", download_found);
+    if (download_found)
+        boot_zcode_package_download_render(result, &download);
+    return true;
+}
+
 void boot_zcode_package_register_rpc(struct rpc_table *table)
 {
     const struct rpc_command commands[] = {
         { "zcode", "zcode_package_pin", package_pin, true },
         { "zcode", "zcode_package_unpin", package_unpin, true },
+        { "zcode", "zcode_package_status", package_status, true },
     };
     for (size_t i = 0; i < sizeof(commands) / sizeof(commands[0]); i++)
         rpc_table_must_append(table, &commands[i]);
