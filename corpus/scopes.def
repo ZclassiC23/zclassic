@@ -111,3 +111,4 @@ package zdiff/zdiff | root 2e64fa60550a999758ec74fe5b8eb1f16dd52bacdfb9ee116ebfb
 package zjsonp/zjsonp | root 8c7914335303a9c0e5f2f9649660ab66f671965944fc4852e09a6292faf46294 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zurl/zurl | root 588899b84c51e0624431112c145d0ea173f3119f5c154574d1f86a69f6785736 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zarg/zarg | root 350aa0de13413c2506d6f5cf50314007260b86db17bf348091a326cbe1a39c8e | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zpath/zpath | root d7ee2ac72e0990f5af3091043ac4a67156e90693977c432a19cb6b33550a3a4a | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
