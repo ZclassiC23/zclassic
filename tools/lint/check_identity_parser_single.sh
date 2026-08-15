@@ -65,16 +65,11 @@
 # leaving the total unchanged elsewhere — raising the ceiling itself is a
 # one-line diff in code review, not a silent runtime edit.
 #
-# tools/ship.sh carries two occurrences that are PERMANENTLY exempt, not
-# ratcheted: they execute on the remote fleet host over ssh/heredoc, which
-# cannot source a local library file that only exists in this checkout.
-# Each is marked in-place with a `zcl-identity-parser-allow:` comment
-# within a few lines of the match, and this gate treats that marker as a
-# full exemption rather than counting it as debt — but an unbounded marker
-# is itself a hole (any future copy anywhere could be exempted forever by
-# pasting the same comment near it), so MARKER_CEILING below bounds the
-# marker count the same shrink-only way, and MARKER_ALLOWED_FILES bounds
-# WHICH files may carry one at all: today, only tools/ship.sh.
+# tools/ship.sh once carried two remote inline parsers as permanent
+# exemptions. The fleet publisher now binds the running /proc executable
+# SHA-256 to the locally source-proven candidate instead, so the production
+# marker budget has ratcheted to zero. The marker machinery remains because
+# its selftest proves a future exemption cannot be added silently.
 #
 # --selftest plants a fresh inline copy of both classes in a sandboxed
 # tools/ tree, proves the gate FAILS on it, then removes it and proves
@@ -96,8 +91,8 @@ RATCHET_CEILING=16
 # catching the tenth copy. MARKER_ALLOWED_FILES is the second half: WHICH
 # files may carry the marker at all, so a marker planted in a file that
 # was never named here fails regardless of the count.
-MARKER_CEILING=2
-MARKER_ALLOWED_FILES=(tools/ship.sh)
+MARKER_CEILING=0
+MARKER_ALLOWED_FILES=()
 
 # ── --selftest ───────────────────────────────────────────────────────────
 if [ "${1:-}" = "--selftest" ]; then
@@ -447,9 +442,9 @@ fi
 # near it — a hole in a gate whose entire job is catching the next copy.
 # Bound it two ways, same shrink-only shape as the baseline sum:
 #   1. the total marker count may not exceed MARKER_CEIL.
-#   2. a marker may only appear in a file named in MARKER_ALLOWED — today
-#      that is tools/ship.sh's two remote-fleet-host sites, and nowhere
-#      else. A marker anywhere else is a violation regardless of the
+#   2. a marker may only appear in a file named in MARKER_ALLOWED — the
+#      production allowlist is empty today. A marker anywhere is a violation
+#      regardless of the
 #      count, because it exempts a copy this gate was never told about.
 declare -A marker_file_count=()
 marker_total=0

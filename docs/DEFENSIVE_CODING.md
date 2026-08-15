@@ -921,6 +921,7 @@ add/remove a gate.
 - `check-proof-server-pin`
 - `check-promotion-receipt-chain`
 - `check-verification-coverage`
+- `check-ship-remote-transaction`
 - `check-identity-parser-single`
 - `check-status-reason-single`
 - `check-pipefail-status-pipe`

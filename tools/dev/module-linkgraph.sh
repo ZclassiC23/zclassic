@@ -137,7 +137,26 @@ if [ ! -d "$OBJ_DIR" ]; then
     exit 1
 fi
 
-OBJ_COUNT=$(find "$OBJ_DIR" -name '*.o' -type f | wc -l)
+# A root-selected production epoch can retain an object after its source was
+# deleted or moved: `make` knows not to link it, but `find *.o` used to feed it
+# to this graph forever. That produced a false architectural edge after
+# log_throttle.c moved from lib/util to lib/support. Filter root scans through
+# the same repo-relative `.o` -> `.c` mapping used below. An explicit --obj-dir
+# remains an unfiltered diagnostic seam so synthetic gate fixtures need not
+# manufacture a source checkout beside their objects.
+list_objects() {
+    local obj rel src
+    while IFS= read -r -d '' obj; do
+        if [ -n "$OBJ_ROOT" ]; then
+            rel="${obj#"$OBJ_DIR"/}"
+            src="${rel%.o}.c"
+            [ -f "$src" ] || continue
+        fi
+        printf '%s\0' "$obj"
+    done < <(find "$OBJ_DIR" -name '*.o' -type f -print0)
+}
+
+OBJ_COUNT=$(list_objects | tr -cd '\0' | wc -c)
 if [ "$OBJ_COUNT" -eq 0 ]; then
     echo "module-linkgraph: no .o files under $OBJ_DIR" >&2
     echo "  Run 'make build-only -j\$(nproc)' first." >&2
@@ -173,7 +192,7 @@ command -v "$NM_BIN" >/dev/null 2>&1 || {
 
 # One nm invocation per batch (xargs splits), -A so every line carries its
 # object path. Sorted output keeps the report stable across runs.
-OUT=$(find "$OBJ_DIR" -name '*.o' -type f -print0 \
+OUT=$(list_objects \
   | sort -z \
   | xargs -0 "$NM_BIN" -A -g -- 2>/dev/null \
   | awk -v objdir="$OBJ_DIR" -v mode="$AWK_MODE" '

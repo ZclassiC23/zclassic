@@ -136,6 +136,7 @@ gate_command() {
         check-proof-server-pin)            echo './tools/lint/check_proof_server_pin.sh' ;;
         check-promotion-receipt-chain)     echo './tools/lint/check_promotion_receipt_chain.sh' ;;
         check-verification-coverage)       echo './tools/lint/check_verification_coverage.sh' ;;
+        check-ship-remote-transaction)     echo './tools/lint/check_ship_remote_transaction.sh' ;;
         check-identity-parser-single)      echo './tools/lint/check_identity_parser_single.sh --selftest && ./tools/lint/check_identity_parser_single.sh' ;;
         check-status-reason-single)        echo './tools/lint/check_status_reason_single.sh --selftest && ./tools/lint/check_status_reason_single.sh' ;;
         check-pipefail-status-pipe)        echo './tools/lint/check_pipefail_status_pipe.sh --selftest && ./tools/lint/check_pipefail_status_pipe.sh' ;;
