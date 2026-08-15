@@ -131,3 +131,6 @@ package zwrap/zwrap | root a60f58e7081bf790e943eef4f8b009407cb5f770486e4eedd7647
 package zmime/zmime | root ef5cc37f9348a8335a955972bacb8bfa42b8ab26f61f8e43441bdf098eee5f7a | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zhex/zhex | root 56419b192c73f3d5d823239542d09ac36d73d629457ae5a4cd5e20de977f42cc | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zuuid/zuuid | root f37d1aa701a2619da9ab5ab02ed88773f46d82aae8de068db148f7e30949e205 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zvarint/zvarint | root 7932360a256e3cfa25a1555f80a3fab3bcb73ed75342565001454a8fee3716e9 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zsha256/zsha256 | root a39759e55a6346f259d1da3fe36519c341aae46de6631bae7c26645d2319a047 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zrand/zrand | root 35ac26c6d20d02cd44a46637393474eb873aa47ed70dfec2242f5705b60360a8 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT

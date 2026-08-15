@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zvarint/zvarint",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zvarint/zvarint.h",
+    "src/zvarint.c",
+    "tests/test_zvarint.c",
+    "zcode-package.json"
+  ]
+}
