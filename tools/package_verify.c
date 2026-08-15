@@ -1719,7 +1719,7 @@ int main(int argc, char **argv)
             snprintf(d->install_dir, sizeof(d->install_dir), "%s",
                      dep_resolved);
             int in = snprintf(d->include_dir, sizeof(d->include_dir),
-                              "%s/include", d->install_dir);
+                              "%s/include", dep_resolved);
             if (in <= 0 || (size_t)in >= sizeof(d->include_dir)) {
                 fprintf(stderr, "%s: --dep install dir too long\n", PV_LOG);
                 return 2;
