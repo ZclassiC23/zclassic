@@ -152,3 +152,5 @@ package zintern/zintern | root 0718d979a69f62863414f62aac3665b020ee0e72a74c37cd1
 package zu256/zu256 | root aceed4bddfb4a595f4a141fce141291767d73453a5208b9cc1da7b7815b359f4 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package znetstring/znetstring | root d13b56d9b13af4cda54baaf9b3e7c6a8ec941145eb72485c6e66be7c85d0412e | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zmd5/zmd5 | root 2dc59d540076085aac2ff2178e40b6f16c1940bc1d326ac7f9a9a31eda4570ed | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zsha1/zsha1 | root a7c6b1b72b7300c15194c053c4808c163c75638a764bf6f52ce269b477281167 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zdeque/zdeque | root fde6a9285d03c4d97fd456bf72095c4625675b6a2d966b8c18482d3cb454876d | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT

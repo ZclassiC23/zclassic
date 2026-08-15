@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zdeque/zdeque",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zdeque/zdeque.h",
+    "src/zdeque.c",
+    "tests/test_zdeque.c",
+    "zcode-package.json"
+  ]
+}
