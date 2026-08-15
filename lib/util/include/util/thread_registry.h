@@ -38,10 +38,10 @@
  *     exit in time. Diagnostic output names any stragglers so the
  *     operator can see which subsystem is hanging shutdown.
  *
- * This module does NOT own pthread_t lifetime — callers that need to
- * pthread_join from their subsystem code still can; the registry's
- * join_all is for shutdown's final sweep. Unregister on normal exit
- * via thread_registry_unregister_self().
+ * Ownership is explicit at spawn: NULL out_tid means the registry owns the
+ * join and retains a finished thread until join_all reaps it. A non-NULL
+ * out_tid transfers join ownership to the subsystem; its stop routine must
+ * join that tid. The registry remains a shutdown fallback while it is live.
  */
 
 #ifndef ZCL_THREAD_REGISTRY_H
@@ -49,6 +49,7 @@
 
 #include <pthread.h>
 #include <stdbool.h>
+#include <stddef.h>
 
 /* Max concurrent registered threads. Sized generously above the ~50
  * currently spawned so we have headroom for swarm/parallel-sync
@@ -59,10 +60,10 @@
  * `name` is copied; pass NULL for "unnamed". When `out_tid` is
  * non-NULL, writes the spawned thread's pthread_t into *out_tid so the
  * caller can pthread_join it from its own subsystem stop() path. The
- * registry's trampoline still self-unregisters on normal exit, so
- * join_all's sweep will skip an already-exited entry — doing both
- * subsystem-local pthread_join AND relying on join_all is safe in that
- * order.
+ * A NULL `out_tid` gives join ownership to the registry: normal exit marks the
+ * row finished but join_all still reaps it. A non-NULL `out_tid` gives join
+ * ownership to the caller: normal exit unregisters the row and the caller's
+ * stop routine must pthread_join the retained tid.
  *
  * Pass a non-NULL `out_tid` for bounded-lifetime services that already
  * have their own stop() routine; pass NULL for long-running daemons
@@ -82,15 +83,25 @@ bool thread_registry_shutdown_requested(void);
  * no heap allocation, no lock acquisition). */
 void thread_registry_request_shutdown(void);
 
-/* Remove the calling thread's registry entry. Called at the top of a
- * normal thread exit so the shutdown sweep doesn't try to join a
- * thread that has already returned. */
+/* Record that the calling thread is exiting. For registry-owned threads the
+ * row remains pending until join_all reaps the joinable pthread. For
+ * caller-owned threads the row is removed; their stop routine retained the
+ * tid and must join it. The spawn trampoline calls this automatically. */
 void thread_registry_unregister_self(void);
 
 /* pthread_timedjoin_np each registered thread with `timeout_sec`.
  * Returns the number that failed to join in time (0 on clean
  * shutdown). Prints the name of every straggler. */
 int thread_registry_join_all(int timeout_sec);
+
+/* Same diagnostic sweep, but leave the exact pthread_t values in `excluded`
+ * active and owned by their subsystem. This is for dependency providers that
+ * must remain alive while every consumer drains (for example the serialized
+ * DB worker used by shutdown persistence). Exclusion is by pthread identity,
+ * never by a fragile display name. */
+int thread_registry_join_all_except(int timeout_sec,
+                                    const pthread_t *excluded,
+                                    size_t excluded_count);
 
 /* Drain every still-active registered thread without abandoning ownership.
  * This is the final shutdown barrier: callers must keep every dependency
@@ -99,8 +110,17 @@ int thread_registry_join_all(int timeout_sec);
  * never reports completion while one can still access caller-owned state. */
 void thread_registry_join_all_owned(void);
 
-/* Current count of active entries. Exposed for the stress test. */
+/* Ownership-retaining form of thread_registry_join_all_except(). */
+void thread_registry_join_all_owned_except(const pthread_t *excluded,
+                                           size_t excluded_count);
+
+/* Current count of threads whose entry function has not returned. */
 int thread_registry_live_count(void);
+
+/* Current count of occupied ownership rows, including finished registry-owned
+ * pthreads that still require join. A clean final shutdown audit requires both
+ * live_count and unreaped_count to be zero. */
+int thread_registry_unreaped_count(void);
 
 /* One row of a registry snapshot: the spawned thread's pthread_t plus its
  * human-readable name. `tid` is directly usable with pthread_kill(). */
@@ -109,7 +129,7 @@ struct thread_registry_view {
     char      name[48];
 };
 
-/* Copy up to `cap` active registry entries into `out` and return the number
+/* Copy up to `cap` running registry entries into `out` and return the number
  * written. Acquires the registry mutex briefly for a consistent snapshot;
  * NOT signal-handler safe — call it from ordinary context (e.g. the
  * self-backtrace orchestrator) and then pthread_kill each `tid`. */

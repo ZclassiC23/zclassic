@@ -285,8 +285,10 @@ static void *hodl_history_worker_thread(void *arg)
         boot_complete_worker_supervisor(&g_hodl_history_sup_id);
         return NULL;
     }
-    /* Initial settle: wait for boot to complete + first chain advance. */
-    sleep(15);
+    /* Settle but observe shutdown once per second (never sleep(15)). */
+    for (int i = 0; i < HODL_HISTORY_IDLE_SLEEP_SEC &&
+                    !svc->hodl_history_thread_stop; i++)
+        sleep(1);
     while (!svc->hodl_history_thread_stop) {
         supervisor_child_id sup_id = atomic_load(&g_hodl_history_sup_id);
         if (sup_id != SUPERVISOR_INVALID_ID) {
@@ -790,8 +792,6 @@ static void *address_backfill_service_thread(void *arg)
     snprintf(db_path, 1024, "%s/node.db", svc->datadir);
     backfill_addresses_thread(db_path);
     free(db_path);
-    db_path = NULL;
-
 done:
     if (sup_id != SUPERVISOR_INVALID_ID)
         supervisor_tick(sup_id);

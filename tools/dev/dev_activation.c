@@ -988,8 +988,10 @@ static int dev_prepare(struct dev_activation_txn *txn,
     txn->lock_fd = -1;
     txn->req = req;
     txn->result = result;
+    if (!result)
+        return DEV_ACTIVATION_E_INTERNAL;
     dev_result_init(result);
-    if (!req || !result)
+    if (!req)
         return DEV_ACTIVATION_E_INTERNAL;
     if (!ops) {
 #ifdef ZCL_DEV_BUILD
@@ -1031,6 +1033,8 @@ int dev_activation_run(const struct dev_activation_request *req,
                        const struct dev_activation_ops *ops,
                        struct dev_activation_result *result)
 {
+    if (!result)
+        return DEV_ACTIVATION_E_INTERNAL;
     struct dev_activation_txn txn;
     struct dev_activation_ops default_ops;
     int st = dev_prepare(&txn, req, ops, result, &default_ops);
@@ -1063,6 +1067,8 @@ int dev_activation_activate_generation(const uint8_t gen_sha256[32],
                                        const struct dev_activation_ops *ops,
                                        struct dev_activation_result *result)
 {
+    if (!result)
+        return DEV_ACTIVATION_E_INTERNAL;
     struct dev_activation_txn txn;
     struct dev_activation_ops default_ops;
     int st = dev_prepare(&txn, req, ops, result, &default_ops);

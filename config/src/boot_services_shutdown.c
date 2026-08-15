@@ -150,6 +150,13 @@ static void shutdown_stop_runtime_and_drain_workers(struct boot_svc_ctx *svc)
      * set, so this joins at most one in-flight tick. */
     self_heal_stop();
     zcl_service_kernel_stop_all(&svc->runtime_kernel);
+    /* The base service kernel currently owns mempool_limits. Its stop hook is
+     * the only authority that sets zcl_mempool_lim's stop token, so it must run
+     * before the generic registry join below. More generally, service kernels
+     * stop their consumers while DB/progress dependencies are still live; the
+     * registry then verifies ownership instead of trying to invent a stop
+     * protocol for an otherwise-running service. */
+    zcl_service_kernel_stop_all(&svc->service_kernel);
     /* Stop the supervisor AFTER runtime services so any stall-detection
      * callbacks they emit at teardown are still delivered. */
     supervisor_stop();
@@ -168,18 +175,31 @@ static void shutdown_stop_runtime_and_drain_workers(struct boot_svc_ctx *svc)
     boot_join_catchup_service(svc);
 
     /* Diagnostic timeout first, then retain ownership until every remaining
-     * worker exits. The stage watchdog is still pre-durability here, so a
-     * genuinely wedged worker produces an unclean process exit without ever
-     * closing its databases or freeing its dependencies underneath it. */
-    int stragglers = thread_registry_join_all(2);
+     * CONSUMER exits. The DB worker/checkpointer are dependency providers for
+     * the persistence stage below, so joining them here creates a lifecycle
+     * cycle: the registry waits for zcl_db_worker, but db_service_stop() cannot
+     * signal that worker until after the final queued flush/checkpoint. Exclude
+     * those exact pthread identities (not names), drain every consumer with
+     * dependencies live, then let shutdown_persist_runtime_state() stop the DB
+     * provider and run a final all-thread ownership audit. */
+    pthread_t db_threads[2];
+    size_t db_thread_count = 0;
+    if (svc->db_service) {
+        if (svc->db_service->worker_started)
+            db_threads[db_thread_count++] = svc->db_service->worker_thread;
+        if (svc->db_service->ckpt_started)
+            db_threads[db_thread_count++] = svc->db_service->ckpt_thread;
+    }
+    int stragglers = thread_registry_join_all_except(
+        2, db_threads, db_thread_count);
     if (stragglers > 0) {
         fprintf(stderr,
                 "[shutdown] %d worker(s) exceeded their join budget; "
                 "waiting with dependencies retained\n",
                 stragglers);
-        thread_registry_join_all_owned();
+        thread_registry_join_all_owned_except(db_threads, db_thread_count);
     }
-    printf("[shutdown] runtime workers drained\n");
+    printf("[shutdown] runtime consumers drained; DB provider retained\n");
 }
 
 static bool shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
@@ -236,9 +256,29 @@ static bool shutdown_persist_runtime_state(struct boot_svc_ctx *svc)
         if (!db_service_close_write(svc->db_service))
             ok = false;
     }
-    printf("[shutdown] stopping DB/service kernels\n");
+    printf("[shutdown] stopping DB provider kernel\n");
     boot_stop_db_service_kernel();
-    zcl_service_kernel_stop_all(&svc->service_kernel);
+
+    /* db_service_stop() has now signalled and joined the only intentionally
+     * excluded provider threads. No registered thread may survive the final
+     * durability barrier or observe the resource-release phase. */
+    int stragglers = thread_registry_join_all(2);
+    if (stragglers > 0) {
+        fprintf(stderr,
+                "[shutdown] %d final worker(s) exceeded their join budget; "
+                "retaining ownership before durability\n",
+                stragglers);
+        thread_registry_join_all_owned();
+    }
+    int live_threads = thread_registry_live_count();
+    int unreaped_threads = thread_registry_unreaped_count();
+    if (live_threads != 0 || unreaped_threads != 0) {
+        fprintf(stderr,
+                "[shutdown] final worker ownership audit failed: "
+                "live=%d unreaped=%d\n",
+                live_threads, unreaped_threads);
+        ok = false;
+    }
     printf("[shutdown] runtime state persisted\n");
     return ok;
 }
@@ -326,9 +366,18 @@ void app_shutdown_svc(struct boot_svc_ctx *svc)
 
     shutdown_stagewatch_enter("frontend-stop", 15, false, true);
     shutdown_stop_frontend_services(svc);
-    shutdown_stagewatch_enter("network-quiesce", 30, true, true);
+    /* Production evidence (2026-08-15) showed that 30s + two 15s graces
+     * killed an otherwise healthy node before durability when an optional
+     * discovery worker was still owned. Discovery waits are now promptly
+     * interruptible; retain a 120s diagnostic budget as defense in depth for
+     * legitimate socket/message cleanup and final coins I/O, still below the
+     * service manager's 300s hard stop. */
+    shutdown_stagewatch_enter("network-quiesce", 120, true, true);
     bool durability_ok = shutdown_quiesce_network_and_flush_coins(svc);
-    shutdown_stagewatch_enter("worker-drain", 15, false, true);
+    /* Consumer ownership is part of the durability barrier: dependencies may
+     * not be closed while a consumer is live. A legitimate slow callback gets
+     * bounded graces; a true wedge still exits loudly and unclean. */
+    shutdown_stagewatch_enter("worker-drain", 60, true, true);
     shutdown_stop_runtime_and_drain_workers(svc);
     /* Capture while state and progress.kv are still live, after every writer
      * that could move their frontier has been joined. */

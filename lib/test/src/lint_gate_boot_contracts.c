@@ -159,8 +159,13 @@ int t_boot_shutdown_persistence_order_contract(void)
         char *supervisor_stop = strstr(buf, "supervisor_stop();");
         char *stages_stop = strstr(buf,
             "staged_sync_supervisor_shutdown_stages();");
+        char *service_stop = strstr(
+            buf, "zcl_service_kernel_stop_all(&svc->service_kernel);");
         char *wal_checkpoint = strstr(
             buf, "db_service_wal_checkpoint(svc->db_service)");
+        char *consumer_join = strstr(
+            buf, "thread_registry_join_all_except(\n"
+                 "        2, db_threads, db_thread_count)");
         char *thread_join = strstr(buf, "thread_registry_join_all(2)");
         char *marker = strstr(
             buf, "boot_shutdown_marker_write_clean(svc->datadir)");
@@ -169,7 +174,9 @@ int t_boot_shutdown_persistence_order_contract(void)
         ASSERT(health_stop != NULL);
         ASSERT(supervisor_stop != NULL);
         ASSERT(stages_stop != NULL);
+        ASSERT(service_stop != NULL);
         ASSERT(wal_checkpoint != NULL);
+        ASSERT(consumer_join != NULL);
         ASSERT(thread_join != NULL);
         ASSERT(marker != NULL);
         ASSERT(fast != NULL);
@@ -182,10 +189,17 @@ int t_boot_shutdown_persistence_order_contract(void)
          * and while persistence dependencies are still live. */
         ASSERT(supervisor_stop < stages_stop);
         ASSERT(stages_stop < wal_checkpoint);
-        ASSERT(stages_stop < thread_join);
-        ASSERT(thread_join < wal_checkpoint);
+        ASSERT(stages_stop < consumer_join);
+        ASSERT(service_stop < consumer_join);
+        ASSERT(consumer_join < wal_checkpoint);
+        /* The DB provider is stopped only after the WAL barrier, then the
+         * final registry audit proves no thread survives to the marker. */
+        ASSERT(wal_checkpoint < thread_join);
+        ASSERT(thread_join < marker);
         ASSERT(count_occurrences(buf,
                    "staged_sync_supervisor_shutdown_stages();") == 1);
+        ASSERT(count_occurrences(buf,
+                   "zcl_service_kernel_stop_all(&svc->service_kernel);") == 1);
         /* checkpoint precedes the marker (marker binds a checkpointed DB) */
         ASSERT(wal_checkpoint < marker);
         /* marker precedes the slow flat save (durability before optimization) */

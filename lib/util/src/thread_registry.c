@@ -24,15 +24,21 @@
 struct entry {
     pthread_t tid;
     char      name[48];
-    bool      active;
+    bool      occupied;
+    bool      running;
+    bool      registry_owns_join;
+    bool      registry_joining;
 };
 
 static struct entry         g_entries[ZCL_THREAD_REGISTRY_CAP];
 static pthread_mutex_t      g_mu = PTHREAD_MUTEX_INITIALIZER;
 static _Atomic bool         g_shutdown = false;
 
-/* Trampoline lets the registered thread unregister itself when it
- * returns normally, so join_all doesn't trip over exited entries.
+/* The trampoline records normal exit. Registry-owned pthreads (spawned with
+ * out_tid == NULL) remain occupied until join_all reaps them; a returned
+ * joinable pthread still consumes resources and must not disappear from the
+ * ownership table. Caller-owned pthreads unregister on exit because their
+ * subsystem retained the tid and is contractually responsible for joining it.
  * Allocated per-spawn and freed in the trampoline. */
 struct trampoline_args {
     void *(*entry)(void *);
@@ -63,11 +69,11 @@ int thread_registry_spawn(const char *name,
     ta->arg   = arg;
 
     /* Reserve a slot BEFORE pthread_create so we can't race with an
-     * immediate exit + self-unregister. */
+     * immediate exit + lifecycle publication. */
     pthread_mutex_lock(&g_mu);
     int slot = -1;
     for (int i = 0; i < ZCL_THREAD_REGISTRY_CAP; i++) {
-        if (!g_entries[i].active) { slot = i; break; }
+        if (!g_entries[i].occupied) { slot = i; break; }
     }
     if (slot < 0) {
         pthread_mutex_unlock(&g_mu);
@@ -77,7 +83,9 @@ int thread_registry_spawn(const char *name,
                 ZCL_THREAD_REGISTRY_CAP, name ? name : "?");
         return -1;
     }
-    g_entries[slot].active = true;
+    g_entries[slot].occupied = true;
+    g_entries[slot].running = true;
+    g_entries[slot].registry_owns_join = (out_tid == NULL);
     /* tid filled in after pthread_create succeeds. */
     strncpy(g_entries[slot].name, name ? name : "?",
             sizeof(g_entries[slot].name) - 1);
@@ -90,7 +98,7 @@ int thread_registry_spawn(const char *name,
     pthread_t tid;
     int rc = pthread_create(&tid, NULL, thread_registry_trampoline, ta);
     if (rc != 0) {
-        g_entries[slot].active = false;
+        memset(&g_entries[slot], 0, sizeof(g_entries[slot]));
         pthread_mutex_unlock(&g_mu);
         free(ta);
         return rc;
@@ -128,28 +136,52 @@ void thread_registry_unregister_self(void)
     pthread_t self = pthread_self();
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < ZCL_THREAD_REGISTRY_CAP; i++) {
-        if (g_entries[i].active &&
+        if (g_entries[i].occupied &&
             pthread_equal(g_entries[i].tid, self)) {
-            g_entries[i].active = false;
+            g_entries[i].running = false;
+            if (!g_entries[i].registry_owns_join &&
+                !g_entries[i].registry_joining)
+                memset(&g_entries[i], 0, sizeof(g_entries[i]));
             break;
         }
     }
     pthread_mutex_unlock(&g_mu);
 }
 
-int thread_registry_join_all(int timeout_sec)
+static bool thread_registry_tid_is_excluded(
+    pthread_t tid, const pthread_t *excluded, size_t excluded_count)
+{
+    if (!excluded)
+        return false;
+    for (size_t i = 0; i < excluded_count; i++) {
+        if (pthread_equal(tid, excluded[i]))
+            return true;
+    }
+    return false;
+}
+
+int thread_registry_join_all_except(int timeout_sec,
+                                    const pthread_t *excluded,
+                                    size_t excluded_count)
 {
     if (timeout_sec < 0) timeout_sec = 0;
     int failed = 0;
 
     for (int i = 0; i < ZCL_THREAD_REGISTRY_CAP; i++) {
         pthread_mutex_lock(&g_mu);
-        bool active = g_entries[i].active;
+        bool occupied = g_entries[i].occupied;
         pthread_t tid = g_entries[i].tid;
         char name[sizeof(g_entries[i].name)];
-        if (active) memcpy(name, g_entries[i].name, sizeof(name));
+        if (occupied) {
+            memcpy(name, g_entries[i].name, sizeof(name));
+            if (!thread_registry_tid_is_excluded(
+                    tid, excluded, excluded_count))
+                g_entries[i].registry_joining = true;
+        }
         pthread_mutex_unlock(&g_mu);
-        if (!active) continue;
+        if (!occupied) continue;
+        if (thread_registry_tid_is_excluded(tid, excluded, excluded_count))
+            continue;
 
         struct timespec ts;
         platform_time_realtime_timespec(&ts);
@@ -158,28 +190,47 @@ int thread_registry_join_all(int timeout_sec)
         int rc = pthread_timedjoin_np(tid, NULL, &ts);
         if (rc == 0) {
             pthread_mutex_lock(&g_mu);
-            g_entries[i].active = false;
+            memset(&g_entries[i], 0, sizeof(g_entries[i]));
             pthread_mutex_unlock(&g_mu);
         } else {
             fprintf(stderr, "[thread_registry] straggler after %ds: "  // obs-ok:helper-context-logged
                     "'%s' (rc=%d: %s)\n",
                     timeout_sec, name, rc, strerror(rc));
             failed++;
+            pthread_mutex_lock(&g_mu);
+            g_entries[i].registry_joining = false;
+            if (!g_entries[i].running &&
+                !g_entries[i].registry_owns_join)
+                memset(&g_entries[i], 0, sizeof(g_entries[i]));
+            pthread_mutex_unlock(&g_mu);
         }
     }
     return failed;
 }
 
-void thread_registry_join_all_owned(void)
+int thread_registry_join_all(int timeout_sec)
+{
+    return thread_registry_join_all_except(timeout_sec, NULL, 0);
+}
+
+void thread_registry_join_all_owned_except(const pthread_t *excluded,
+                                           size_t excluded_count)
 {
     for (int i = 0; i < ZCL_THREAD_REGISTRY_CAP; i++) {
         pthread_mutex_lock(&g_mu);
-        bool active = g_entries[i].active;
+        bool occupied = g_entries[i].occupied;
         pthread_t tid = g_entries[i].tid;
         char name[sizeof(g_entries[i].name)];
-        if (active) memcpy(name, g_entries[i].name, sizeof(name));
+        if (occupied) {
+            memcpy(name, g_entries[i].name, sizeof(name));
+            if (!thread_registry_tid_is_excluded(
+                    tid, excluded, excluded_count))
+                g_entries[i].registry_joining = true;
+        }
         pthread_mutex_unlock(&g_mu);
-        if (!active)
+        if (!occupied)
+            continue;
+        if (thread_registry_tid_is_excluded(tid, excluded, excluded_count))
             continue;
 
         fprintf(stderr,  // obs-ok:shutdown-owner-join-progress
@@ -190,7 +241,7 @@ void thread_registry_join_all_owned(void)
             rc = pthread_join(tid, NULL);
         } while (rc == EINTR);
 
-        if (rc != 0 && rc != ESRCH && rc != EINVAL) {
+        if (rc != 0) {
             fprintf(stderr,  // obs-ok:shutdown-watchdog-propagates-join-failure
                     "[thread_registry] blocking join of '%s' failed: "
                     "rc=%d: %s\n",
@@ -198,13 +249,21 @@ void thread_registry_join_all_owned(void)
             /* Keep the registry entry active. The caller's shutdown watchdog
              * remains responsible for a truthful unclean process exit; we
              * must not manufacture a successful ownership handoff. */
+            pthread_mutex_lock(&g_mu);
+            g_entries[i].registry_joining = false;
+            pthread_mutex_unlock(&g_mu);
             continue;
         }
 
         pthread_mutex_lock(&g_mu);
-        g_entries[i].active = false;
+        memset(&g_entries[i], 0, sizeof(g_entries[i]));
         pthread_mutex_unlock(&g_mu);
     }
+}
+
+void thread_registry_join_all_owned(void)
+{
+    thread_registry_join_all_owned_except(NULL, 0);
 }
 
 int thread_registry_live_count(void)
@@ -212,7 +271,17 @@ int thread_registry_live_count(void)
     int n = 0;
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < ZCL_THREAD_REGISTRY_CAP; i++)
-        if (g_entries[i].active) n++;
+        if (g_entries[i].running) n++;
+    pthread_mutex_unlock(&g_mu);
+    return n;
+}
+
+int thread_registry_unreaped_count(void)
+{
+    int n = 0;
+    pthread_mutex_lock(&g_mu);
+    for (int i = 0; i < ZCL_THREAD_REGISTRY_CAP; i++)
+        if (g_entries[i].occupied) n++;
     pthread_mutex_unlock(&g_mu);
     return n;
 }
@@ -223,7 +292,7 @@ int thread_registry_snapshot(struct thread_registry_view *out, int cap)
     int n = 0;
     pthread_mutex_lock(&g_mu);
     for (int i = 0; i < ZCL_THREAD_REGISTRY_CAP && n < cap; i++) {
-        if (!g_entries[i].active) continue;
+        if (!g_entries[i].running) continue;
         out[n].tid = g_entries[i].tid;
         memcpy(out[n].name, g_entries[i].name, sizeof(out[n].name));
         n++;
