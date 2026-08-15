@@ -99,9 +99,9 @@ bool zcl_native_presentation_publication_confirm_model_from_plan(
     (void)snprintf(model->request_id, sizeof(model->request_id),
                    "publish-%.12s", token);
     (void)snprintf(model->title, sizeof(model->title),
-                   "Publish this exact package locally?");
+                   "Commit this exact package locally?");
     (void)snprintf(model->summary, sizeof(model->summary),
-                   "HUMAN DECISION - confirm only plan %.12s...; this window performs no publication.",
+                   "HUMAN DECISION - confirm only plan %.12s...; this window performs no write or network publication.",
                    token);
     (void)snprintf(model->exact_root, sizeof(model->exact_root), "%s",
                    token);
@@ -125,9 +125,22 @@ bool zcl_native_presentation_publication_confirm_model_from_plan(
     npcf_item(model, "recheck", "LOCAL OBSERVATION - Commit boundary",
               "Separate commit rechecks bytes, current policy, and identity",
               ZCL_PRESENT_STATUS_GREEN);
+    npcf_item(model, "confirmation-stage", "EVIDENCE STAGE - Human confirmation",
+              "Pending this exact decision", ZCL_PRESENT_STATUS_YELLOW);
+    npcf_item(model, "local-commit-stage", "EVIDENCE STAGE - Local commit",
+              "Not started - separate commit required",
+              ZCL_PRESENT_STATUS_NEUTRAL);
+    npcf_item(model, "pointer-stage", "EVIDENCE STAGE - Pointer announcement",
+              "Not observed", ZCL_PRESENT_STATUS_NEUTRAL);
+    npcf_item(model, "provider-stage", "EVIDENCE STAGE - Provider announcement",
+              "Not observed", ZCL_PRESENT_STATUS_NEUTRAL);
+    npcf_item(model, "discovery-stage", "EVIDENCE STAGE - Peer discovery",
+              "Not observed", ZCL_PRESENT_STATUS_NEUTRAL);
+    npcf_item(model, "fetch-stage", "EVIDENCE STAGE - Exact peer fetch",
+              "Not observed", ZCL_PRESENT_STATUS_NEUTRAL);
     model->action_count = 2;
     npcf_action(&model->actions[0], ZCL_PRESENT_ACTION_CONFIRM,
-                "confirm", "Confirm exact local publication");
+                "confirm", "Confirm exact local commit");
     npcf_action(&model->actions[1], ZCL_PRESENT_ACTION_CANCEL,
                 "cancel", "Cancel - make no change");
     return zcl_present_model_validate_v1(model, why, why_cap);
@@ -179,13 +192,24 @@ void zcl_native_handle_presentation_publication_confirm(
     zcl_native_present_model(&model, NPCF_LEAF, request->input, reply);
     if (reply->status != ZCL_COMMAND_STATUS_PASSED) return;
     const char *action = npcf_str(&reply->data, "action_id");
-    if (action && (strcmp(action, "confirm") == 0 ||
-                   strcmp(action, "cancel") == 0))
+    bool decision_observed = action &&
+        (strcmp(action, "confirm") == 0 || strcmp(action, "cancel") == 0);
+    bool confirmed = action && strcmp(action, "confirm") == 0;
+    if (decision_observed)
         (void)json_push_kv_str(&reply->data, "human_decision",
-                              strcmp(action, "confirm") == 0
-                                  ? "CONFIRM" : "CANCEL");
+                              confirmed ? "CONFIRM" : "CANCEL");
     (void)json_push_kv_str(&reply->data, "plan_identity", plan_identity);
     (void)json_push_kv_str(&reply->data, "view_identity", model.request_id);
+    (void)json_push_kv_bool(&reply->data, "human_confirmation_observed",
+                           decision_observed);
+    (void)json_push_kv_bool(&reply->data, "human_confirmed", confirmed);
+    (void)json_push_kv_bool(&reply->data, "local_commit_complete", false);
+    (void)json_push_kv_bool(&reply->data,
+                           "pointer_publication_observed", false);
+    (void)json_push_kv_bool(&reply->data,
+                           "provider_publication_observed", false);
+    (void)json_push_kv_bool(&reply->data, "peer_discovery_observed", false);
+    (void)json_push_kv_bool(&reply->data, "exact_fetch_observed", false);
     (void)json_push_kv_bool(&reply->data,
                            "privileged_action_performed", false);
     (void)json_push_kv_str(&reply->data, "effect_boundary",

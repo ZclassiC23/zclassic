@@ -592,7 +592,7 @@ represented by its children's sections.
 | `app presentation corpus` | ready | mutate / app-write / operator · fast/low | `output`, `page` | `zcl.app_presentation_corpus.v1` | `zclassic23 app presentation corpus` | Show the canonical C23 corpus lower bound in a native status card |
 | `app presentation code-change` | ready | mutate / app-write / operator · fast/low | **`workspace`**, **`before_root`**, **`candidate_root`**, **`path`**, **`requested_behavior`**, **`before_behavior`**, **`after_behavior`**, `output`, `page` | `zcl.app_presentation_code_change.v1` | `zclassic23 app presentation code-change --input='<exact-roots-and-summaries>'` | Show an exact ZVCS-backed C code change in a native window |
 | `app presentation reproduction` | ready | mutate / app-write / operator · fast/low | **`action_id`**, `output`, `page` | `zcl.app_presentation_reproduction.v1` | `zclassic23 app presentation reproduction --input='{"action_id":"<64hex>"}'` | Show live independent-reproduction progress in one native window |
-| `app presentation publication-confirm` | ready | mutate / app-write / operator · foreground/moderate | `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `datadir`, `output`, `page` | `zcl.app_presentation_publication_confirm.v1` | `zclassic23 app presentation publication-confirm --input='{"release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Ask for an exact local package-publication decision in native C23 |
+| `app presentation publication-confirm` | ready | mutate / app-write / operator · foreground/moderate | `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `datadir`, `output`, `page` | `zcl.app_presentation_publication_confirm.v1` | `zclassic23 app presentation publication-confirm --input='{"release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Ask for an exact local package-commit decision in native C23 |
 
 #### `app.blog` — Blog
 
@@ -1242,12 +1242,12 @@ represented by its children's sections.
 | `zcode package dev publish plan` (aliases: `zcode.publish.plan`) | ready | read / read / operator · foreground/moderate | **`workspace`**, **`datadir`**, `acceptance_datadir`, **`source_root`**, **`publisher_pubkey`**, **`name`**, **`semver`**, **`license`**, `reward_address`, `znam`, `task_root`, `lane_receipt_root`, `publisher_sequence`, `parent_release_root`, `package_mapping_root`, `publication_job_root` | `zcl.zcode_publish_plan.v1` | `zclassic23 zcode publish plan --input='{"workspace":"/src/project","datadir":"/tmp/zcode-dev","source_root":"<64hex>","publisher_pubkey":"<66hex>","name":"publisher/package","semver":"1.0.0","license":"MIT"}'` | Prepare a PROVEN work for offline release signing |
 | `zcode package dev publish commit` (aliases: `zcode.publish`) | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`datadir`**, `acceptance_datadir`, **`source_root`**, **`release_hex`**, `task_root`, `lane_receipt_root`, `day`, `package_mapping_root`, `publication_job_root` | `zcl.zcode_publish_commit.v1` | `zclassic23 zcode publish --input='{"workspace":"/src/project","datadir":"/tmp/zcode-dev","source_root":"<64hex>","release_hex":"<hex>"}'` | Publish one offline-signed PROVEN-work release |
 
-#### `zcode.package` — Published packages
+#### `zcode.package` — Locally committed packages
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode package guide` | ready | read / read / public · instant/tiny | none | `zcl.zcode_package_guide.v1` | `zclassic23 zcode package guide` | Show the exact package workflow and authority boundaries |
-| `zcode package search` | ready | read / read / operator · fast/low | `publisher`, `name_prefix`, `license`, `keyword`, `limit`, `datadir` | `zcl.zcode_package_search.v1` | `zclassic23 zcode package search --input='{"keyword":"ring"}'` | Search locally published packages |
+| `zcode package search` | ready | read / read / operator · fast/low | `publisher`, `name_prefix`, `license`, `keyword`, `limit`, `datadir` | `zcl.zcode_package_search.v1` | `zclassic23 zcode package search --input='{"keyword":"ring"}'` | Search locally committed packages |
 | `zcode package show` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_show.v1` | `zclassic23 zcode package show --input='{"root":"<64hex>"}'` | Release record and manifest summary for one package root |
 | `zcode package recipe` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_recipe.v1` | `zclassic23 zcode package recipe --input='{"root":"<64hex>"}'` | Declarative build recipe for one package root |
 | `zcode package verify` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_verify.v1` | `zclassic23 zcode package verify --input='{"root":"<64hex>"}'` | Verifier attestation quorum for one package root |
@@ -1260,7 +1260,7 @@ represented by its children's sections.
 | `zcode package checkout` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, **`destination`**, `datadir` | `zcl.zcode_package_checkout.v1` | `zclassic23 zcode package checkout --input='{"root":"<64hex>","destination":"/tmp/package-source"}'` | Reconstruct one verified package tree without executing it |
 | `zcode package rollback` | ready | mutate / app-write / operator · fast/low | **`name`**, `now_unix`, `datadir` | `zcl.zcode_package_rollback.v1` | `zclassic23 zcode package rollback --input='{"name":"alice/ringbuffer"}'` | Re-activate the previous installed generation |
 
-#### `zcode.package.publish` — Publish a signed release into the store (plan, then commit)
+#### `zcode.package.publish` — Commit a signed release into the local store (plan, then commit)
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|

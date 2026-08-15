@@ -4025,7 +4025,7 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(publish_commit_reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(
                           &publish_commit_reply.data, "result")),
-                      "published");
+                      "committed");
         ASSERT_STR_EQ(json_get_str(json_get(
                           &publish_commit_reply.data, "package_root")),
                       planned_package_saved);

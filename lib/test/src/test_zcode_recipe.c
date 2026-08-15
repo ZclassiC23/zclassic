@@ -726,11 +726,11 @@ static int t_command(void)
     (void)json_push_kv_str(&c.input, "recipe_hex", recipe_hex);
     (void)json_push_kv_str(&c.input, "dir", pkgdir);
     zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
-    ZR_CHECK("command: package with recipe publishes",
+    ZR_CHECK("command: package with recipe commits locally",
              c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              json_get_str(json_get(&c.reply.data, "result")) &&
              strcmp(json_get_str(json_get(&c.reply.data, "result")),
-                    "published") == 0);
+                    "committed") == 0);
     zr_cmd_free(&c);
     char recipe_root_hex[65];
     zr_hex32(recipe_root, recipe_root_hex);

@@ -768,8 +768,8 @@ void zcl_native_handle_zcode_package_publish_commit(
         return;
     }
 
-    bool published = report.accept == VCS_PACKAGE_ACCEPT_OK;
-    if (published) {
+    bool committed = report.accept == VCS_PACKAGE_ACCEPT_OK;
+    if (committed) {
         enum vcs_package_accept_result ar;
         sres = vcs_package_store_put_release(store, &cand.release, &ar);
         if (sres != VCS_PACKAGE_STORE_OK) {
@@ -788,14 +788,14 @@ void zcl_native_handle_zcode_package_publish_commit(
     }
     vcs_package_store_close(store);
 
-    /* Slice 11: a successful FRESH publish records the publication event
+    /* Slice 11: a successful FRESH local commit records the admission event
      * in the local service book (dedup by release id — a redelivered
      * release id never mints a second event). A record failure degrades
-     * the frequency gate's history, never the publish itself; the reply
+     * the frequency gate's history, never the local commit itself; the reply
      * says so honestly. */
     bool policy_recorded = false;
     uint32_t policy_week_usage = 0;
-    if (published && book) {
+    if (committed && book) {
         enum vcs_service_record_result rr = vcs_service_record_publish(
             book, cand.release.publisher_pubkey, report.release_id,
             policy_day);
@@ -811,7 +811,18 @@ void zcl_native_handle_zcode_package_publish_commit(
     char hex[65];
     (void)json_push_kv_str(&reply->data, "stage", "commit");
     (void)json_push_kv_str(&reply->data, "result",
-                           published ? "published" : "duplicate");
+                           committed ? "committed" : "duplicate");
+    (void)json_push_kv_bool(&reply->data, "local_commit_complete", true);
+    (void)json_push_kv_bool(&reply->data,
+                           "human_confirmation_bound", false);
+    (void)json_push_kv_bool(&reply->data,
+                           "pointer_publication_observed", false);
+    (void)json_push_kv_bool(&reply->data,
+                           "provider_publication_observed", false);
+    (void)json_push_kv_bool(&reply->data, "peer_discovery_observed", false);
+    (void)json_push_kv_bool(&reply->data, "exact_fetch_observed", false);
+    (void)json_push_kv_bool(&reply->data,
+                           "network_publication_performed", false);
     zcl_hex_encode(report.release_id, 32, hex);
     (void)json_push_kv_str(&reply->data, "release_id", hex);
     (void)json_push_kv_str(&reply->data, "plan_token", hex);
@@ -828,7 +839,7 @@ void zcl_native_handle_zcode_package_publish_commit(
                            (int64_t)chunks_stored);
     (void)json_push_kv_int(&reply->data, "replayed_releases",
                            (int64_t)replayed);
-    if (published) {
+    if (committed) {
         struct json_value pol;
         json_init(&pol);
         json_set_object(&pol);
@@ -844,13 +855,13 @@ void zcl_native_handle_zcode_package_publish_commit(
         if (!policy_recorded)
             (void)json_push_kv_str(
                 &pol, "policy_record_warning",
-                "the publication event could not be recorded in the local "
+                "the local admission event could not be recorded in the "
                 "service book; the publish-frequency gate's history is "
-                "degraded (the publish itself succeeded)");
+                "degraded (the local commit itself succeeded)");
         (void)json_push_kv(&reply->data, "policy", &pol);
         json_free(&pol);
     }
-    reply->error.mutated = published;
+    reply->error.mutated = committed;
     vcs_package_transport_free(&transport);
     zc_candidate_free(&cand);
 }
@@ -961,7 +972,7 @@ void zcl_native_handle_zcode_package_recipe(
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_PACKAGE",
                                "execute", false, false,
-                               "no published release names this package root",
+                               "no locally committed release names this package root",
                                root_hex);
         return;
     }
@@ -1118,7 +1129,7 @@ void zcl_native_handle_zcode_package_verify(
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_PACKAGE",
                                "execute", false, false,
-                               "no published release names this package root",
+                               "no locally committed release names this package root",
                                root_hex);
         return;
     }
@@ -1522,7 +1533,7 @@ void zcl_native_handle_zcode_package_show(
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INVALID, "UNKNOWN_PACKAGE",
                                "execute", false, false,
-                               "no published release names this package root",
+                               "no locally committed release names this package root",
                                root_hex);
         return;
     }

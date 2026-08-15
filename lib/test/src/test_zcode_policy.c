@@ -1379,7 +1379,7 @@ static int t_publish_gate(void)
         const struct json_value *pol = json_get(&c.reply.data, "policy");
         ZPY_CHECK("gate: the first publish commits",
                   strcmp(json_get_str(json_get(&c.reply.data, "result")),
-                         "published") == 0 && c.reply.error.mutated);
+                         "committed") == 0 && c.reply.error.mutated);
         ZPY_CHECK("gate: the policy block reports the new-user tier",
                   pol &&
                   strcmp(json_get_str(json_get(pol, "tier")),
@@ -1431,7 +1431,7 @@ static int t_publish_gate(void)
         zpyf_commit(&c, datadir, &p2, &r2, pkg2, 20007);
         ZPY_CHECK("gate: the next ISO week publishes the same candidate",
                   strcmp(json_get_str(json_get(&c.reply.data, "result")),
-                         "published") == 0);
+                         "committed") == 0);
         zpy_cmd_free(&c);
     }
 
@@ -1469,7 +1469,7 @@ static int t_publish_gate(void)
         const struct json_value *pol = json_get(&c.reply.data, "policy");
         ZPY_CHECK("gate: contributor tier publishes #2 of the week",
                   strcmp(json_get_str(json_get(&c.reply.data, "result")),
-                         "published") == 0 && pol &&
+                         "committed") == 0 && pol &&
                   strcmp(json_get_str(json_get(pol, "tier")),
                          "earned-contributor") == 0 &&
                   json_get_int(json_get(pol, "publish_per_week")) == 4);
@@ -1477,12 +1477,12 @@ static int t_publish_gate(void)
         zpyf_commit(&c, datadir, &p4, &r4, pkg4, 20008);
         ZPY_CHECK("gate: contributor tier publishes #3",
                   strcmp(json_get_str(json_get(&c.reply.data, "result")),
-                         "published") == 0);
+                         "committed") == 0);
         zpy_cmd_free(&c);
         zpyf_commit(&c, datadir, &p5, &r5, pkg5, 20009);
         ZPY_CHECK("gate: contributor tier publishes #4 (the allowance)",
                   strcmp(json_get_str(json_get(&c.reply.data, "result")),
-                         "published") == 0);
+                         "committed") == 0);
         zpy_cmd_free(&c);
         zpyf_commit(&c, datadir, &p6, &r6, pkg6, 20009);
         ZPY_CHECK("gate: #5 in the week names the rule at the "

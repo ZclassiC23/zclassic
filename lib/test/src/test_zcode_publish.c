@@ -921,11 +921,23 @@ static int t_commit_roundtrip(void)
 
     zp_publish_input(&c, dd, release_hex, manifest_hex, pkgdir);
     zcl_native_handle_zcode_package_publish_commit(&c.request, &c.reply);
-    ZP_CHECK("commit: valid candidate publishes",
+    ZP_CHECK("commit: valid candidate commits locally",
              c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              json_get_str(json_get(&c.reply.data, "result")) &&
              strcmp(json_get_str(json_get(&c.reply.data, "result")),
-                    "published") == 0 &&
+                    "committed") == 0 &&
+             json_get_bool(json_get(&c.reply.data,
+                                    "local_commit_complete")) &&
+             !json_get_bool(json_get(&c.reply.data,
+                                     "pointer_publication_observed")) &&
+             !json_get_bool(json_get(&c.reply.data,
+                                     "provider_publication_observed")) &&
+             !json_get_bool(json_get(&c.reply.data,
+                                     "peer_discovery_observed")) &&
+             !json_get_bool(json_get(&c.reply.data,
+                                     "exact_fetch_observed")) &&
+             !json_get_bool(json_get(&c.reply.data,
+                                     "network_publication_performed")) &&
              c.reply.error.mutated);
     ZP_CHECK("commit: all chunks admitted",
              json_get_int(json_get(&c.reply.data, "chunks_stored")) == 3);
@@ -1601,7 +1613,7 @@ static int t_registry_path(void)
              commit_ran && c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              json_get_str(json_get(&c.reply.data, "result")) &&
              strcmp(json_get_str(json_get(&c.reply.data, "result")),
-                    "published") == 0);
+                    "committed") == 0);
     zp_cmd_free(&c);
 
     free(release_hex);
