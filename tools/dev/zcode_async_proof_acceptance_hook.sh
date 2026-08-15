@@ -487,10 +487,29 @@ zap_start_node() {
         dht_die "async proof node $node failed to start"
 }
 
+zap_cancel_find_capability() {
+    local node="$1" lookup_id="$2" owner_token="$3" result ok code
+    [ "${#lookup_id}" -eq 32 ] && [ "${#owner_token}" -eq 32 ] ||
+        dht_die "async proof lookup cleanup received an invalid capability"
+    result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
+        zcode network find cancel \
+        --input="{\"lookup_id\":\"$lookup_id\",\"owner_token\":\"$owner_token\"}" || true)"
+    ok="$(printf '%s' "$result" | dht_jget \
+        'd.get("ok",False)' 2>/dev/null || true)"
+    code="$(printf '%s' "$result" | dht_jget \
+        'd.get("error",{}).get("code","")' 2>/dev/null || true)"
+    # Expiry cleanup cancels the service lookup before reporting the public
+    # capability unknown. Both outcomes prove this client retains no slot.
+    [ "$ok" = True ] || [ "$code" = LOOKUP_UNKNOWN ] ||
+        dht_die "async proof lookup cleanup failed: $result"
+}
+
 zap_connect() {
     local from="$1" to="$2" deadline status_from status_to
     local enabled_from enabled_to find_result find_ok
     local auth_from auth_to accepted_from accepted_to started rearmed
+    local lookup_id owner_token cleanup_index
+    local -a cleanup_nodes=() cleanup_ids=() cleanup_owners=()
     case "${ZAP_CONNECT_SKIP_ONETRY:-0}" in
         0)
             dht_rpc "${DDS[$from]}" "${RPCS[$from]}" addnode \
@@ -537,6 +556,13 @@ zap_connect() {
         'd.get("ok",False)' 2>/dev/null || true)"
     [ "$find_ok" = True ] ||
         dht_die "async proof lookup $from/$to was not admitted: $find_result"
+    lookup_id="$(printf '%s' "$find_result" | dht_jget \
+        'd["data"].get("lookup_id","")')"
+    owner_token="$(printf '%s' "$find_result" | dht_jget \
+        'd["data"].get("owner_token","")')"
+    cleanup_nodes+=("$from")
+    cleanup_ids+=("$lookup_id")
+    cleanup_owners+=("$owner_token")
 
     # Capability learning deliberately tears down the first plaintext P2P
     # connection and replaces it with Noise. A lookup admitted in that small
@@ -561,6 +587,12 @@ zap_connect() {
             'd.get("data",{}).get("frames_accepted",0)' 2>/dev/null || true)"
         if [ "${auth_from:-0}" -ge 1 ] && [ "${auth_to:-0}" -ge 1 ] &&
            [ "${accepted_from:-0}" -ge 1 ] && [ "${accepted_to:-0}" -ge 1 ]; then
+            for cleanup_index in "${!cleanup_ids[@]}"; do
+                zap_cancel_find_capability \
+                    "${cleanup_nodes[$cleanup_index]}" \
+                    "${cleanup_ids[$cleanup_index]}" \
+                    "${cleanup_owners[$cleanup_index]}"
+            done
             return 0
         fi
         if [ "$rearmed" -eq 0 ] &&
@@ -568,14 +600,41 @@ zap_connect() {
             find_result="$(dht_native "${DDS[$from]}" "${RPCS[$from]}" \
                 zcode network find begin \
                 --input="{\"node_id\":\"${NODES[$to]}\"}" 2>/dev/null || true)"
+            find_ok="$(printf '%s' "$find_result" | dht_jget \
+                'd.get("ok",False)' 2>/dev/null || true)"
+            if [ "$find_ok" = True ]; then
+                lookup_id="$(printf '%s' "$find_result" | dht_jget \
+                    'd["data"].get("lookup_id","")')"
+                owner_token="$(printf '%s' "$find_result" | dht_jget \
+                    'd["data"].get("owner_token","")')"
+                cleanup_nodes+=("$from")
+                cleanup_ids+=("$lookup_id")
+                cleanup_owners+=("$owner_token")
+            fi
             if [ "${ZAP_CONNECT_DIRECTED_REARM:-0}" = 0 ]; then
                 find_result="$(dht_native "${DDS[$to]}" "${RPCS[$to]}" \
                     zcode network find begin \
                     --input="{\"node_id\":\"${NODES[$from]}\"}" 2>/dev/null || true)"
+                find_ok="$(printf '%s' "$find_result" | dht_jget \
+                    'd.get("ok",False)' 2>/dev/null || true)"
+                if [ "$find_ok" = True ]; then
+                    lookup_id="$(printf '%s' "$find_result" | dht_jget \
+                        'd["data"].get("lookup_id","")')"
+                    owner_token="$(printf '%s' "$find_result" | dht_jget \
+                        'd["data"].get("owner_token","")')"
+                    cleanup_nodes+=("$to")
+                    cleanup_ids+=("$lookup_id")
+                    cleanup_owners+=("$owner_token")
+                fi
             fi
             rearmed=1
         fi
         sleep 0.5
+    done
+    for cleanup_index in "${!cleanup_ids[@]}"; do
+        zap_cancel_find_capability "${cleanup_nodes[$cleanup_index]}" \
+            "${cleanup_ids[$cleanup_index]}" \
+            "${cleanup_owners[$cleanup_index]}"
     done
     dht_die "async proof nodes $from/$to did not authenticate "\
 "(from auth=${auth_from:-0} accepted=${accepted_from:-0}; "\
@@ -877,7 +936,11 @@ dht_kill_group "${PIDS[$ZAP_C]}"; PIDS[$ZAP_C]=""
 sleep 2
 zap_start_node "$ZAP_B"
 zap_connect "$ZAP_A" "$ZAP_B"
-zap_submit "$ZAP_A" 4 "Change x to four with lease recovery" 10
+# Lease recovery is the boundary under test.  Thirty aggregate CPU-seconds
+# keeps the measured ~12-second cold candidate clear of the former 10-second
+# compilation cliff while retaining a real lease expiry inside the hook's
+# bounded observation window.
+zap_submit "$ZAP_A" 4 "Change x to four with lease recovery" 30
 RETRY_ACTION="$ZAP_ACTION"; RETRY_MS="$ZAP_FOREGROUND_MS"
 STALE_B_WORKER="$(zap_sql_value "$ZAP_B" "SELECT worker_id FROM build_workers WHERE approved=1 AND revoked=0 AND capabilities LIKE '%c23.package.recipe.v1%' ORDER BY last_seen_at DESC LIMIT 1")"
 [ "${#STALE_B_WORKER}" -eq 64 ] || dht_die "B's stale worker identity was not durable"

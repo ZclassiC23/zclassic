@@ -27,6 +27,9 @@ BETA_VISUAL_AGENT_REQUESTS=0
 BETA_VISUAL_HUMAN_ACTIONS=0
 BETA_VISUAL_BROWSER_DELTA=0
 BETA_VISUAL_PLAN_IDENTITY=""
+BETA_VISUAL_BEFORE_SOURCE_ROOT=""
+BETA_VISUAL_CANDIDATE_SOURCE_ROOT=""
+BETA_VISUAL_CHANGED_PATH=""
 BETA_VISUAL_ENABLED=false
 
 beta_browser_snapshot() {
@@ -53,6 +56,48 @@ beta_visual_assert_reply() {
     [ "$(printf '%s' "$reply" | beta_jget 'd.get("data",{}).get("resident_host",False)' 2>/dev/null || true)" = True ] &&
     [ "$(printf '%s' "$reply" | beta_jget 'd.get("data",{}).get("authority","")' 2>/dev/null || true)" = display-only ] ||
         beta_die "$label did not use the display-only resident host: $reply"
+}
+
+beta_visual_capture_source() {
+    local role="$1" workspace="$2" reply root
+    reply="$(beta_native "$role" zcode workspace source capture \
+        --input="{\"workspace\":\"$workspace\"}")"
+    beta_ok "exact source capture" "$reply"
+    root="$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("source_root","")')"
+    [ "${#root}" -eq 64 ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("accepted",True)')" = False ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("source_executed",True)')" = False ] ||
+        beta_die "source capture did not remain exact and inert: $reply"
+    printf '%s\n' "$root"
+}
+
+beta_visual_code_change() {
+    local role="$1" workspace="$2" before_root="$3" candidate_root="$4"
+    local path="$5" reply
+    reply="$(beta_native "$role" app presentation code-change \
+        --input="{\"workspace\":\"$workspace\",\"before_root\":\"$before_root\",\"candidate_root\":\"$candidate_root\",\"path\":\"$path\",\"requested_behavior\":\"Reject an empty note before hashing\",\"before_behavior\":\"An empty note reaches the SHA3 calculation\",\"after_behavior\":\"An empty note is refused before SHA3\"}")"
+    beta_visual_assert_reply "exact package code change" "$reply"
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("fact_authority","")')" = local_zvcs_cas ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("summary_authority","")')" = agent ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("before_root","")')" = "$before_root" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("candidate_root","")')" = "$candidate_root" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("path","")')" = "$path" ] ||
+        beta_die "code-change view lost its exact source evidence: $reply"
+    "$C23_BETA_NATIVE_UI_DRIVER" --title='Exact code change' --key=escape \
+        --timeout-ms=5000 >/dev/null ||
+        beta_die "exact package code-change window was not keyboard reachable"
+    BETA_VISUAL_BEFORE_SOURCE_ROOT="$before_root"
+    BETA_VISUAL_CANDIDATE_SOURCE_ROOT="$candidate_root"
+    BETA_VISUAL_CHANGED_PATH="$path"
+    printf '%s\n' code-change >>"$DHT_WORK/native-ui-agent-requests"
 }
 
 beta_visual_confirm_publication() {
@@ -898,6 +943,10 @@ V1_NOTE_BACKUP="$DHT_WORK/v1-note.c"
 V1_HEADER_BACKUP="$DHT_WORK/v1-note.h"
 cp "$APP_SOURCE/src/note.c" "$V1_NOTE_BACKUP"
 cp "$APP_SOURCE/include/stranger/note.h" "$V1_HEADER_BACKUP"
+if [ "$BETA_VISUAL_ENABLED" = true ]; then
+    BETA_VISUAL_BEFORE_SOURCE_ROOT="$(beta_visual_capture_source \
+        "$BETA_D" "$APP_SOURCE")"
+fi
 python3 - "$APP_SOURCE/src/note.c" <<'PY'
 import pathlib, sys
 path = pathlib.Path(sys.argv[1])
@@ -908,6 +957,16 @@ if text.count(old) != 1:
     raise SystemExit("v2 edit target is not exact")
 path.write_text(text.replace(old, new))
 PY
+if [ "$BETA_VISUAL_ENABLED" = true ]; then
+    BETA_VISUAL_CANDIDATE_SOURCE_ROOT="$(beta_visual_capture_source \
+        "$BETA_D" "$APP_SOURCE")"
+    [ "$BETA_VISUAL_BEFORE_SOURCE_ROOT" != \
+        "$BETA_VISUAL_CANDIDATE_SOURCE_ROOT" ] ||
+        beta_die "v2 edit did not move the exact ZVCS source root"
+    beta_visual_code_change "$BETA_D" "$APP_SOURCE" \
+        "$BETA_VISUAL_BEFORE_SOURCE_ROOT" \
+        "$BETA_VISUAL_CANDIDATE_SOURCE_ROOT" "src/note.c"
+fi
 beta_publish_version "$BETA_D" v2 "$APP_SOURCE" 4 22
 BETA_V2_ROOT="$BETA_VERSION_ROOT"
 BETA_V2_TRANSPORT="$BETA_VERSION_TRANSPORT"
@@ -1123,12 +1182,17 @@ if [ "$BETA_VISUAL_ENABLED" = true ]; then
     BETA_VISUAL_HUMAN_ACTIONS="$(wc -l \
         <"$DHT_WORK/native-ui-human-actions" | tr -d ' ')"
     BETA_VISUAL_PLAN_IDENTITY="$(<"$DHT_WORK/native-ui-plan-identity")"
-    [ "$BETA_VISUAL_AGENT_REQUESTS" -eq 3 ] &&
+    [ "$BETA_VISUAL_AGENT_REQUESTS" -eq 4 ] &&
     [ "$BETA_VISUAL_HUMAN_ACTIONS" -eq 1 ] &&
+    [ "${#BETA_VISUAL_BEFORE_SOURCE_ROOT}" -eq 64 ] &&
+    [ "${#BETA_VISUAL_CANDIDATE_SOURCE_ROOT}" -eq 64 ] &&
+    [ "$BETA_VISUAL_BEFORE_SOURCE_ROOT" != \
+        "$BETA_VISUAL_CANDIDATE_SOURCE_ROOT" ] &&
+    [ "$BETA_VISUAL_CHANGED_PATH" = src/note.c ] &&
     [ "$BETA_VISUAL_PLAN_IDENTITY" = "$BETA_V2_RELEASE_ID" ] ||
         beta_die "native journey action accounting or exact plan binding drifted"
 fi
 
 printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_stretch.v1\",\"verdict\":\"PASS\",\"second_package_root\":\"$BETA_SECOND_ROOT\",\"second_transport_root\":\"$BETA_SECOND_TRANSPORT\",\"second_release_id\":\"$BETA_SECOND_RELEASE_ID\",\"second_recipe_root\":\"$BETA_SECOND_RECIPE_ROOT\",\"second_dependency_lock_root\":\"$BETA_SECOND_LOCK_ROOT\",\"second_api_capsule_root\":\"$BETA_SECOND_API_ROOT\",\"second_author_pubkey\":\"$SECOND_AUTHOR_PUB\",\"authors_distinct\":true,\"shared_dependency_root\":\"$BETA_BASE_ROOT\",\"shared_dependency_receipt\":\"$C_BASE_RECEIPT\",\"shared_dependency_artifact_root\":\"$C_BASE_ARTIFACT\",\"shared_dependency_physical_builds_on_consumer\":1,\"shared_dependency_receipt_reused\":true,\"downstream_applications\":2,\"package_build_target\":\"linux-x86_64\",\"package_cpu_runtime_proof\":\"$PACKAGE_CPU_RUNTIME_PROOF\",\"first_standalone_output\":\"$FIRST_SHARED_APP_OUTPUT\",\"second_build_receipt_id\":\"$SECOND_RECEIPT\",\"second_artifact_root\":\"$SECOND_ARTIFACT\",\"second_objects_transferred\":$SECOND_TRANSFERRED_OBJECTS,\"second_bytes_transferred\":$SECOND_TRANSFERRED_BYTES,\"second_standalone_output\":\"$SECOND_APP_OUTPUT\",\"compiled_registry_admission\":false,\"second_publisher_store_removed\":true,\"alternate_provider_refetch\":true}"
 
-printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_installed.v1\",\"verdict\":\"PASS\",\"installed_binary\":\"$C23_BETA_INSTALL_BIN/zclassic23\",\"repository_source_used_by_consumers\":false,\"package_root\":\"$BETA_PACKAGE_ROOT\",\"dependency_roots\":[\"$BETA_BASE_ROOT\",\"$BETA_SHA3_ROOT\"],\"author_pubkey\":\"$AUTHOR_PUB\",\"build_receipt_id\":\"$C_RECEIPT\",\"artifact_root\":\"$C_ARTIFACT\",\"fetch_inert\":true,\"explicit_builds\":2,\"publisher_disappearance_survived\":true,\"standalone_output\":\"$APP_OUTPUT\",\"native_package_change_journey\":{\"enabled\":$BETA_VISUAL_ENABLED,\"agent_visual_requests\":$BETA_VISUAL_AGENT_REQUESTS,\"human_actions\":$BETA_VISUAL_HUMAN_ACTIONS,\"browser_process_delta\":$BETA_VISUAL_BROWSER_DELTA,\"display_authority\":\"none\",\"confirmed_plan_identity\":\"$BETA_VISUAL_PLAN_IDENTITY\",\"published_package_root\":\"$BETA_V2_ROOT\",\"consumer_output\":\"$V2_APP_OUTPUT\"},\"updates\":{\"v1\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"recipe_root\":\"$BETA_V1_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V1_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V1_API_ROOT\",\"artifact_root\":\"$C_ARTIFACT\"},\"v2\":{\"package_root\":\"$BETA_V2_ROOT\",\"transport_root\":\"$BETA_V2_TRANSPORT\",\"release_id\":\"$BETA_V2_RELEASE_ID\",\"recipe_root\":\"$BETA_V2_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V2_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V2_API_ROOT\",\"artifact_root\":\"$V2_ARTIFACT\",\"objects_requested\":$V2_REQUESTED_OBJECTS,\"objects_transferred\":$V2_TRANSFERRED_OBJECTS,\"objects_reused\":$V2_REUSED_OBJECTS,\"bytes_requested\":$V2_REQUESTED_BYTES,\"bytes_transferred\":$V2_TRANSFERRED_BYTES,\"bytes_reused\":$V2_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"v3\":{\"package_root\":\"$BETA_V3_ROOT\",\"transport_root\":\"$BETA_V3_TRANSPORT\",\"release_id\":\"$BETA_V3_RELEASE_ID\",\"recipe_root\":\"$BETA_V3_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V3_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V3_API_ROOT\",\"artifact_root\":\"$V3_ARTIFACT\",\"objects_requested\":$V3_REQUESTED_OBJECTS,\"objects_transferred\":$V3_TRANSFERRED_OBJECTS,\"objects_reused\":$V3_REUSED_OBJECTS,\"bytes_requested\":$V3_REQUESTED_BYTES,\"bytes_transferred\":$V3_TRANSFERRED_BYTES,\"bytes_reused\":$V3_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"revert\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"bytes_transferred\":0,\"packages_rebuilt\":0,\"packages_reused\":3,\"prior_evidence_reused\":3,\"build_receipt_id\":\"$REVERT_RECEIPT\"},\"v1_fetchable_after_v3\":true,\"author_sequence_is_advisory\":true,\"exact_root_local_policy\":true},\"signed_reproduction\":{\"actions\":[\"$C_STANDARD_ACTION\",\"$D_STANDARD_ACTION\"],\"output_root\":\"$C_OUTPUT\",\"signers\":[\"$C_SIGNER\",\"$D_SIGNER\"],\"distinct_signers\":2,\"requester_executed\":false}}"
+printf '%s\n' "{\"schema\":\"zcl.c23_commons_beta_installed.v1\",\"verdict\":\"PASS\",\"installed_binary\":\"$C23_BETA_INSTALL_BIN/zclassic23\",\"repository_source_used_by_consumers\":false,\"package_root\":\"$BETA_PACKAGE_ROOT\",\"dependency_roots\":[\"$BETA_BASE_ROOT\",\"$BETA_SHA3_ROOT\"],\"author_pubkey\":\"$AUTHOR_PUB\",\"build_receipt_id\":\"$C_RECEIPT\",\"artifact_root\":\"$C_ARTIFACT\",\"fetch_inert\":true,\"explicit_builds\":2,\"publisher_disappearance_survived\":true,\"standalone_output\":\"$APP_OUTPUT\",\"native_package_change_journey\":{\"enabled\":$BETA_VISUAL_ENABLED,\"agent_visual_requests\":$BETA_VISUAL_AGENT_REQUESTS,\"human_actions\":$BETA_VISUAL_HUMAN_ACTIONS,\"browser_process_delta\":$BETA_VISUAL_BROWSER_DELTA,\"display_authority\":\"none\",\"code_change\":{\"before_source_root\":\"$BETA_VISUAL_BEFORE_SOURCE_ROOT\",\"candidate_source_root\":\"$BETA_VISUAL_CANDIDATE_SOURCE_ROOT\",\"path\":\"$BETA_VISUAL_CHANGED_PATH\"},\"confirmed_plan_identity\":\"$BETA_VISUAL_PLAN_IDENTITY\",\"published_package_root\":\"$BETA_V2_ROOT\",\"consumer_output\":\"$V2_APP_OUTPUT\"},\"updates\":{\"v1\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"recipe_root\":\"$BETA_V1_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V1_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V1_API_ROOT\",\"artifact_root\":\"$C_ARTIFACT\"},\"v2\":{\"package_root\":\"$BETA_V2_ROOT\",\"transport_root\":\"$BETA_V2_TRANSPORT\",\"release_id\":\"$BETA_V2_RELEASE_ID\",\"recipe_root\":\"$BETA_V2_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V2_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V2_API_ROOT\",\"artifact_root\":\"$V2_ARTIFACT\",\"objects_requested\":$V2_REQUESTED_OBJECTS,\"objects_transferred\":$V2_TRANSFERRED_OBJECTS,\"objects_reused\":$V2_REUSED_OBJECTS,\"bytes_requested\":$V2_REQUESTED_BYTES,\"bytes_transferred\":$V2_TRANSFERRED_BYTES,\"bytes_reused\":$V2_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"v3\":{\"package_root\":\"$BETA_V3_ROOT\",\"transport_root\":\"$BETA_V3_TRANSPORT\",\"release_id\":\"$BETA_V3_RELEASE_ID\",\"recipe_root\":\"$BETA_V3_RECIPE_ROOT\",\"dependency_lock_root\":\"$BETA_V3_LOCK_ROOT\",\"api_capsule_root\":\"$BETA_V3_API_ROOT\",\"artifact_root\":\"$V3_ARTIFACT\",\"objects_requested\":$V3_REQUESTED_OBJECTS,\"objects_transferred\":$V3_TRANSFERRED_OBJECTS,\"objects_reused\":$V3_REUSED_OBJECTS,\"bytes_requested\":$V3_REQUESTED_BYTES,\"bytes_transferred\":$V3_TRANSFERRED_BYTES,\"bytes_reused\":$V3_REUSED_BYTES,\"packages_rebuilt\":1,\"packages_reused\":2,\"prior_evidence_reused\":2,\"prior_evidence_invalidated\":1},\"revert\":{\"package_root\":\"$BETA_PACKAGE_ROOT\",\"transport_root\":\"$BETA_PACKAGE_TRANSPORT\",\"release_id\":\"$PACKAGE_RELEASE_ID\",\"bytes_transferred\":0,\"packages_rebuilt\":0,\"packages_reused\":3,\"prior_evidence_reused\":3,\"build_receipt_id\":\"$REVERT_RECEIPT\"},\"v1_fetchable_after_v3\":true,\"author_sequence_is_advisory\":true,\"exact_root_local_policy\":true},\"signed_reproduction\":{\"actions\":[\"$C_STANDARD_ACTION\",\"$D_STANDARD_ACTION\"],\"output_root\":\"$C_OUTPUT\",\"signers\":[\"$C_SIGNER\",\"$D_SIGNER\"],\"distinct_signers\":2,\"requester_executed\":false}}"

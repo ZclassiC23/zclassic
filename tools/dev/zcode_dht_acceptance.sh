@@ -681,6 +681,14 @@ for port in $A_PORT $A_RPC $A_FS $A_HTTPS $B_PORT $B_RPC $B_FS $B_HTTPS; do
 done
 [ -x "$NODE_BIN" ] && [ -x "$RPC_BIN" ] || dht_die "build node and RPC binaries first"
 dht_make_work zcl23-dhtacc
+# This regtest transport/package fixture never proves a shielded transaction.
+# Keep its boot cost and outcome independent of any operator-installed proving
+# parameters; callers that really need a particular fixture can still provide
+# DHT_PARAMS_DIR explicitly.
+if [ -z "$DHT_PARAMS_DIR" ]; then
+    DHT_PARAMS_DIR="$DHT_WORK/no-zk-params"
+    mkdir -p "$DHT_PARAMS_DIR"
+fi
 DHT_DD_A="$DHT_WORK/a"; DHT_DD_B="$DHT_WORK/b"
 mkdir -p "$DHT_DD_A" "$DHT_DD_B"
 dht_build_helper
