@@ -266,6 +266,12 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
                      "warm same-binary C23 presentation host");
     json_push_kv_str(&visual_loop, "result",
                      "bounded display result or exact human decision");
+    json_push_kv_str(&visual_loop, "input_discovery",
+                     "zclassic23 discover schema <leaf>");
+    json_push_kv_str(&visual_loop, "text_companion",
+                     "set output=text for the deterministic companion from the same bounded model; no native window opens");
+    json_push_kv_str(&visual_loop, "selection_rule",
+                     "use a typed instrument for node-owned facts or human decisions; use bounded_display only for inert agent-owned facts");
     json_push_kv_str(&visual_loop, "authority_rule",
                      "the full node owns facts and independently rechecks every effect; the visual host owns none");
     json_push_kv_str(&visual_loop, "generic_model_policy",
