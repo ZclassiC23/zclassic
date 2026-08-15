@@ -60,7 +60,7 @@
 #include "event/event.h"
 #include "sync/sync_state.h"
 #include "util/log_macros.h"
-#include "base/log_throttle.h"
+#include "support/log_throttle.h"
 #include "util/safe_alloc.h"
 #include "util/sync.h"
 #include "util/thread_liveness.h"

@@ -25,7 +25,7 @@
 #include "platform/time_compat.h"
 #include "primitives/block.h"
 #include "util/ar_step_readonly.h"
-#include "base/log_throttle.h"
+#include "support/log_throttle.h"
 #include <string.h>
 #include <stdio.h>
 

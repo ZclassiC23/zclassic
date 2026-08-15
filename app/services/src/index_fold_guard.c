@@ -20,7 +20,7 @@
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
-#include "base/log_throttle.h"
+#include "support/log_throttle.h"
 #include "platform/time_compat.h"
 
 #include <stdatomic.h>

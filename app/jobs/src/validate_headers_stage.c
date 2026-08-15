@@ -29,7 +29,7 @@
 #include "storage/txdb.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
-#include "base/log_throttle.h"
+#include "support/log_throttle.h"
 #include "util/stage.h"
 #include "util/util.h"
 #include "validation/chainstate.h"
@@ -81,7 +81,7 @@ static _Atomic int64_t  g_last_recheck_start = -1;
 static _Atomic int64_t  g_last_recheck_selected = 0;
 
 /* Mark-failure throttle (deliverable a), standardized on the shared
- * log_throttle primitive (base/log_throttle.h) rather than a bespoke streak
+ * log_throttle primitive (support/log_throttle.h) rather than a bespoke streak
  * counter: only the FIRST refusal of a streak (keyed on height+nStatus) emits
  * a WARN + raises the typed blocker; same-key repeats collapse to a 60 s
  * keep-alive so the condition stays visible without storming (this is the

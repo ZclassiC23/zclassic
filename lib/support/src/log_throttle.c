@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: dependency-free shared log de-storm decision primitive. */
 
-#include "base/log_throttle.h"
+#include "support/log_throttle.h"
 
 static bool throttle_decide(struct log_throttle *t, bool changed,
                             int64_t now_unix, int64_t keepalive_secs,

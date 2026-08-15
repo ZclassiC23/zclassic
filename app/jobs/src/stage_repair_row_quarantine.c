@@ -48,7 +48,7 @@
 
 #include "util/blocker.h"
 #include "util/log_macros.h"
-#include "base/log_throttle.h"
+#include "support/log_throttle.h"
 
 #include <stdatomic.h>
 #include <stdint.h>

@@ -30,7 +30,7 @@
 #include "util/blocker.h"
 #include "util/boot_phase.h"
 #include "util/log_macros.h"
-#include "base/log_throttle.h"
+#include "support/log_throttle.h"
 #include "util/safe_alloc.h"
 
 /* ── load_block_index_from_blocks_table ──────────────────── */

@@ -4,9 +4,9 @@
  * repeat the SAME line every reducer pass (millions of times in minutes) while
  * a held frontier / pending-tear / suppressed-gate condition persists.
  *
- * This dependency-free decision primitive belongs beside the base logging
- * vocabulary so crypto and every higher-ranked module can share it without an
- * upward module edge. The caller still owns the clock and message text.
+ * This dependency-free decision primitive is low-level runtime support so
+ * crypto and every higher-ranked module can share it without an upward module
+ * edge. The caller still owns the clock and message text.
  *
  * Cadence:
  *   - First key, or a changed key: emit and report the prior key's suppressed
@@ -16,8 +16,8 @@
  *
  * All state is atomic. A real key must not equal LOG_THROTTLE_KEY_NONE.
  */
-#ifndef ZCL_BASE_LOG_THROTTLE_H
-#define ZCL_BASE_LOG_THROTTLE_H
+#ifndef ZCL_SUPPORT_LOG_THROTTLE_H
+#define ZCL_SUPPORT_LOG_THROTTLE_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -44,4 +44,4 @@ bool log_throttle_should_emit_changed(struct log_throttle *t, bool changed,
 void log_throttle_reset(struct log_throttle *t);
 uint64_t log_throttle_reps(const struct log_throttle *t);
 
-#endif /* ZCL_BASE_LOG_THROTTLE_H */
+#endif /* ZCL_SUPPORT_LOG_THROTTLE_H */

@@ -28,7 +28,7 @@
 #include "models/block.h"
 #include "util/blocker.h"
 #include "util/boot_phase.h"
-#include "base/log_throttle.h"
+#include "support/log_throttle.h"
 #include <sqlite3.h>
 #include <stdio.h>
 #include <string.h>
