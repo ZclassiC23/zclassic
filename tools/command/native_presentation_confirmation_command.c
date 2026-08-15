@@ -139,10 +139,12 @@ bool zcl_native_presentation_publication_confirm_model_from_plan(
     npcf_item(model, "fetch-stage", "EVIDENCE STAGE - Exact peer fetch",
               "Not observed", ZCL_PRESENT_STATUS_NEUTRAL);
     model->action_count = 2;
-    npcf_action(&model->actions[0], ZCL_PRESENT_ACTION_CONFIRM,
-                "confirm", "Confirm exact local commit");
-    npcf_action(&model->actions[1], ZCL_PRESENT_ACTION_CANCEL,
+    /* The native action row focuses index zero. Keep the harmless decision
+     * there so an accidental Enter can never confirm publication intent. */
+    npcf_action(&model->actions[0], ZCL_PRESENT_ACTION_CANCEL,
                 "cancel", "Cancel - make no change");
+    npcf_action(&model->actions[1], ZCL_PRESENT_ACTION_CONFIRM,
+                "confirm", "Confirm exact local commit");
     return zcl_present_model_validate_v1(model, why, why_cap);
 }
 

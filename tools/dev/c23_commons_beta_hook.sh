@@ -111,7 +111,7 @@ beta_visual_confirm_publication() {
         --input="$input" >"$reply_file" 2>&1 &
     pid="$!"
     "$C23_BETA_NATIVE_UI_DRIVER" \
-        --title='Commit this exact package locally?' --key=1 \
+        --title='Commit this exact package locally?' --key=2 \
         --timeout-ms=5000 >/dev/null || {
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true

@@ -476,16 +476,16 @@ int test_qr(void)
     memset(confirmation.exact_root, 'a', ZCL_PRESENT_MODEL_ROOT_MAX);
     confirmation.exact_root[ZCL_PRESENT_MODEL_ROOT_MAX] = '\0';
     confirmation.action_count = 2;
-    confirmation.actions[0].kind = ZCL_PRESENT_ACTION_CONFIRM;
+    confirmation.actions[0].kind = ZCL_PRESENT_ACTION_CANCEL;
     (void)snprintf(confirmation.actions[0].id,
-                   sizeof(confirmation.actions[0].id), "confirm");
+                   sizeof(confirmation.actions[0].id), "cancel");
     (void)snprintf(confirmation.actions[0].label,
-                   sizeof(confirmation.actions[0].label), "Publish");
-    confirmation.actions[1].kind = ZCL_PRESENT_ACTION_CANCEL;
+                   sizeof(confirmation.actions[0].label), "Cancel");
+    confirmation.actions[1].kind = ZCL_PRESENT_ACTION_CONFIRM;
     (void)snprintf(confirmation.actions[1].id,
-                   sizeof(confirmation.actions[1].id), "cancel");
+                   sizeof(confirmation.actions[1].id), "confirm");
     (void)snprintf(confirmation.actions[1].label,
-                   sizeof(confirmation.actions[1].label), "Cancel");
+                   sizeof(confirmation.actions[1].label), "Publish");
     QR_CHECK("exact confirmation binds a root and two explicit actions",
              zcl_present_model_validate_v1(
                  &confirmation, why, sizeof(why)));
@@ -722,14 +722,17 @@ int test_qr(void)
              publication_model.item_count == 13 &&
              publication_model.action_count == 2 &&
              publication_model.actions[0].kind ==
-                 ZCL_PRESENT_ACTION_CONFIRM &&
+                 ZCL_PRESENT_ACTION_CANCEL &&
              publication_model.actions[1].kind ==
-                 ZCL_PRESENT_ACTION_CANCEL);
+                 ZCL_PRESENT_ACTION_CONFIRM);
+    QR_CHECK("canonical confirmation focuses the harmless decision first",
+             strcmp(publication_model.actions[0].id, "cancel") == 0 &&
+             strcmp(publication_model.actions[1].id, "confirm") == 0);
     QR_CHECK("confirmation chrome and effect text are ZClassic23-authored",
              strcmp(publication_model.actions[0].label,
-                    "Confirm exact local commit") == 0 &&
-             strcmp(publication_model.actions[1].label,
                     "Cancel - make no change") == 0 &&
+             strcmp(publication_model.actions[1].label,
+                    "Confirm exact local commit") == 0 &&
              strncmp(publication_model.items[0].label,
                      "LOCAL OBSERVATION - ", 20) == 0 &&
              strstr(publication_model.summary, "HUMAN DECISION - ") != NULL);

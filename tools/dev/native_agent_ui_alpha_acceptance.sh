@@ -307,7 +307,7 @@ UPDATE_HANDOFF_US="$(tail -1 "$HANDOFFS")"
 # An interactive model blocks only for one bounded action. The physical driver
 # clicks inside action zero; the command must return its ID and exact root, but
 # performs no publication or other software effect.
-CONFIRM_MODEL='{"kind":"confirmation","request_id":"alpha-publish","title":"Alpha local-commit confirmation","summary":"HUMAN DECISION - confirm the exact local commit plan; no network publication is performed","exact_root":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","items":[{"kind":"key-value","label":"LOCAL OBSERVATION - plan root","value":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}],"actions":[{"kind":"confirm","id":"confirm-exact-local-commit","label":"Confirm exact local commit"},{"kind":"cancel","id":"cancel","label":"Cancel - make no change"}]}'
+CONFIRM_MODEL='{"kind":"confirmation","request_id":"alpha-publish","title":"Alpha local-commit confirmation","summary":"HUMAN DECISION - confirm the exact local commit plan; no network publication is performed","exact_root":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","items":[{"kind":"key-value","label":"LOCAL OBSERVATION - plan root","value":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}],"actions":[{"kind":"cancel","id":"cancel","label":"Cancel - make no change"},{"kind":"confirm","id":"confirm-exact-local-commit","label":"Confirm exact local commit"}]}'
 CONFIRM_REPLY_FILE="$RUN_ROOT/confirmation.json"
 "$NODE_BIN" app presentation show --input="$CONFIRM_MODEL" \
     >"$CONFIRM_REPLY_FILE" 2>&1 &
@@ -338,19 +338,14 @@ json_has "$COLLISION_REPLY" 'request id already owns an active window' ||
 "$DRIVER_BIN" --title='Alpha local-commit confirmation' --expect-count=1 \
     --timeout-ms=1000 >/dev/null
 # Exercise the shared visible focus path rather than the direct numeric
-# shortcut: Tab moves to Cancel, a second Tab wraps to Confirm, and Enter
-# returns that exact bounded action. The semantic human decision remains one.
+# shortcut: the harmless Cancel action owns initial focus; Tab deliberately
+# moves to Confirm, and Enter returns that exact bounded action. The semantic
+# human decision remains one.
 "$DRIVER_BIN" --title='Alpha local-commit confirmation' --key=tab \
     --expect-pixels-change --timeout-ms=3000 >/dev/null || {
         kill "$CONFIRM_PID" 2>/dev/null || true
         wait "$CONFIRM_PID" 2>/dev/null || true
         fail "physical confirmation focus did not advance"
-    }
-"$DRIVER_BIN" --title='Alpha local-commit confirmation' --key=tab \
-    --timeout-ms=3000 >/dev/null || {
-        kill "$CONFIRM_PID" 2>/dev/null || true
-        wait "$CONFIRM_PID" 2>/dev/null || true
-        fail "physical confirmation focus did not wrap"
     }
 "$DRIVER_BIN" --title='Alpha local-commit confirmation' --key=enter \
     --timeout-ms=3000 >/dev/null || {

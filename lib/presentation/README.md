@@ -36,6 +36,9 @@ Interactive models always open with one visible two-tone action focus ring.
 Tab and Shift-Tab wrap through the bounded action row; Enter or Space returns
 the focused action, while number keys retain direct exact selection. Moving
 focus is display-local state and never returns an action or grants authority.
+Canonical publication confirmations place `Cancel - make no change` at index
+zero, so the initial focus and a bare Enter are harmless; confirmation requires
+one deliberate focus move or the visibly numbered second action.
 
 The companion `include/presentation/canvas.h` is a bounded caller-owned RGB canvas
 with clipped rectangles, lines, alpha logo blits, and embedded Basic Latin
