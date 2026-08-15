@@ -5,7 +5,7 @@ C23.
 
 - Built-in registry for the common web/software types (html, css, js,
   json, toml, png, svg, wasm, fonts, archives, …). Unknown extensions
-  return `application/octet-stream`; reverse lookup reports the first
+  return `application/octet-stream`; reverse lookup reports the first <!-- doc-path-ok: MIME media type, not a filesystem path -->
   registered extension.
 - Strict Content-Type parser: RFC 9110 tokens, token or quoted-string
   parameter values with backslash escapes, optional whitespace,
