@@ -111,7 +111,14 @@ beta_visual_confirm_publication() {
         --input="$input" >"$reply_file" 2>&1 &
     pid="$!"
     "$C23_BETA_NATIVE_UI_DRIVER" \
-        --title='Commit this exact package locally?' --key=2 \
+        --title='Commit this exact package locally?' --key=tab \
+        --expect-pixels-change --timeout-ms=5000 >/dev/null || {
+            kill "$pid" 2>/dev/null || true
+            wait "$pid" 2>/dev/null || true
+            beta_die "exact package publication confirmation did not visibly focus"
+        }
+    "$C23_BETA_NATIVE_UI_DRIVER" \
+        --title='Commit this exact package locally?' --key=enter \
         --timeout-ms=5000 >/dev/null || {
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
