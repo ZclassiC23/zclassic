@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zfmt/zfmt",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zfmt/zfmt.h",
+    "src/zfmt.c",
+    "tests/test_zfmt.c",
+    "zcode-package.json"
+  ]
+}
