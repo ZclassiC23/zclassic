@@ -149,4 +149,4 @@ package ztrie/ztrie | root eecd684cb2bf81789e075dc48650e013d8109677cf2769609aad6
 package zpuny/zpuny | root 1fea52d0ebae0a62a3194f93e667a413736d258b4fceb05c01a0ccf768d48348 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package ztemplate/ztemplate | root e37ff36394c939a37d0a4e59fb731d86b86f48dfb175c28d2803a559f3396456 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zintern/zintern | root 0718d979a69f62863414f62aac3665b020ee0e72a74c37cd145800d9f0ac4ccf | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
-package zbigint/zbigint | root 7e6e4403bdf8bfa4766ab0e562883ed2e02e70f711542650908b32211d35c7b7 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zu256/zu256 | root aceed4bddfb4a595f4a141fce141291767d73453a5208b9cc1da7b7815b359f4 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
