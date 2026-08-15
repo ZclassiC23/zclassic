@@ -410,6 +410,20 @@ json_has "$CORPUS_TEXT_REPLY" 'title: 10 Million Exact C23' ||
     fail "corpus instrument lost its product identity: $CORPUS_TEXT_REPLY"
 json_has "$CORPUS_TEXT_REPLY" 'CORPUS FACT - Admitted production' ||
     fail "corpus instrument lost canonical status facts: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" 'CORPUS FACT - Downstream used' ||
+    fail "corpus text companion omitted downstream-use status: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" 'CORPUS FACT - Unique semantic units' ||
+    fail "corpus text companion omitted semantic units: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" 'CORPUS FACT - Packages admitted' ||
+    fail "corpus text companion omitted package count: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" 'CORPUS FACT - Exclusions' ||
+    fail "corpus text companion omitted exclusions: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" 'CORPUS FACT - Velocity' ||
+    fail "corpus text companion omitted velocity status: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" '"text_complete":true' ||
+    fail "bounded corpus facts still require multiple agent commands: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" '"text_page_count":1' ||
+    fail "complete corpus text companion reports extra pages: $CORPUS_TEXT_REPLY"
 json_has "$CORPUS_TEXT_REPLY" '"global_completeness_claimed":false' ||
     fail "corpus instrument overstated completeness: $CORPUS_TEXT_REPLY"
 json_has "$CORPUS_TEXT_REPLY" '"authority":"display-only"' ||

@@ -109,8 +109,9 @@ ZCL_COMMAND_READY_COMMAND(
     "host, retaining the detached reviewed child as a portable fallback. The "
     "bounded payload crosses only length-framed local IPC or framed stdin, "
     "never argv, environment, node transport, or logs. The native result "
-    "does not echo it; explicit output=text returns deterministic bounded "
-    "payload pages without launching a window. The "
+    "does not echo it; explicit output=text returns the complete deterministic "
+    "companion when it fits, otherwise a bounded payload page with exact page "
+    "count, without launching a window. The "
     "window copies with C, closes with Escape/Q, and uses an integer-scaled "
     "four-module quiet zone for reliable scanning. RGFW and the QR encoder are "
     "pinned permissive source in this repository.", 0,
@@ -137,9 +138,10 @@ ZCL_COMMAND_READY_COMMAND(
     "confirmations return only a numbered action ID or dismissal; the full "
     "node must independently recheck policy and plan/commit state before "
     "acting. The host receives no wallet, Internet, datadir, package, "
-    "publication, deployment, or consensus authority. Set output=text and "
-    "an optional zero-based page to receive the deterministic paged "
-    "plain-text companion without opening a window.", 0,
+    "publication, deployment, or consensus authority. Set output=text to "
+    "receive the complete deterministic plain-text companion when it fits; "
+    "oversized documents return one bounded page and exact page count, and an "
+    "optional zero-based page selects another page. No window is opened.", 0,
     "presentation,native,status,progress,diff,evidence,agent",
     "zcl.app_presentation_show.input.v1", "zcl.app_presentation_show.v1",
     "kind,request_id,title,summary,exact_root,items,actions,output,page",

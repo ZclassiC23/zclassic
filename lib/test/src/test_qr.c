@@ -379,6 +379,13 @@ int test_qr(void)
                  &rejected_qr, ZCL_PRESENT_MODEL_QR_CHUNKS_MAX,
                  qr_text, sizeof(qr_text), &qr_text_len, &qr_text_pages,
                  why, sizeof(why)));
+    QR_CHECK("complete QR text export joins every exact payload chunk",
+             zcl_present_model_text_all_v1(
+                 &rejected_qr, qr_text, sizeof(qr_text), &qr_text_len,
+                 why, sizeof(why)) &&
+             strstr(qr_text, "page: 1/1") != NULL &&
+             strstr(qr_text, "payload-bytes: 1-2048 of 2048") != NULL &&
+             strstr(qr_text, max_qr) != NULL);
     rejected_qr.items[1].id[0] = 'x';
     QR_CHECK("reordered QR payload chunks fail closed",
              !zcl_present_model_validate_v1(
@@ -593,6 +600,18 @@ int test_qr(void)
                     "18 entries; reason LOC unavailable") == 0);
     QR_CHECK("corpus instrument never fabricates used LOC or velocity",
              corpus_used_honest && corpus_velocity_honest);
+    char corpus_all_text[ZCL_PRESENT_MODEL_TEXT_MAX];
+    size_t corpus_all_text_len = 0;
+    QR_CHECK("one bounded corpus text export contains every exact fact",
+             zcl_present_model_text_all_v1(
+                 &corpus_model, corpus_all_text, sizeof(corpus_all_text),
+                 &corpus_all_text_len, why, sizeof(why)) &&
+             corpus_all_text_len < sizeof(corpus_all_text) &&
+             strstr(corpus_all_text, "page: 1/1") != NULL &&
+             strstr(corpus_all_text, "CORPUS FACT - Admitted production") &&
+             strstr(corpus_all_text, "CORPUS FACT - Packages admitted") &&
+             strstr(corpus_all_text, "CORPUS FACT - Exclusions") &&
+             strstr(corpus_all_text, "CORPUS FACT - Velocity"));
     json_free(&corpus_facts);
 
     struct json_value corpus_request_input;
@@ -610,8 +629,14 @@ int test_qr(void)
     QR_CHECK("typed corpus instrument is headless and display-only end to end",
              corpus_reply.status == ZCL_COMMAND_STATUS_PASSED &&
              !json_get_bool(json_get(&corpus_reply.data, "launched")) &&
+             json_get_bool(json_get(&corpus_reply.data, "text_complete")) &&
+             json_get_int(json_get(&corpus_reply.data,
+                                   "text_page_count")) == 1 &&
              corpus_text && strstr(corpus_text, "10 Million Exact C23") &&
              strstr(corpus_text, "CORPUS FACT - Admitted production") &&
+             strstr(corpus_text, "CORPUS FACT - Packages admitted") &&
+             strstr(corpus_text, "CORPUS FACT - Exclusions") &&
+             strstr(corpus_text, "CORPUS FACT - Velocity") &&
              strstr(corpus_text, "value: unavailable") &&
              strcmp(json_get_str(json_get(&corpus_reply.data, "authority")),
                     "display-only") == 0);
@@ -914,6 +939,11 @@ int test_qr(void)
                  &long_table, table_text_pages, table_text,
                  sizeof(table_text), &table_text_len, &table_text_pages,
                  why, sizeof(why)));
+    QR_CHECK("oversized complete text export refuses instead of truncating",
+             !zcl_present_model_text_all_v1(
+                 &long_table, table_text, sizeof(table_text),
+                 &table_text_len, why, sizeof(why)) &&
+             strstr(why, "exceeds its byte bound") != NULL);
     struct zcl_present_model_bitmap_v1 first_page, last_page;
     bool first_page_ok = zcl_present_model_render_page_v1(
         &long_table, 0, &first_page, why, sizeof(why));
@@ -981,10 +1011,31 @@ int test_qr(void)
                              &text_delivery, &text_reply);
     QR_CHECK("shared presentation response proves no privileged action",
              text_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&text_reply.data, "text_complete")) &&
+             json_get_int(json_get(&text_reply.data,
+                                   "text_page_count")) == 1 &&
+             strstr(json_get_str(json_get(&text_reply.data, "plain_text")),
+                    "value: return 0;") != NULL &&
+             strstr(json_get_str(json_get(&text_reply.data, "plain_text")),
+                    "value: return verified;") != NULL &&
              strcmp(json_get_str(json_get(&text_reply.data, "authority")),
                     "display-only") == 0 &&
              !json_get_bool(json_get(&text_reply.data,
                                      "privileged_action_performed")));
+    zcl_command_reply_free(&text_reply);
+
+    zcl_command_reply_init(&text_reply, "zcl.app_presentation_show.v1");
+    zcl_native_present_model(&long_table, "app.presentation.show",
+                             &text_delivery, &text_reply);
+    QR_CHECK("oversized shared text response falls back to exact paging",
+             text_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             !json_get_bool(json_get(&text_reply.data, "text_complete")) &&
+             json_get_int(json_get(&text_reply.data,
+                                   "text_page_count")) == 64 &&
+             strstr(json_get_str(json_get(&text_reply.data, "plain_text")),
+                    "id: row-1") != NULL &&
+             strstr(json_get_str(json_get(&text_reply.data, "plain_text")),
+                    "id: row-2") == NULL);
     zcl_command_reply_free(&text_reply);
     json_free(&text_delivery);
 

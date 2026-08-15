@@ -105,10 +105,12 @@ void zcl_native_handle_presentation_show(
 }
 
 static bool np_output_mode(const struct json_value *input, bool *text_only,
-                           uint32_t *text_page, char *why, size_t why_cap)
+                           uint32_t *text_page, bool *page_explicit,
+                           char *why, size_t why_cap)
 {
     *text_only = false;
     *text_page = 0;
+    *page_explicit = false;
     const struct json_value *output_value = json_get(input, "output");
     const char *output = json_get_str(output_value);
     if (output_value && (!output || (strcmp(output, "native") != 0 &&
@@ -130,7 +132,10 @@ static bool np_output_mode(const struct json_value *input, bool *text_only,
                        "page is valid only when output is text");
         return false;
     }
-    if (page) *text_page = (uint32_t)page->val.i;
+    if (page) {
+        *text_page = (uint32_t)page->val.i;
+        *page_explicit = true;
+    }
     return true;
 }
 
@@ -147,8 +152,10 @@ void zcl_native_present_model(
     }
     bool text_only = false;
     uint32_t text_page = 0;
+    bool page_explicit = false;
     char why[192];
-    if (!np_output_mode(input, &text_only, &text_page, why, sizeof(why))) {
+    if (!np_output_mode(input, &text_only, &text_page, &page_explicit,
+                        why, sizeof(why))) {
         np_fail(reply, "INVALID_PRESENTATION_OUTPUT", why, leaf);
         return;
     }
@@ -156,9 +163,16 @@ void zcl_native_present_model(
         char plain_text[ZCL_PRESENT_MODEL_TEXT_MAX];
         size_t text_len = 0;
         uint32_t text_pages = 0;
-        if (!zcl_present_model_text_page_v1(
-                model, text_page, plain_text, sizeof(plain_text), &text_len,
-                &text_pages, why, sizeof(why))) {
+        bool text_complete = !page_explicit &&
+            zcl_present_model_text_all_v1(
+                model, plain_text, sizeof(plain_text), &text_len,
+                why, sizeof(why));
+        if (text_complete) {
+            text_page = 0;
+            text_pages = 1;
+        } else if (!zcl_present_model_text_page_v1(
+                       model, text_page, plain_text, sizeof(plain_text),
+                       &text_len, &text_pages, why, sizeof(why))) {
             np_fail(reply, "PRESENTATION_TEXT_EXPORT_FAILED", why, leaf);
             return;
         }
@@ -171,6 +185,8 @@ void zcl_native_present_model(
         (void)json_push_kv_bool(&reply->data, "text_export", true);
         (void)json_push_kv_int(&reply->data, "text_page", text_page);
         (void)json_push_kv_int(&reply->data, "text_page_count", text_pages);
+        (void)json_push_kv_bool(&reply->data, "text_complete",
+                               text_complete || text_pages == 1u);
         (void)json_push_kv_int(&reply->data, "text_bytes", text_len);
         (void)json_push_kv_str(&reply->data, "plain_text", plain_text);
         (void)json_push_kv_bool(&reply->data, "event_return", false);
