@@ -253,7 +253,7 @@ int api_transaction_type_focused_tests(void)
         size_t nonchain_count = 0;
         const struct zcl_transaction_nonchain_command *nonchain =
             zcl_transaction_nonchain_command_catalog(&nonchain_count);
-        ok = ok && nonchain && nonchain_count == 25;
+        ok = ok && nonchain && nonchain_count == 33;
         for (size_t i = 0; ok && i < nonchain_count; i++) {
             const struct zcl_command_spec *spec =
                 zcl_command_registry_find(registry,
@@ -452,7 +452,7 @@ int api_transaction_type_focused_tests(void)
              json_get_int(json_get(&root,
                  "alternate_command_route_count")) == 13 &&
              json_get_int(json_get(&root,
-                 "explicit_non_chain_command_count")) == 25 &&
+                 "explicit_non_chain_command_count")) == 33 &&
              strcmp(json_get_str(json_get(&root,
                          "checked_in_proof_source")),
                     "docs/work/transaction-lab-events.jsonl") == 0 &&
@@ -893,10 +893,12 @@ int api_transaction_type_focused_tests(void)
         data = json_get(&root, "data");
         ok = ok && data &&
             strcmp(json_get_str(json_get(data, "catalog_status")),
-                   "unclassified") == 0 &&
-            json_get_bool(json_get(data,
-                                   "unmapped_is_not_off_chain_proof")) &&
-            !json_get_bool(json_get(data, "explicitly_non_chain"));
+                   "explicitly_non_chain") == 0 &&
+            !json_get_bool(json_get(data,
+                                    "unmapped_is_not_off_chain_proof")) &&
+            json_get_bool(json_get(data, "explicitly_non_chain")) &&
+            strcmp(json_get_str(json_get(data, "non_chain_category")),
+                   "local_presentation") == 0;
         json_free(&root);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

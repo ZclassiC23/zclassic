@@ -2317,6 +2317,41 @@ static int test_describe_emits_semantics(void)
         ASSERT(n > 0);
         ASSERT(strstr(out, "\"semantics\"") != NULL);
         ASSERT(strstr(out, "\"budget_bytes\"") != NULL);
+        ASSERT(strstr(out, "\"display_only\":false") != NULL);
+        n = zcl_command_registry_describe_json(
+            reg, "app.presentation.show", out, sizeof(out));
+        ASSERT(n > 0);
+        ASSERT(strstr(out, "\"display_only\":true") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_presentation_leaves_are_display_only(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("every native presentation leaf declares one display-only boundary") {
+        const char *paths[] = {
+            "app.qr.show",
+            "app.presentation.show",
+            "app.presentation.status",
+            "app.presentation.corpus",
+            "app.presentation.code-change",
+            "app.presentation.reproduction",
+            "app.presentation.publication-confirm",
+            "app.presentation.publication-status",
+        };
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            const struct zcl_command_spec *spec = find_spec(reg, paths[i]);
+            ASSERT(spec != NULL);
+            ASSERT_EQ(spec->availability, ZCL_COMMAND_READY);
+            ASSERT((spec->traits & ZCL_COMMAND_TRAIT_DISPLAY_ONLY) != 0);
+            ASSERT_EQ(spec->effect, ZCL_COMMAND_EFFECT_MUTATE);
+            ASSERT_EQ(spec->risk, ZCL_COMMAND_RISK_APP_WRITE);
+            ASSERT_EQ(spec->confirmation, ZCL_COMMAND_CONFIRM_NONE);
+            ASSERT_EQ(spec->required_capabilities, ZCL_COMMAND_CAP_NONE);
+        }
         PASS();
     } _test_next:;
     return failures;
@@ -3059,6 +3094,7 @@ int test_command_registry_catalog(void)
     failures += test_handler_index_matches_catalog();
     failures += test_handler_index_known_symbol_maps_to_path();
     failures += test_app_features_leaves();
+    failures += test_presentation_leaves_are_display_only();
     failures += test_wallet_shielded_reads_bound();
     failures += test_ops_dash_dashboards_ported();
     failures += test_semantics_contract_negative();

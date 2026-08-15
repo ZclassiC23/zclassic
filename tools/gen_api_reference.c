@@ -608,6 +608,8 @@ static void emit_policy(FILE *f, const struct row *r)
         fputs(", ", f);
         fputs(confirmation_name(r->confirmation), f);
     }
+    if ((r->traits & ZCL_COMMAND_TRAIT_DISPLAY_ONLY) != 0)
+        fputs(", display-only", f);
     fputs(" · ", f);
     fputs(latency_name(r->latency), f);
     fputc('/', f);

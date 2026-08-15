@@ -367,5 +367,4 @@ void zcl_native_handle_presentation_publication_status(
                       model.items[4].status == ZCL_PRESENT_STATUS_GREEN);
     json_push_kv_bool(&reply->data, "exact_fetch_observed",
                       model.items[5].status == ZCL_PRESENT_STATUS_GREEN);
-    json_push_kv_bool(&reply->data, "privileged_action_performed", false);
 }

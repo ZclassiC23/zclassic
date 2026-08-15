@@ -971,6 +971,23 @@ int test_qr(void)
              json_model.items[1].kind == ZCL_PRESENT_ITEM_DIFF_ADD);
     json_free(&visual_json);
 
+    struct json_value text_delivery;
+    json_init(&text_delivery);
+    json_set_object(&text_delivery);
+    json_push_kv_str(&text_delivery, "output", "text");
+    struct zcl_command_reply text_reply;
+    zcl_command_reply_init(&text_reply, "zcl.app_presentation_show.v1");
+    zcl_native_present_model(&json_model, "app.presentation.show",
+                             &text_delivery, &text_reply);
+    QR_CHECK("shared presentation response proves no privileged action",
+             text_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             strcmp(json_get_str(json_get(&text_reply.data, "authority")),
+                    "display-only") == 0 &&
+             !json_get_bool(json_get(&text_reply.data,
+                                     "privileged_action_performed")));
+    zcl_command_reply_free(&text_reply);
+    json_free(&text_delivery);
+
     static const char smuggled_json[] =
         "{\"kind\":\"status\",\"request_id\":\"bad-1\","
         "\"title\":\"Bad\",\"items\":[{\"kind\":\"text\","
