@@ -337,7 +337,22 @@ json_has "$COLLISION_REPLY" 'request id already owns an active window' ||
     --timeout-ms=1000 >/dev/null
 "$DRIVER_BIN" --title='Alpha local-commit confirmation' --expect-count=1 \
     --timeout-ms=1000 >/dev/null
-"$DRIVER_BIN" --title='Alpha local-commit confirmation' --key=1 \
+# Exercise the shared visible focus path rather than the direct numeric
+# shortcut: Tab moves to Cancel, a second Tab wraps to Confirm, and Enter
+# returns that exact bounded action. The semantic human decision remains one.
+"$DRIVER_BIN" --title='Alpha local-commit confirmation' --key=tab \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$CONFIRM_PID" 2>/dev/null || true
+        wait "$CONFIRM_PID" 2>/dev/null || true
+        fail "physical confirmation focus did not advance"
+    }
+"$DRIVER_BIN" --title='Alpha local-commit confirmation' --key=tab \
+    --timeout-ms=3000 >/dev/null || {
+        kill "$CONFIRM_PID" 2>/dev/null || true
+        wait "$CONFIRM_PID" 2>/dev/null || true
+        fail "physical confirmation focus did not wrap"
+    }
+"$DRIVER_BIN" --title='Alpha local-commit confirmation' --key=enter \
     --timeout-ms=3000 >/dev/null || {
         kill "$CONFIRM_PID" 2>/dev/null || true
         wait "$CONFIRM_PID" 2>/dev/null || true
@@ -422,4 +437,4 @@ AFTER_BROWSERS="$(browser_snapshot)"
     fail "browser process set changed during the native journey"
 
 printf '%s\n' \
-    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"corpus_status_instrument\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"
+    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"corpus_status_instrument\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"visible_action_focus\":true,\"tab_enter_actions\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"

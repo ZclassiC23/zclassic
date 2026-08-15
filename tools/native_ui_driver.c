@@ -5,6 +5,7 @@
 
 #include <X11/Xlib.h>
 #include <X11/keysym.h>
+#include <X11/Xutil.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -96,12 +97,36 @@ static bool send_key(Display *display, Window root, Window window,
     return true;
 }
 
+static XImage *capture_window(Display *display, Window window)
+{
+    XWindowAttributes attributes;
+    if (window == None ||
+        !XGetWindowAttributes(display, window, &attributes) ||
+        attributes.width <= 0 || attributes.height <= 0)
+        return NULL;
+    return XGetImage(display, window, 0, 0,
+                     (unsigned int)attributes.width,
+                     (unsigned int)attributes.height,
+                     AllPlanes, ZPixmap);
+}
+
+static bool image_differs(const XImage *before, const XImage *after)
+{
+    if (!before || !after || before->width != after->width ||
+        before->height != after->height ||
+        before->bytes_per_line != after->bytes_per_line)
+        return false;
+    size_t bytes = (size_t)before->bytes_per_line *
+                   (size_t)before->height;
+    return bytes > 0 && memcmp(before->data, after->data, bytes) != 0;
+}
+
 static int usage(const char *program)
 {
     fprintf(stderr,
             "usage: %s --title=<substring> "
-            "(--key=1|pagedown|pageup|escape | --expect-count=N) "
-            "[--timeout-ms=N]\n",
+            "(--key=1|tab|enter|pagedown|pageup|escape | --expect-count=N) "
+            "[--expect-pixels-change] [--timeout-ms=N]\n",
             program);
     return 2;
 }
@@ -113,6 +138,7 @@ int main(int argc, char **argv)
     bool expect_count_set = false;
     unsigned int expected_count = 0;
     unsigned int timeout_ms = 5000;
+    bool expect_pixels_change = false;
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--title=", 8) == 0)
             title = argv[i] + 8;
@@ -132,17 +158,23 @@ int main(int argc, char **argv)
             if (!end || *end || parsed < 20 || parsed > 30000)
                 return usage(argv[0]);
             timeout_ms = (unsigned int)parsed;
+        } else if (strcmp(argv[i], "--expect-pixels-change") == 0) {
+            expect_pixels_change = true;
         } else {
             return usage(argv[0]);
         }
     }
-    if (!title || !title[0] || (!!key == expect_count_set))
+    if (!title || !title[0] || (!!key == expect_count_set) ||
+        (expect_pixels_change && !key))
         return usage(argv[0]);
     bool first_action = key && strcmp(key, "1") == 0;
+    bool tab = key && strcmp(key, "tab") == 0;
+    bool enter = key && strcmp(key, "enter") == 0;
     bool page_down = key && strcmp(key, "pagedown") == 0;
     bool page_up = key && strcmp(key, "pageup") == 0;
     bool close = key && strcmp(key, "escape") == 0;
-    if (key && !first_action && !page_down && !page_up && !close)
+    if (key && !first_action && !tab && !enter &&
+        !page_down && !page_up && !close)
         return usage(argv[0]);
 
     Display *display = XOpenDisplay(NULL);
@@ -177,19 +209,35 @@ int main(int argc, char **argv)
         return 0;
     }
     KeySym key_sym = first_action ? XK_1
-        : (page_down ? XK_Page_Down : XK_Page_Up);
-    bool sent = window != None && (close
+        : (tab ? XK_Tab : (enter ? XK_Return
+        : (page_down ? XK_Page_Down : XK_Page_Up)));
+    XImage *before = expect_pixels_change
+        ? capture_window(display, window) : NULL;
+    bool sent = window != None && (!expect_pixels_change || before) && (close
         ? send_close(display, window)
         : send_key(display, root, window, key_sym));
+    bool pixels_changed = !expect_pixels_change;
+    if (sent && expect_pixels_change) {
+        for (unsigned int i = 0; i <= attempts; i++) {
+            XImage *after = capture_window(display, window);
+            pixels_changed = image_differs(before, after);
+            if (after) XDestroyImage(after);
+            if (pixels_changed || i == attempts) break;
+            sleep_20ms();
+        }
+    }
+    if (before) XDestroyImage(before);
     (void)XCloseDisplay(display);
-    if (!sent) {
-        fprintf(stderr, "native_ui_driver: window/key delivery failed: %s\n",
+    if (!sent || !pixels_changed) {
+        fprintf(stderr,
+                "native_ui_driver: window/key delivery failed or pixels did not change: %s\n",
                 title);
         return 1;
     }
     printf("{\"schema\":\"zcl.native_ui_physical_event.v1\","
            "\"title\":\"%s\",\"key\":\"%s\",\"window\":%lu,"
-           "\"delivered\":true}\n",
-           title, key, (unsigned long)window);
+           "\"delivered\":true,\"pixels_changed\":%s}\n",
+           title, key, (unsigned long)window,
+           expect_pixels_change ? "true" : "false");
     return 0;
 }

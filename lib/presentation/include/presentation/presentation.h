@@ -84,9 +84,10 @@ bool zcl_present_window_run_v1(
     const struct zcl_present_window_v1 *request,
     char *error, size_t error_cap);
 
-/* Interactive host variant. Number keys 1..action_count return only a bounded
- * zero-based action index; Escape/Q/window-close return DISMISSED. Labels and
- * authority remain outside this backend. */
+/* Interactive host variant. Tab/Shift-Tab move one visibly outlined action;
+ * Enter/Space activate it, and number keys 1..action_count activate the exact
+ * numbered action directly. Escape/Q/window-close return DISMISSED. Labels
+ * and authority remain outside this backend. */
 bool zcl_present_window_run_actions_v1(
     const struct zcl_present_window_v1 *request,
     uint32_t action_count,
@@ -110,6 +111,12 @@ bool zcl_present_window_run_pages_actions_v1(
 bool zcl_present_window_page_step_v1(
     uint32_t current_page, uint32_t page_count, int32_t delta,
     uint32_t *next_page);
+
+/* Pure wrapping focus transition for the bounded native action row. This is
+ * visual/input state only and never returns an authority-bearing action. */
+bool zcl_present_window_action_focus_step_v1(
+    uint32_t current_action, uint32_t action_count, int32_t delta,
+    uint32_t *next_action);
 
 /* Deterministic hit test for the standard renderer-neutral model action row.
  * Window pixels are aspect-fit, so letterboxing and resize are accounted for
