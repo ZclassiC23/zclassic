@@ -12,6 +12,7 @@
 #include <string.h>
 #include <unistd.h>
 #include <sys/socket.h>
+#include <sys/wait.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
 
@@ -34,14 +35,101 @@ static bool write_all(int fd, const char *buf, size_t len)
     return true;
 }
 
+/* Read legacy zclassic.conf credentials without silently truncating them.
+ * A truncated password is indistinguishable from a bad node to an operator,
+ * and accepting an overlong fgets fragment could treat its continuation as a
+ * separate directive. Return 1 for a complete pair, 0 when absent, -1 when
+ * the file contains an invalid credential value. */
+static int load_conf_auth(const char *path, char *cookie, size_t cookie_cap)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+
+    char user[128] = "", pass[128] = "", line[256];
+    bool invalid = false;
+    while (fgets(line, sizeof(line), f)) {
+        const char *value = NULL;
+        char *dst = NULL;
+        size_t cap = 0;
+        if (strncmp(line, "rpcuser=", 8) == 0) {
+            value = line + 8;
+            dst = user;
+            cap = sizeof(user);
+        } else if (strncmp(line, "rpcpassword=", 12) == 0) {
+            value = line + 12;
+            dst = pass;
+            cap = sizeof(pass);
+        } else {
+            continue;
+        }
+
+        size_t len = strcspn(value, "\r\n");
+        if (len == 0 || len >= cap) {
+            invalid = true;
+            break;
+        }
+        memcpy(dst, value, len);
+        dst[len] = '\0';
+    }
+    fclose(f);
+
+    if (invalid) {
+        fprintf(stderr,
+                "zcl-rpc: invalid or overlong RPC credential in %s\n", path);
+        return -1;
+    }
+    if (!user[0] || !pass[0])
+        return 0;
+    int n = snprintf(cookie, cookie_cap, "%s:%s", user, pass);
+    if (n <= 0 || (size_t)n >= cookie_cap) {
+        fprintf(stderr, "zcl-rpc: combined RPC credential is too long\n");
+        return -1;
+    }
+    return 1;
+}
+
+/* Quote one argument for the POSIX shell used by popen(). Credentials are
+ * local configuration, but they are still data: $, backticks, quotes, and
+ * whitespace must never become shell syntax. */
+static bool shell_quote(const char *in, char *out, size_t cap)
+{
+    if (!in || !out || cap < 3)
+        return false;
+    size_t used = 0;
+    out[used++] = '\'';
+    for (const char *p = in; *p; p++) {
+        if (*p == '\'') {
+            static const char escaped[] = "'\\''";
+            if (used + sizeof(escaped) - 1 >= cap)
+                return false;
+            memcpy(out + used, escaped, sizeof(escaped) - 1);
+            used += sizeof(escaped) - 1;
+        } else {
+            if (used + 1 >= cap)
+                return false;
+            out[used++] = *p;
+        }
+    }
+    if (used + 2 > cap)
+        return false;
+    out[used++] = '\'';
+    out[used] = '\0';
+    return true;
+}
+
 static int rpc_call(const char *host, int port, const char *cookie,
                     const char *method, const char *params_json,
                     char *out, size_t out_len)
 {
     char body[8192];
-    snprintf(body, sizeof(body),
+    int body_n = snprintf(body, sizeof(body),
         "{\"jsonrpc\":\"1.0\",\"method\":\"%s\",\"params\":[%s],\"id\":1}",
         method, params_json ? params_json : "");
+    if (body_n <= 0 || (size_t)body_n >= sizeof(body)) {
+        fprintf(stderr, "zcl-rpc: request body is too long\n");
+        return -1;
+    }
 
     /* Write body to temp file to avoid shell quoting issues */
     char tmpf[] = "/tmp/zcl-rpc-XXXXXX";
@@ -63,20 +151,38 @@ static int rpc_call(const char *host, int port, const char *cookie,
         return -1;
     }
 
+    char quoted_cookie[1024];
+    if (!shell_quote(cookie, quoted_cookie, sizeof(quoted_cookie))) {
+        fprintf(stderr, "zcl-rpc: RPC credential is too long to quote\n");
+        unlink(tmpf);
+        return -1;
+    }
     char cmd[16384];
-    snprintf(cmd, sizeof(cmd),
-        "curl -s --max-time 30 --user \"%s\" "
+    int cmd_n = snprintf(cmd, sizeof(cmd),
+        "curl -s --max-time 30 --user %s "
         "-d @%s -H 'content-type:text/plain;' "
         "http://%s:%d/ 2>/dev/null",
-        cookie, tmpf, host, port);
+        quoted_cookie, tmpf, host, port);
+    if (cmd_n <= 0 || (size_t)cmd_n >= sizeof(cmd)) {
+        fprintf(stderr, "zcl-rpc: curl command is too long\n");
+        unlink(tmpf);
+        return -1;
+    }
 
     FILE *p = popen(cmd, "r");
-    if (!p) return -1;
+    if (!p) {
+        unlink(tmpf);
+        return -1;
+    }
 
     size_t total = fread(out, 1, out_len - 1, p);
+    bool read_ok = !ferror(p);
     out[total] = '\0';
-    pclose(p);
+    int status = pclose(p);
     unlink(tmpf);
+    if (!read_ok || status < 0 || !WIFEXITED(status) ||
+        WEXITSTATUS(status) != 0)
+        return -1;
     return (int)total;
 }
 
@@ -127,24 +233,8 @@ int main(int argc, char *argv[])
         else
             snprintf(conf_path, sizeof(conf_path), "zclassic.conf");
 
-        FILE *f = fopen(conf_path, "r");
-        if (f) {
-            char user[128] = "", pass[128] = "";
-            char line[256];
-            while (fgets(line, sizeof(line), f)) {
-                if (strncmp(line, "rpcuser=", 8) == 0) {
-                    snprintf(user, sizeof(user), "%s", line + 8);
-                    char *nl = strchr(user, '\n'); if (nl) *nl = '\0';
-                }
-                if (strncmp(line, "rpcpassword=", 12) == 0) {
-                    snprintf(pass, sizeof(pass), "%s", line + 12);
-                    char *nl = strchr(pass, '\n'); if (nl) *nl = '\0';
-                }
-            }
-            fclose(f);
-            if (user[0] && pass[0])
-                snprintf(cookie, sizeof(cookie), "%s:%s", user, pass);
-        }
+        if (load_conf_auth(conf_path, cookie, sizeof(cookie)) < 0)
+            return 1;
     }
 
     if (cookie[0] == '\0') {
@@ -196,23 +286,13 @@ int main(int argc, char *argv[])
             snprintf(conf_path2, sizeof(conf_path2), "%s/.zclassic-c23/zclassic.conf", home);
         else
             snprintf(conf_path2, sizeof(conf_path2), "zclassic.conf");
-        FILE *f2 = fopen(conf_path2, "r");
-        if (f2) {
-            char user2[128] = "", pass2[128] = "", line2[256];
-            while (fgets(line2, sizeof(line2), f2)) {
-                if (strncmp(line2, "rpcuser=", 8) == 0)
-                    { snprintf(user2, sizeof(user2), "%s", line2+8); char *nl=strchr(user2,'\n'); if(nl)*nl='\0'; }
-                if (strncmp(line2, "rpcpassword=", 12) == 0)
-                    { snprintf(pass2, sizeof(pass2), "%s", line2+12); char *nl=strchr(pass2,'\n'); if(nl)*nl='\0'; }
-            }
-            fclose(f2);
-            if (user2[0] && pass2[0]) {
-                char fallback[256];
-                snprintf(fallback, sizeof(fallback), "%s:%s", user2, pass2);
-                n = rpc_call("127.0.0.1", port, fallback, argv[1], params,
-                             response, sizeof(response));
-            }
-        }
+        char fallback[256] = "";
+        int auth = load_conf_auth(conf_path2, fallback, sizeof(fallback));
+        if (auth < 0)
+            return 1;
+        if (auth > 0)
+            n = rpc_call("127.0.0.1", port, fallback, argv[1], params,
+                         response, sizeof(response));
     }
 
     if (n > 0)
