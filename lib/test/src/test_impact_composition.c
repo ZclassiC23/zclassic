@@ -890,6 +890,29 @@ static int test_ic_code_capsule_stays_with_code_owner(void)
     return failures;
 }
 
+static int test_ic_native_compositor_selects_physical_proof(void)
+{
+    int failures = 0;
+    TEST("impact composition: every native compositor path selects UI proof") {
+        static const char *const paths[] = {
+            "app/views/src/ui_present_document.c",
+            "app/views/include/views/ui_present_document.h",
+            "app/views/src/ui_present_host.c",
+            "app/views/include/views/ui_present_host.h",
+        };
+        for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {
+            struct agent_impact_acc impact = {0};
+            ASSERT(agent_impact_apply_shared_rules(paths[i], &impact));
+            ASSERT(ic_acc_has_group(&impact, "qr"));
+            ASSERT(ic_acc_has_group(&impact, "spawn"));
+            ASSERT(ic_acc_has_group(&impact, "native_api_contract"));
+            ASSERT(ic_acc_has_group(&impact, "make_lint_gates"));
+        }
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_impact_composition(void)
 {
     int failures = 0;
@@ -904,5 +927,6 @@ int test_impact_composition(void)
     failures += test_ic_dimension_applicability_and_exact_execution();
     failures += test_ic_snapshot_overlays_current_symbols();
     failures += test_ic_code_capsule_stays_with_code_owner();
+    failures += test_ic_native_compositor_selects_physical_proof();
     return failures;
 }

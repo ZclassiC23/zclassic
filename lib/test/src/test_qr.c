@@ -11,6 +11,7 @@
 #include "presentation/zclassic_brand.h"
 #include "views/qr_popup.h"
 #include "views/ui_present.h"
+#include "views/ui_present_document.h"
 #include "vcs/zcode_work_node.h"
 
 #include <stdio.h>
@@ -202,6 +203,18 @@ int test_qr(void)
              !generic_card.is_deposit &&
              strcmp(generic_card.address, "generic metadata") == 0);
     qr_popup_card_free(&generic_card);
+    struct ui_present_document qr_document;
+    QR_CHECK("one compositor owns QR title, pixels and copy payload",
+             ui_present_document_from_model(
+                 &generic_model, &qr_document, why, sizeof(why)) &&
+             qr_document.is_qr && qr_document.page_count == 1u &&
+             qr_document.action_count == 0u &&
+             qr_document.windows[0].pixels == qr_document.qr_card.pixels &&
+             strcmp(qr_document.windows[0].title,
+                    "ZClassic23 — Metadata — C copies, Esc closes") == 0 &&
+             strcmp(qr_document.windows[0].copy_text,
+                    "generic metadata") == 0);
+    ui_present_document_free(&qr_document);
 
     static const uint8_t tiny_rgb[] = {
         0xff, 0xff, 0xff, 0x00, 0x00, 0x00,
@@ -397,6 +410,18 @@ int test_qr(void)
     QR_CHECK("rootless publication confirmation fails closed",
              !zcl_present_model_validate_v1(
                  &confirmation, why, sizeof(why)));
+    memset(confirmation.exact_root, 'a', ZCL_PRESENT_MODEL_ROOT_MAX);
+    confirmation.exact_root[ZCL_PRESENT_MODEL_ROOT_MAX] = '\0';
+    struct ui_present_document action_document;
+    QR_CHECK("one compositor preserves exact actions and copy root",
+             ui_present_document_from_model(
+                 &confirmation, &action_document, why, sizeof(why)) &&
+             !action_document.is_qr &&
+             action_document.page_count == 1u &&
+             action_document.action_count == 2u &&
+             strcmp(action_document.windows[0].copy_text,
+                    confirmation.exact_root) == 0);
+    ui_present_document_free(&action_document);
 
     struct json_value status_facts, health_facts, health_checks;
     struct json_value backup_facts, work_facts;
@@ -715,6 +740,19 @@ int test_qr(void)
              zcl_present_model_page_count_v1(
                  &long_table, &table_pages, why, sizeof(why)) &&
              table_pages == 8u);
+    struct ui_present_document table_document;
+    QR_CHECK("resident and cold hosts receive the same complete page set",
+             ui_present_document_from_model(
+                 &long_table, &table_document, why, sizeof(why)) &&
+             table_document.page_count == table_pages &&
+             table_document.windows[0].pixels ==
+                 table_document.bitmaps[0].pixels &&
+             table_document.windows[table_pages - 1u].pixels ==
+                 table_document.bitmaps[table_pages - 1u].pixels &&
+             memcmp(table_document.windows[0].pixels,
+                    table_document.windows[table_pages - 1u].pixels,
+                    ZCL_PRESENT_MODEL_BITMAP_BYTES) != 0);
+    ui_present_document_free(&table_document);
     char table_text[ZCL_PRESENT_MODEL_TEXT_MAX];
     size_t table_text_len = 0;
     uint32_t table_text_pages = 0;

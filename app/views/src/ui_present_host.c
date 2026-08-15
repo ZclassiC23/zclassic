@@ -7,12 +7,10 @@
 
 #include "platform/os_proc.h"
 #include "platform/time_compat.h"
-#include "presentation/model_render.h"
 #include "presentation/presentation.h"
-#include "presentation/zclassic_brand.h"
 #include "util/log_macros.h"
 #include "util/spawn.h"
-#include "views/qr_popup.h"
+#include "views/ui_present_document.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -150,131 +148,30 @@ static bool ui_host_show_pages(
     return shown;
 }
 
-static bool ui_host_show_window(
-    int client,
-    int replacement_gate,
-    uint16_t flags,
-    bool view_replaced,
-    const struct zcl_present_window_v1 *window,
-    uint32_t action_count,
-    const uint8_t nonce[UI_HOST_NONCE_BYTES])
-{
-    struct zcl_present_window_pages_v1 pages = {
-        .struct_size = sizeof(pages),
-        .abi_version = ZCL_PRESENT_ABI_V1,
-        .pages = window,
-        .page_count = 1,
-    };
-    return ui_host_show_pages(client, replacement_gate, flags,
-                              view_replaced, &pages,
-                              action_count, nonce);
-}
-
 static bool ui_host_worker_model(int client, int replacement_gate,
                                  uint16_t flags,
                                  bool view_replaced,
                                  const uint8_t *wire, uint32_t wire_len,
                                  const uint8_t nonce[UI_HOST_NONCE_BYTES])
 {
-    struct zcl_present_model_v1 model;
-    struct zcl_present_model_bitmap_v1
-        bitmaps[ZCL_PRESENT_MODEL_PAGES_MAX] = {{0}};
-    struct zcl_present_window_v1 windows[ZCL_PRESENT_MODEL_PAGES_MAX] = {{0}};
+    struct ui_present_document document;
     char why[192];
-    if (!zcl_present_model_decode_v1(wire, wire_len, &model,
-                                     why, sizeof(why))) {
-        LOG_WARN("presentation.host", "visual model rejected: %s", why);
+    if (!ui_present_document_from_wire(
+            wire, wire_len, &document, why, sizeof(why))) {
+        LOG_WARN("presentation.host", "visual model composition failed: %s",
+                 why);
         return false;
     }
-    if (model.kind == ZCL_PRESENT_MODEL_QR_CARD) {
-        struct qr_popup_card card;
-        char payload[ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX + 1u];
-        if (!qr_popup_card_render(&model, &card, why, sizeof(why)) ||
-            !zcl_present_model_qr_payload_v1(&model, payload,
-                                             why, sizeof(why))) {
-            qr_popup_card_free(&card);
-            LOG_WARN("presentation.host", "QR model render failed: %s", why);
-            return false;
-        }
-        uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
-        if (!zcl_present_zclassic_icon_rgba(icon, sizeof(icon))) {
-            qr_popup_card_free(&card);
-            LOG_WARN("presentation.host", "QR window icon is unavailable");
-            return false;
-        }
-        char title[ZCL_PRESENT_TITLE_MAX + 1u];
-        const char *kind = card.is_deposit ? "Deposit ZCL" : model.title;
-        (void)snprintf(title, sizeof(title),
-                       "ZClassic23 — %s — C copies, Esc closes", kind);
-        struct zcl_present_window_v1 window = {
-            .struct_size = sizeof(window),
-            .abi_version = ZCL_PRESENT_ABI_V1,
-            .title = title,
-            .pixels = card.pixels,
-            .width = card.width,
-            .height = card.height,
-            .pixel_format = ZCL_PRESENT_RGB8,
-            .icon_rgba = icon,
-            .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
-            .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
-            .copy_text = payload,
-        };
-        bool shown = ui_host_show_window(client, replacement_gate, flags,
-                                         view_replaced,
-                                         &window, 0, nonce);
-        qr_popup_card_free(&card);
-        return shown;
-    }
-    uint32_t page_count = 0;
-    if (!zcl_present_model_page_count_v1(&model, &page_count,
-                                         why, sizeof(why))) {
-        LOG_WARN("presentation.host", "visual model pagination failed: %s", why);
-        return false;
-    }
-    uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
-    if (!zcl_present_zclassic_icon_rgba(icon, sizeof(icon))) {
-        LOG_WARN("presentation.host", "native window icon is unavailable");
-        return false;
-    }
-    char title[ZCL_PRESENT_TITLE_MAX + 1u];
-    (void)snprintf(title, sizeof(title), "ZClassic23 — %s", model.title);
-    bool rendered = true;
-    for (uint32_t i = 0; i < page_count; i++) {
-        if (!zcl_present_model_render_page_v1(
-                &model, i, &bitmaps[i], why, sizeof(why))) {
-            LOG_WARN("presentation.host",
-                     "visual model page render failed: %s", why);
-            rendered = false;
-            break;
-        }
-        windows[i] = (struct zcl_present_window_v1){
-            .struct_size = sizeof(windows[i]),
-            .abi_version = ZCL_PRESENT_ABI_V1,
-            .title = title,
-            .pixels = bitmaps[i].pixels,
-            .width = bitmaps[i].width,
-            .height = bitmaps[i].height,
-            .pixel_format = ZCL_PRESENT_RGB8,
-            .icon_rgba = icon,
-            .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
-            .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
-            .copy_text = model.exact_root[0] ? model.exact_root : NULL,
-        };
-    }
-    bool shown = false;
-    if (rendered) {
-        struct zcl_present_window_pages_v1 pages = {
-            .struct_size = sizeof(pages),
-            .abi_version = ZCL_PRESENT_ABI_V1,
-            .pages = windows,
-            .page_count = page_count,
-        };
-        shown = ui_host_show_pages(client, replacement_gate, flags,
-                                   view_replaced, &pages,
-                                   model.action_count, nonce);
-    }
-    for (uint32_t i = 0; i < page_count; i++)
-        zcl_present_model_bitmap_free_v1(&bitmaps[i]);
+    struct zcl_present_window_pages_v1 pages = {
+        .struct_size = sizeof(pages),
+        .abi_version = ZCL_PRESENT_ABI_V1,
+        .pages = document.windows,
+        .page_count = document.page_count,
+    };
+    bool shown = ui_host_show_pages(
+        client, replacement_gate, flags, view_replaced, &pages,
+        document.action_count, nonce);
+    ui_present_document_free(&document);
     return shown;
 }
 

@@ -25,6 +25,13 @@ layout makes the same bounded item sequence produce the same page count and
 pixels independently of window size, while aspect-fit scaling and clipping
 remain backend concerns.
 
+`app/views/src/ui_present_document.c` is the only model-to-window compositor.
+It owns validation, every rendered page, QR specialization, application icon,
+window title, exact copy text, and action count for the duration of one native
+call. The resident host and the portable same-binary compatibility child both
+consume that exact document, so neither launch path can silently drop later
+pages or invent separate QR, branding, or action behavior.
+
 Interactive models always open with one visible two-tone action focus ring.
 Tab and Shift-Tab wrap through the bounded action row; Enter or Space returns
 the focused action, while number keys retain direct exact selection. Moving
