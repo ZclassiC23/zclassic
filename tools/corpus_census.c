@@ -146,7 +146,9 @@
  * <datadir>/zcode/corpus/checkpoint.hex, where `zcode commons corpus
  * status` picks it up. --previous-report reads the previous sequence's
  * report JSON and adds the growth-delta KPI block (raw deltas plus floor
- * per-day rates when >= 1 day elapsed between cutoffs).
+ * per-day rates when >= 1 day elapsed between cutoffs). For sequence >1
+ * the predecessor root and the previous report default to
+ * <out>/report-<seq-1>.json; the explicit flags override the discovery.
  */
 
 #define _GNU_SOURCE
@@ -2507,7 +2509,9 @@ static void usage(FILE *stream)
         "       --cutoff-height N --cutoff-mtp N [--signer-seed-file PATH]\n"
         "       [--sequence N] [--predecessor-root HEX64] "
         "[--quality-attested 0|1]\n"
-        "       [--install <datadir>] [--previous-report PATH]\n");
+        "       [--install <datadir>] [--previous-report PATH]\n"
+        "       (sequence >1 auto-discovers the predecessor root and the\n"
+        "       previous report from <out>/report-<seq-1>.json)\n");
 }
 
 static bool args_parse(int argc, char **argv, struct census_args *args)
@@ -2565,10 +2569,10 @@ static bool args_parse(int argc, char **argv, struct census_args *args)
         return false;
     bool pred_nonzero =
         args->predecessor_given && root_nonzero(args->predecessor);
-    /* sequence 1 requires the zero predecessor root; sequence >1 requires
-     * an explicit nonzero one. */
+    /* sequence 1 requires the zero predecessor root; sequence >1 either
+     * takes an explicit nonzero root or discovers it from the previous
+     * sequence's report in the out dir (main, fail-closed). */
     if (args->sequence == 1 && pred_nonzero) return false;
-    if (args->sequence > 1 && !pred_nonzero) return false;
     if (!shell_safe(args->repo))
         return false;
     return true;
@@ -2615,6 +2619,47 @@ int main(int argc, char **argv)
     if (!shell_safe(repo_real))
         LOG_ERR(CENSUS_LOG, "repo path %s has unsafe characters",
                 repo_real);
+
+    /* Sequence-chain defaults: when advancing the sequence inside an out
+     * dir that already holds the previous sequence's report, bind the
+     * predecessor root and the growth-delta input from that report
+     * automatically. Explicit flags always win; when the predecessor is
+     * neither given nor discoverable the run fails closed rather than
+     * cutting an unchained checkpoint. */
+    char discovered_report[4400];
+    if (args.sequence > 1 &&
+        (!args.predecessor_given || !args.previous_report)) {
+        int n = snprintf(discovered_report, sizeof(discovered_report),
+                         "%s/report-%06llu.json", args.out,
+                         (unsigned long long)(args.sequence - 1));
+        if (n < 0 || (size_t)n >= sizeof(discovered_report))
+            LOG_ERR(CENSUS_LOG, "previous report path overflow");
+        uint8_t *prev_wire = NULL;
+        size_t prev_len = 0;
+        struct json_value prev;
+        json_init(&prev);
+        const char *prev_root_hex = NULL;
+        if (store_file_read(discovered_report, 4u * 1024u * 1024u,
+                            &prev_wire, &prev_len) && prev_wire &&
+            json_read(&prev, (const char *)prev_wire, prev_len))
+            prev_root_hex = json_get_str(json_get(&prev, "checkpoint_root"));
+        if (!args.predecessor_given) {
+            if (!prev_root_hex || strlen(prev_root_hex) != 64 ||
+                !zcl_hex_decode_lower(prev_root_hex, args.predecessor, 32))
+                LOG_ERR(CENSUS_LOG, "sequence %llu needs "
+                        "--predecessor-root (or a readable %s with a "
+                        "checkpoint_root)",
+                        (unsigned long long)args.sequence,
+                        discovered_report);
+            args.predecessor_given = true;
+            LOG_INFO(CENSUS_LOG, "predecessor root %.16s... from %s",
+                     prev_root_hex, discovered_report);
+        }
+        if (!args.previous_report && prev_root_hex)
+            args.previous_report = discovered_report;
+        free(prev_wire);
+        json_free(&prev);
+    }
 
     /* Signer seed. */
     char default_seed[4096];

@@ -41,15 +41,14 @@ make corpus-census            # builds the driver, runs a SMOKE census
                               # into build/corpus-census/ (never corpus/)
 ```
 
-Advancing the committed sequence is explicit:
+Advancing the committed sequence is explicit (the predecessor root and the
+previous report are auto-discovered from `CORPUS_OUT`; the
+`CORPUS_PREDECESSOR_ROOT` / `CORPUS_PREVIOUS_REPORT` variables override):
 
 ```bash
 make corpus-census CORPUS_OUT=corpus CORPUS_SEQUENCE=<n> \
-    CORPUS_PREDECESSOR_ROOT=<seq n-1 checkpoint root> \
     CORPUS_CUTOFF_HEIGHT=3050000 CORPUS_CUTOFF_MTP=1754000000 \
-    CORPUS_QUALITY_ATTESTED=1 \
-    CORPUS_PREVIOUS_REPORT=corpus/report-<n-1>.json \
-    CORPUS_INSTALL=<datadir>
+    CORPUS_QUALITY_ATTESTED=1 CORPUS_INSTALL=<datadir>
 ```
 
 The signer seed lives OUTSIDE the repo at

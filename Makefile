@@ -3639,13 +3639,12 @@ $(BIN_DIR)/corpus-census: tools/corpus_census.c \
 # Run the corpus census. The default is a SMOKE run into build/corpus-census/
 # (unsigned, cutoff 1, quality unattested) so it can never overwrite the
 # committed signed artifacts under corpus/. Advancing the canonical sequence
-# is an explicit operator act:
+# is an explicit operator act (the predecessor root and previous report are
+# discovered from CORPUS_OUT automatically):
 #   make corpus-census CORPUS_OUT=corpus CORPUS_SEQUENCE=N \
-#       CORPUS_PREDECESSOR_ROOT=<seq N-1 checkpoint root> \
 #       CORPUS_CUTOFF_HEIGHT=... CORPUS_CUTOFF_MTP=... \
-#       CORPUS_QUALITY_ATTESTED=1 \
-#       CORPUS_PREVIOUS_REPORT=corpus/report-NNNNNN.json \
-#       CORPUS_INSTALL=<datadir>   # drops <datadir>/zcode/corpus/checkpoint.hex
+#       CORPUS_QUALITY_ATTESTED=1 CORPUS_INSTALL=<datadir>
+#   (CORPUS_PREDECESSOR_ROOT / CORPUS_PREVIOUS_REPORT override discovery)
 .PHONY: corpus-census
 corpus-census: $(BIN_DIR)/corpus-census
 	$(BIN_DIR)/corpus-census --repo . --def corpus/scopes.def \
