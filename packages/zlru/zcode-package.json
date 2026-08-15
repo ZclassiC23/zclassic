@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "name": "zlru/zlru",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "name": "zmap/zmap",
+      "root": "ae1c1bb4922688ea0020c4831c833bbf5410956719c1347ebe9f74a6a65e65d6",
+      "semver": "0.1.0"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zlru/zlru.h",
+    "src/zlru.c",
+    "tests/test_zlru.c",
+    "zcode-package.json"
+  ]
+}
