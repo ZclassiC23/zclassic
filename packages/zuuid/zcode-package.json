@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zuuid/zuuid",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zuuid/zuuid.h",
+    "src/zuuid.c",
+    "tests/test_zuuid.c",
+    "zcode-package.json"
+  ]
+}
