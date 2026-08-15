@@ -571,7 +571,7 @@ trailing window, so deploy when the escalator fires anyway, or after
 | 72h hold accrual toward `HOLD_PROVEN` | `~/.local/state/zclassic23-slo/hold-ledger.jsonl`; judge: `tools/scripts/slo_hold_judge.sh`; recorder: `zclassic23-hold-certifier.timer` (`make install-hold-certifier`) |
 | Peers, RSS, disk growth, Tor, standing blocker | `~/.local/state/zclassic23-slo/uptime-ledger.jsonl` — the same per-sample line now carries `peer_count`, `rss_kb`, `datadir_bytes`, `nrestarts`, `active_enter_ts`, `unit_active_state`, `onion_enabled`, `onion_address`, `blocker_count`, `blocker_primary` |
 | EXTERNAL availability (not a loopback dial) | `~/.local/state/zclassic23-public-smoke/availability-ledger.jsonl`; collector `tools/scripts/public_explorer_smoke.sh`; unit `deploy/zclassic23-public-smoke.{service,timer}` |
-| Operator interventions, declared and undeclared | `~/.local/state/zclassic23-intervention/intervention-ledger.jsonl`; detector `tools/scripts/intervention_ledger.sh`; declaration front door `tools/scripts/zcl_intervene.sh`; unit `deploy/zclassic23-intervention.{service,timer}` |
+| Operator interventions, declared and undeclared | `~/.local/state/zclassic23-intervention/intervention-ledger.jsonl`; detector `tools/scripts/intervention_ledger.sh`; declaration front door `tools/scripts/zcl_intervene.sh`; unit `deploy/zclassic23-intervention.{service,timer}` (`make install-intervention-ledger`) |
 | Our tip HASH vs genuinely remote peers (off-host block identity) | `~/.local/state/zclassic23-parity/agreement-ledger.jsonl`; recorder `tools/scripts/tip_agreement_probe.sh`; judge `tools/scripts/tip_agreement_judge.sh`; unit `deploy/zclassic23-tip-agreement.{service,timer}` (`make install-tip-agreement`) |
 
 ### Reading the availability columns

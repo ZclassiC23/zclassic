@@ -942,20 +942,27 @@ static bool connman_addr_is_advertised_external(
  * on a DISTINCT live candidate. Safe for recovery: a peer that ever handshook
  * has attempts reset to 0, and fresh/harvested/seed addresses (attempts==0) are
  * always dialable, so ONLY never-worked addresses are backed off. */
-static int connman_addrman_retry_cooldown(const struct addr_info *info)
+int connman_addrman_retry_cooldown_for_attempts(int attempts)
 {
-    if (!info || info->attempts <= 0)
+    if (attempts <= 0)
         return 0;
-    if (info->attempts >= 10) return 21600;  /* 6 h  — effectively dead */
-    if (info->attempts >= 7)  return 7200;   /* 2 h  */
-    if (info->attempts >= 5)  return 3600;   /* 1 h  */
-    if (info->attempts >= 3)  return 900;    /* 15 m */
-    if (info->attempts >= 2)  return 300;    /* 5 m  */
+    if (attempts >= 10) return 21600;  /* 6 h  — effectively dead */
+    if (attempts >= 7)  return 7200;   /* 2 h  */
+    if (attempts >= 5)  return 3600;   /* 1 h  */
+    if (attempts >= 3)  return 900;    /* 15 m */
+    if (attempts >= 2)  return 300;    /* 5 m  */
     return 60;                               /* 1 m  — first miss */
 }
 
-static bool connman_addrman_candidate_usable(struct connman *cm,
-                                             const struct addr_info *info)
+#ifdef ZCL_TESTING
+int connman_addrman_retry_cooldown_for_test(int attempts)
+{
+    return connman_addrman_retry_cooldown_for_attempts(attempts);
+}
+#endif
+
+bool connman_addrman_candidate_usable(struct connman *cm,
+                                      const struct addr_info *info)
 {
     if (!cm || !info)
         return false;
@@ -968,7 +975,8 @@ static bool connman_addrman_candidate_usable(struct connman *cm,
 
     if (info->last_try > 0) {
         int64_t now = (int64_t)platform_time_wall_time_t();
-        int cooldown = connman_addrman_retry_cooldown(info);
+        int cooldown =
+            connman_addrman_retry_cooldown_for_attempts(info->attempts);
         if (now - info->last_try < cooldown)
             return false;
     }

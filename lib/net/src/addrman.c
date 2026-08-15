@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "net/addrman.h"
+#include "addrman_internal.h"
 #include "net/directory_influence_port.h"
 #include "core/hash.h"
 #include "core/random.h"
@@ -16,7 +17,6 @@
 #include <math.h>
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
-
 int addr_info_get_tried_bucket(const struct addr_info *info,
                                const struct uint256 *nKey)
 {
@@ -581,8 +581,8 @@ static void swap_random(struct addr_man *am, unsigned int p1, unsigned int p2)
     am->random_order[p2] = id1;
 }
 
-static struct addr_info *find_addr(struct addr_man *am,
-                                    const struct net_addr *addr, int *pnId)
+struct addr_info *addrman_find_addr_locked(struct addr_man *am,
+                                           const struct net_addr *addr, int *pnId)
 {
     if (!am || !addr || !am->entries)
         LOG_NULL("addrman", "find_addr: bad args");
@@ -783,7 +783,7 @@ bool addrman_add(struct addr_man *am, const struct net_address *addr,
 
     bool fNew = false;
     int nId;
-    struct addr_info *pinfo = find_addr(am, &addr->svc.addr, &nId);
+    struct addr_info *pinfo = addrman_find_addr_locked(am, &addr->svc.addr, &nId);
 
     if (pinfo) {
         int64_t nUpdateInterval = 24 * 60 * 60;
@@ -877,7 +877,7 @@ void addrman_good(struct addr_man *am, const struct net_service *addr,
     zcl_mutex_lock(&am->cs);
 
     int nId;
-    struct addr_info *pinfo = find_addr(am, &addr->addr, &nId);
+    struct addr_info *pinfo = addrman_find_addr_locked(am, &addr->addr, &nId);
     if (!pinfo || !net_service_eq(&pinfo->addr.svc, addr)) {
         zcl_mutex_unlock(&am->cs);
         return;
@@ -917,7 +917,7 @@ void addrman_attempt(struct addr_man *am, const struct net_service *addr,
 {
     zcl_mutex_lock(&am->cs);
     int nId;
-    struct addr_info *pinfo = find_addr(am, &addr->addr, &nId);
+    struct addr_info *pinfo = addrman_find_addr_locked(am, &addr->addr, &nId);
     if (!pinfo || !net_service_eq(&pinfo->addr.svc, addr)) {
         zcl_mutex_unlock(&am->cs);
         return;
@@ -1037,7 +1037,7 @@ void addrman_connected(struct addr_man *am, const struct net_service *addr,
 {
     zcl_mutex_lock(&am->cs);
     int nId;
-    struct addr_info *pinfo = find_addr(am, &addr->addr, &nId);
+    struct addr_info *pinfo = addrman_find_addr_locked(am, &addr->addr, &nId);
     if (!pinfo || !net_service_eq(&pinfo->addr.svc, addr)) {
         zcl_mutex_unlock(&am->cs);
         return;

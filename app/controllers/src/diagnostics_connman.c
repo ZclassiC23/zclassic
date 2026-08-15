@@ -204,6 +204,23 @@ bool connman_diag_dump_state_json(struct json_value *out, const char *key)
     json_push_kv(out, "addnode", &addnode);
     json_free(&addnode);
 
+    struct json_value zcl23_db = {0};
+    json_set_object(&zcl23_db);
+    json_push_kv_int(&zcl23_db, "preference_rounds",
+                     (int64_t)atomic_load(&cm->zcl23_preference_round));
+    json_push_kv_int(&zcl23_db, "candidates_seen",
+                     (int64_t)atomic_load(&cm->zcl23_candidates_seen));
+    json_push_kv_int(&zcl23_db, "dials_scheduled",
+                     (int64_t)atomic_load(&cm->zcl23_dials_scheduled));
+    json_push_kv_int(&zcl23_db, "backoff_skips",
+                     (int64_t)atomic_load(&cm->zcl23_backoff_skips));
+    json_push_kv_int(&zcl23_db, "policy_skips",
+                     (int64_t)atomic_load(&cm->zcl23_policy_skips));
+    json_push_kv_str(&zcl23_db, "owner", "persistent_dial_scheduler");
+    json_push_kv_str(&zcl23_db, "success_gate", "protocol_handshake");
+    json_push_kv(out, "zcl23_db", &zcl23_db);
+    json_free(&zcl23_db);
+
     struct connman_reactor_stats rs;
     connman_get_reactor_stats(&rs);
     struct json_value reactor = {0};

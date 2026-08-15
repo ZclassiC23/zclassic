@@ -135,6 +135,13 @@ void addrman_good(struct addr_man *am, const struct net_service *addr,
 void addrman_attempt(struct addr_man *am, const struct net_service *addr,
                      int64_t nTime);
 
+/* Copy the exact endpoint's durable dial ledger. O(1) through addrman's
+ * address index; false means the endpoint is absent or its port differs.
+ * The caller never receives an internal pointer, so concurrent writers may
+ * safely update the entry after this snapshot returns. */
+bool addrman_find_info(struct addr_man *am, const struct net_service *addr,
+                       struct addr_info *out);
+
 bool addrman_select(struct addr_man *am, bool new_only,
                     struct addr_info *result);
 

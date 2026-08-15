@@ -637,7 +637,8 @@ int syncdiag_cases_operator(void)
 
         /* reactor + message_cycle + floor + addrman_summary + dial_outcomes
          * sections are all present (rollups of existing owners — never
-         * absent just because the node is idle). */
+         * absent just because the node is idle). The discovered-peer section
+         * must explicitly name the shared scheduler and handshake gate. */
         ok = ok && json_get(&cm_result2, "reactor") != NULL;
         ok = ok && json_get(&cm_result2, "message_cycle") != NULL;
         ok = ok && json_get(&cm_result2, "floor") != NULL;
@@ -646,6 +647,16 @@ int syncdiag_cases_operator(void)
         ok = ok && am_sum && json_get(am_sum, "size") &&
             json_get_int(json_get(am_sum, "size")) == 0;
         ok = ok && json_get(&cm_result2, "dial_outcomes") != NULL;
+        const struct json_value *zdb = json_get(&cm_result2, "zcl23_db");
+        ok = ok && zdb && zdb->type == JSON_OBJ &&
+            strcmp(json_get_str(json_get(zdb, "owner")),
+                   "persistent_dial_scheduler") == 0 &&
+            strcmp(json_get_str(json_get(zdb, "success_gate")),
+                   "protocol_handshake") == 0 &&
+            json_get(zdb, "dials_scheduled") &&
+            json_get_int(json_get(zdb, "dials_scheduled")) == 0 &&
+            json_get(zdb, "backoff_skips") &&
+            json_get_int(json_get(zdb, "backoff_skips")) == 0;
         json_free(&cm_result2);
 
         struct json_value am_result2 = {0};

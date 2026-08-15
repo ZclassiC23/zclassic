@@ -239,6 +239,12 @@ struct p2p_node {
     struct net_address addr;
     char addr_name[256];
     struct net_service addr_local;
+    /* For an inbound connection, the peer's version.addr_from is its stable
+     * listening endpoint while addr.svc contains the socket's ephemeral
+     * source port. Valid only when the advertised IP matches the connected
+     * IP; consumers may then resolve reciprocal-dial ownership exactly. */
+    struct net_service advertised_service;
+    bool advertised_service_valid;
     int version;
     char sub_ver[MAX_SUBVERSION_LENGTH];
     char clean_sub_ver[MAX_SUBVERSION_LENGTH];

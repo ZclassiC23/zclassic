@@ -33,10 +33,11 @@
  * select() for up to DEFAULT_CONNECT_TIMEOUT (5 s) PER address, up to 3
  * attempts a loop — so a cold boot could spend ~15 s of wall time before it
  * had even 3 peers if the first candidates were slow/dead. Candidate gathering
- * remains shared by anchors, DHT hints, addnodes, and addrman, but the owning
- * scheduler starts only one non-blocking connect at a time. This makes endpoint
- * deduplication and recovery backoff deterministic and prevents dial storms.
- * The scheduler remains a single persistent thread. */
+ * remains shared by anchors, DHT hints, database-discovered ZCL23 peers,
+ * addnodes, and addrman, but the owning scheduler starts only one non-blocking
+ * connect at a time. This makes endpoint deduplication and recovery backoff
+ * deterministic and prevents dial storms. The scheduler remains a single
+ * persistent thread. */
 
 #define ZCL_DIAL_BATCH_MAX 8   /* candidate/test buffer bound */
 #define ZCL_DIAL_SCHEDULER_WIDTH 1 /* one scheduler-owned TCP attempt */
@@ -272,7 +273,21 @@ size_t connman_gather_dial_candidates(struct connman *cm,
         n++;
     }
 
-    /* (3) addnode / addrman via the existing selector. Bound the draws so a
+    /* (3) Database-discovered ZCL23 peers, on alternating scheduler turns.
+     * The alternate turns belong to addnode/addrman so a stale preferred set
+     * can never starve healthy general candidates. */
+    if (!g_connect_only && n < max && cm->known_zcl23_peers) {
+        uint64_t zcl23_round =
+            atomic_fetch_add(&cm->zcl23_preference_round, 1);
+        if ((zcl23_round & 1u) == 0 &&
+            connman_gather_known_zcl23_candidate(
+                cm, tally.svcs, tally.n, &out[n])) {
+            tally.svcs[tally.n++] = out[n].addr.svc;
+            n++;
+        }
+    }
+
+    /* (4) addnode / addrman via the existing selector. Bound the draws so a
      * pool that keeps returning saturated/duplicate picks can't spin, but
      * budget enough draws that a batch still fills with DISTINCT live
      * candidates when a large fraction of addrman is in failure-aware backoff
@@ -409,10 +424,11 @@ static void connman_record_dial_failure(struct connman *cm,
     if (c->source == CONNMAN_TARGET_ADDNODE) {
         connman_record_addnode_attempt(cm, c->addnode_index, false);
     } else if (c->source == CONNMAN_TARGET_ADDRMAN ||
+               c->source == CONNMAN_TARGET_ZCL23_DB ||
                c->source == CONNMAN_TARGET_DHT_HINT) {
-        /* A NON-feeler addrman candidate was already charged exactly one
-         * attempt at pick time (connman_pick_next_outbound_target ->
-         * addrman_attempt). Charging a second one here double-counted every
+        /* A NON-feeler addrman or ZCL23 candidate was already charged exactly
+         * one attempt when the shared scheduler selected it. Charging a
+         * second one here double-counted every
          * TCP-refused dial, so a refused address escalated its backoff twice
          * as fast as a dead-on-arrival peer that connects TCP then stalls
          * pre-handshake (charged only once, at pick) — backwards, since the
@@ -438,6 +454,7 @@ static void connman_complete_dial(struct connman *cm,
     enum peer_lifecycle_source ls =
         c->source == CONNMAN_TARGET_ADDNODE ? PEER_LIFECYCLE_SOURCE_ADDNODE :
         c->source == CONNMAN_TARGET_ANCHOR  ? PEER_LIFECYCLE_SOURCE_ANCHOR  :
+        c->source == CONNMAN_TARGET_ZCL23_DB ? PEER_LIFECYCLE_SOURCE_ZCL23_DB :
                                               PEER_LIFECYCLE_SOURCE_ADDRMAN;
     const char *dest = NULL;
     char destbuf[64];
@@ -490,6 +507,7 @@ static void connman_dial_batch(struct connman *cm,
         peer_lifecycle_note_attempt(&c->addr,
             c->source == CONNMAN_TARGET_ADDNODE ? PEER_LIFECYCLE_SOURCE_ADDNODE :
             c->source == CONNMAN_TARGET_ANCHOR  ? PEER_LIFECYCLE_SOURCE_ANCHOR  :
+            c->source == CONNMAN_TARGET_ZCL23_DB ? PEER_LIFECYCLE_SOURCE_ZCL23_DB :
                                                   PEER_LIFECYCLE_SOURCE_ADDRMAN);
         zcl_socket_t s = ZCL_INVALID_SOCKET;
         enum zcl_connect_start st = connect_socket_start(&c->addr.svc, &s);
@@ -624,53 +642,6 @@ void *thread_open_connections(void *arg)
             continue;
         }
 
-        /* ZCL23 peer preference: 50% of connection attempts go to known
-         * ZCL23 peers (fast sync capable, high bandwidth). This creates
-         * a tight mesh of power nodes that find each other quickly. */
-        bool tried_zcl23 = false;
-        if (!g_connect_only && cm->known_zcl23_peers &&
-            (GetRand(2) == 0)) {
-            struct connman_known_peer zcl_peers[8];
-            int nzcl = cm->known_zcl23_peers(
-                cm->known_zcl23_peers_ctx, zcl_peers, 8);
-            if (nzcl > 0) {
-                struct connman_known_peer *pick =
-                    &zcl_peers[GetRand((uint64_t)nzcl)];
-                /* Check not already connected */
-                bool already = false;
-                zcl_mutex_lock(&cm->manager.cs_nodes);
-                for (size_t ni = 0; ni < cm->manager.num_nodes; ni++) {
-                    struct p2p_node *n = cm->manager.nodes[ni];
-                    if (!n->disconnect &&
-                        memcmp(n->addr.svc.addr.ip, pick->ip, 16) == 0 &&
-                        n->addr.svc.port == pick->port) {
-                        already = true;
-                        break;
-                    }
-                }
-                zcl_mutex_unlock(&cm->manager.cs_nodes);
-                if (!already) {
-                    struct net_address addr;
-                    memset(&addr, 0, sizeof(addr));
-                    memcpy(addr.svc.addr.ip, pick->ip, 16);
-                    addr.svc.port = pick->port;
-                    addr.nServices = pick->services;
-                    addr.nTime = (uint32_t)platform_time_wall_time_t();
-                    peer_lifecycle_note_attempt(&addr,
-                                                PEER_LIFECYCLE_SOURCE_ZCL23_DB);
-                    struct p2p_node *node = connect_node(&cm->manager,
-                                                          &addr, NULL);
-                    if (node) {
-                        peer_lifecycle_note_connected(
-                            node, PEER_LIFECYCLE_SOURCE_ZCL23_DB);
-                        tried_zcl23 = true;
-                        /* Drop the +1 caller ref connect_node returns. */
-                        connman_release_connect_node_ref(cm, node);
-                    }
-                }
-            }
-        }
-
         /* Parallel batch dial. Below the healthy-peer floor (3 fully-
          * handshaked outbound) we fill many slots at once (peers stuck in
          * PEER_CONNECTING don't count, so a node with 1 working peer + several
@@ -706,7 +677,7 @@ void *thread_open_connections(void *arg)
 
         size_t free_slots = MAX_OUTBOUND_CONNECTIONS - outbound; /* > 0 here */
         size_t want = 0;
-        if (rate_ok && !tried_zcl23) {
+        if (rate_ok) {
             if (outbound_healthy == 0)
                 want = free_slots;                    /* bootstrap: fill fast */
             else if (below_floor)
@@ -748,7 +719,7 @@ void *thread_open_connections(void *arg)
         }
 
         if (nbatch > 0) {
-            if (rate_ok && !tried_zcl23)
+            if (rate_ok)
                 s_last_addrman_attempt = now_oc;
             connman_dial_batch(cm, batch, nbatch);
         }

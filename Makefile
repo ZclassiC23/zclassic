@@ -6426,6 +6426,27 @@ install-hold-certifier:
 	@echo "installed 72h hold certifier: zclassic23-hold-certifier.timer (every 15 min)"
 	@echo "verdicts: $(HOME)/.local/state/zclassic23-slo/hold-ledger.jsonl"
 
+# install-intervention-ledger: independent read-only evidence that the node,
+# its unit configuration, and its on-disk/running binaries did or did not
+# change. A daily heartbeat distinguishes a quiet node from a dead detector.
+.PHONY: install-intervention-ledger intervention-ledger-status
+install-intervention-ledger:
+	@install -d "$(HOME)/.config/systemd/user"
+	@set -eu; tmp="$$(mktemp "$(HOME)/.config/systemd/user/zclassic23-intervention.service.tmp.XXXXXX")"; \
+		trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+		sed 's|%h/github/zclassic23|$(CURDIR)|g' deploy/zclassic23-intervention.service > "$$tmp"; \
+		install -m 644 "$$tmp" "$(HOME)/.config/systemd/user/zclassic23-intervention.service"
+	@install -m 644 deploy/zclassic23-intervention.timer "$(HOME)/.config/systemd/user/zclassic23-intervention.timer"
+	@systemctl --user daemon-reload
+	@systemctl --user enable --now zclassic23-intervention.timer
+	@echo "installed intervention detector: zclassic23-intervention.timer (every 60s)"
+	@echo "ledger: $(HOME)/.local/state/zclassic23-intervention/intervention-ledger.jsonl"
+
+intervention-ledger-status:
+	@systemctl --user list-timers zclassic23-intervention.timer --no-pager 2>/dev/null || true
+	@systemctl --user status zclassic23-intervention.service zclassic23-intervention.timer --no-pager -n 12 2>/dev/null || true
+	@./tools/scripts/intervention_ledger.sh summary 2>/dev/null || true
+
 slo-probe-status:
 	@systemctl --user list-timers zclassic23-slo-probe.timer zclassic23-slo-pager.timer --no-pager 2>/dev/null || true
 	@systemctl --user status zclassic23-slo-probe.service zclassic23-slo-probe.timer --no-pager -n 12 2>/dev/null || true
