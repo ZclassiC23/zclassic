@@ -231,7 +231,16 @@ int syncdiag_cases_agent_interface(void)
             json_size(visual_instruments) == 8;
         ok = ok && visual_qr &&
             strcmp(json_get_str(json_get(visual_qr, "native")),
-                   "zclassic23 app qr show '<bounded-payload>'") == 0;
+                   "zclassic23 app qr show 'zclassic:t1...?amount=0.01'") == 0;
+        ok = ok && visual_qr &&
+            strcmp(json_get_str(json_get(visual_qr, "path")),
+                   "app.qr.show") == 0;
+        ok = ok && visual_qr &&
+            strcmp(json_get_str(json_get(visual_qr, "input_schema")),
+                   "zcl.app_qr_show.input.v1") == 0;
+        ok = ok && visual_qr &&
+            strstr(json_get_str(json_get(visual_qr, "input_keys")),
+                   "output") != NULL;
         ok = ok && visual_status &&
             strcmp(json_get_str(json_get(visual_status, "native")),
                    "zclassic23 app presentation status") == 0;
@@ -253,6 +262,12 @@ int syncdiag_cases_agent_interface(void)
         ok = ok && visual_bounded &&
             strstr(json_get_str(json_get(visual_bounded, "native")),
                    "app presentation show") != NULL;
+        ok = ok && visual_bounded &&
+            strcmp(json_get_str(json_get(visual_bounded, "input_schema")),
+                   "zcl.app_presentation_show.input.v1") == 0;
+        ok = ok && visual_bounded &&
+            strcmp(json_get_str(json_get(visual_bounded, "discover_input")),
+                   "zclassic23 discover schema app.presentation.show") == 0;
         ok = ok && visual_loop &&
             strcmp(json_get_str(json_get(visual_loop, "schema")),
                    "zcl.agent_visual_loop.v1") == 0;

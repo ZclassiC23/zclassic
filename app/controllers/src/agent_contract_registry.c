@@ -2,7 +2,9 @@
 
 #include "controllers/agent_controller.h"
 
+#include "config/command_catalog.h"
 #include "json/json.h"
+#include "kernel/command_registry.h"
 
 #include <stdio.h>
 #include <stdint.h>
@@ -26,6 +28,7 @@ struct agent_contract_command_surface {
     int rank;
     const char *name;
     const char *method;
+    const char *catalog_path;
     const char *native_override;
     const char *purpose_override;
 };
@@ -47,9 +50,11 @@ struct agent_contract_field_surface {
 };
 
 #define CONTRACT_COMMAND(surface, rank, name, method, purpose)               \
-    { surface, rank, name, method, "", purpose }
+    { surface, rank, name, method, "", "", purpose }
 #define DIRECT_COMMAND(surface, rank, name, native, purpose)                 \
-    { surface, rank, name, "", native, purpose }
+    { surface, rank, name, "", "", native, purpose }
+#define CATALOG_COMMAND(surface, rank, name, path, purpose)                  \
+    { surface, rank, name, "", path, "", purpose }
 
 static const struct agent_contract_command_surface g_agent_command_surfaces[] = {
     DIRECT_COMMAND("agentmap.commands.core", 1, "compact_status",
@@ -97,33 +102,33 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
     CONTRACT_COMMAND("agentmap.commands.drilldown", 6, "peer_incidents",
       "peerincidents", "bounded peer reconnect and duplicate-host incidents"),
 
-    DIRECT_COMMAND("agentinterface.visual_instruments", 1, "qr",
-      "zclassic23 app qr show '<bounded-payload>'",
+    CATALOG_COMMAND("agentinterface.visual_instruments", 1, "qr",
+      "app.qr.show",
       "show one bounded agent-supplied payload; copy or close returns no software authority"),
-    DIRECT_COMMAND("agentinterface.visual_instruments", 2, "node_status",
-      "zclassic23 app presentation status",
+    CATALOG_COMMAND("agentinterface.visual_instruments", 2, "node_status",
+      "app.presentation.status",
       "show target-node-owned height, gap, peers, onion, backup, and package-worker facts"),
-    DIRECT_COMMAND("agentinterface.visual_instruments", 3, "code_change",
-      "zclassic23 app presentation code-change --input='<exact-roots-and-summaries>'",
+    CATALOG_COMMAND("agentinterface.visual_instruments", 3, "code_change",
+      "app.presentation.code-change",
       "show exact local ZVCS source facts while visibly separating agent behavior summaries"),
-    DIRECT_COMMAND("agentinterface.visual_instruments", 4,
+    CATALOG_COMMAND("agentinterface.visual_instruments", 4,
       "reproduction_progress",
-      "zclassic23 app presentation reproduction --input='{\"action_id\":\"<64hex>\"}'",
+      "app.presentation.reproduction",
       "show target-node proof-ledger progress for one exact action in one replaceable window"),
-    DIRECT_COMMAND("agentinterface.visual_instruments", 5,
+    CATALOG_COMMAND("agentinterface.visual_instruments", 5,
       "publication_confirmation",
-      "zclassic23 app presentation publication-confirm --input='<exact-package-plan-inputs>'",
+      "app.presentation.publication-confirm",
       "ask for one exact human decision; the command performs no publication action"),
-    DIRECT_COMMAND("agentinterface.visual_instruments", 6, "corpus_status",
-      "zclassic23 app presentation corpus",
+    CATALOG_COMMAND("agentinterface.visual_instruments", 6, "corpus_status",
+      "app.presentation.corpus",
       "show canonical signed-checkpoint C23 corpus facts without starting another census"),
-    DIRECT_COMMAND("agentinterface.visual_instruments", 7,
+    CATALOG_COMMAND("agentinterface.visual_instruments", 7,
       "publication_status",
-      "zclassic23 app presentation publication-status --input='<exact-package-identities>'",
+      "app.presentation.publication-status",
       "show local commit, pointer, provider, peer discovery, and exact peer fetch as separate evidence stages"),
-    DIRECT_COMMAND("agentinterface.visual_instruments", 8,
+    CATALOG_COMMAND("agentinterface.visual_instruments", 8,
       "bounded_display",
-      "zclassic23 app presentation show --input='<bounded-inert-model>'",
+      "app.presentation.show",
       "show agent-supplied tables, charts, timelines, graphs, choices, or forms; use typed instruments for node-owned facts and confirmations"),
 
     DIRECT_COMMAND("agentmap.telemetry", 1, "compact_status",
@@ -155,6 +160,7 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
       "background tests/fuzz/coverage verdicts"),
 };
 #undef DIRECT_COMMAND
+#undef CATALOG_COMMAND
 #undef CONTRACT_COMMAND
 
 static const size_t g_agent_command_surface_count =
@@ -487,6 +493,36 @@ static bool agent_push_command_surface_entry_json(
     if (e->method && e->method[0]) {
         return agent_push_contract_command_json(arr, e->name, e->method,
                                                 e->purpose_override);
+    }
+
+    if (e->catalog_path && e->catalog_path[0]) {
+        const struct zcl_command_spec *spec = zcl_command_registry_find(
+            zcl_command_catalog(), e->catalog_path, NULL);
+        if (!spec || spec->availability != ZCL_COMMAND_READY ||
+            !spec->example || !spec->example[0])
+            return false;
+
+        char discover[128];
+        int discover_len = snprintf(discover, sizeof(discover),
+                                    "zclassic23 discover schema %s",
+                                    spec->path);
+        if (discover_len <= 0 || (size_t)discover_len >= sizeof(discover))
+            return false;
+
+        struct json_value obj;
+        json_init(&obj);
+        json_set_object(&obj);
+        json_push_kv_str(&obj, "name", e->name);
+        json_push_kv_str(&obj, "path", spec->path);
+        json_push_kv_str(&obj, "native", spec->example);
+        json_push_kv_str(&obj, "input_schema", spec->input_schema);
+        json_push_kv_str(&obj, "input_keys", spec->input_keys);
+        json_push_kv_str(&obj, "output_schema", spec->output_schema);
+        json_push_kv_str(&obj, "discover_input", discover);
+        json_push_kv_str(&obj, "purpose", e->purpose_override);
+        json_push_back(arr, &obj);
+        json_free(&obj);
+        return true;
     }
 
     if (!e->native_override || !e->native_override[0])
