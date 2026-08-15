@@ -3210,6 +3210,11 @@ int main(int argc, char **argv)
      * (<datadir>/zcode/corpus/checkpoint.hex). Write-only, atomic, never
      * touches any other datadir content. */
     if (args.install_datadir) {
+        if (mkdir(args.install_datadir, 0755) != 0 && errno != EEXIST) {
+            LOG_ERROR(CENSUS_LOG, "install mkdir %s: %s",
+                      args.install_datadir, strerror(errno));
+            return 1;
+        }
         size_t dir_cap = strlen(args.install_datadir) + 32u;
         char *zcode_dir = zcl_malloc(dir_cap, "corpus.install.dir");
         if (!zcode_dir)
