@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zbase64/zbase64",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zbase64/zbase64.h",
+    "src/zbase64.c",
+    "tests/test_zbase64.c",
+    "zcode-package.json"
+  ]
+}

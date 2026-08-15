@@ -99,3 +99,4 @@ package zclassic23-commons/zcsv | root f864f254758d5da85058ca18c6411cd5cf71999ea
 package zmap/zmap | root ae1c1bb4922688ea0020c4831c833bbf5410956719c1347ebe9f74a6a65e65d6 | store /home/rhett/.zclassic-c23-commons-factory-c | kind ai | spdx MIT
 package zini/zini | root 2b08ba41a58a837cfafbdb10921a86da096df74f428a06ad99e8d7e0b7f3ed03 | store /home/rhett/.zclassic-c23-commons-factory-c | kind ai | spdx MIT
 package zsemver/zsemver | root b919d97ad8a9f9754d2357a3cda8f1cace35e677fe38cdc1452f321c38562ab5 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zbase64/zbase64 | root e82a1c1410dcc4f22e4e53cc0eea9d4e8b794f18f7a70731d065ebb2922b4eb7 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
