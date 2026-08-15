@@ -187,7 +187,7 @@ void zcl_native_handle_presentation_reproduction(
         npr_fail(reply, "REPRODUCTION_MODEL_INVALID", why);
         return;
     }
-    zcl_native_present_model(&model, NPR_LEAF, reply);
+    zcl_native_present_model(&model, NPR_LEAF, request->input, reply);
     if (reply->status == ZCL_COMMAND_STATUS_PASSED) {
         (void)json_push_kv_str(&reply->data, "fact_authority",
                               "target_node_build_proof_ledger");

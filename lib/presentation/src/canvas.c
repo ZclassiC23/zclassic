@@ -4,8 +4,19 @@
 #include "presentation/canvas.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* GCC 16 can fold stb_truetype's `(float)sqrt(double_expression)` into the
+ * host's new sqrtf ABI even when the release link targets the pinned older
+ * glibc sysroot. Keep the vendored renderer on the long-established double
+ * sqrt symbol; volatile blocks that unsafe cross-ABI narrowing transform. */
+static double canvas_sqrt_compat(double value)
+{
+    volatile double exact = value;
+    return sqrt(exact);
+}
 
 /* The pinned upstream implementation compares float intermediates with a few
  * unsuffixed math constants. Keep the project's -Werror contract on our code
@@ -14,6 +25,8 @@
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wdouble-promotion"
 #endif
+#define STBTT_sqrt(x) canvas_sqrt_compat(x)
+#define STBTT_pow(x, y) pow((x), (y))
 #define STB_TRUETYPE_IMPLEMENTATION
 #include "../../../vendor/typography/stb_truetype.h"
 #if defined(__GNUC__) || defined(__clang__)

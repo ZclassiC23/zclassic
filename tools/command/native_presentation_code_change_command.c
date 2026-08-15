@@ -444,7 +444,7 @@ void zcl_native_handle_presentation_code_change(
         npc_fail(reply, "CODE_CHANGE_MODEL_INVALID", why);
         return;
     }
-    zcl_native_present_model(&model, NPC_LEAF, reply);
+    zcl_native_present_model(&model, NPC_LEAF, request->input, reply);
     if (reply->status == ZCL_COMMAND_STATUS_PASSED) {
         (void)json_push_kv_str(&reply->data, "fact_authority", "local_zvcs_cas");
         (void)json_push_kv_str(&reply->data, "summary_authority", "agent");

@@ -231,7 +231,7 @@ bool ui_present_model_from_json(const struct json_value *input,
 {
     static const char *const allowed[] = {
         "kind", "request_id", "title", "summary", "exact_root",
-        "items", "actions",
+        "items", "actions", "output", "page",
     };
     if (error && error_cap > 0) error[0] = '\0';
     if (!out || !ui_present_keys_allowed(

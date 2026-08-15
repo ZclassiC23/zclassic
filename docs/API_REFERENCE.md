@@ -581,17 +581,17 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `app qr show` | ready | mutate / app-write / operator · fast/low | **`payload`**, `title` | `zcl.app_qr_show.v1` | `zclassic23 app qr show 'zclassic:t1...?amount=0.01'` | Show a payload as a native QR window |
+| `app qr show` | ready | mutate / app-write / operator · fast/low | **`payload`**, `title`, `output`, `page` | `zcl.app_qr_show.v1` | `zclassic23 app qr show 'zclassic:t1...?amount=0.01'` | Show a payload as a native QR window |
 
 #### `app.presentation` — Native presentation
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `app presentation show` | ready | mutate / app-write / operator · fast/low | **`kind`**, **`request_id`**, **`title`**, `summary`, `exact_root`, `items`, `actions` | `zcl.app_presentation_show.v1` | `zclassic23 app presentation show --input='<bounded-model>'` | Show a bounded renderer-neutral model in a native C23 window |
-| `app presentation status` | ready | mutate / app-write / operator · fast/low | none | `zcl.app_presentation_status.v1` | `zclassic23 app presentation status` | Show canonical node facts in a native C23 status card |
-| `app presentation code-change` | ready | mutate / app-write / operator · fast/low | **`workspace`**, **`before_root`**, **`candidate_root`**, **`path`**, **`requested_behavior`**, **`before_behavior`**, **`after_behavior`** | `zcl.app_presentation_code_change.v1` | `zclassic23 app presentation code-change --input='<exact-roots-and-summaries>'` | Show an exact ZVCS-backed C code change in a native window |
-| `app presentation reproduction` | ready | mutate / app-write / operator · fast/low | **`action_id`** | `zcl.app_presentation_reproduction.v1` | `zclassic23 app presentation reproduction --input='{"action_id":"<64hex>"}'` | Show live independent-reproduction progress in one native window |
-| `app presentation publication-confirm` | ready | mutate / app-write / operator · foreground/moderate | `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `datadir` | `zcl.app_presentation_publication_confirm.v1` | `zclassic23 app presentation publication-confirm --input='{"release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Ask for an exact local package-publication decision in native C23 |
+| `app presentation show` | ready | mutate / app-write / operator · fast/low | **`kind`**, **`request_id`**, **`title`**, `summary`, `exact_root`, `items`, `actions`, `output`, `page` | `zcl.app_presentation_show.v1` | `zclassic23 app presentation show --input='<bounded-model>'` | Show a bounded renderer-neutral model in a native C23 window |
+| `app presentation status` | ready | mutate / app-write / operator · fast/low | `output`, `page` | `zcl.app_presentation_status.v1` | `zclassic23 app presentation status` | Show canonical node facts in a native C23 status card |
+| `app presentation code-change` | ready | mutate / app-write / operator · fast/low | **`workspace`**, **`before_root`**, **`candidate_root`**, **`path`**, **`requested_behavior`**, **`before_behavior`**, **`after_behavior`**, `output`, `page` | `zcl.app_presentation_code_change.v1` | `zclassic23 app presentation code-change --input='<exact-roots-and-summaries>'` | Show an exact ZVCS-backed C code change in a native window |
+| `app presentation reproduction` | ready | mutate / app-write / operator · fast/low | **`action_id`**, `output`, `page` | `zcl.app_presentation_reproduction.v1` | `zclassic23 app presentation reproduction --input='{"action_id":"<64hex>"}'` | Show live independent-reproduction progress in one native window |
+| `app presentation publication-confirm` | ready | mutate / app-write / operator · foreground/moderate | `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `datadir`, `output`, `page` | `zcl.app_presentation_publication_confirm.v1` | `zclassic23 app presentation publication-confirm --input='{"release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Ask for an exact local package-publication decision in native C23 |
 
 #### `app.blog` — Blog
 

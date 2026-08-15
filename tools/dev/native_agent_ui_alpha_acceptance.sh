@@ -364,6 +364,43 @@ set -e
 json_has "$HEADLESS_REPLY" 'HEADLESS_DISPLAY_UNAVAILABLE' ||
     fail "headless refusal was not named"
 
+# The exact same typed instrument has a deterministic, display-independent
+# companion. Text delivery must neither require DISPLAY nor wake/replace the
+# resident host, and it remains explicitly display-only inert data.
+TEXT_HOSTS_BEFORE="$(host_pids)"
+QR_TEXT_REPLY="$(env -u DISPLAY "$NODE_BIN" app qr show \
+    --input='{"payload":"headless-text-exact","title":"Text QR","output":"text"}')" ||
+    fail "headless QR text companion failed"
+json_has "$QR_TEXT_REPLY" '"launched":false' ||
+    fail "QR text companion claimed a native launch: $QR_TEXT_REPLY"
+json_has "$QR_TEXT_REPLY" '"delivery":"text"' ||
+    fail "QR text companion lost its delivery identity: $QR_TEXT_REPLY"
+json_has "$QR_TEXT_REPLY" 'payload-fragment: headless-text-exact' ||
+    fail "QR text companion lost exact payload bytes: $QR_TEXT_REPLY"
+json_has "$QR_TEXT_REPLY" '"authority":"display-only"' ||
+    fail "QR text companion lost the authority boundary: $QR_TEXT_REPLY"
+
+STATUS_TEXT_MODEL='{"kind":"status","request_id":"alpha-status","title":"Alpha node status","summary":"NODE FACT - bounded native status instrument","items":[{"kind":"key-value","status":"green","label":"NODE FACT - presentation host","value":"ready"}],"output":"text"}'
+STATUS_TEXT_REPLY="$(env -u DISPLAY "$NODE_BIN" app presentation show \
+    --input="$STATUS_TEXT_MODEL")" ||
+    fail "headless status text companion failed"
+json_has "$STATUS_TEXT_REPLY" 'kind: status' ||
+    fail "status text companion lost its model kind: $STATUS_TEXT_REPLY"
+json_has "$STATUS_TEXT_REPLY" 'NODE FACT - presentation host' ||
+    fail "status text companion lost its exact item: $STATUS_TEXT_REPLY"
+DIFF_TEXT_MODEL='{"kind":"code-diff","request_id":"alpha-diff-text","title":"Alpha exact code diff","exact_root":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","items":[{"kind":"diff-remove","label":"before","value":"return 0;"},{"kind":"diff-add","status":"green","label":"candidate","value":"return verified;"}],"output":"text","page":1}'
+DIFF_TEXT_REPLY="$(env -u DISPLAY "$NODE_BIN" app presentation show \
+    --input="$DIFF_TEXT_MODEL")" ||
+    fail "headless paged code-diff text companion failed"
+json_has "$DIFF_TEXT_REPLY" 'page: 2/2' ||
+    fail "code-diff text companion lost normalized paging: $DIFF_TEXT_REPLY"
+json_has "$DIFF_TEXT_REPLY" 'value: return verified;' ||
+    fail "code-diff text companion lost its exact candidate: $DIFF_TEXT_REPLY"
+json_has "$DIFF_TEXT_REPLY" 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' ||
+    fail "code-diff text companion lost its exact root: $DIFF_TEXT_REPLY"
+[ "$TEXT_HOSTS_BEFORE" = "$(host_pids)" ] ||
+    fail "text-only delivery changed the resident native host set"
+
 DEPENDENCIES="$(ldd "$NODE_BIN" 2>&1 | tr '[:upper:]' '[:lower:]')"
 case "$DEPENDENCIES" in
     *gtk*|*webkit*|*javascriptcore*|*libnode*)
@@ -374,4 +411,4 @@ AFTER_BROWSERS="$(browser_snapshot)"
     fail "browser process set changed during the native journey"
 
 printf '%s\n' \
-    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"code_diff\":true,\"bounded_keyboard_pagination\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"
+    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"
