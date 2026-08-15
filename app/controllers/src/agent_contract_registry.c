@@ -114,6 +114,13 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
       "publication_confirmation",
       "zclassic23 app presentation publication-confirm --input='<exact-package-plan-inputs>'",
       "ask for one exact human decision; the command performs no publication action"),
+    DIRECT_COMMAND("agentinterface.visual_instruments", 6, "corpus_status",
+      "zclassic23 app presentation corpus",
+      "show canonical signed-checkpoint C23 corpus facts without starting another census"),
+    DIRECT_COMMAND("agentinterface.visual_instruments", 7,
+      "publication_status",
+      "zclassic23 app presentation publication-status --input='<exact-package-identities>'",
+      "show local commit, pointer, provider, peer discovery, and exact peer fetch as separate evidence stages"),
 
     DIRECT_COMMAND("agentmap.telemetry", 1, "compact_status",
       "zclassic23 status",
