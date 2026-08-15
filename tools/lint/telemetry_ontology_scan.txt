@@ -54,6 +54,7 @@ connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json o
 connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &outbound outbound.
 connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &inbound inbound.
 connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &addnode addnode.
+connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &zcl23_db zcl23_db.
 connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &reactor reactor.
 connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &v2j v2transport.
 connman app/controllers/src/diagnostics_connman.c connman_diag_dump_state_json &msg message_cycle.

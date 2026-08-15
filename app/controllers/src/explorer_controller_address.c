@@ -81,10 +81,12 @@ size_t serve_address(const char *param, uint8_t *r, size_t max)
         for (int i = 0; i < count; i++) {
             struct explorer_address_utxo_row *row = &rows[nrows];
             struct uint256 utxo_txid;
+            char txid_hex[65];
             memcpy(utxo_txid.data, utxos[i].txid, 32);
-            uint256_get_hex(&utxo_txid, row->txid_hex);
+            uint256_get_hex(&utxo_txid, txid_hex);
+            memcpy(row->txid_hex, txid_hex, sizeof(txid_hex));
             snprintf(row->short_txid, sizeof(row->short_txid), "%.8s...%.4s",
-                     row->txid_hex, row->txid_hex + 60);
+                     txid_hex, txid_hex + 60);
 
             zcl_format_zcl(row->value, sizeof(row->value), utxos[i].value);
             row->vout = utxos[i].vout;

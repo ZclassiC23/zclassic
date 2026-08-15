@@ -23,6 +23,39 @@ static void test_set_ipv4(struct net_address *addr,
     addr->svc.port = port;
 }
 
+struct test_known_zcl23_ctx {
+    struct connman_known_peer peers[8];
+    int count;
+};
+
+static int test_known_zcl23_peers(void *ctx,
+                                  struct connman_known_peer *out,
+                                  size_t max)
+{
+    struct test_known_zcl23_ctx *known = ctx;
+    if (!known || !out || max == 0)
+        return 0;
+    size_t count = (size_t)known->count;
+    if (count > max)
+        count = max;
+    memcpy(out, known->peers, count * sizeof(*out));
+    return (int)count;
+}
+
+static void test_known_add_ipv4(struct test_known_zcl23_ctx *known,
+                                uint8_t a, uint8_t b, uint8_t c, uint8_t d,
+                                uint16_t port)
+{
+    if (!known || known->count >= 8)
+        return;
+    struct net_address addr;
+    test_set_ipv4(&addr, a, b, c, d, port);
+    struct connman_known_peer *peer = &known->peers[known->count++];
+    memcpy(peer->ip, addr.svc.addr.ip, sizeof(peer->ip));
+    peer->port = port;
+    peer->services = NODE_NETWORK | NODE_ZCL23;
+}
+
 static struct p2p_node *add_test_peer(struct connman *cm,
                                       uint8_t a, uint8_t b,
                                       uint8_t c, uint8_t d,
@@ -153,6 +186,104 @@ int test_connman_addnode_fallback(void)
                        NULL) &&
              source == CONNMAN_TARGET_ADDNODE &&
              remaining.addr.svc.port == 20024;
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: discovered ZCL23 peers share durable "
+           "backoff and reciprocal ownership... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        struct test_known_zcl23_ctx known;
+        struct net_addr source;
+        memset(&sigs, 0, sizeof(sigs));
+        memset(&known, 0, sizeof(known));
+        net_addr_init(&source);
+        bool ok = connman_init(&cm, params, &sigs);
+
+        test_known_add_ipv4(&known, 140, 174, 189, 3, 8033);
+        test_known_add_ipv4(&known, 205, 209, 104, 118, 8033);
+        connman_set_known_zcl23_peer_source(&cm, test_known_zcl23_peers,
+                                            &known);
+
+        /* A healthy general candidate proves a cooling/stable ZCL23 set
+         * cannot starve the rest of addrman. */
+        struct net_address general;
+        test_set_ipv4(&general, 81, 214, 132, 20, 8033);
+        general.nTime = (uint32_t)platform_time_wall_time_t();
+        ok = ok && addrman_add(&cm.manager.addrman, &general, &source, 0);
+
+        /* The first known endpoint is already connected inbound under an
+         * ephemeral source port. Exact endpoint comparison would miss it;
+         * the handshake-qualified IP ownership rule must suppress the
+         * reciprocal outbound collision. */
+        struct p2p_node *inbound = add_test_peer(
+            &cm, 140, 174, 189, 3, PEER_HANDSHAKE_COMPLETE, true, false);
+        ok = ok && inbound != NULL;
+        if (inbound) {
+            inbound->addr.svc.port = 49152;
+            inbound->services = NODE_NETWORK | NODE_ZCL23;
+            memcpy(inbound->advertised_service.addr.ip,
+                   known.peers[0].ip,
+                   sizeof(inbound->advertised_service.addr.ip));
+            inbound->advertised_service.port = known.peers[0].port;
+            inbound->advertised_service_valid = true;
+        }
+
+        struct connman_dial_candidate candidate;
+        memset(&candidate, 0, sizeof(candidate));
+        size_t n = ok ? connman_gather_dial_candidates(&cm, &candidate, 1) : 0;
+        ok = ok && n == 1;
+        ok = ok && !(candidate.source == CONNMAN_TARGET_ZCL23_DB &&
+                     candidate.addr.svc.addr.ip[12] == 140);
+
+        /* Whichever other known endpoint was selected now owns an addrman
+         * attempt. Put it into the persisted six-hour tier and prove the
+         * next preferred turn falls through to a healthy general peer. */
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        ok = ok && test_addrman_set_fail(&cm, 205, 10, now);
+        atomic_store(&cm.zcl23_preference_round, 0);
+        memset(&candidate, 0, sizeof(candidate));
+        n = ok ? connman_gather_dial_candidates(&cm, &candidate, 1) : 0;
+        ok = ok && n == 1 &&
+             candidate.source == CONNMAN_TARGET_ADDRMAN &&
+             candidate.addr.svc.addr.ip[12] == 81;
+        ok = ok && atomic_load(&cm.zcl23_backoff_skips) >= 1;
+        ok = ok && atomic_load(&cm.zcl23_policy_skips) >= 1;
+
+        /* Three days of a peer that accepts TCP and immediately closes must
+         * remain a small bounded number of scheduler assignments, not the
+         * tens-of-thousands/day trajectory observed on rhett4. */
+        int simulated_attempts = 0;
+        int64_t next_attempt = 0;
+        for (int64_t second = 0; second < 3 * 86400; second++) {
+            if (second < next_attempt)
+                continue;
+            simulated_attempts++;
+            next_attempt = second +
+                connman_addrman_retry_cooldown_for_test(simulated_attempts);
+        }
+        ok = ok && simulated_attempts <= 20;
+
+        /* After the durable cooldown expires, the same endpoint is eligible
+         * through the shared scheduler again and is charged only once. */
+        ok = ok && test_addrman_set_fail(&cm, 205, 10, now - 21601);
+        atomic_store(&cm.zcl23_preference_round, 0);
+        memset(&candidate, 0, sizeof(candidate));
+        n = ok ? connman_gather_dial_candidates(&cm, &candidate, 1) : 0;
+        ok = ok && n == 1 &&
+             candidate.source == CONNMAN_TARGET_ZCL23_DB &&
+             candidate.addr.svc.addr.ip[12] == 205;
+        struct addr_info charged;
+        memset(&charged, 0, sizeof(charged));
+        ok = ok && addrman_find_info(&cm.manager.addrman,
+                                     &candidate.addr.svc, &charged) &&
+             charged.attempts == 11;
+
         connman_free(&cm);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }

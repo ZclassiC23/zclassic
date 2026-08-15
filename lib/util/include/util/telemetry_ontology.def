@@ -447,6 +447,36 @@ TELEMETRY_FIELD("connman", "addnode.entries[].retired",
 TELEMETRY_FIELD("connman", "addnode.entries[].retired_at",
     TFU_UNIX_TIME, TFR_INFO, NULL, 0, TFS_INFO,
     "unix time this target was retired, 0 if it never was", "", "")
+TELEMETRY_FIELD("connman", "zcl23_db.preference_rounds",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "scheduler rounds in which database-discovered ZCL23 preference was "
+    "considered; alternate rounds remain available to general candidates",
+    "", "")
+TELEMETRY_FIELD("connman", "zcl23_db.candidates_seen",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "cumulative database rows examined by preferred scheduler rounds", "", "")
+TELEMETRY_FIELD("connman", "zcl23_db.dials_scheduled",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "database-discovered endpoints actually assigned to the one persistent "
+    "dial scheduler after dedupe, ownership, diversity and cooldown gates",
+    "", "")
+TELEMETRY_FIELD("connman", "zcl23_db.backoff_skips",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "candidate observations suppressed by addrman's durable consecutive-"
+    "failure cooldown", "", "")
+TELEMETRY_FIELD("connman", "zcl23_db.policy_skips",
+    TFU_COUNT_TOTAL, TFR_INFO, NULL, 0, TFS_INFO,
+    "candidate observations suppressed because the exact endpoint is already "
+    "owned by a handshaked reciprocal connection, is duplicated, local, "
+    "invalid, or outside the diversity policy", "", "")
+TELEMETRY_FIELD("connman", "zcl23_db.owner",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "the component authorized to create these connections; always "
+    "persistent_dial_scheduler", "", "")
+TELEMETRY_FIELD("connman", "zcl23_db.success_gate",
+    TFU_ENUM, TFR_INFO, NULL, 0, TFS_INFO,
+    "the event that clears the endpoint failure ledger; always a completed "
+    "protocol_handshake, never TCP connect alone", "", "")
 TELEMETRY_FIELD("connman", "reactor.npfds_high_water",
     TFU_GAUGE, TFR_INFO, NULL, 0, TFS_INFO,
     "the largest number of pollable descriptors the reactor has held at once "

@@ -93,6 +93,16 @@ int connman_outbound_onion_count(struct connman *cm);
 bool connman_addr_is_connected(struct connman *cm,
                                const struct net_address *addr);
 
+/* Shared failure-aware addrman policy. Discovered ZCL23 endpoints must pass
+ * this same durable cooldown/diversity gate instead of owning a retry loop. */
+int connman_addrman_retry_cooldown_for_attempts(int attempts);
+bool connman_addrman_candidate_usable(struct connman *cm,
+                                      const struct addr_info *info);
+
+bool connman_gather_known_zcl23_candidate(
+    struct connman *cm, const struct net_service *batch_services,
+    size_t batch_count, struct connman_dial_candidate *out);
+
 /* Release the +1 caller-owned ref that connect_node/connect_node_from_socket
  * ALWAYS return. See the definition in connman.c for the full ref-lifecycle
  * contract. */

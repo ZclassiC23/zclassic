@@ -45,6 +45,12 @@ published node is a C23 executable with pinned project dependencies linked
 statically; it does not inherit GTK/WebKit or the C++ LevelDB runtime from the
 build host. The build fails closed if the ELF dependency audit finds one.
 
+For a binary intended to move between x86-64 Linux machines, use
+`make portable`. It needs no container or root access: it downloads a
+checksum-pinned GLIBC 2.31 sysroot, rebuilds all linked archives through that
+boundary, forces the baseline x86-64/SSE2 CPU, and executes a typed command
+under the old loader before declaring success.
+
 The first build needs internet access once: `make` auto-runs `make vendor`,
 which fetches pinned third-party source tarballs (OpenSSL, libevent, LevelDB,
 zlib, SQLite, the canonical Zcash Sapling prover), verifies each against a

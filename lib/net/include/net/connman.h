@@ -112,6 +112,7 @@ enum connman_outbound_target_source {
     CONNMAN_TARGET_ADDRMAN,
     CONNMAN_TARGET_ANCHOR,   /* persisted anchors.dat, dialed first at boot */
     CONNMAN_TARGET_DHT_HINT, /* chain-bound ZENDP hint, one priority attempt */
+    CONNMAN_TARGET_ZCL23_DB, /* discovered peer, via the shared scheduler */
 };
 
 enum connman_addnode_failure_kind {
@@ -268,6 +269,15 @@ struct connman {
     onion_peer_discover_fn onion_peer_discover;
     connman_known_zcl23_peers_fn known_zcl23_peers;
     void *known_zcl23_peers_ctx;
+    /* One dial owner for every source. The ZCL23 database is preferred on
+     * alternating scheduler turns, while its exact endpoints inherit
+     * addrman's durable handshake-qualified failure cooldown. These counters
+     * make suppression and fairness visible without an unbounded ledger. */
+    _Atomic uint64_t zcl23_preference_round;
+    _Atomic uint64_t zcl23_candidates_seen;
+    _Atomic uint64_t zcl23_dials_scheduled;
+    _Atomic uint64_t zcl23_backoff_skips;
+    _Atomic uint64_t zcl23_policy_skips;
 
     /* Message-loop counters for operator/agent diagnostics. The message
      * thread updates these on the hot path; RPC/API readers snapshot them
@@ -439,7 +449,8 @@ struct connman_dial_candidate {
  * dial candidates for one non-blocking batch, in PRIORITY order:
  *   1. un-tried persisted anchors (each dialed once, marked tried), then
  *   2. a chain-bound DHT endpoint hint, then
- *   3. addnode / addrman via connman_pick_next_outbound_target.
+ *   3. database-discovered ZCL23 peers on alternating scheduler turns, then
+ *   4. addnode / addrman via connman_pick_next_outbound_target.
  * Every candidate passes the same per-candidate gates the serial dialer used
  * (reachable port, not already connected, not is_local, /16+/32+onion
  * diversity), PLUS an in-batch dedupe + diversity tally so a single batch
@@ -459,6 +470,7 @@ bool connman_connect_only_wait_needed_for_test(bool connect_only,
 bool connman_outbound_rate_allowed_for_test(bool below_floor,
                                             bool interval_elapsed,
                                             bool dht_hint_pending);
+int connman_addrman_retry_cooldown_for_test(int attempts);
 #endif
 
 /* Snapshot the currently healthy (handshaked, NODE_NETWORK, non-disconnecting,

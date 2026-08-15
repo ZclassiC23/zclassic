@@ -28,7 +28,9 @@
                "protocol failures/retired), reactor admission + "
                "message-cycle counters, the net.outbound_floor supervisor "
                "contract, an addrman size/new/tried pointer, and a "
-               "per-source dial-attempt-outcome rollup",
+               "per-source dial-attempt-outcome rollup; zcl23_db names its "
+               "single scheduler owner, handshake gate, scheduled dials, "
+               "and backoff/policy skips",
                "app/controllers/src/diagnostics_connman.c",
                "lib/test/src/test_syncdiag_operator.c"),
     DIAG_CHAIN("addrman", addrman_diag_dump_state_json,

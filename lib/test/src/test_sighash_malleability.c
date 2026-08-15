@@ -375,6 +375,8 @@ int test_sighash_malleability(void)
 
         unsigned char sig[72]; size_t siglen = sizeof(sig);
         ok = ok && privkey_sign(&key, &hash_all, sig, &siglen);
+        if (siglen > sizeof(sig))
+            ok = false;
 
         /* Control scriptSig: <sig || SIGHASH_ALL>. */
         struct script ssig_ctrl; script_init(&ssig_ctrl);

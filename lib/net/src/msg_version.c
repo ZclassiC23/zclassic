@@ -351,6 +351,15 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
 
     node->version = ver.protocol_version;
     node->services = ver.services;
+    if (node->state < PEER_HANDSHAKE_COMPLETE) {
+        node->advertised_service_valid = false;
+        if (node->inbound && ver.addr_from.svc.port != 0 &&
+            net_addr_is_routable(&ver.addr_from.svc.addr) &&
+            net_addr_eq(&ver.addr_from.svc.addr, &node->addr.svc.addr)) {
+            node->advertised_service = ver.addr_from.svc;
+            node->advertised_service_valid = true;
+        }
+    }
     strncpy(node->sub_ver, ver.sub_version, MAX_SUBVERSION_LENGTH - 1);
     node->sub_ver[MAX_SUBVERSION_LENGTH - 1] = '\0';
     strncpy(node->clean_sub_ver, ver.sub_version, MAX_SUBVERSION_LENGTH - 1);
@@ -512,9 +521,12 @@ bool process_verack(struct msg_processor *mp, struct p2p_node *node)
 
     /* Mark peer as good in addrman — increases selection priority */
     if (mp->net_mgr) {
-        addrman_good(&mp->net_mgr->addrman, &node->addr.svc,
+        const struct net_service *stable =
+            node->inbound && node->advertised_service_valid
+                ? &node->advertised_service : &node->addr.svc;
+        addrman_good(&mp->net_mgr->addrman, stable,
                       (int64_t)platform_time_wall_time_t());
-        addrman_connected(&mp->net_mgr->addrman, &node->addr.svc,
+        addrman_connected(&mp->net_mgr->addrman, stable,
                            (int64_t)platform_time_wall_time_t());
     }
 
