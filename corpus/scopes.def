@@ -102,3 +102,4 @@ package zsemver/zsemver | root b919d97ad8a9f9754d2357a3cda8f1cace35e677fe38cdc14
 package zbase64/zbase64 | root e82a1c1410dcc4f22e4e53cc0eea9d4e8b794f18f7a70731d065ebb2922b4eb7 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zglob/zglob | root 13914d634838bcde336606b8e7cf89b439653a108e676d1baec065685c25f06a | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zrange/zrange | root e0999bc8bc206749dae55a49f5ece8f0856e42a2742310b58e65c9267312957b | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zutf8/zutf8 | root 6495fd455de7b7dca7c9fd5e5e6a4e1f8b0637252cc558635fe6c99e9cb90b3c | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
