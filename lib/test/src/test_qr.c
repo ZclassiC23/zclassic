@@ -12,6 +12,7 @@
 #include "views/qr_popup.h"
 #include "views/ui_present.h"
 #include "views/ui_present_document.h"
+#include "views/ui_present_host_transport.h"
 #include "vcs/zcode_work_node.h"
 
 #include <stdio.h>
@@ -645,6 +646,145 @@ int test_qr(void)
     QR_CHECK("choice/action ID drift fails closed",
              !zcl_present_model_validate_v1(&choice, why, sizeof(why)) &&
              strstr(why, "matching select actions") != NULL);
+
+    struct zcl_present_model_v1 form_model;
+    zcl_present_model_init_v1(&form_model, ZCL_PRESENT_MODEL_FORM);
+    (void)snprintf(form_model.request_id, sizeof(form_model.request_id),
+                   "release-form");
+    (void)snprintf(form_model.title, sizeof(form_model.title),
+                   "Describe exact release");
+    memset(form_model.exact_root, 'f', ZCL_PRESENT_MODEL_ROOT_MAX);
+    form_model.exact_root[ZCL_PRESENT_MODEL_ROOT_MAX] = '\0';
+    form_model.item_count = 2;
+    form_model.items[0].kind = ZCL_PRESENT_ITEM_FORM_FIELD;
+    form_model.items[0].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+    form_model.items[0].flags = ZCL_PRESENT_ITEM_REQUIRED;
+    (void)snprintf(form_model.items[0].id,
+                   sizeof(form_model.items[0].id), "release-note");
+    (void)snprintf(form_model.items[0].label,
+                   sizeof(form_model.items[0].label), "Release note");
+    form_model.items[1].kind = ZCL_PRESENT_ITEM_FORM_FIELD;
+    form_model.items[1].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+    form_model.items[1].flags = ZCL_PRESENT_ITEM_READ_ONLY;
+    (void)snprintf(form_model.items[1].id,
+                   sizeof(form_model.items[1].id), "candidate-root");
+    (void)snprintf(form_model.items[1].label,
+                   sizeof(form_model.items[1].label), "Candidate root");
+    (void)snprintf(form_model.items[1].value,
+                   sizeof(form_model.items[1].value), "immutable-root");
+    form_model.action_count = 2;
+    form_model.actions[0].kind = ZCL_PRESENT_ACTION_CANCEL;
+    (void)snprintf(form_model.actions[0].id,
+                   sizeof(form_model.actions[0].id), "cancel");
+    (void)snprintf(form_model.actions[0].label,
+                   sizeof(form_model.actions[0].label), "Cancel");
+    form_model.actions[1].kind = ZCL_PRESENT_ACTION_SUBMIT;
+    (void)snprintf(form_model.actions[1].id,
+                   sizeof(form_model.actions[1].id), "submit-release-note");
+    (void)snprintf(form_model.actions[1].label,
+                   sizeof(form_model.actions[1].label), "Submit");
+    QR_CHECK("bounded form fixes fields and safe cancel/submit order",
+             zcl_present_model_validate_v1(
+                 &form_model, why, sizeof(why)));
+    struct zcl_present_model_bitmap_v1 form_pixels = {0};
+    struct zcl_present_model_bitmap_v1 form_rows_pixels = {0};
+    bool form_pixels_ok = zcl_present_model_render_v1(
+        &form_model, &form_pixels, why, sizeof(why));
+    struct zcl_present_model_v1 form_rows = form_model;
+    form_rows.kind = ZCL_PRESENT_MODEL_STATUS_CARD;
+    form_rows.action_count = 0;
+    form_rows.exact_root[0] = '\0';
+    for (uint32_t i = 0; i < form_rows.item_count; i++) {
+        form_rows.items[i].kind = ZCL_PRESENT_ITEM_KEY_VALUE;
+        form_rows.items[i].flags = 0;
+    }
+    bool form_rows_ok = zcl_present_model_render_v1(
+        &form_rows, &form_rows_pixels, why, sizeof(why));
+    QR_CHECK("form fields render as input boxes, not generic rows",
+             form_pixels_ok && form_rows_ok &&
+             memcmp(form_pixels.pixels, form_rows_pixels.pixels,
+                    ZCL_PRESENT_MODEL_BITMAP_BYTES) != 0);
+    zcl_present_model_bitmap_free_v1(&form_pixels);
+    zcl_present_model_bitmap_free_v1(&form_rows_pixels);
+
+    struct zcl_present_window_form_v1 form_state = {
+        .struct_size = sizeof(form_state),
+        .abi_version = ZCL_PRESENT_ABI_V1,
+        .field_count = 2,
+        .fields = {
+            {.flags = ZCL_PRESENT_WINDOW_FORM_REQUIRED, .value = ""},
+            {.flags = ZCL_PRESENT_WINDOW_FORM_READ_ONLY,
+             .value = "immutable-root"},
+        },
+    };
+    uint32_t form_focus = UINT32_MAX;
+    QR_CHECK("form reducer accepts one editable and one read-only field",
+             zcl_present_window_form_validate_v1(
+                 &form_state, why, sizeof(why)));
+    QR_CHECK("form typing and Backspace change one exact editable value",
+             zcl_present_window_form_edit_v1(
+                 &form_state, 0, (uint8_t)'A', false) &&
+             strcmp(form_state.fields[0].value, "A") == 0 &&
+             zcl_present_window_form_edit_v1(
+                 &form_state, 0, 0, true) &&
+             form_state.fields[0].value[0] == '\0' &&
+             !zcl_present_window_form_edit_v1(
+                 &form_state, 1, (uint8_t)'x', false));
+    QR_CHECK("form focus skips read-only bytes then reaches both actions",
+             zcl_present_window_form_focus_step_v1(
+                 &form_state, 2, 0, 1, &form_focus) &&
+             form_focus == form_state.field_count &&
+             zcl_present_window_form_focus_step_v1(
+                 &form_state, 2, form_focus, 1, &form_focus) &&
+             form_focus == form_state.field_count + 1u &&
+             zcl_present_window_form_focus_step_v1(
+                 &form_state, 2, form_focus, 1, &form_focus) &&
+             form_focus == 0);
+
+    struct zcl_present_model_v1 submitted_form = form_model;
+    (void)snprintf(submitted_form.items[0].value,
+                   sizeof(submitted_form.items[0].value), "exact note");
+    QR_CHECK("form submission may change only editable value bytes",
+             zcl_present_model_form_submission_validate_v1(
+                 &form_model, &submitted_form, why, sizeof(why)));
+    submitted_form.items[0].label[0] = 'X';
+    QR_CHECK("form submission immutable-label mutant fails closed",
+             !zcl_present_model_form_submission_validate_v1(
+                 &form_model, &submitted_form, why, sizeof(why)));
+    submitted_form = form_model;
+    (void)snprintf(submitted_form.items[1].value,
+                   sizeof(submitted_form.items[1].value), "forged-root");
+    QR_CHECK("form submission read-only mutant fails closed",
+             !zcl_present_model_form_submission_validate_v1(
+                 &form_model, &submitted_form, why, sizeof(why)));
+    submitted_form = form_model;
+    submitted_form.actions[0].kind = ZCL_PRESENT_ACTION_SUBMIT;
+    QR_CHECK("form action-order mutant fails closed",
+             !zcl_present_model_validate_v1(
+                 &submitted_form, why, sizeof(why)));
+
+    uint8_t host_nonce[UI_HOST_NONCE_BYTES];
+    memset(host_nonce, 0x5a, sizeof(host_nonce));
+    uint8_t host_reply[UI_HOST_REPLY_BYTES];
+    uint32_t host_status = UINT32_MAX, host_value = UINT32_MAX;
+    uint32_t host_payload_len = 0;
+    uint64_t host_elapsed = 0;
+    ui_host_transport_reply(
+        host_reply, UI_HOST_PHASE_EVENT, UI_HOST_STATUS_OK, 1,
+        777, 1234, host_nonce);
+    QR_CHECK("form payload length is nonce-bound in the fixed host reply",
+             ui_host_transport_parse_reply(
+                 host_reply, UI_HOST_PHASE_EVENT, &host_status,
+                 &host_value, &host_payload_len, &host_elapsed,
+                 host_nonce) && host_status == UI_HOST_STATUS_OK &&
+             host_value == 1 && host_payload_len == 777 &&
+             host_elapsed == 1234);
+    host_reply[20] = 1;
+    QR_CHECK("host reply reserved-byte mutant fails closed",
+             !ui_host_transport_parse_reply(
+                 host_reply, UI_HOST_PHASE_EVENT, &host_status,
+                 &host_value, &host_payload_len, &host_elapsed,
+                 host_nonce));
 
     uint8_t model_wire[ZCL_PRESENT_MODEL_WIRE_MAX];
     size_t model_wire_len = 0;
@@ -1341,6 +1481,44 @@ int test_qr(void)
                     "display-only") == 0);
     zcl_command_reply_free(&choice_reply);
     json_free(&choice_input);
+
+    static const char form_json[] =
+        "{\"kind\":\"form\",\"request_id\":\"release-form\","
+        "\"title\":\"Describe exact release\",\"output\":\"text\","
+        "\"exact_root\":"
+        "\"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff\","
+        "\"items\":[{\"kind\":\"form-field\",\"id\":\"release-note\","
+        "\"label\":\"Release note\",\"value\":\"\",\"required\":true},"
+        "{\"kind\":\"form-field\",\"id\":\"candidate-root\","
+        "\"label\":\"Candidate root\",\"value\":\"immutable-root\","
+        "\"read_only\":true}],\"actions\":["
+        "{\"kind\":\"cancel\",\"id\":\"cancel\",\"label\":\"Cancel\"},"
+        "{\"kind\":\"submit\",\"id\":\"submit-release-note\","
+        "\"label\":\"Submit\"}]}";
+    struct json_value form_input;
+    json_init(&form_input);
+    QR_CHECK("typed form parses as one exact bounded edit contract",
+             json_read(&form_input, form_json, sizeof(form_json) - 1u));
+    struct zcl_command_request form_request = {.input = &form_input};
+    struct zcl_command_reply form_reply;
+    zcl_command_reply_init(&form_reply,
+                           "zcl.app_presentation_show.v1");
+    zcl_native_handle_presentation_show(&form_request, &form_reply);
+    const char *typed_form_text =
+        json_get_str(json_get(&form_reply.data, "plain_text"));
+    QR_CHECK("agent form text exposes the same fields and safe actions",
+             form_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             typed_form_text &&
+             strstr(typed_form_text, "kind: form") != NULL &&
+             strstr(typed_form_text, "id: release-note") != NULL &&
+             strstr(typed_form_text, "flags: required") != NULL &&
+             strstr(typed_form_text, "flags: read-only") != NULL &&
+             strstr(typed_form_text, "action 1: cancel") != NULL &&
+             strstr(typed_form_text, "action 2: submit") != NULL &&
+             strcmp(json_get_str(json_get(&form_reply.data, "authority")),
+                    "display-only") == 0);
+    zcl_command_reply_free(&form_reply);
+    json_free(&form_input);
 
     struct json_value text_delivery;
     json_init(&text_delivery);

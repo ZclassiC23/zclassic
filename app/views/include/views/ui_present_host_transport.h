@@ -8,9 +8,9 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define UI_HOST_PROTOCOL_VERSION 3u
+#define UI_HOST_PROTOCOL_VERSION 4u
 #define UI_HOST_REQUEST_BYTES 32u
-#define UI_HOST_REPLY_BYTES 40u
+#define UI_HOST_REPLY_BYTES 48u
 #define UI_HOST_NONCE_BYTES 16u
 #define UI_HOST_FLAG_WAIT_EVENT 1u
 #define UI_HOST_PHASE_READY 1u
@@ -36,11 +36,12 @@ bool ui_host_transport_parse_request_header(
     uint32_t *model_len, uint8_t nonce[UI_HOST_NONCE_BYTES]);
 void ui_host_transport_reply(
     uint8_t out[UI_HOST_REPLY_BYTES], uint16_t phase, uint32_t status,
-    uint32_t value, uint64_t elapsed_us,
+    uint32_t value, uint32_t payload_len, uint64_t elapsed_us,
     const uint8_t nonce[UI_HOST_NONCE_BYTES]);
 bool ui_host_transport_parse_reply(
     const uint8_t in[UI_HOST_REPLY_BYTES], uint16_t expected_phase,
-    uint32_t *status, uint32_t *value, uint64_t *elapsed_us,
+    uint32_t *status, uint32_t *value, uint32_t *payload_len,
+    uint64_t *elapsed_us,
     const uint8_t nonce[UI_HOST_NONCE_BYTES]);
 
 #endif /* ZCL_VIEWS_UI_PRESENT_HOST_TRANSPORT_H */

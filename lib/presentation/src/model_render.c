@@ -172,6 +172,32 @@ static int32_t render_choice(
     return y + 50;
 }
 
+static int32_t render_form_field(
+    struct zcl_present_canvas *canvas,
+    const struct zcl_present_model_item_v1 *item, int32_t y)
+{
+    const bool read_only =
+        (item->flags & ZCL_PRESENT_ITEM_READ_ONLY) != 0;
+    char label[112];
+    (void)snprintf(label, sizeof(label), "%s%s%s", item->label,
+                   (item->flags & ZCL_PRESENT_ITEM_REQUIRED) ? "  *" : "",
+                   read_only ? "  read only" : "");
+    text_fit(canvas, ZCL_PRESENT_MODEL_FORM_X, y, label,
+             14u, ZCL_PRESENT_MODEL_FORM_WIDTH, MUTED);
+    int32_t input_y = y + ZCL_PRESENT_MODEL_FORM_INPUT_Y_OFFSET;
+    zcl_present_canvas_fill_rect(
+        canvas, ZCL_PRESENT_MODEL_FORM_X, input_y,
+        ZCL_PRESENT_MODEL_FORM_WIDTH, ZCL_PRESENT_MODEL_FORM_INPUT_HEIGHT,
+        read_only ? PANEL : PAPER);
+    zcl_present_canvas_stroke_rect(
+        canvas, ZCL_PRESENT_MODEL_FORM_X, input_y,
+        ZCL_PRESENT_MODEL_FORM_WIDTH, ZCL_PRESENT_MODEL_FORM_INPUT_HEIGHT,
+        2u, RULE);
+    text_fit(canvas, ZCL_PRESENT_MODEL_FORM_X + 12, input_y + 10,
+             item->value, 16u, ZCL_PRESENT_MODEL_FORM_WIDTH - 24u, INK);
+    return y + ZCL_PRESENT_MODEL_FORM_FIELD_HEIGHT;
+}
+
 static int32_t render_diff(struct zcl_present_canvas *canvas,
                            const struct zcl_present_model_item_v1 *item,
                            int32_t y)
@@ -221,6 +247,8 @@ static int32_t render_item(struct zcl_present_canvas *canvas,
         return render_graph_node(canvas, model, index, y);
     if (item->kind == ZCL_PRESENT_ITEM_CHOICE)
         return render_choice(canvas, item, index, y);
+    if (item->kind == ZCL_PRESENT_ITEM_FORM_FIELD)
+        return render_form_field(canvas, item, y);
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
@@ -239,6 +267,8 @@ static uint32_t item_height(const struct zcl_present_model_item_v1 *item)
     if (item->kind == ZCL_PRESENT_ITEM_CHART_POINT) return 43u;
     if (item->kind == ZCL_PRESENT_ITEM_TIMELINE_EVENT) return 48u;
     if (item->kind == ZCL_PRESENT_ITEM_CHOICE) return 50u;
+    if (item->kind == ZCL_PRESENT_ITEM_FORM_FIELD)
+        return ZCL_PRESENT_MODEL_FORM_FIELD_HEIGHT;
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)

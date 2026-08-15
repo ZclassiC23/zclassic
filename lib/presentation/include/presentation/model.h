@@ -16,6 +16,7 @@ extern "C" {
 #define ZCL_PRESENT_MODEL_WIRE_MAX (32u * 1024u)
 #define ZCL_PRESENT_MODEL_ITEMS_MAX 64u
 #define ZCL_PRESENT_MODEL_ACTIONS_MAX 4u
+#define ZCL_PRESENT_MODEL_FORM_FIELDS_MAX 4u
 #define ZCL_PRESENT_MODEL_TITLE_MAX 80u
 #define ZCL_PRESENT_MODEL_SUMMARY_MAX 240u
 #define ZCL_PRESENT_MODEL_ROOT_MAX 64u
@@ -147,6 +148,16 @@ bool zcl_present_model_encode_v1(const struct zcl_present_model_v1 *model,
 bool zcl_present_model_decode_v1(const uint8_t *wire, size_t wire_len,
                                  struct zcl_present_model_v1 *model,
                                  char *error, size_t error_cap);
+
+/* Validate a form event against the exact inert model that opened the native
+ * window. Only values of non-read-only form fields may differ; all IDs,
+ * labels, flags, actions, roots, and other bytes must re-encode identically.
+ * This is the full node's independent recheck of an authority-free visual
+ * worker result. */
+bool zcl_present_model_form_submission_validate_v1(
+    const struct zcl_present_model_v1 *original,
+    const struct zcl_present_model_v1 *submitted,
+    char *error, size_t error_cap);
 
 const char *zcl_present_model_kind_name(uint16_t kind);
 

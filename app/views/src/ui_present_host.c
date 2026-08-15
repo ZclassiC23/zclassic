@@ -99,7 +99,7 @@ static void ui_host_window_ready(void *context)
     uint8_t reply[UI_HOST_REPLY_BYTES];
     int64_t elapsed = platform_time_monotonic_us() - ready->started_us;
     ui_host_transport_reply(reply, UI_HOST_PHASE_READY, UI_HOST_STATUS_OK,
-                            ready->ready_value,
+                            ready->ready_value, 0,
                             elapsed > 0 ? (uint64_t)elapsed : 0,
                             ready->nonce);
     (void)ui_host_transport_send_all(ready->fd, reply, sizeof(reply));
@@ -110,17 +110,39 @@ static void ui_host_send_rejected(
     const uint8_t nonce[UI_HOST_NONCE_BYTES])
 {
     uint8_t reply[UI_HOST_REPLY_BYTES];
-    ui_host_transport_reply(reply, phase, status, UINT32_MAX, 0, nonce);
+    ui_host_transport_reply(reply, phase, status, UINT32_MAX, 0, 0, nonce);
     (void)ui_host_transport_send_all(fd, reply, sizeof(reply));
 }
 
-static bool ui_host_show_pages(
+static bool ui_host_form_from_model(
+    const struct zcl_present_model_v1 *model,
+    struct zcl_present_window_form_v1 *form)
+{
+    *form = (struct zcl_present_window_form_v1){
+        .struct_size = sizeof(*form),
+        .abi_version = ZCL_PRESENT_ABI_V1,
+        .field_count = model->item_count,
+    };
+    for (uint32_t i = 0; i < model->item_count; i++) {
+        const struct zcl_present_model_item_v1 *item = &model->items[i];
+        struct zcl_present_window_form_field_v1 *field = &form->fields[i];
+        if (item->flags & ZCL_PRESENT_ITEM_REQUIRED)
+            field->flags |= ZCL_PRESENT_WINDOW_FORM_REQUIRED;
+        if (item->flags & ZCL_PRESENT_ITEM_READ_ONLY)
+            field->flags |= ZCL_PRESENT_WINDOW_FORM_READ_ONLY;
+        (void)snprintf(field->value, sizeof(field->value), "%s",
+                       item->value);
+    }
+    char why[128];
+    return zcl_present_window_form_validate_v1(form, why, sizeof(why));
+}
+
+static bool ui_host_show_document(
     int client,
     int replacement_gate,
     uint16_t flags,
     bool view_replaced,
-    const struct zcl_present_window_pages_v1 *pages,
-    uint32_t action_count,
+    struct ui_present_document *document,
     const uint8_t nonce[UI_HOST_NONCE_BYTES])
 {
     char why[192];
@@ -131,19 +153,56 @@ static bool ui_host_show_pages(
         .ready_value = view_replaced ? 1u : 0u,
     };
     memcpy(ready.nonce, nonce, UI_HOST_NONCE_BYTES);
+    struct zcl_present_window_pages_v1 pages = {
+        .struct_size = sizeof(pages),
+        .abi_version = ZCL_PRESENT_ABI_V1,
+        .pages = document->windows,
+        .page_count = document->page_count,
+    };
     struct zcl_present_window_event_v1 event;
-    bool shown = zcl_present_window_run_pages_actions_v1(
-        pages, action_count, ui_host_window_ready, &ready,
-        &event, why, sizeof(why));
+    struct zcl_present_window_form_v1 form;
+    bool is_form = document->model.kind == ZCL_PRESENT_MODEL_FORM;
+    bool form_ready = !is_form ||
+        ui_host_form_from_model(&document->model, &form);
+    if (!form_ready)
+        (void)snprintf(why, sizeof(why),
+                       "validated form could not enter bounded edit state");
+    bool shown = form_ready && (is_form
+        ? zcl_present_window_run_pages_form_actions_v1(
+              &pages, document->action_count, &form,
+              ui_host_window_ready, &ready, &event, why, sizeof(why))
+        : zcl_present_window_run_pages_actions_v1(
+              &pages, document->action_count,
+              ui_host_window_ready, &ready, &event, why, sizeof(why)));
     if (!shown)
         LOG_WARN("presentation.host", "native window failed: %s", why);
     if (shown && (flags & UI_HOST_FLAG_WAIT_EVENT)) {
         uint8_t reply[UI_HOST_REPLY_BYTES];
         uint32_t action = event.outcome == ZCL_PRESENT_WINDOW_ACTION
             ? event.action_index : UINT32_MAX;
+        uint8_t payload[ZCL_PRESENT_MODEL_WIRE_MAX];
+        size_t payload_len = 0;
+        bool payload_ok = true;
+        if (is_form && action < document->model.action_count &&
+            document->model.actions[action].kind ==
+                ZCL_PRESENT_ACTION_SUBMIT) {
+            for (uint32_t i = 0; i < form.field_count; i++)
+                (void)snprintf(document->model.items[i].value,
+                               sizeof(document->model.items[i].value), "%s",
+                               form.fields[i].value);
+            payload_ok = zcl_present_model_encode_v1(
+                &document->model, payload, sizeof(payload), &payload_len,
+                why, sizeof(why));
+        }
         ui_host_transport_reply(reply, UI_HOST_PHASE_EVENT,
-                                UI_HOST_STATUS_OK, action, 0, nonce);
-        (void)ui_host_transport_send_all(client, reply, sizeof(reply));
+                                payload_ok ? UI_HOST_STATUS_OK
+                                           : UI_HOST_STATUS_REJECTED,
+                                action, (uint32_t)payload_len, 0, nonce);
+        bool sent = ui_host_transport_send_all(client, reply, sizeof(reply));
+        if (sent && payload_len > 0)
+            sent = ui_host_transport_send_all(client, payload, payload_len);
+        if (!sent) payload_ok = false;
+        shown = payload_ok;
     }
     return shown;
 }
@@ -162,15 +221,8 @@ static bool ui_host_worker_model(int client, int replacement_gate,
                  why);
         return false;
     }
-    struct zcl_present_window_pages_v1 pages = {
-        .struct_size = sizeof(pages),
-        .abi_version = ZCL_PRESENT_ABI_V1,
-        .pages = document.windows,
-        .page_count = document.page_count,
-    };
-    bool shown = ui_host_show_pages(
-        client, replacement_gate, flags, view_replaced, &pages,
-        document.action_count, nonce);
+    bool shown = ui_host_show_document(
+        client, replacement_gate, flags, view_replaced, &document, nonce);
     ui_present_document_free(&document);
     return shown;
 }
@@ -302,6 +354,7 @@ static enum ui_host_session_admission ui_host_session_admit(
 }
 
 static struct zcl_result ui_host_submit_wire(
+    const struct zcl_present_model_v1 *original,
     const uint8_t *wire,
     size_t wire_len,
     uint16_t flags,
@@ -331,11 +384,14 @@ static struct zcl_result ui_host_submit_wire(
     uint8_t reply[UI_HOST_REPLY_BYTES];
     uint32_t status = 0;
     uint32_t value = 0;
+    uint32_t payload_len = 0;
     uint64_t elapsed_us = 0;
     if (!ui_host_transport_recv_all(fd, reply, sizeof(reply),
                                     UI_HOST_READY_TIMEOUT_MS) ||
         !ui_host_transport_parse_reply(reply, UI_HOST_PHASE_READY, &status,
-                                       &value, &elapsed_us, nonce)) {
+                                       &value, &payload_len,
+                                       &elapsed_us, nonce) ||
+        payload_len != 0) {
         close(fd);
         return ZCL_ERR(-1, "presentation host rejected the native window");
     }
@@ -360,14 +416,49 @@ static struct zcl_result ui_host_submit_wire(
     if (!ui_host_transport_recv_all(fd, reply, sizeof(reply),
                                     UI_HOST_EVENT_TIMEOUT_MS) ||
         !ui_host_transport_parse_reply(reply, UI_HOST_PHASE_EVENT, &status,
-                                       &value, &elapsed_us, nonce) ||
+                                       &value, &payload_len,
+                                       &elapsed_us, nonce) ||
         status != UI_HOST_STATUS_OK) {
         close(fd);
         return ZCL_ERR(-1, "presentation host event channel closed");
     }
-    close(fd);
     result->event_received = true;
     result->action_index = value;
+    if (payload_len > 0) {
+        uint8_t payload[ZCL_PRESENT_MODEL_WIRE_MAX];
+        struct zcl_present_model_v1 submitted;
+        char why[192];
+        if (!original || original->kind != ZCL_PRESENT_MODEL_FORM ||
+            value >= original->action_count ||
+            original->actions[value].kind != ZCL_PRESENT_ACTION_SUBMIT ||
+            !ui_host_transport_recv_all(fd, payload, payload_len,
+                                        UI_HOST_READY_TIMEOUT_MS) ||
+            !zcl_present_model_decode_v1(
+                payload, payload_len, &submitted, why, sizeof(why)) ||
+            !zcl_present_model_form_submission_validate_v1(
+                original, &submitted, why, sizeof(why))) {
+            close(fd);
+            return ZCL_ERR(-1,
+                           "presentation host form event failed exact validation");
+        }
+        result->form_submitted = true;
+        result->form_value_count = submitted.item_count;
+        for (uint32_t i = 0; i < submitted.item_count; i++) {
+            (void)snprintf(result->form_values[i].id,
+                           sizeof(result->form_values[i].id), "%s",
+                           submitted.items[i].id);
+            (void)snprintf(result->form_values[i].value,
+                           sizeof(result->form_values[i].value), "%s",
+                           submitted.items[i].value);
+        }
+    } else if (original && original->kind == ZCL_PRESENT_MODEL_FORM &&
+               value < original->action_count &&
+               original->actions[value].kind == ZCL_PRESENT_ACTION_SUBMIT) {
+        close(fd);
+        return ZCL_ERR(-1,
+                       "presentation host omitted the submitted form values");
+    }
+    close(fd);
     return ZCL_OK;
 }
 #endif /* __linux__ */
@@ -394,7 +485,8 @@ struct zcl_result ui_present_host_submit(
                                      why, sizeof(why)))
         return ZCL_ERR(-1, "presentation host model encode: %s", why);
     return ui_host_submit_wire(
-        wire, wire_len, wait_for_event ? UI_HOST_FLAG_WAIT_EVENT : 0,
+        model, wire, wire_len,
+        wait_for_event ? UI_HOST_FLAG_WAIT_EVENT : 0,
         result);
 #endif
 }

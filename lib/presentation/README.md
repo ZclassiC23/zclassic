@@ -45,6 +45,16 @@ index, so the visible numbered option and returned bounded action cannot drift.
 At most one row may describe the initial selection. The event remains an inert
 ID; the full node independently rechecks every fact and policy before acting.
 
+A form instrument contains one to four uniquely identified fields and exactly
+two actions in the safe order `Cancel`, then `Submit`. Printable Basic Latin is
+edited directly in the native window; Tab traverses editable fields and then
+the two visibly focused actions. Required empty fields keep Submit local and
+visibly invalid, while read-only values cannot receive focus or change. Only a
+successful Submit returns the ordered ID/value pairs. The caller independently
+revalidates that the nonce-bound returned model differs from the opening model
+only in editable values before exposing them to the full node. The host still
+executes nothing and owns no authority.
+
 `app/views/src/ui_present_document.c` is the only model-to-window compositor.
 It owns validation, every rendered page, QR specialization, application icon,
 window title, exact copy text, and action count for the duration of one native
@@ -52,10 +62,12 @@ call. The resident host and the portable same-binary compatibility child both
 consume that exact document, so neither launch path can silently drop later
 pages or invent separate QR, branding, or action behavior.
 
-Interactive models always open with one visible two-tone action focus ring.
-Tab and Shift-Tab wrap through the bounded action row; Enter or Space returns
-the focused action, while number keys retain direct exact selection. Moving
-focus is display-local state and never returns an action or grants authority.
+Action-only interactive models always open with one visible two-tone action
+focus ring. Tab and Shift-Tab wrap through the bounded action row; Enter or
+Space returns the focused action, while number keys retain direct exact
+selection. Forms instead open on their first editable field and traverse fields
+before actions. Moving focus is display-local state and never returns an action
+or grants authority.
 Canonical publication confirmations place `Cancel - make no change` at index
 zero, so the initial focus and a bare Enter are harmless; confirmation requires
 one deliberate focus move or the visibly numbered second action.

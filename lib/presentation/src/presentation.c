@@ -4,6 +4,7 @@
 #include "presentation/presentation.h"
 
 #include "presentation/model_render.h"
+#include "presentation_form_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -205,87 +206,6 @@ static bool present_scale_bitmap(const struct zcl_present_window_v1 *request,
     return true;
 }
 
-bool zcl_present_window_action_at_v1(
-    uint32_t source_width, uint32_t source_height,
-    int32_t target_width, int32_t target_height,
-    int32_t mouse_x, int32_t mouse_y, uint32_t action_count,
-    uint32_t *action_index)
-{
-    if (!action_index || source_width == 0 || source_height == 0 ||
-        target_width <= 0 || target_height <= 0 || mouse_x < 0 ||
-        mouse_y < 0 || action_count == 0 ||
-        action_count > ZCL_PRESENT_WINDOW_ACTIONS_MAX)
-        return false;
-    uint32_t draw_width = (uint32_t)target_width;
-    uint32_t draw_height = (uint32_t)((uint64_t)draw_width * source_height /
-                                      source_width);
-    if (draw_height > (uint32_t)target_height) {
-        draw_height = (uint32_t)target_height;
-        draw_width = (uint32_t)((uint64_t)draw_height * source_width /
-                                source_height);
-    }
-    if (draw_width == 0 || draw_height == 0) return false;
-    uint32_t x0 = ((uint32_t)target_width - draw_width) / 2u;
-    uint32_t y0 = ((uint32_t)target_height - draw_height) / 2u;
-    if ((uint32_t)mouse_x < x0 || (uint32_t)mouse_y < y0 ||
-        (uint32_t)mouse_x >= x0 + draw_width ||
-        (uint32_t)mouse_y >= y0 + draw_height)
-        return false;
-    uint32_t source_x = (uint32_t)((uint64_t)((uint32_t)mouse_x - x0) *
-                                   source_width / draw_width);
-    uint32_t source_y = (uint32_t)((uint64_t)((uint32_t)mouse_y - y0) *
-                                   source_height / draw_height);
-    if (source_x < ZCL_PRESENT_MODEL_ACTION_X ||
-        source_x >= ZCL_PRESENT_MODEL_ACTION_X +
-                    ZCL_PRESENT_MODEL_ACTION_WIDTH ||
-        source_y < ZCL_PRESENT_MODEL_ACTION_Y ||
-        source_y >= ZCL_PRESENT_MODEL_ACTION_Y +
-                    ZCL_PRESENT_MODEL_ACTION_HEIGHT)
-        return false;
-    uint32_t width = (ZCL_PRESENT_MODEL_ACTION_WIDTH -
-                      ZCL_PRESENT_MODEL_ACTION_GAP * (action_count - 1u)) /
-                     action_count;
-    uint32_t local_x = source_x - ZCL_PRESENT_MODEL_ACTION_X;
-    uint32_t stride = width + ZCL_PRESENT_MODEL_ACTION_GAP;
-    uint32_t candidate = local_x / stride;
-    if (candidate >= action_count || local_x % stride >= width)
-        return false;
-    *action_index = candidate;
-    return true;
-}
-
-bool zcl_present_window_page_step_v1(
-    uint32_t current_page, uint32_t page_count, int32_t delta,
-    uint32_t *next_page)
-{
-    if (!next_page || page_count == 0 ||
-        page_count > ZCL_PRESENT_WINDOW_PAGES_MAX ||
-        current_page >= page_count)
-        return false;
-    int64_t wanted = (int64_t)current_page + delta;
-    if (wanted < 0) wanted = 0;
-    if (wanted >= (int64_t)page_count) wanted = (int64_t)page_count - 1;
-    *next_page = (uint32_t)wanted;
-    return true;
-}
-
-bool zcl_present_window_action_focus_step_v1(
-    uint32_t current_action, uint32_t action_count, int32_t delta,
-    uint32_t *next_action)
-{
-    if (!next_action || action_count == 0 ||
-        action_count > ZCL_PRESENT_WINDOW_ACTIONS_MAX ||
-        current_action >= action_count || (delta != -1 && delta != 1))
-        return false;
-    if (delta > 0)
-        *next_action = current_action + 1u == action_count
-            ? 0u : current_action + 1u;
-    else
-        *next_action = current_action == 0
-            ? action_count - 1u : current_action - 1u;
-    return true;
-}
-
 static bool present_pages_validate(
     const struct zcl_present_window_pages_v1 *request,
     char *error, size_t error_cap)
@@ -407,26 +327,57 @@ static bool present_replace_surface(
     RGFW_window *window, const struct zcl_present_window_v1 *page,
     i32 width, i32 height, RGFW_surface **surface,
     uint8_t **scaled_pixels, uint32_t action_count,
-    uint32_t focused_action)
+    uint32_t focused_control,
+    const struct zcl_present_window_form_v1 *form,
+    bool required_invalid)
 {
     uint8_t *replacement_pixels = NULL;
     bool scaled = width != (i32)page->width || height != (i32)page->height;
-    bool owned = scaled || action_count > 0;
-    if (scaled) {
-        if (!present_scale_bitmap(page, width, height,
-                                  &replacement_pixels))
-            return false;
-    } else if (owned) {
+    bool owned = scaled || action_count > 0 || form;
+    uint8_t *form_pixels = NULL;
+    struct zcl_present_window_v1 form_page = *page;
+    if (form) {
         uint64_t bytes = (uint64_t)page->width * page->height *
                          (uint32_t)page->pixel_format;
         if (bytes == 0 || bytes > SIZE_MAX) return false;
-        replacement_pixels = malloc((size_t)bytes); // raw-alloc-ok:standalone-presentation-package
-        if (!replacement_pixels) return false;
-        memcpy(replacement_pixels, page->pixels, (size_t)bytes);
+        form_pixels = malloc((size_t)bytes); // raw-alloc-ok:standalone-presentation-package
+        if (!form_pixels) return false;
+        memcpy(form_pixels, page->pixels, (size_t)bytes);
+        zcl_present_form_draw_state_internal(
+            form_pixels, (size_t)bytes, form,
+            focused_control, required_invalid);
+        form_page.pixels = form_pixels;
+        page = &form_page;
+    }
+    if (scaled) {
+        if (!present_scale_bitmap(page, width, height,
+                                  &replacement_pixels)) {
+            free(form_pixels);
+            return false;
+        }
+        free(form_pixels);
+    } else if (owned) {
+        if (form_pixels) {
+            replacement_pixels = form_pixels;
+        } else {
+            uint64_t bytes = (uint64_t)page->width * page->height *
+                             (uint32_t)page->pixel_format;
+            if (bytes == 0 || bytes > SIZE_MAX) return false;
+            replacement_pixels = malloc((size_t)bytes); // raw-alloc-ok:standalone-presentation-package
+            if (!replacement_pixels) return false;
+            memcpy(replacement_pixels, page->pixels, (size_t)bytes);
+        }
     }
     uint8_t *pixels = owned ? replacement_pixels
         : (uint8_t *)(uintptr_t)page->pixels;
-    if (action_count > 0)
+    uint32_t focused_action = focused_control;
+    bool action_focused = action_count > 0;
+    if (form) {
+        action_focused = focused_control >= form->field_count;
+        focused_action = action_focused
+            ? focused_control - form->field_count : UINT32_MAX;
+    }
+    if (action_focused)
         present_draw_action_focus(page, pixels, (uint32_t)width,
                                   (uint32_t)height, action_count,
                                   focused_action);
@@ -445,9 +396,10 @@ static bool present_replace_surface(
     return true;
 }
 
-bool zcl_present_window_run_pages_actions_v1(
+static bool present_run_pages_actions(
     const struct zcl_present_window_pages_v1 *pages,
     uint32_t action_count,
+    struct zcl_present_window_form_v1 *form,
     zcl_present_window_ready_fn ready,
     void *ready_context,
     struct zcl_present_window_event_v1 *result,
@@ -464,6 +416,14 @@ bool zcl_present_window_run_pages_actions_v1(
     };
     if (!present_pages_validate(pages, error, error_cap))
         return false;
+    if (form && (!zcl_present_window_form_validate_v1(
+                     form, error, error_cap) ||
+                 action_count != 2u || pages->page_count != 1u ||
+                 pages->pages[0].pixel_format != ZCL_PRESENT_RGB8 ||
+                 pages->pages[0].width != ZCL_PRESENT_MODEL_BITMAP_WIDTH ||
+                 pages->pages[0].height != ZCL_PRESENT_MODEL_BITMAP_HEIGHT))
+        return present_error(error, error_cap,
+                             "presentation form geometry/actions are invalid");
     uint32_t current_page = 0;
     const struct zcl_present_window_v1 *request = &pages->pages[current_page];
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__linux__)
@@ -504,12 +464,22 @@ bool zcl_present_window_run_pages_actions_v1(
     }
     RGFW_surface *surface = NULL;
     uint8_t *scaled_pixels = NULL;
-    uint32_t focused_action = 0;
+    uint32_t focused_control = 0;
+    bool required_invalid = false;
+    if (form) {
+        while (focused_control < form->field_count &&
+               (form->fields[focused_control].flags &
+                ZCL_PRESENT_WINDOW_FORM_READ_ONLY))
+            focused_control++;
+        if (focused_control == form->field_count)
+            focused_control = form->field_count;
+    }
     if (!present_replace_surface(window, request,
                                  (i32)request->width,
                                  (i32)request->height,
                                  &surface, &scaled_pixels,
-                                 action_count, focused_action)) {
+                                 action_count, focused_control,
+                                 form, required_invalid)) {
         RGFW_window_close(window);
         return present_error(error, error_cap,
                              "native bitmap surface creation failed");
@@ -531,7 +501,7 @@ bool zcl_present_window_run_pages_actions_v1(
                 (void)present_replace_surface(
                     window, request, resized_width, resized_height,
                     &surface, &scaled_pixels, action_count,
-                    focused_action);
+                    focused_control, form, required_invalid);
                 RGFW_window_blitSurface(window, surface);
             } else if (event.type == RGFW_windowRefresh) {
                 RGFW_window_blitSurface(window, surface);
@@ -548,9 +518,20 @@ bool zcl_present_window_run_pages_actions_v1(
                         request->width, request->height,
                         window_width, window_height, mouse_x, mouse_y,
                         action_count, &action)) {
-                    result->outcome = ZCL_PRESENT_WINDOW_ACTION;
-                    result->action_index = action;
-                    RGFW_window_setShouldClose(window, RGFW_TRUE);
+                    if (form && action == 1u &&
+                        !zcl_present_form_required_complete_internal(form)) {
+                        required_invalid = true;
+                        focused_control = form->field_count + action;
+                        (void)present_replace_surface(
+                            window, request, window_width, window_height,
+                            &surface, &scaled_pixels, action_count,
+                            focused_control, form, required_invalid);
+                        RGFW_window_blitSurface(window, surface);
+                    } else {
+                        result->outcome = ZCL_PRESENT_WINDOW_ACTION;
+                        result->action_index = action;
+                        RGFW_window_setShouldClose(window, RGFW_TRUE);
+                    }
                 }
             }
             uint32_t next_page = current_page;
@@ -585,7 +566,7 @@ bool zcl_present_window_run_pages_actions_v1(
                 if (present_replace_surface(
                         window, next, window_width, window_height,
                         &surface, &scaled_pixels, action_count,
-                        focused_action)) {
+                        focused_control, form, required_invalid)) {
                     current_page = next_page;
                     request = next;
                     RGFW_window_blitSurface(window, surface);
@@ -593,30 +574,88 @@ bool zcl_present_window_run_pages_actions_v1(
             }
             if (event.type != RGFW_keyPressed) continue;
             if (event.key.value == RGFW_tab && action_count > 0) {
-                uint32_t next_action = focused_action;
+                uint32_t next_control = focused_control;
                 int32_t direction = (event.key.mod & RGFW_modShift)
                     ? -1 : 1;
-                if (zcl_present_window_action_focus_step_v1(
-                        focused_action, action_count, direction,
-                        &next_action)) {
+                bool stepped = form
+                    ? zcl_present_window_form_focus_step_v1(
+                          form, action_count, focused_control, direction,
+                          &next_control)
+                    : zcl_present_window_action_focus_step_v1(
+                          focused_control, action_count, direction,
+                          &next_control);
+                if (stepped) {
                     i32 window_width = 0, window_height = 0;
                     (void)RGFW_window_getSize(window, &window_width,
                                               &window_height);
                     if (present_replace_surface(
                             window, request, window_width, window_height,
                             &surface, &scaled_pixels, action_count,
-                            next_action)) {
-                        focused_action = next_action;
+                            next_control, form, required_invalid)) {
+                        focused_control = next_control;
                         RGFW_window_blitSurface(window, surface);
                     }
                 }
+                continue;
+            }
+            if (form && focused_control < form->field_count) {
+                bool changed = false;
+                if (event.key.value == RGFW_return) {
+                    uint32_t next_control = focused_control;
+                    if (zcl_present_window_form_focus_step_v1(
+                            form, action_count, focused_control, 1,
+                            &next_control)) {
+                        focused_control = next_control;
+                        changed = true;
+                    }
+                } else if (event.key.value == RGFW_backSpace) {
+                    changed = zcl_present_window_form_edit_v1(
+                        form, focused_control, 0, true);
+                    required_invalid = false;
+                } else if (!(event.key.mod &
+                             (RGFW_modControl | RGFW_modAlt |
+                              RGFW_modSuper)) &&
+                           event.key.sym >= 0x20u &&
+                           event.key.sym <= 0x7eu) {
+                    changed = zcl_present_window_form_edit_v1(
+                        form, focused_control, event.key.sym, false);
+                    required_invalid = false;
+                }
+                if (changed) {
+                    i32 window_width = 0, window_height = 0;
+                    (void)RGFW_window_getSize(window, &window_width,
+                                              &window_height);
+                    if (present_replace_surface(
+                            window, request, window_width, window_height,
+                            &surface, &scaled_pixels, action_count,
+                            focused_control, form, required_invalid))
+                        RGFW_window_blitSurface(window, surface);
+                }
+                continue;
             }
             if ((event.key.value == RGFW_return ||
                  event.key.value == RGFW_space) && action_count > 0) {
-                result->outcome = ZCL_PRESENT_WINDOW_ACTION;
-                result->action_index = focused_action;
-                RGFW_window_setShouldClose(window, RGFW_TRUE);
+                uint32_t action = form
+                    ? focused_control - form->field_count
+                    : focused_control;
+                if (form && action == 1u &&
+                    !zcl_present_form_required_complete_internal(form)) {
+                    required_invalid = true;
+                    i32 window_width = 0, window_height = 0;
+                    (void)RGFW_window_getSize(window, &window_width,
+                                              &window_height);
+                    if (present_replace_surface(
+                            window, request, window_width, window_height,
+                            &surface, &scaled_pixels, action_count,
+                            focused_control, form, required_invalid))
+                        RGFW_window_blitSurface(window, surface);
+                } else {
+                    result->outcome = ZCL_PRESENT_WINDOW_ACTION;
+                    result->action_index = action;
+                    RGFW_window_setShouldClose(window, RGFW_TRUE);
+                }
             }
+            if (form) continue;
             if (event.key.value == RGFW_q)
                 RGFW_window_setShouldClose(window, RGFW_TRUE);
             if (event.key.value == RGFW_c && request->copy_text) {
@@ -646,6 +685,33 @@ bool zcl_present_window_run_pages_actions_v1(
     if (error && error_cap > 0) error[0] = '\0';
     return true;
 #endif
+}
+
+bool zcl_present_window_run_pages_actions_v1(
+    const struct zcl_present_window_pages_v1 *pages,
+    uint32_t action_count,
+    zcl_present_window_ready_fn ready,
+    void *ready_context,
+    struct zcl_present_window_event_v1 *result,
+    char *error, size_t error_cap)
+{
+    return present_run_pages_actions(
+        pages, action_count, NULL, ready, ready_context,
+        result, error, error_cap);
+}
+
+bool zcl_present_window_run_pages_form_actions_v1(
+    const struct zcl_present_window_pages_v1 *pages,
+    uint32_t action_count,
+    struct zcl_present_window_form_v1 *form,
+    zcl_present_window_ready_fn ready,
+    void *ready_context,
+    struct zcl_present_window_event_v1 *result,
+    char *error, size_t error_cap)
+{
+    return present_run_pages_actions(
+        pages, action_count, form, ready, ready_context,
+        result, error, error_cap);
 }
 
 bool zcl_present_window_run_actions_v1(

@@ -248,6 +248,19 @@ void zcl_native_present_model(
                 model->actions[host.action_index].id);
             (void)json_push_kv_int(&reply->data, "action_index",
                                    host.action_index);
+            if (host.form_submitted) {
+                struct json_value values;
+                json_init(&values);
+                json_set_object(&values);
+                for (uint32_t i = 0; i < host.form_value_count; i++)
+                    (void)json_push_kv_str(
+                        &values, host.form_values[i].id,
+                        host.form_values[i].value);
+                (void)json_push_kv_bool(&reply->data,
+                                       "form_submitted", true);
+                (void)json_push_kv(&reply->data, "form_values", &values);
+                json_free(&values);
+            }
         }
         if (model->exact_root[0])
             (void)json_push_kv_str(&reply->data, "exact_root",

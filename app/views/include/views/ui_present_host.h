@@ -16,6 +16,12 @@ struct ui_present_host_result {
     bool view_replaced;
     bool event_received;
     uint32_t action_index;
+    bool form_submitted;
+    uint32_t form_value_count;
+    struct {
+        char id[ZCL_PRESENT_MODEL_ID_MAX + 1u];
+        char value[ZCL_PRESENT_MODEL_VALUE_MAX + 1u];
+    } form_values[ZCL_PRESENT_MODEL_FORM_FIELDS_MAX];
     int64_t ready_us;
 };
 

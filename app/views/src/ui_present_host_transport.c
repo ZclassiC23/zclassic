@@ -194,7 +194,7 @@ bool ui_host_transport_parse_request_header(
 
 void ui_host_transport_reply(
     uint8_t out[UI_HOST_REPLY_BYTES], uint16_t phase, uint32_t status,
-    uint32_t value, uint64_t elapsed_us,
+    uint32_t value, uint32_t payload_len, uint64_t elapsed_us,
     const uint8_t nonce[UI_HOST_NONCE_BYTES])
 {
     memcpy(out, UI_HOST_REPLY_MAGIC, sizeof(UI_HOST_REPLY_MAGIC));
@@ -202,24 +202,29 @@ void ui_host_transport_reply(
     zcl_write_u16_le(out + 6u, phase);
     zcl_write_u32_le(out + 8u, status);
     zcl_write_u32_le(out + 12u, value);
-    zcl_write_u64_le(out + 16u, elapsed_us);
-    memcpy(out + 24u, nonce, UI_HOST_NONCE_BYTES);
+    zcl_write_u32_le(out + 16u, payload_len);
+    zcl_write_u32_le(out + 20u, 0);
+    zcl_write_u64_le(out + 24u, elapsed_us);
+    memcpy(out + 32u, nonce, UI_HOST_NONCE_BYTES);
 }
 
 bool ui_host_transport_parse_reply(
     const uint8_t in[UI_HOST_REPLY_BYTES], uint16_t expected_phase,
-    uint32_t *status, uint32_t *value, uint64_t *elapsed_us,
+    uint32_t *status, uint32_t *value, uint32_t *payload_len,
+    uint64_t *elapsed_us,
     const uint8_t nonce[UI_HOST_NONCE_BYTES])
 {
     if (memcmp(in, UI_HOST_REPLY_MAGIC, sizeof(UI_HOST_REPLY_MAGIC)) != 0 ||
         zcl_read_u16_le(in + 4u) != UI_HOST_PROTOCOL_VERSION ||
         zcl_read_u16_le(in + 6u) != expected_phase ||
-        memcmp(in + 24u, nonce, UI_HOST_NONCE_BYTES) != 0)
+        zcl_read_u32_le(in + 20u) != 0 ||
+        memcmp(in + 32u, nonce, UI_HOST_NONCE_BYTES) != 0)
         return false;
     *status = zcl_read_u32_le(in + 8u);
     *value = zcl_read_u32_le(in + 12u);
-    *elapsed_us = zcl_read_u64_le(in + 16u);
-    return true;
+    *payload_len = zcl_read_u32_le(in + 16u);
+    *elapsed_us = zcl_read_u64_le(in + 24u);
+    return *payload_len <= ZCL_PRESENT_MODEL_WIRE_MAX;
 }
 
 bool ui_host_transport_peer_allowed(int client)

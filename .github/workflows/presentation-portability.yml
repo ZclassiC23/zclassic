@@ -65,6 +65,8 @@ jobs:
           clang -std=c2x -O2 -Wall -Wextra -Werror -pedantic \
             -Ilib/presentation/include \
             lib/presentation/src/presentation.c \
+            lib/presentation/src/presentation_form.c \
+            lib/presentation/src/presentation_input.c \
             lib/presentation/src/canvas.c \
             lib/presentation/src/zclassic_brand.c \
             lib/presentation/examples/bitmap_demo.c \

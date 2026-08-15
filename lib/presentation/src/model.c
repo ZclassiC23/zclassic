@@ -148,6 +148,44 @@ static bool choice_shape(const struct zcl_present_model_v1 *model)
     return selected <= 1u;
 }
 
+static bool printable_ascii(const char *text, size_t max)
+{
+    size_t length = 0;
+    if (!bounded_length(text, max, &length)) return false;
+    for (size_t i = 0; i < length; i++) {
+        unsigned char byte = (unsigned char)text[i];
+        if (byte < 0x20u || byte > 0x7eu) return false;
+    }
+    return true;
+}
+
+static bool form_shape(const struct zcl_present_model_v1 *model)
+{
+    if (model->kind != ZCL_PRESENT_MODEL_FORM) return true;
+    if (!model->exact_root[0] || model->item_count == 0 ||
+        model->item_count > ZCL_PRESENT_MODEL_FORM_FIELDS_MAX ||
+        model->action_count != 2u ||
+        model->actions[0].kind != ZCL_PRESENT_ACTION_CANCEL ||
+        model->actions[1].kind != ZCL_PRESENT_ACTION_SUBMIT)
+        return false;
+    bool editable = false;
+    for (uint32_t i = 0; i < model->item_count; i++) {
+        const struct zcl_present_model_item_v1 *item = &model->items[i];
+        if (item->kind != ZCL_PRESENT_ITEM_FORM_FIELD || !item->id[0] ||
+            !item->label[0] ||
+            item->parent_index != ZCL_PRESENT_MODEL_PARENT_NONE ||
+            (item->flags & ~(uint16_t)(ZCL_PRESENT_ITEM_REQUIRED |
+                                      ZCL_PRESENT_ITEM_READ_ONLY)) != 0 ||
+            !printable_ascii(item->value, ZCL_PRESENT_MODEL_VALUE_MAX))
+            return false;
+        editable |= !(item->flags & ZCL_PRESENT_ITEM_READ_ONLY);
+        for (uint32_t j = i + 1u; j < model->item_count; j++)
+            if (strcmp(item->id, model->items[j].id) == 0)
+                return false;
+    }
+    return editable;
+}
+
 static bool qr_shape(const struct zcl_present_model_v1 *model)
 {
     if (model->kind != ZCL_PRESENT_MODEL_QR_CARD) return true;
@@ -329,6 +367,10 @@ bool zcl_present_model_validate_v1(const struct zcl_present_model_v1 *model,
         return model_error(
             error, error_cap,
             "choice must bind one to four rows to matching select actions");
+    if (!form_shape(model))
+        return model_error(
+            error, error_cap,
+            "form must bind one to four unique fields to cancel then submit");
     if (!qr_shape(model))
         return model_error(error, error_cap,
                            "QR model must contain ordered payload chunks only");
@@ -516,6 +558,56 @@ bool zcl_present_model_decode_v1(const uint8_t *wire, size_t wire_len,
         return model_error(error, error_cap,
                            "visual model wire is truncated or has trailing bytes");
     return zcl_present_model_validate_v1(model, error, error_cap);
+}
+
+bool zcl_present_model_form_submission_validate_v1(
+    const struct zcl_present_model_v1 *original,
+    const struct zcl_present_model_v1 *submitted,
+    char *error, size_t error_cap)
+{
+    if (!original || !submitted ||
+        original->kind != ZCL_PRESENT_MODEL_FORM ||
+        submitted->kind != ZCL_PRESENT_MODEL_FORM ||
+        !zcl_present_model_validate_v1(original, error, error_cap) ||
+        !zcl_present_model_validate_v1(submitted, error, error_cap))
+        return model_error(error, error_cap,
+                           "form submission model is invalid");
+    if (original->item_count != submitted->item_count)
+        return model_error(error, error_cap,
+                           "form submission field count changed");
+
+    struct zcl_present_model_v1 normalized = *submitted;
+    for (uint32_t i = 0; i < original->item_count; i++) {
+        const struct zcl_present_model_item_v1 *before = &original->items[i];
+        const struct zcl_present_model_item_v1 *after = &submitted->items[i];
+        if ((before->flags & ZCL_PRESENT_ITEM_READ_ONLY) &&
+            strcmp(before->value, after->value) != 0)
+            return model_error(error, error_cap,
+                               "form submission changed a read-only value");
+        if (!printable_ascii(after->value, ZCL_PRESENT_MODEL_VALUE_MAX))
+            return model_error(error, error_cap,
+                               "form submission value is not printable ASCII");
+        (void)snprintf(normalized.items[i].value,
+                       sizeof(normalized.items[i].value), "%s",
+                       before->value);
+    }
+
+    uint8_t expected[ZCL_PRESENT_MODEL_WIRE_MAX];
+    uint8_t received[ZCL_PRESENT_MODEL_WIRE_MAX];
+    size_t expected_len = 0, received_len = 0;
+    char why[192];
+    if (!zcl_present_model_encode_v1(
+            original, expected, sizeof(expected), &expected_len,
+            why, sizeof(why)) ||
+        !zcl_present_model_encode_v1(
+            &normalized, received, sizeof(received), &received_len,
+            why, sizeof(why)) ||
+        expected_len != received_len ||
+        memcmp(expected, received, expected_len) != 0)
+        return model_error(error, error_cap,
+                           "form submission changed immutable model bytes");
+    if (error && error_cap > 0) error[0] = '\0';
+    return true;
 }
 
 const char *zcl_present_model_kind_name(uint16_t kind)

@@ -342,6 +342,85 @@ json_has "$CHOICE_REPLY" '"exact_root":"dddddddddddddddddddddddddddddddddddddddd
 "$DRIVER_BIN" --title='Alpha proof choice' --expect-count=0 \
     --timeout-ms=3000 >/dev/null
 
+# A form is direct bounded editing, not a decorative card. The first printable
+# key must change pixels in the focused field; Tab skips the read-only exact
+# root, then reaches harmless Cancel and explicit Submit. Only Submit returns
+# the exact ID/value pairs, still correlated to the opening root.
+FORM_MODEL='{"kind":"form","request_id":"alpha-release-form","title":"Alpha bounded form","summary":"HUMAN INPUT - describe this exact candidate","exact_root":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee","items":[{"kind":"form-field","id":"release-note","label":"Release note","value":"","required":true},{"kind":"form-field","id":"candidate-root","label":"Candidate root","value":"immutable-root","read_only":true}],"actions":[{"kind":"cancel","id":"cancel","label":"Cancel"},{"kind":"submit","id":"submit-release-note","label":"Submit"}]}'
+FORM_REPLY_FILE="$RUN_ROOT/form.json"
+"$NODE_BIN" app presentation show --input="$FORM_MODEL" \
+    >"$FORM_REPLY_FILE" 2>&1 &
+FORM_PID="$!"
+"$DRIVER_BIN" --title='Alpha bounded form' --expect-count=1 \
+    --timeout-ms=3000 >/dev/null || {
+        kill "$FORM_PID" 2>/dev/null || true
+        wait "$FORM_PID" 2>/dev/null || true
+        fail "physical bounded form did not appear"
+    }
+"$DRIVER_BIN" --title='Alpha bounded form' --key=tab \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$FORM_PID" 2>/dev/null || true
+        wait "$FORM_PID" 2>/dev/null || true
+        fail "physical form focus did not reach Cancel"
+    }
+"$DRIVER_BIN" --title='Alpha bounded form' --key=tab \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$FORM_PID" 2>/dev/null || true
+        wait "$FORM_PID" 2>/dev/null || true
+        fail "physical form focus did not reach Submit"
+    }
+"$DRIVER_BIN" --title='Alpha bounded form' --key=enter \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$FORM_PID" 2>/dev/null || true
+        wait "$FORM_PID" 2>/dev/null || true
+        fail "empty required field did not keep Submit local and visible"
+    }
+"$DRIVER_BIN" --title='Alpha bounded form' --key=tab \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$FORM_PID" 2>/dev/null || true
+        wait "$FORM_PID" 2>/dev/null || true
+        fail "physical form focus did not wrap back to its editable field"
+    }
+"$DRIVER_BIN" --title='Alpha bounded form' --key=1 \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$FORM_PID" 2>/dev/null || true
+        wait "$FORM_PID" 2>/dev/null || true
+        fail "physical form keystroke did not change its exact field"
+    }
+"$DRIVER_BIN" --title='Alpha bounded form' --key=tab \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$FORM_PID" 2>/dev/null || true
+        wait "$FORM_PID" 2>/dev/null || true
+        fail "physical form focus did not reach Cancel"
+    }
+"$DRIVER_BIN" --title='Alpha bounded form' --key=tab \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$FORM_PID" 2>/dev/null || true
+        wait "$FORM_PID" 2>/dev/null || true
+        fail "physical form focus did not reach Submit"
+    }
+"$DRIVER_BIN" --title='Alpha bounded form' --key=enter \
+    --timeout-ms=3000 >/dev/null || {
+        kill "$FORM_PID" 2>/dev/null || true
+        wait "$FORM_PID" 2>/dev/null || true
+        fail "physical form submission was not delivered"
+    }
+wait "$FORM_PID" || fail "interactive bounded form command failed"
+FORM_REPLY="$(<"$FORM_REPLY_FILE")"
+assert_display_reply "$FORM_REPLY"
+json_has "$FORM_REPLY" '"action_id":"submit-release-note"' ||
+    fail "form returned the wrong bounded action"
+json_has "$FORM_REPLY" '"form_submitted":true' ||
+    fail "form submit did not identify an exact value event"
+json_has "$FORM_REPLY" '"release-note":"1"' ||
+    fail "form submit lost the physically edited value"
+json_has "$FORM_REPLY" '"candidate-root":"immutable-root"' ||
+    fail "form submit changed its read-only value"
+json_has "$FORM_REPLY" '"exact_root":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"' ||
+    fail "form event lost its exact correlation root"
+"$DRIVER_BIN" --title='Alpha bounded form' --expect-count=0 \
+    --timeout-ms=3000 >/dev/null
+
 # An interactive model blocks only for one bounded action. The physical driver
 # clicks inside action zero; the command must return its ID and exact root, but
 # performs no publication or other software effect.
@@ -484,4 +563,4 @@ AFTER_BROWSERS="$(browser_snapshot)"
     fail "browser process set changed during the native journey"
 
 printf '%s\n' \
-    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"corpus_status_instrument\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"visible_action_focus\":true,\"tab_enter_actions\":true,\"exact_choice_event\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"
+    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"corpus_status_instrument\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"visible_action_focus\":true,\"tab_enter_actions\":true,\"exact_choice_event\":true,\"exact_form_event\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"
