@@ -43,10 +43,15 @@ fi
 
 # Excludes: vendor (third-party), build artifacts, the test fixtures dir, and
 # the repo's `_`-prefixed ephemeral-source convention (planted lint fixtures).
+# packages/ holds C23 Commons package payloads: inert published artifacts that
+# are never compiled into the node build. Their placement discipline is the
+# fixed Commons package layout (LICENSE/include/src/tests/zcode-package.json)
+# enforced by the package factory gate, and the corpus census counts them
+# through package-store intake — they have no node navigator group by design.
 is_excluded() {
     local f="$1" base="${1##*/}"
     case "$f" in
-        vendor/*|build/*|lib/test/fixtures/*) return 0 ;;
+        vendor/*|build/*|lib/test/fixtures/*|packages/*) return 0 ;;
     esac
     case "$base" in
         _*) return 0 ;;
