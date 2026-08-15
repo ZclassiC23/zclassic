@@ -161,19 +161,27 @@ static bool ui_host_show_document(
     };
     struct zcl_present_window_event_v1 event;
     struct zcl_present_window_form_v1 form;
+    struct zcl_present_window_canvas_v1 canvas;
     bool is_form = document->model.kind == ZCL_PRESENT_MODEL_FORM;
-    bool form_ready = !is_form ||
-        ui_host_form_from_model(&document->model, &form);
-    if (!form_ready)
+    bool is_canvas = document->model.kind == ZCL_PRESENT_MODEL_CANVAS;
+    bool controls_ready =
+        (!is_form || ui_host_form_from_model(&document->model, &form)) &&
+        (!is_canvas || zcl_present_window_canvas_from_model_v1(
+            &document->model, &canvas, why, sizeof(why)));
+    if (!controls_ready)
         (void)snprintf(why, sizeof(why),
-                       "validated form could not enter bounded edit state");
-    bool shown = form_ready && (is_form
+                       "validated model could not enter bounded control state");
+    bool shown = controls_ready && (is_form
         ? zcl_present_window_run_pages_form_actions_v1(
               &pages, document->action_count, &form,
               ui_host_window_ready, &ready, &event, why, sizeof(why))
+        : (is_canvas
+            ? zcl_present_window_run_pages_canvas_actions_v1(
+                  &pages, document->action_count, &canvas,
+                  ui_host_window_ready, &ready, &event, why, sizeof(why))
         : zcl_present_window_run_pages_actions_v1(
               &pages, document->action_count,
-              ui_host_window_ready, &ready, &event, why, sizeof(why)));
+              ui_host_window_ready, &ready, &event, why, sizeof(why))));
     if (!shown)
         LOG_WARN("presentation.host", "native window failed: %s", why);
     if (shown && (flags & UI_HOST_FLAG_WAIT_EVENT)) {
@@ -190,6 +198,16 @@ static bool ui_host_show_document(
                 (void)snprintf(document->model.items[i].value,
                                sizeof(document->model.items[i].value), "%s",
                                form.fields[i].value);
+            payload_ok = zcl_present_model_encode_v1(
+                &document->model, payload, sizeof(payload), &payload_len,
+                why, sizeof(why));
+        } else if (is_canvas && action < document->model.action_count &&
+                   document->model.actions[action].kind ==
+                       ZCL_PRESENT_ACTION_SUBMIT) {
+            for (uint32_t i = 0; i < canvas.point_count; i++) {
+                document->model.items[i].numerator = canvas.points[i].x;
+                document->model.items[i].denominator = canvas.points[i].y;
+            }
             payload_ok = zcl_present_model_encode_v1(
                 &document->model, payload, sizeof(payload), &payload_len,
                 why, sizeof(why));
@@ -428,35 +446,56 @@ static struct zcl_result ui_host_submit_wire(
         uint8_t payload[ZCL_PRESENT_MODEL_WIRE_MAX];
         struct zcl_present_model_v1 submitted;
         char why[192];
-        if (!original || original->kind != ZCL_PRESENT_MODEL_FORM ||
+        bool is_form = original &&
+            original->kind == ZCL_PRESENT_MODEL_FORM;
+        bool is_canvas = original &&
+            original->kind == ZCL_PRESENT_MODEL_CANVAS;
+        if ((!is_form && !is_canvas) ||
             value >= original->action_count ||
             original->actions[value].kind != ZCL_PRESENT_ACTION_SUBMIT ||
             !ui_host_transport_recv_all(fd, payload, payload_len,
                                         UI_HOST_READY_TIMEOUT_MS) ||
             !zcl_present_model_decode_v1(
                 payload, payload_len, &submitted, why, sizeof(why)) ||
-            !zcl_present_model_form_submission_validate_v1(
-                original, &submitted, why, sizeof(why))) {
+            (is_form && !zcl_present_model_form_submission_validate_v1(
+                original, &submitted, why, sizeof(why))) ||
+            (is_canvas && !zcl_present_model_canvas_submission_validate_v1(
+                original, &submitted, why, sizeof(why)))) {
             close(fd);
             return ZCL_ERR(-1,
-                           "presentation host form event failed exact validation");
+                           "presentation host control event failed exact validation");
         }
-        result->form_submitted = true;
-        result->form_value_count = submitted.item_count;
-        for (uint32_t i = 0; i < submitted.item_count; i++) {
-            (void)snprintf(result->form_values[i].id,
-                           sizeof(result->form_values[i].id), "%s",
-                           submitted.items[i].id);
-            (void)snprintf(result->form_values[i].value,
-                           sizeof(result->form_values[i].value), "%s",
-                           submitted.items[i].value);
+        if (is_form) {
+            result->form_submitted = true;
+            result->form_value_count = submitted.item_count;
+            for (uint32_t i = 0; i < submitted.item_count; i++) {
+                (void)snprintf(result->form_values[i].id,
+                               sizeof(result->form_values[i].id), "%s",
+                               submitted.items[i].id);
+                (void)snprintf(result->form_values[i].value,
+                               sizeof(result->form_values[i].value), "%s",
+                               submitted.items[i].value);
+            }
+        } else {
+            for (uint32_t i = 0; i < submitted.item_count; i++) {
+                if (submitted.items[i].flags & ZCL_PRESENT_ITEM_READ_ONLY)
+                    continue;
+                result->canvas_submitted = true;
+                (void)snprintf(result->canvas_point_id,
+                               sizeof(result->canvas_point_id), "%s",
+                               submitted.items[i].id);
+                result->canvas_x = submitted.items[i].numerator;
+                result->canvas_y = submitted.items[i].denominator;
+            }
         }
-    } else if (original && original->kind == ZCL_PRESENT_MODEL_FORM &&
+    } else if (original &&
+               (original->kind == ZCL_PRESENT_MODEL_FORM ||
+                original->kind == ZCL_PRESENT_MODEL_CANVAS) &&
                value < original->action_count &&
                original->actions[value].kind == ZCL_PRESENT_ACTION_SUBMIT) {
         close(fd);
         return ZCL_ERR(-1,
-                       "presentation host omitted the submitted form values");
+                       "presentation host omitted the submitted control values");
     }
     close(fd);
     return ZCL_OK;

@@ -4,6 +4,7 @@
 #include "presentation/model_render.h"
 
 #include "presentation/canvas.h"
+#include "presentation_canvas_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -249,6 +250,8 @@ static int32_t render_item(struct zcl_present_canvas *canvas,
         return render_choice(canvas, item, index, y);
     if (item->kind == ZCL_PRESENT_ITEM_FORM_FIELD)
         return render_form_field(canvas, item, y);
+    if (item->kind == ZCL_PRESENT_ITEM_CANVAS_POINT)
+        return y;
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
@@ -269,6 +272,7 @@ static uint32_t item_height(const struct zcl_present_model_item_v1 *item)
     if (item->kind == ZCL_PRESENT_ITEM_CHOICE) return 50u;
     if (item->kind == ZCL_PRESENT_ITEM_FORM_FIELD)
         return ZCL_PRESENT_MODEL_FORM_FIELD_HEIGHT;
+    if (item->kind == ZCL_PRESENT_ITEM_CANVAS_POINT) return 1u;
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
@@ -408,8 +412,17 @@ bool zcl_present_model_render_page_v1(
     zcl_present_canvas_line(&canvas, 42, 164, 678, 164, RULE);
 
     int32_t y = MODEL_CONTENT_TOP;
-    for (uint32_t i = start; i < end; i++)
-        y = render_item(&canvas, model, i, y);
+    if (model->kind == ZCL_PRESENT_MODEL_CANVAS) {
+        if (!zcl_present_canvas_draw_model_internal(
+                pixels, ZCL_PRESENT_MODEL_BITMAP_BYTES, model,
+                UINT32_MAX)) {
+            free(pixels);
+            return render_error(error, error_cap,
+                                "visual model canvas state is invalid");
+        }
+    } else
+        for (uint32_t i = start; i < end; i++)
+            y = render_item(&canvas, model, i, y);
     if (page_count > 1u) {
         char page[96];
         (void)snprintf(page, sizeof(page),

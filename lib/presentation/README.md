@@ -55,6 +55,15 @@ revalidates that the nonce-bound returned model differs from the opening model
 only in editable values before exposing them to the full node. The host still
 executes nothing and owns no authority.
 
+A canvas instrument is one bounded 2D placement decision, not an arbitrary
+drawing or callback surface. It contains one editable selected point and up to
+three immutable reference points, all expressed as renderer-neutral thousandths
+from `(0,0)` through `(1000,1000)`. Mouse clicks or arrow keys move only the
+orange point; Shift+arrow makes one-unit adjustments. Tab reaches harmless
+Cancel before explicit Submit. The host returns only that point's ID and exact
+normalized coordinates, and the caller rejects any change to reference points,
+labels, actions, roots, or other model bytes.
+
 `app/views/src/ui_present_document.c` is the only model-to-window compositor.
 It owns validation, every rendered page, QR specialization, application icon,
 window title, exact copy text, and action count for the duration of one native
@@ -68,6 +77,8 @@ Space returns the focused action, while number keys retain direct exact
 selection. Forms instead open on their first editable field and traverse fields
 before actions. Moving focus is display-local state and never returns an action
 or grants authority.
+Canvases open on the editable point, then traverse Cancel and Submit using the
+same safe focus order.
 Canonical publication confirmations place `Cancel - make no change` at index
 zero, so the initial focus and a bare Enter are harmless; confirmation requires
 one deliberate focus move or the visibly numbered second action.

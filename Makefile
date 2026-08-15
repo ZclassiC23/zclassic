@@ -1043,12 +1043,15 @@ check-vendor-provenance:
 	@sha256sum --check vendor/x11/SHA256SUMS
 
 # Reusable native presentation package. This deliberately has a tiny source
-# closure: eight project TUs plus pinned RGFW headers, with no node/app objects.
+# closure: eleven project TUs plus pinned RGFW headers, with no node/app objects.
 PRESENTATION_BUILD_DIR := build/presentation
 PRESENTATION_PACKAGE_CFLAGS := -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	-Ilib/presentation/include -Ilib/base/include -Ivendor/x11/include
 PRESENTATION_PACKAGE_SRCS := \
 	lib/presentation/src/presentation.c \
+	lib/presentation/src/presentation_canvas_model.c \
+	lib/presentation/src/presentation_canvas_select.c \
+	lib/presentation/src/presentation_focus.c \
 	lib/presentation/src/presentation_form.c \
 	lib/presentation/src/presentation_input.c \
 	lib/presentation/src/canvas.c \
@@ -1058,6 +1061,9 @@ PRESENTATION_PACKAGE_SRCS := \
 	lib/presentation/src/zclassic_brand.c
 PRESENTATION_PACKAGE_OBJS := \
 	$(PRESENTATION_BUILD_DIR)/presentation.o \
+	$(PRESENTATION_BUILD_DIR)/presentation_canvas_model.o \
+	$(PRESENTATION_BUILD_DIR)/presentation_canvas_select.o \
+	$(PRESENTATION_BUILD_DIR)/presentation_focus.o \
 	$(PRESENTATION_BUILD_DIR)/presentation_form.o \
 	$(PRESENTATION_BUILD_DIR)/presentation_input.o \
 	$(PRESENTATION_BUILD_DIR)/canvas.o \
@@ -1109,6 +1115,8 @@ $(PRESENTATION_PROVENANCE_STAMP): $(PRESENTATION_VENDOR_INPUTS)
 
 $(PRESENTATION_BUILD_DIR)/presentation.o: \
 	lib/presentation/src/presentation.c \
+	lib/presentation/src/presentation_canvas_internal.h \
+	lib/presentation/src/presentation_focus_internal.h \
 	lib/presentation/src/presentation_form_internal.h \
 	lib/presentation/include/presentation/presentation.h \
 	lib/presentation/include/presentation/model_render.h \
@@ -1118,6 +1126,37 @@ $(PRESENTATION_BUILD_DIR)/presentation.o: \
 	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
 	lib/presentation/src/presentation.c \
 		-o $(PRESENTATION_BUILD_DIR)/presentation.o
+
+$(PRESENTATION_BUILD_DIR)/presentation_canvas_select.o: \
+	lib/presentation/src/presentation_canvas_select.c \
+	lib/presentation/src/presentation_canvas_internal.h \
+	lib/presentation/include/presentation/presentation.h \
+	lib/presentation/include/presentation/canvas.h \
+	lib/presentation/include/presentation/model_render.h
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/presentation_canvas_select.c \
+		-o $(PRESENTATION_BUILD_DIR)/presentation_canvas_select.o
+
+$(PRESENTATION_BUILD_DIR)/presentation_canvas_model.o: \
+	lib/presentation/src/presentation_canvas_model.c \
+	lib/presentation/src/presentation_canvas_internal.h \
+	lib/presentation/include/presentation/presentation.h \
+	lib/presentation/include/presentation/model.h
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/presentation_canvas_model.c \
+		-o $(PRESENTATION_BUILD_DIR)/presentation_canvas_model.o
+
+$(PRESENTATION_BUILD_DIR)/presentation_focus.o: \
+	lib/presentation/src/presentation_focus.c \
+	lib/presentation/src/presentation_focus_internal.h \
+	lib/presentation/include/presentation/presentation.h \
+	lib/presentation/include/presentation/model_render.h
+	@mkdir -p $(PRESENTATION_BUILD_DIR)
+	$(CC) $(PRESENTATION_PACKAGE_CFLAGS) -c \
+		lib/presentation/src/presentation_focus.c \
+		-o $(PRESENTATION_BUILD_DIR)/presentation_focus.o
 
 $(PRESENTATION_BUILD_DIR)/presentation_form.o: \
 	lib/presentation/src/presentation_form.c \
@@ -1170,6 +1209,7 @@ $(PRESENTATION_BUILD_DIR)/model.o: \
 
 $(PRESENTATION_BUILD_DIR)/model_render.o: \
 	lib/presentation/src/model_render.c \
+	lib/presentation/src/presentation_canvas_internal.h \
 	lib/presentation/include/presentation/model_render.h \
 	lib/presentation/include/presentation/model.h \
 	lib/presentation/include/presentation/canvas.h
@@ -1238,6 +1278,9 @@ presentation-portability: presentation-demo
 		x86_64-w64-mingw32-gcc -std=c2x -O2 -Wall -Wextra -Werror \
 			-pedantic -Ilib/presentation/include -Ilib/base/include \
 			lib/presentation/src/presentation.c \
+			lib/presentation/src/presentation_canvas_model.c \
+			lib/presentation/src/presentation_canvas_select.c \
+			lib/presentation/src/presentation_focus.c \
 			lib/presentation/src/presentation_form.c \
 			lib/presentation/src/presentation_input.c \
 			lib/presentation/src/canvas.c \

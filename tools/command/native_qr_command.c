@@ -78,7 +78,8 @@ static bool np_supported_kind(uint16_t kind)
            kind == ZCL_PRESENT_MODEL_EVIDENCE_GRAPH ||
            kind == ZCL_PRESENT_MODEL_CHOICE ||
            kind == ZCL_PRESENT_MODEL_CONFIRMATION ||
-           kind == ZCL_PRESENT_MODEL_FORM;
+           kind == ZCL_PRESENT_MODEL_FORM ||
+           kind == ZCL_PRESENT_MODEL_CANVAS;
 }
 
 void zcl_native_handle_presentation_show(
@@ -96,7 +97,7 @@ void zcl_native_handle_presentation_show(
     if (model.kind == ZCL_PRESENT_MODEL_QR_CARD ||
         !np_supported_kind(model.kind)) {
         np_fail(reply, "UNSUPPORTED_PRESENTATION_KIND",
-                "use app.qr.show for QR; raw canvas documents are not admitted",
+                "use app.qr.show for QR; the visual kind is not admitted",
                 "app.presentation.show");
         return;
     }
@@ -260,6 +261,17 @@ void zcl_native_present_model(
                                        "form_submitted", true);
                 (void)json_push_kv(&reply->data, "form_values", &values);
                 json_free(&values);
+            }
+            if (host.canvas_submitted) {
+                (void)json_push_kv_bool(&reply->data,
+                                       "canvas_submitted", true);
+                (void)json_push_kv_str(&reply->data,
+                                      "canvas_point_id",
+                                      host.canvas_point_id);
+                (void)json_push_kv_int(&reply->data,
+                                      "canvas_x", host.canvas_x);
+                (void)json_push_kv_int(&reply->data,
+                                      "canvas_y", host.canvas_y);
             }
         }
         if (model->exact_root[0])

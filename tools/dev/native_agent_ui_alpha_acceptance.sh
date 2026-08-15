@@ -421,6 +421,62 @@ json_has "$FORM_REPLY" '"exact_root":"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee
 "$DRIVER_BIN" --title='Alpha bounded form' --expect-count=0 \
     --timeout-ms=3000 >/dev/null
 
+# A canvas is one exact bounded 2D decision, not arbitrary drawing code. The
+# orange point moves locally; immutable reference points remain inert. Submit
+# returns only normalized coordinates for the one editable point.
+CANVAS_MODEL='{"kind":"canvas","request_id":"alpha-placement-canvas","title":"Alpha bounded canvas","summary":"HUMAN INPUT - place one exact point","exact_root":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff","items":[{"kind":"canvas-point","id":"label-origin","label":"Label origin","numerator":250,"denominator":300,"selected":true},{"kind":"canvas-point","status":"info","id":"fixed-anchor","label":"Fixed anchor","numerator":800,"denominator":700,"read_only":true}],"actions":[{"kind":"cancel","id":"cancel","label":"Cancel"},{"kind":"submit","id":"submit-placement","label":"Submit"}]}'
+CANVAS_REPLY_FILE="$RUN_ROOT/canvas.json"
+"$NODE_BIN" app presentation show --input="$CANVAS_MODEL" \
+    >"$CANVAS_REPLY_FILE" 2>&1 &
+CANVAS_PID="$!"
+"$DRIVER_BIN" --title='Alpha bounded canvas' --expect-count=1 \
+    --timeout-ms=3000 >/dev/null || {
+        kill "$CANVAS_PID" 2>/dev/null || true
+        wait "$CANVAS_PID" 2>/dev/null || true
+        fail "physical bounded canvas did not appear"
+    }
+"$DRIVER_BIN" --title='Alpha bounded canvas' --key=right \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$CANVAS_PID" 2>/dev/null || true
+        wait "$CANVAS_PID" 2>/dev/null || true
+        fail "physical canvas arrow did not move the editable point"
+    }
+"$DRIVER_BIN" --title='Alpha bounded canvas' --key=tab \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$CANVAS_PID" 2>/dev/null || true
+        wait "$CANVAS_PID" 2>/dev/null || true
+        fail "physical canvas focus did not reach Cancel"
+    }
+"$DRIVER_BIN" --title='Alpha bounded canvas' --key=tab \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$CANVAS_PID" 2>/dev/null || true
+        wait "$CANVAS_PID" 2>/dev/null || true
+        fail "physical canvas focus did not reach Submit"
+    }
+"$DRIVER_BIN" --title='Alpha bounded canvas' --key=enter \
+    --timeout-ms=3000 >/dev/null || {
+        kill "$CANVAS_PID" 2>/dev/null || true
+        wait "$CANVAS_PID" 2>/dev/null || true
+        fail "physical canvas submission was not delivered"
+    }
+wait "$CANVAS_PID" || fail "interactive bounded canvas command failed"
+CANVAS_REPLY="$(<"$CANVAS_REPLY_FILE")"
+assert_display_reply "$CANVAS_REPLY"
+json_has "$CANVAS_REPLY" '"action_id":"submit-placement"' ||
+    fail "canvas returned the wrong bounded action"
+json_has "$CANVAS_REPLY" '"canvas_submitted":true' ||
+    fail "canvas submit did not identify an exact coordinate event"
+json_has "$CANVAS_REPLY" '"canvas_point_id":"label-origin"' ||
+    fail "canvas submit lost the editable point identity"
+json_has "$CANVAS_REPLY" '"canvas_x":260' ||
+    fail "canvas submit lost the physically moved x coordinate"
+json_has "$CANVAS_REPLY" '"canvas_y":300' ||
+    fail "canvas submit changed the untouched y coordinate"
+json_has "$CANVAS_REPLY" '"exact_root":"ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"' ||
+    fail "canvas event lost its exact correlation root"
+"$DRIVER_BIN" --title='Alpha bounded canvas' --expect-count=0 \
+    --timeout-ms=3000 >/dev/null
+
 # An interactive model blocks only for one bounded action. The physical driver
 # clicks inside action zero; the command must return its ID and exact root, but
 # performs no publication or other software effect.
@@ -563,4 +619,4 @@ AFTER_BROWSERS="$(browser_snapshot)"
     fail "browser process set changed during the native journey"
 
 printf '%s\n' \
-    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"corpus_status_instrument\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"visible_action_focus\":true,\"tab_enter_actions\":true,\"exact_choice_event\":true,\"exact_form_event\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"
+    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"corpus_status_instrument\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"visible_action_focus\":true,\"tab_enter_actions\":true,\"exact_choice_event\":true,\"exact_form_event\":true,\"exact_canvas_event\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"

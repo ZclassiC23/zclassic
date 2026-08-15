@@ -77,7 +77,7 @@ static bool valid_model_kind(uint16_t kind)
 static bool valid_item_kind(uint16_t kind)
 {
     return kind >= ZCL_PRESENT_ITEM_TEXT &&
-           kind <= ZCL_PRESENT_ITEM_FORM_FIELD;
+           kind <= ZCL_PRESENT_ITEM_CANVAS_POINT;
 }
 
 static bool valid_status(uint16_t status)
@@ -184,6 +184,41 @@ static bool form_shape(const struct zcl_present_model_v1 *model)
                 return false;
     }
     return editable;
+}
+
+static bool canvas_shape(const struct zcl_present_model_v1 *model)
+{
+    if (model->kind != ZCL_PRESENT_MODEL_CANVAS) return true;
+    if (!model->exact_root[0] || model->item_count == 0 ||
+        model->item_count > ZCL_PRESENT_MODEL_CANVAS_POINTS_MAX ||
+        model->action_count != 2u ||
+        model->actions[0].kind != ZCL_PRESENT_ACTION_CANCEL ||
+        model->actions[1].kind != ZCL_PRESENT_ACTION_SUBMIT)
+        return false;
+    uint32_t editable = 0;
+    uint32_t selected = 0;
+    for (uint32_t i = 0; i < model->item_count; i++) {
+        const struct zcl_present_model_item_v1 *item = &model->items[i];
+        bool read_only = (item->flags & ZCL_PRESENT_ITEM_READ_ONLY) != 0;
+        bool is_selected = (item->flags & ZCL_PRESENT_ITEM_SELECTED) != 0;
+        if (item->kind != ZCL_PRESENT_ITEM_CANVAS_POINT || !item->id[0] ||
+            !item->label[0] ||
+            item->parent_index != ZCL_PRESENT_MODEL_PARENT_NONE ||
+            (item->flags & ~(uint16_t)(ZCL_PRESENT_ITEM_SELECTED |
+                                      ZCL_PRESENT_ITEM_READ_ONLY)) != 0 ||
+            item->numerator > ZCL_PRESENT_MODEL_CANVAS_COORD_MAX ||
+            item->denominator > ZCL_PRESENT_MODEL_CANVAS_COORD_MAX ||
+            !printable_ascii(item->label, ZCL_PRESENT_MODEL_LABEL_MAX) ||
+            !printable_ascii(item->value, ZCL_PRESENT_MODEL_VALUE_MAX) ||
+            (read_only && is_selected))
+            return false;
+        editable += !read_only;
+        selected += is_selected;
+        for (uint32_t j = i + 1u; j < model->item_count; j++)
+            if (strcmp(item->id, model->items[j].id) == 0)
+                return false;
+    }
+    return editable == 1u && selected == 1u;
 }
 
 static bool qr_shape(const struct zcl_present_model_v1 *model)
@@ -371,6 +406,10 @@ bool zcl_present_model_validate_v1(const struct zcl_present_model_v1 *model,
         return model_error(
             error, error_cap,
             "form must bind one to four unique fields to cancel then submit");
+    if (!canvas_shape(model))
+        return model_error(
+            error, error_cap,
+            "canvas must bind one editable selected point to cancel then submit");
     if (!qr_shape(model))
         return model_error(error, error_cap,
                            "QR model must contain ordered payload chunks only");
@@ -606,6 +645,53 @@ bool zcl_present_model_form_submission_validate_v1(
         memcmp(expected, received, expected_len) != 0)
         return model_error(error, error_cap,
                            "form submission changed immutable model bytes");
+    if (error && error_cap > 0) error[0] = '\0';
+    return true;
+}
+
+bool zcl_present_model_canvas_submission_validate_v1(
+    const struct zcl_present_model_v1 *original,
+    const struct zcl_present_model_v1 *submitted,
+    char *error, size_t error_cap)
+{
+    if (!original || !submitted ||
+        original->kind != ZCL_PRESENT_MODEL_CANVAS ||
+        submitted->kind != ZCL_PRESENT_MODEL_CANVAS ||
+        !zcl_present_model_validate_v1(original, error, error_cap) ||
+        !zcl_present_model_validate_v1(submitted, error, error_cap))
+        return model_error(error, error_cap,
+                           "canvas submission model is invalid");
+    if (original->item_count != submitted->item_count)
+        return model_error(error, error_cap,
+                           "canvas submission point count changed");
+
+    struct zcl_present_model_v1 normalized = *submitted;
+    for (uint32_t i = 0; i < original->item_count; i++) {
+        const struct zcl_present_model_item_v1 *before = &original->items[i];
+        const struct zcl_present_model_item_v1 *after = &submitted->items[i];
+        if ((before->flags & ZCL_PRESENT_ITEM_READ_ONLY) &&
+            (before->numerator != after->numerator ||
+             before->denominator != after->denominator))
+            return model_error(error, error_cap,
+                               "canvas submission changed a reference point");
+        normalized.items[i].numerator = before->numerator;
+        normalized.items[i].denominator = before->denominator;
+    }
+
+    uint8_t expected[ZCL_PRESENT_MODEL_WIRE_MAX];
+    uint8_t received[ZCL_PRESENT_MODEL_WIRE_MAX];
+    size_t expected_len = 0, received_len = 0;
+    char why[192];
+    if (!zcl_present_model_encode_v1(
+            original, expected, sizeof(expected), &expected_len,
+            why, sizeof(why)) ||
+        !zcl_present_model_encode_v1(
+            &normalized, received, sizeof(received), &received_len,
+            why, sizeof(why)) ||
+        expected_len != received_len ||
+        memcmp(expected, received, expected_len) != 0)
+        return model_error(error, error_cap,
+                           "canvas submission changed immutable model bytes");
     if (error && error_cap > 0) error[0] = '\0';
     return true;
 }

@@ -17,6 +17,8 @@ extern "C" {
 #define ZCL_PRESENT_MODEL_ITEMS_MAX 64u
 #define ZCL_PRESENT_MODEL_ACTIONS_MAX 4u
 #define ZCL_PRESENT_MODEL_FORM_FIELDS_MAX 4u
+#define ZCL_PRESENT_MODEL_CANVAS_POINTS_MAX 4u
+#define ZCL_PRESENT_MODEL_CANVAS_COORD_MAX 1000u
 #define ZCL_PRESENT_MODEL_TITLE_MAX 80u
 #define ZCL_PRESENT_MODEL_SUMMARY_MAX 240u
 #define ZCL_PRESENT_MODEL_ROOT_MAX 64u
@@ -58,6 +60,7 @@ enum zcl_present_item_kind {
     ZCL_PRESENT_ITEM_GRAPH_NODE,
     ZCL_PRESENT_ITEM_CHOICE,
     ZCL_PRESENT_ITEM_FORM_FIELD,
+    ZCL_PRESENT_ITEM_CANVAS_POINT,
 };
 
 enum zcl_present_status {
@@ -155,6 +158,14 @@ bool zcl_present_model_decode_v1(const uint8_t *wire, size_t wire_len,
  * This is the full node's independent recheck of an authority-free visual
  * worker result. */
 bool zcl_present_model_form_submission_validate_v1(
+    const struct zcl_present_model_v1 *original,
+    const struct zcl_present_model_v1 *submitted,
+    char *error, size_t error_cap);
+
+/* A bounded canvas contains one editable point and up to three inert reference
+ * points. Coordinates are renderer-neutral thousandths (0..1000). Only the
+ * editable point coordinates may differ in a submitted canvas event. */
+bool zcl_present_model_canvas_submission_validate_v1(
     const struct zcl_present_model_v1 *original,
     const struct zcl_present_model_v1 *submitted,
     char *error, size_t error_cap);

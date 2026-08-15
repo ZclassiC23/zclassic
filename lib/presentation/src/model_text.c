@@ -73,6 +73,7 @@ static const char *item_kind_name(uint16_t kind)
         "invalid", "text", "key-value", "table-header", "table-row",
         "progress", "chart-point", "timeline-event", "diff-context",
         "diff-add", "diff-remove", "graph-node", "choice", "form-field",
+        "canvas-point",
     };
     return kind < sizeof(names) / sizeof(names[0]) ? names[kind] : "invalid";
 }
@@ -136,10 +137,14 @@ static bool text_item(struct text_writer *writer,
         !field(writer, "  value", item->value))
         return false;
     if ((item->kind == ZCL_PRESENT_ITEM_PROGRESS ||
-         item->kind == ZCL_PRESENT_ITEM_CHART_POINT) &&
+         item->kind == ZCL_PRESENT_ITEM_CHART_POINT ||
+         item->kind == ZCL_PRESENT_ITEM_CANVAS_POINT) &&
         (!text_literal(writer,
                        item->kind == ZCL_PRESENT_ITEM_PROGRESS
-                           ? "  progress: " : "  chart-point: ") ||
+                           ? "  progress: "
+                           : (item->kind == ZCL_PRESENT_ITEM_CHART_POINT
+                                  ? "  chart-point: "
+                                  : "  canvas-point-x-y: ")) ||
          !text_u32(writer, item->numerator) ||
          !text_literal(writer, "/") ||
          !text_u32(writer, item->denominator) ||

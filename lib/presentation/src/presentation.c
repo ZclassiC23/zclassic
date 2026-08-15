@@ -4,6 +4,8 @@
 #include "presentation/presentation.h"
 
 #include "presentation/model_render.h"
+#include "presentation_canvas_internal.h"
+#include "presentation_focus_internal.h"
 #include "presentation_form_internal.h"
 
 #include <stdio.h>
@@ -229,136 +231,47 @@ static bool present_pages_validate(
     return true;
 }
 
-static void present_focus_pixel(uint8_t *pixels, uint32_t width,
-                                uint32_t height, uint32_t channels,
-                                uint32_t x, uint32_t y,
-                                uint8_t red, uint8_t green, uint8_t blue)
-{
-    if (x >= width || y >= height) return;
-    size_t offset = ((size_t)y * width + x) * channels;
-    pixels[offset] = red;
-    pixels[offset + 1u] = green;
-    pixels[offset + 2u] = blue;
-    if (channels == 4u) pixels[offset + 3u] = 0xff;
-}
-
-static void present_focus_outline(uint8_t *pixels, uint32_t width,
-                                  uint32_t height, uint32_t channels,
-                                  uint32_t x0, uint32_t y0,
-                                  uint32_t x1, uint32_t y1,
-                                  uint32_t thickness,
-                                  uint8_t red, uint8_t green, uint8_t blue)
-{
-    if (x0 >= x1 || y0 >= y1) return;
-    for (uint32_t inset = 0; inset < thickness; inset++) {
-        if (x0 + inset >= x1 || y0 + inset >= y1) break;
-        uint32_t left = x0 + inset;
-        uint32_t top = y0 + inset;
-        uint32_t right = x1 - 1u;
-        uint32_t bottom = y1 - 1u;
-        if (right < inset || bottom < inset) break;
-        right -= inset;
-        bottom -= inset;
-        if (left > right || top > bottom) break;
-        for (uint32_t x = left; x <= right; x++) {
-            present_focus_pixel(pixels, width, height, channels,
-                                x, top, red, green, blue);
-            present_focus_pixel(pixels, width, height, channels,
-                                x, bottom, red, green, blue);
-        }
-        for (uint32_t y = top; y <= bottom; y++) {
-            present_focus_pixel(pixels, width, height, channels,
-                                left, y, red, green, blue);
-            present_focus_pixel(pixels, width, height, channels,
-                                right, y, red, green, blue);
-        }
-    }
-}
-
-static void present_draw_action_focus(
-    const struct zcl_present_window_v1 *page,
-    uint8_t *pixels, uint32_t width, uint32_t height,
-    uint32_t action_count, uint32_t focused_action)
-{
-    if (!pixels || action_count == 0 || focused_action >= action_count)
-        return;
-    uint32_t draw_width = width;
-    uint32_t draw_height = (uint32_t)((uint64_t)draw_width * page->height /
-                                      page->width);
-    if (draw_height > height) {
-        draw_height = height;
-        draw_width = (uint32_t)((uint64_t)draw_height * page->width /
-                                page->height);
-    }
-    if (draw_width == 0 || draw_height == 0) return;
-    uint32_t letterbox_x = (width - draw_width) / 2u;
-    uint32_t letterbox_y = (height - draw_height) / 2u;
-    uint32_t total_gap = ZCL_PRESENT_MODEL_ACTION_GAP * (action_count - 1u);
-    uint32_t action_width =
-        (ZCL_PRESENT_MODEL_ACTION_WIDTH - total_gap) / action_count;
-    uint32_t source_x = ZCL_PRESENT_MODEL_ACTION_X +
-        focused_action * (action_width + ZCL_PRESENT_MODEL_ACTION_GAP);
-    uint32_t source_x1 = source_x + action_width;
-    uint32_t source_y = ZCL_PRESENT_MODEL_ACTION_Y;
-    uint32_t source_y1 = source_y + ZCL_PRESENT_MODEL_ACTION_HEIGHT;
-    uint32_t x0 = letterbox_x +
-        (uint32_t)((uint64_t)source_x * draw_width / page->width);
-    uint32_t x1 = letterbox_x +
-        (uint32_t)(((uint64_t)source_x1 * draw_width + page->width - 1u) /
-                   page->width);
-    uint32_t y0 = letterbox_y +
-        (uint32_t)((uint64_t)source_y * draw_height / page->height);
-    uint32_t y1 = letterbox_y +
-        (uint32_t)(((uint64_t)source_y1 * draw_height + page->height - 1u) /
-                   page->height);
-    uint32_t channels = (uint32_t)page->pixel_format;
-    /* A two-tone ring remains visible over both the orange decisive button
-     * and the dark secondary button. It is display state only: model bytes,
-     * action IDs, and the returned numbered event are unchanged. */
-    present_focus_outline(pixels, width, height, channels,
-                          x0, y0, x1, y1, 3u, 0x16, 0x13, 0x0f);
-    if (x1 > x0 + 6u && y1 > y0 + 6u)
-        present_focus_outline(pixels, width, height, channels,
-                              x0 + 3u, y0 + 3u, x1 - 3u, y1 - 3u,
-                              2u, 0xff, 0xf4, 0xd6);
-}
-
 static bool present_replace_surface(
     RGFW_window *window, const struct zcl_present_window_v1 *page,
     i32 width, i32 height, RGFW_surface **surface,
     uint8_t **scaled_pixels, uint32_t action_count,
     uint32_t focused_control,
     const struct zcl_present_window_form_v1 *form,
+    const struct zcl_present_window_canvas_v1 *canvas,
     bool required_invalid)
 {
     uint8_t *replacement_pixels = NULL;
     bool scaled = width != (i32)page->width || height != (i32)page->height;
-    bool owned = scaled || action_count > 0 || form;
-    uint8_t *form_pixels = NULL;
-    struct zcl_present_window_v1 form_page = *page;
-    if (form) {
+    bool owned = scaled || action_count > 0 || form || canvas;
+    uint8_t *overlay_pixels = NULL;
+    struct zcl_present_window_v1 overlay_page = *page;
+    if (form || canvas) {
         uint64_t bytes = (uint64_t)page->width * page->height *
                          (uint32_t)page->pixel_format;
         if (bytes == 0 || bytes > SIZE_MAX) return false;
-        form_pixels = malloc((size_t)bytes); // raw-alloc-ok:standalone-presentation-package
-        if (!form_pixels) return false;
-        memcpy(form_pixels, page->pixels, (size_t)bytes);
-        zcl_present_form_draw_state_internal(
-            form_pixels, (size_t)bytes, form,
-            focused_control, required_invalid);
-        form_page.pixels = form_pixels;
-        page = &form_page;
+        overlay_pixels = malloc((size_t)bytes); // raw-alloc-ok:standalone-presentation-package
+        if (!overlay_pixels) return false;
+        memcpy(overlay_pixels, page->pixels, (size_t)bytes);
+        if (form)
+            zcl_present_form_draw_state_internal(
+                overlay_pixels, (size_t)bytes, form,
+                focused_control, required_invalid);
+        else
+            zcl_present_canvas_draw_state_internal(
+                overlay_pixels, (size_t)bytes, canvas, focused_control);
+        overlay_page.pixels = overlay_pixels;
+        page = &overlay_page;
     }
     if (scaled) {
         if (!present_scale_bitmap(page, width, height,
                                   &replacement_pixels)) {
-            free(form_pixels);
+            free(overlay_pixels);
             return false;
         }
-        free(form_pixels);
+        free(overlay_pixels);
     } else if (owned) {
-        if (form_pixels) {
-            replacement_pixels = form_pixels;
+        if (overlay_pixels) {
+            replacement_pixels = overlay_pixels;
         } else {
             uint64_t bytes = (uint64_t)page->width * page->height *
                              (uint32_t)page->pixel_format;
@@ -376,11 +289,15 @@ static bool present_replace_surface(
         action_focused = focused_control >= form->field_count;
         focused_action = action_focused
             ? focused_control - form->field_count : UINT32_MAX;
+    } else if (canvas) {
+        action_focused = focused_control > 0;
+        focused_action = action_focused
+            ? focused_control - 1u : UINT32_MAX;
     }
     if (action_focused)
-        present_draw_action_focus(page, pixels, (uint32_t)width,
-                                  (uint32_t)height, action_count,
-                                  focused_action);
+        zcl_present_draw_action_focus_internal(
+            page, pixels, (uint32_t)width, (uint32_t)height,
+            action_count, focused_action);
     RGFW_surface *replacement = RGFW_window_createSurface(
         window, pixels, width, height,
         page->pixel_format == ZCL_PRESENT_RGB8
@@ -396,10 +313,29 @@ static bool present_replace_surface(
     return true;
 }
 
+static bool present_redraw(
+    RGFW_window *window, const struct zcl_present_window_v1 *page,
+    RGFW_surface **surface, uint8_t **scaled_pixels,
+    uint32_t action_count, uint32_t focused_control,
+    const struct zcl_present_window_form_v1 *form,
+    const struct zcl_present_window_canvas_v1 *canvas,
+    bool required_invalid)
+{
+    i32 width = 0, height = 0;
+    (void)RGFW_window_getSize(window, &width, &height);
+    if (!present_replace_surface(
+            window, page, width, height, surface, scaled_pixels,
+            action_count, focused_control, form, canvas, required_invalid))
+        return false;
+    RGFW_window_blitSurface(window, *surface);
+    return true;
+}
+
 static bool present_run_pages_actions(
     const struct zcl_present_window_pages_v1 *pages,
     uint32_t action_count,
     struct zcl_present_window_form_v1 *form,
+    struct zcl_present_window_canvas_v1 *canvas,
     zcl_present_window_ready_fn ready,
     void *ready_context,
     struct zcl_present_window_event_v1 *result,
@@ -416,6 +352,9 @@ static bool present_run_pages_actions(
     };
     if (!present_pages_validate(pages, error, error_cap))
         return false;
+    if (form && canvas)
+        return present_error(error, error_cap,
+                             "presentation controls are mutually exclusive");
     if (form && (!zcl_present_window_form_validate_v1(
                      form, error, error_cap) ||
                  action_count != 2u || pages->page_count != 1u ||
@@ -424,6 +363,14 @@ static bool present_run_pages_actions(
                  pages->pages[0].height != ZCL_PRESENT_MODEL_BITMAP_HEIGHT))
         return present_error(error, error_cap,
                              "presentation form geometry/actions are invalid");
+    if (canvas && (!zcl_present_window_canvas_validate_v1(
+                       canvas, error, error_cap) ||
+                   action_count != 2u || pages->page_count != 1u ||
+                   pages->pages[0].pixel_format != ZCL_PRESENT_RGB8 ||
+                   pages->pages[0].width != ZCL_PRESENT_MODEL_BITMAP_WIDTH ||
+                   pages->pages[0].height != ZCL_PRESENT_MODEL_BITMAP_HEIGHT))
+        return present_error(error, error_cap,
+                             "presentation canvas geometry/actions are invalid");
     uint32_t current_page = 0;
     const struct zcl_present_window_v1 *request = &pages->pages[current_page];
 #if !defined(_WIN32) && !defined(__APPLE__) && !defined(__linux__)
@@ -479,7 +426,7 @@ static bool present_run_pages_actions(
                                  (i32)request->height,
                                  &surface, &scaled_pixels,
                                  action_count, focused_control,
-                                 form, required_invalid)) {
+                                 form, canvas, required_invalid)) {
         RGFW_window_close(window);
         return present_error(error, error_cap,
                              "native bitmap surface creation failed");
@@ -501,7 +448,7 @@ static bool present_run_pages_actions(
                 (void)present_replace_surface(
                     window, request, resized_width, resized_height,
                     &surface, &scaled_pixels, action_count,
-                    focused_control, form, required_invalid);
+                    focused_control, form, canvas, required_invalid);
                 RGFW_window_blitSurface(window, surface);
             } else if (event.type == RGFW_windowRefresh) {
                 RGFW_window_blitSurface(window, surface);
@@ -522,15 +469,30 @@ static bool present_run_pages_actions(
                         !zcl_present_form_required_complete_internal(form)) {
                         required_invalid = true;
                         focused_control = form->field_count + action;
-                        (void)present_replace_surface(
-                            window, request, window_width, window_height,
-                            &surface, &scaled_pixels, action_count,
-                            focused_control, form, required_invalid);
-                        RGFW_window_blitSurface(window, surface);
+                        (void)present_redraw(
+                            window, request, &surface, &scaled_pixels,
+                            action_count, focused_control, form, canvas,
+                            required_invalid);
                     } else {
                         result->outcome = ZCL_PRESENT_WINDOW_ACTION;
                         result->action_index = action;
                         RGFW_window_setShouldClose(window, RGFW_TRUE);
+                    }
+                } else if (canvas) {
+                    uint32_t point_x = 0, point_y = 0;
+                    if (zcl_present_window_canvas_point_at_v1(
+                            request->width, request->height,
+                            window_width, window_height, mouse_x, mouse_y,
+                            &point_x, &point_y)) {
+                        struct zcl_present_window_canvas_point_v1 *point =
+                            &canvas->points[canvas->editable_index];
+                        point->x = point_x;
+                        point->y = point_y;
+                        focused_control = 0;
+                        (void)present_redraw(
+                            window, request, &surface, &scaled_pixels,
+                            action_count, focused_control, form, canvas,
+                            required_invalid);
                     }
                 }
             }
@@ -566,7 +528,7 @@ static bool present_run_pages_actions(
                 if (present_replace_surface(
                         window, next, window_width, window_height,
                         &surface, &scaled_pixels, action_count,
-                        focused_control, form, required_invalid)) {
+                        focused_control, form, canvas, required_invalid)) {
                     current_page = next_page;
                     request = next;
                     RGFW_window_blitSurface(window, surface);
@@ -581,19 +543,19 @@ static bool present_run_pages_actions(
                     ? zcl_present_window_form_focus_step_v1(
                           form, action_count, focused_control, direction,
                           &next_control)
-                    : zcl_present_window_action_focus_step_v1(
-                          focused_control, action_count, direction,
-                          &next_control);
+                    : (canvas
+                        ? zcl_present_window_canvas_focus_step_v1(
+                              action_count, focused_control, direction,
+                              &next_control)
+                        : zcl_present_window_action_focus_step_v1(
+                              focused_control, action_count, direction,
+                              &next_control));
                 if (stepped) {
-                    i32 window_width = 0, window_height = 0;
-                    (void)RGFW_window_getSize(window, &window_width,
-                                              &window_height);
-                    if (present_replace_surface(
-                            window, request, window_width, window_height,
-                            &surface, &scaled_pixels, action_count,
-                            next_control, form, required_invalid)) {
+                    if (present_redraw(
+                            window, request, &surface, &scaled_pixels,
+                            action_count, next_control, form, canvas,
+                            required_invalid)) {
                         focused_control = next_control;
-                        RGFW_window_blitSurface(window, surface);
                     }
                 }
                 continue;
@@ -622,14 +584,42 @@ static bool present_run_pages_actions(
                     required_invalid = false;
                 }
                 if (changed) {
-                    i32 window_width = 0, window_height = 0;
-                    (void)RGFW_window_getSize(window, &window_width,
-                                              &window_height);
-                    if (present_replace_surface(
-                            window, request, window_width, window_height,
-                            &surface, &scaled_pixels, action_count,
-                            focused_control, form, required_invalid))
-                        RGFW_window_blitSurface(window, surface);
+                    (void)present_redraw(
+                        window, request, &surface, &scaled_pixels,
+                        action_count, focused_control, form, canvas,
+                        required_invalid);
+                }
+                continue;
+            }
+            if (canvas && focused_control == 0) {
+                bool changed = false;
+                int32_t step = (event.key.mod & RGFW_modShift) ? 1 : 10;
+                if (event.key.value == RGFW_return) {
+                    uint32_t next_control = focused_control;
+                    if (zcl_present_window_canvas_focus_step_v1(
+                            action_count, focused_control, 1,
+                            &next_control)) {
+                        focused_control = next_control;
+                        changed = true;
+                    }
+                } else if (event.key.value == RGFW_left) {
+                    changed = zcl_present_window_canvas_step_v1(
+                        canvas, -step, 0);
+                } else if (event.key.value == RGFW_right) {
+                    changed = zcl_present_window_canvas_step_v1(
+                        canvas, step, 0);
+                } else if (event.key.value == RGFW_up) {
+                    changed = zcl_present_window_canvas_step_v1(
+                        canvas, 0, -step);
+                } else if (event.key.value == RGFW_down) {
+                    changed = zcl_present_window_canvas_step_v1(
+                        canvas, 0, step);
+                }
+                if (changed) {
+                    (void)present_redraw(
+                        window, request, &surface, &scaled_pixels,
+                        action_count, focused_control, form, canvas,
+                        required_invalid);
                 }
                 continue;
             }
@@ -637,25 +627,21 @@ static bool present_run_pages_actions(
                  event.key.value == RGFW_space) && action_count > 0) {
                 uint32_t action = form
                     ? focused_control - form->field_count
-                    : focused_control;
+                    : (canvas ? focused_control - 1u : focused_control);
                 if (form && action == 1u &&
                     !zcl_present_form_required_complete_internal(form)) {
                     required_invalid = true;
-                    i32 window_width = 0, window_height = 0;
-                    (void)RGFW_window_getSize(window, &window_width,
-                                              &window_height);
-                    if (present_replace_surface(
-                            window, request, window_width, window_height,
-                            &surface, &scaled_pixels, action_count,
-                            focused_control, form, required_invalid))
-                        RGFW_window_blitSurface(window, surface);
+                    (void)present_redraw(
+                        window, request, &surface, &scaled_pixels,
+                        action_count, focused_control, form, canvas,
+                        required_invalid);
                 } else {
                     result->outcome = ZCL_PRESENT_WINDOW_ACTION;
                     result->action_index = action;
                     RGFW_window_setShouldClose(window, RGFW_TRUE);
                 }
             }
-            if (form) continue;
+            if (form || canvas) continue;
             if (event.key.value == RGFW_q)
                 RGFW_window_setShouldClose(window, RGFW_TRUE);
             if (event.key.value == RGFW_c && request->copy_text) {
@@ -696,7 +682,7 @@ bool zcl_present_window_run_pages_actions_v1(
     char *error, size_t error_cap)
 {
     return present_run_pages_actions(
-        pages, action_count, NULL, ready, ready_context,
+        pages, action_count, NULL, NULL, ready, ready_context,
         result, error, error_cap);
 }
 
@@ -710,7 +696,21 @@ bool zcl_present_window_run_pages_form_actions_v1(
     char *error, size_t error_cap)
 {
     return present_run_pages_actions(
-        pages, action_count, form, ready, ready_context,
+        pages, action_count, form, NULL, ready, ready_context,
+        result, error, error_cap);
+}
+
+bool zcl_present_window_run_pages_canvas_actions_v1(
+    const struct zcl_present_window_pages_v1 *pages,
+    uint32_t action_count,
+    struct zcl_present_window_canvas_v1 *canvas,
+    zcl_present_window_ready_fn ready,
+    void *ready_context,
+    struct zcl_present_window_event_v1 *result,
+    char *error, size_t error_cap)
+{
+    return present_run_pages_actions(
+        pages, action_count, NULL, canvas, ready, ready_context,
         result, error, error_cap);
 }
 

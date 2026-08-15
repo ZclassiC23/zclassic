@@ -22,6 +22,10 @@ struct ui_present_host_result {
         char id[ZCL_PRESENT_MODEL_ID_MAX + 1u];
         char value[ZCL_PRESENT_MODEL_VALUE_MAX + 1u];
     } form_values[ZCL_PRESENT_MODEL_FORM_FIELDS_MAX];
+    bool canvas_submitted;
+    char canvas_point_id[ZCL_PRESENT_MODEL_ID_MAX + 1u];
+    uint32_t canvas_x;
+    uint32_t canvas_y;
     int64_t ready_us;
 };
 

@@ -125,7 +125,8 @@ static int usage(const char *program)
 {
     fprintf(stderr,
             "usage: %s --title=<substring> "
-            "(--key=1|tab|enter|pagedown|pageup|escape | --expect-count=N) "
+            "(--key=1|tab|enter|left|right|up|down|pagedown|pageup|escape "
+            "| --expect-count=N) "
             "[--expect-pixels-change] [--timeout-ms=N]\n",
             program);
     return 2;
@@ -172,9 +173,13 @@ int main(int argc, char **argv)
     bool enter = key && strcmp(key, "enter") == 0;
     bool page_down = key && strcmp(key, "pagedown") == 0;
     bool page_up = key && strcmp(key, "pageup") == 0;
+    bool left = key && strcmp(key, "left") == 0;
+    bool right = key && strcmp(key, "right") == 0;
+    bool up = key && strcmp(key, "up") == 0;
+    bool down = key && strcmp(key, "down") == 0;
     bool close = key && strcmp(key, "escape") == 0;
     if (key && !first_action && !tab && !enter &&
-        !page_down && !page_up && !close)
+        !page_down && !page_up && !left && !right && !up && !down && !close)
         return usage(argv[0]);
 
     Display *display = XOpenDisplay(NULL);
@@ -208,9 +213,15 @@ int main(int argc, char **argv)
                title, count);
         return 0;
     }
-    KeySym key_sym = first_action ? XK_1
-        : (tab ? XK_Tab : (enter ? XK_Return
-        : (page_down ? XK_Page_Down : XK_Page_Up)));
+    KeySym key_sym = XK_Page_Up;
+    if (first_action) key_sym = XK_1;
+    else if (tab) key_sym = XK_Tab;
+    else if (enter) key_sym = XK_Return;
+    else if (left) key_sym = XK_Left;
+    else if (right) key_sym = XK_Right;
+    else if (up) key_sym = XK_Up;
+    else if (down) key_sym = XK_Down;
+    else if (page_down) key_sym = XK_Page_Down;
     XImage *before = expect_pixels_change
         ? capture_window(display, window) : NULL;
     bool sent = window != None && (!expect_pixels_change || before) && (close

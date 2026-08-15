@@ -21,6 +21,9 @@ extern "C" {
 #define ZCL_PRESENT_WINDOW_PAGES_MAX 16u
 #define ZCL_PRESENT_WINDOW_FORM_FIELDS_MAX 4u
 #define ZCL_PRESENT_WINDOW_FORM_VALUE_MAX 256u
+#define ZCL_PRESENT_WINDOW_CANVAS_POINTS_MAX 4u
+#define ZCL_PRESENT_WINDOW_CANVAS_COORD_MAX 1000u
+#define ZCL_PRESENT_WINDOW_CANVAS_LABEL_MAX 80u
 
 enum zcl_present_pixel_format {
     ZCL_PRESENT_RGB8 = 3,
@@ -91,6 +94,29 @@ struct zcl_present_window_form_v1 {
         fields[ZCL_PRESENT_WINDOW_FORM_FIELDS_MAX];
 };
 
+enum zcl_present_window_canvas_point_flags {
+    ZCL_PRESENT_WINDOW_CANVAS_POINT_READ_ONLY = 1u << 0,
+};
+
+struct zcl_present_window_canvas_point_v1 {
+    uint16_t flags;
+    uint16_t status;
+    uint32_t x;
+    uint32_t y;
+    char label[ZCL_PRESENT_WINDOW_CANVAS_LABEL_MAX + 1u];
+};
+
+/* One editable normalized point plus up to three display-only references.
+ * The backend mutates only points[editable_index].x/y. */
+struct zcl_present_window_canvas_v1 {
+    uint32_t struct_size;
+    uint32_t abi_version;
+    uint32_t point_count;
+    uint32_t editable_index;
+    struct zcl_present_window_canvas_point_v1
+        points[ZCL_PRESENT_WINDOW_CANVAS_POINTS_MAX];
+};
+
 /* Called after the native window and software surface exist and the first
  * bitmap has been blitted. The callback belongs to the reviewed host, never
  * to the inert visual document or fetched code. */
@@ -146,6 +172,18 @@ bool zcl_present_window_run_pages_form_actions_v1(
     struct zcl_present_window_event_v1 *event,
     char *error, size_t error_cap);
 
+/* Direct bounded 2D selection over the same safe Cancel/Submit action row.
+ * Mouse clicks inside the fixed canvas and keyboard arrows move only the one
+ * editable normalized point; Enter advances to harmless Cancel. */
+bool zcl_present_window_run_pages_canvas_actions_v1(
+    const struct zcl_present_window_pages_v1 *request,
+    uint32_t action_count,
+    struct zcl_present_window_canvas_v1 *canvas,
+    zcl_present_window_ready_fn ready,
+    void *ready_context,
+    struct zcl_present_window_event_v1 *event,
+    char *error, size_t error_cap);
+
 /* Pure clamped page transition used by the backend and sensitivity tests. */
 bool zcl_present_window_page_step_v1(
     uint32_t current_page, uint32_t page_count, int32_t delta,
@@ -169,6 +207,26 @@ bool zcl_present_window_form_focus_step_v1(
     const struct zcl_present_window_form_v1 *form,
     uint32_t action_count, uint32_t current_focus, int32_t delta,
     uint32_t *next_focus);
+
+bool zcl_present_window_canvas_validate_v1(
+    const struct zcl_present_window_canvas_v1 *canvas,
+    char *error, size_t error_cap);
+struct zcl_present_model_v1;
+bool zcl_present_window_canvas_from_model_v1(
+    const struct zcl_present_model_v1 *model,
+    struct zcl_present_window_canvas_v1 *canvas,
+    char *error, size_t error_cap);
+bool zcl_present_window_canvas_step_v1(
+    struct zcl_present_window_canvas_v1 *canvas,
+    int32_t delta_x, int32_t delta_y);
+bool zcl_present_window_canvas_focus_step_v1(
+    uint32_t action_count, uint32_t current_focus, int32_t delta,
+    uint32_t *next_focus);
+bool zcl_present_window_canvas_point_at_v1(
+    uint32_t source_width, uint32_t source_height,
+    int32_t target_width, int32_t target_height,
+    int32_t mouse_x, int32_t mouse_y,
+    uint32_t *normalized_x, uint32_t *normalized_y);
 
 /* Deterministic hit test for the standard renderer-neutral model action row.
  * Window pixels are aspect-fit, so letterboxing and resize are accounted for

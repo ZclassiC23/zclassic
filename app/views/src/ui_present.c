@@ -86,6 +86,7 @@ static uint16_t ui_present_item_kind(const char *name)
         "", "text", "key-value", "table-header", "table-row", "progress",
         "chart-point", "timeline-event", "diff-context", "diff-add",
         "diff-remove", "graph-node", "choice", "form-field",
+        "canvas-point",
     };
     if (!name) return 0;
     for (uint16_t i = 1; i < sizeof(names) / sizeof(names[0]); i++)

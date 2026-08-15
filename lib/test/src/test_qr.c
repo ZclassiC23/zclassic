@@ -763,6 +763,124 @@ int test_qr(void)
              !zcl_present_model_validate_v1(
                  &submitted_form, why, sizeof(why)));
 
+    struct zcl_present_model_v1 canvas_model;
+    zcl_present_model_init_v1(&canvas_model, ZCL_PRESENT_MODEL_CANVAS);
+    (void)snprintf(canvas_model.request_id,
+                   sizeof(canvas_model.request_id), "placement-canvas");
+    (void)snprintf(canvas_model.title, sizeof(canvas_model.title),
+                   "Place the exact label");
+    memset(canvas_model.exact_root, 'e', ZCL_PRESENT_MODEL_ROOT_MAX);
+    canvas_model.exact_root[ZCL_PRESENT_MODEL_ROOT_MAX] = '\0';
+    canvas_model.item_count = 2;
+    canvas_model.items[0].kind = ZCL_PRESENT_ITEM_CANVAS_POINT;
+    canvas_model.items[0].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+    canvas_model.items[0].flags = ZCL_PRESENT_ITEM_SELECTED;
+    canvas_model.items[0].numerator = 250;
+    canvas_model.items[0].denominator = 300;
+    (void)snprintf(canvas_model.items[0].id,
+                   sizeof(canvas_model.items[0].id), "label-origin");
+    (void)snprintf(canvas_model.items[0].label,
+                   sizeof(canvas_model.items[0].label), "Label origin");
+    canvas_model.items[1].kind = ZCL_PRESENT_ITEM_CANVAS_POINT;
+    canvas_model.items[1].status = ZCL_PRESENT_STATUS_INFO;
+    canvas_model.items[1].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+    canvas_model.items[1].flags = ZCL_PRESENT_ITEM_READ_ONLY;
+    canvas_model.items[1].numerator = 800;
+    canvas_model.items[1].denominator = 700;
+    (void)snprintf(canvas_model.items[1].id,
+                   sizeof(canvas_model.items[1].id), "fixed-anchor");
+    (void)snprintf(canvas_model.items[1].label,
+                   sizeof(canvas_model.items[1].label), "Fixed anchor");
+    canvas_model.action_count = 2;
+    canvas_model.actions[0].kind = ZCL_PRESENT_ACTION_CANCEL;
+    (void)snprintf(canvas_model.actions[0].id,
+                   sizeof(canvas_model.actions[0].id), "cancel");
+    (void)snprintf(canvas_model.actions[0].label,
+                   sizeof(canvas_model.actions[0].label), "Cancel");
+    canvas_model.actions[1].kind = ZCL_PRESENT_ACTION_SUBMIT;
+    (void)snprintf(canvas_model.actions[1].id,
+                   sizeof(canvas_model.actions[1].id), "submit-placement");
+    (void)snprintf(canvas_model.actions[1].label,
+                   sizeof(canvas_model.actions[1].label), "Submit");
+    QR_CHECK("bounded canvas fixes one editable point and safe actions",
+             zcl_present_model_validate_v1(
+                 &canvas_model, why, sizeof(why)));
+    struct zcl_present_model_bitmap_v1 canvas_model_pixels = {0};
+    QR_CHECK("bounded canvas renders a real normalized 2D instrument",
+             zcl_present_model_render_v1(
+                 &canvas_model, &canvas_model_pixels, why, sizeof(why)) &&
+             canvas_model_pixels.pixels != NULL);
+    zcl_present_model_bitmap_free_v1(&canvas_model_pixels);
+    char canvas_text[ZCL_PRESENT_MODEL_TEXT_MAX];
+    size_t canvas_text_len = 0;
+    QR_CHECK("canvas text companion preserves exact normalized coordinates",
+             zcl_present_model_text_all_v1(
+                 &canvas_model, canvas_text, sizeof(canvas_text),
+                 &canvas_text_len, why, sizeof(why)) &&
+             strstr(canvas_text, "canvas-point-x-y: 250/300") != NULL &&
+             strstr(canvas_text, "flags: selected") != NULL &&
+             strstr(canvas_text, "flags: read-only") != NULL);
+
+    struct zcl_present_window_canvas_v1 canvas_state = {
+        .struct_size = sizeof(canvas_state),
+        .abi_version = ZCL_PRESENT_ABI_V1,
+        .point_count = 2,
+        .editable_index = 0,
+        .points = {
+            {.x = 250, .y = 300, .label = "Label origin"},
+            {.flags = ZCL_PRESENT_WINDOW_CANVAS_POINT_READ_ONLY,
+             .status = ZCL_PRESENT_STATUS_INFO,
+             .x = 800, .y = 700, .label = "Fixed anchor"},
+        },
+    };
+    QR_CHECK("canvas reducer accepts one editable and one reference point",
+             zcl_present_window_canvas_validate_v1(
+                 &canvas_state, why, sizeof(why)));
+    QR_CHECK("canvas arrows move only the editable point and clamp exactly",
+             zcl_present_window_canvas_step_v1(
+                 &canvas_state, -300, 710) &&
+             canvas_state.points[0].x == 0 &&
+             canvas_state.points[0].y == 1000 &&
+             canvas_state.points[1].x == 800 &&
+             canvas_state.points[1].y == 700);
+    uint32_t canvas_focus = UINT32_MAX;
+    QR_CHECK("canvas focus traverses point, Cancel, Submit, then wraps",
+             zcl_present_window_canvas_focus_step_v1(
+                 2, 0, 1, &canvas_focus) && canvas_focus == 1 &&
+             zcl_present_window_canvas_focus_step_v1(
+                 2, canvas_focus, 1, &canvas_focus) && canvas_focus == 2 &&
+             zcl_present_window_canvas_focus_step_v1(
+                 2, canvas_focus, 1, &canvas_focus) && canvas_focus == 0);
+    uint32_t canvas_x = UINT32_MAX, canvas_y = UINT32_MAX;
+    QR_CHECK("canvas hit test maps native pixels to bounded coordinates",
+             zcl_present_window_canvas_point_at_v1(
+                 ZCL_PRESENT_MODEL_BITMAP_WIDTH,
+                 ZCL_PRESENT_MODEL_BITMAP_HEIGHT,
+                 (int32_t)ZCL_PRESENT_MODEL_BITMAP_WIDTH,
+                 (int32_t)ZCL_PRESENT_MODEL_BITMAP_HEIGHT,
+                 359, 383, &canvas_x, &canvas_y) &&
+             canvas_x == 499 && canvas_y == 498);
+    struct zcl_present_model_v1 submitted_canvas = canvas_model;
+    submitted_canvas.items[0].numerator = 499;
+    submitted_canvas.items[0].denominator = 498;
+    QR_CHECK("canvas submission may change only editable coordinates",
+             zcl_present_model_canvas_submission_validate_v1(
+                 &canvas_model, &submitted_canvas, why, sizeof(why)));
+    submitted_canvas.items[1].numerator++;
+    QR_CHECK("canvas reference-point mutant fails closed",
+             !zcl_present_model_canvas_submission_validate_v1(
+                 &canvas_model, &submitted_canvas, why, sizeof(why)));
+    submitted_canvas = canvas_model;
+    submitted_canvas.items[0].label[0] = 'X';
+    QR_CHECK("canvas immutable-label mutant fails closed",
+             !zcl_present_model_canvas_submission_validate_v1(
+                 &canvas_model, &submitted_canvas, why, sizeof(why)));
+    submitted_canvas = canvas_model;
+    submitted_canvas.items[1].flags |= ZCL_PRESENT_ITEM_SELECTED;
+    QR_CHECK("canvas selected-reference mutant fails closed",
+             !zcl_present_model_validate_v1(
+                 &submitted_canvas, why, sizeof(why)));
+
     uint8_t host_nonce[UI_HOST_NONCE_BYTES];
     memset(host_nonce, 0x5a, sizeof(host_nonce));
     uint8_t host_reply[UI_HOST_REPLY_BYTES];
@@ -1519,6 +1637,47 @@ int test_qr(void)
                     "display-only") == 0);
     zcl_command_reply_free(&form_reply);
     json_free(&form_input);
+
+    static const char canvas_json[] =
+        "{\"kind\":\"canvas\",\"request_id\":\"placement-canvas\","
+        "\"title\":\"Place exact label\",\"output\":\"text\","
+        "\"exact_root\":"
+        "\"eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee\","
+        "\"items\":[{\"kind\":\"canvas-point\","
+        "\"id\":\"label-origin\",\"label\":\"Label origin\","
+        "\"numerator\":250,\"denominator\":300,\"selected\":true},"
+        "{\"kind\":\"canvas-point\",\"status\":\"info\","
+        "\"id\":\"fixed-anchor\",\"label\":\"Fixed anchor\","
+        "\"numerator\":800,\"denominator\":700,"
+        "\"read_only\":true}],\"actions\":["
+        "{\"kind\":\"cancel\",\"id\":\"cancel\",\"label\":\"Cancel\"},"
+        "{\"kind\":\"submit\",\"id\":\"submit-placement\","
+        "\"label\":\"Submit\"}]}";
+    struct json_value canvas_input;
+    json_init(&canvas_input);
+    QR_CHECK("typed canvas parses as one exact bounded point contract",
+             json_read(&canvas_input, canvas_json,
+                       sizeof(canvas_json) - 1u));
+    struct zcl_command_request canvas_request = {.input = &canvas_input};
+    struct zcl_command_reply canvas_reply;
+    zcl_command_reply_init(&canvas_reply,
+                           "zcl.app_presentation_show.v1");
+    zcl_native_handle_presentation_show(&canvas_request, &canvas_reply);
+    const char *typed_canvas_text =
+        json_get_str(json_get(&canvas_reply.data, "plain_text"));
+    QR_CHECK("agent canvas text preserves exact point and safe actions",
+             canvas_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             typed_canvas_text &&
+             strstr(typed_canvas_text, "kind: canvas") != NULL &&
+             strstr(typed_canvas_text,
+                    "canvas-point-x-y: 250/300") != NULL &&
+             strstr(typed_canvas_text, "flags: read-only") != NULL &&
+             strstr(typed_canvas_text, "action 1: cancel") != NULL &&
+             strstr(typed_canvas_text, "action 2: submit") != NULL &&
+             strcmp(json_get_str(json_get(&canvas_reply.data, "authority")),
+                    "display-only") == 0);
+    zcl_command_reply_free(&canvas_reply);
+    json_free(&canvas_input);
 
     struct json_value text_delivery;
     json_init(&text_delivery);
