@@ -445,6 +445,55 @@ int test_qr(void)
              strstr(visual_text, "action 1: close") != NULL &&
              strstr(visual_text, "authority: display-only") != NULL);
 
+    struct zcl_present_model_v1 chart;
+    zcl_present_model_init_v1(&chart, ZCL_PRESENT_MODEL_CHART);
+    (void)snprintf(chart.request_id, sizeof(chart.request_id),
+                   "coverage-chart");
+    (void)snprintf(chart.title, sizeof(chart.title),
+                   "Exact candidate coverage");
+    chart.item_count = 2;
+    for (uint32_t i = 0; i < chart.item_count; i++) {
+        chart.items[i].kind = ZCL_PRESENT_ITEM_CHART_POINT;
+        chart.items[i].status = i == 0 ? ZCL_PRESENT_STATUS_INFO
+                                       : ZCL_PRESENT_STATUS_GREEN;
+        chart.items[i].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+        chart.items[i].numerator = i == 0 ? 47u : 81u;
+        chart.items[i].denominator = 100u;
+        (void)snprintf(chart.items[i].id, sizeof(chart.items[i].id),
+                       "coverage-%u", i);
+        (void)snprintf(chart.items[i].label, sizeof(chart.items[i].label),
+                       "%s", i == 0 ? "Before" : "Candidate");
+        (void)snprintf(chart.items[i].value, sizeof(chart.items[i].value),
+                       "%u%%", chart.items[i].numerator);
+    }
+    QR_CHECK("chart points require exact bounded fractions",
+             zcl_present_model_validate_v1(&chart, why, sizeof(why)));
+    char chart_text[ZCL_PRESENT_MODEL_TEXT_MAX];
+    size_t chart_text_len = 0;
+    QR_CHECK("chart text companion preserves the exact plotted fractions",
+             zcl_present_model_text_all_v1(
+                 &chart, chart_text, sizeof(chart_text), &chart_text_len,
+                 why, sizeof(why)) &&
+             strstr(chart_text, "chart-point: 47/100") != NULL &&
+             strstr(chart_text, "chart-point: 81/100") != NULL);
+    struct zcl_present_model_bitmap_v1 chart_47 = {0};
+    struct zcl_present_model_bitmap_v1 chart_48 = {0};
+    bool chart_47_ok = zcl_present_model_render_v1(
+        &chart, &chart_47, why, sizeof(why));
+    chart.items[0].numerator = 48u;
+    bool chart_48_ok = zcl_present_model_render_v1(
+        &chart, &chart_48, why, sizeof(why));
+    QR_CHECK("one-point chart change produces different native pixels",
+             chart_47_ok && chart_48_ok &&
+             memcmp(chart_47.pixels, chart_48.pixels,
+                    ZCL_PRESENT_MODEL_BITMAP_BYTES) != 0);
+    zcl_present_model_bitmap_free_v1(&chart_47);
+    zcl_present_model_bitmap_free_v1(&chart_48);
+    chart.items[0].denominator = 0;
+    QR_CHECK("zero-scale chart data fails closed",
+             !zcl_present_model_validate_v1(&chart, why, sizeof(why)) &&
+             strstr(why, "chart-point fraction") != NULL);
+
     uint8_t model_wire[ZCL_PRESENT_MODEL_WIRE_MAX];
     size_t model_wire_len = 0;
     struct zcl_present_model_v1 decoded;
@@ -1017,6 +1066,33 @@ int test_qr(void)
              json_model.item_count == 2 &&
              json_model.items[1].kind == ZCL_PRESENT_ITEM_DIFF_ADD);
     json_free(&visual_json);
+
+    static const char chart_json[] =
+        "{\"kind\":\"chart\",\"request_id\":\"coverage-chart\","
+        "\"title\":\"Exact candidate coverage\",\"output\":\"text\","
+        "\"items\":[{\"kind\":\"chart-point\",\"status\":\"green\","
+        "\"id\":\"candidate\",\"label\":\"Candidate\",\"value\":\"81%\","
+        "\"numerator\":81,\"denominator\":100}]}";
+    struct json_value chart_input;
+    json_init(&chart_input);
+    QR_CHECK("typed chart request parses as one bounded model",
+             json_read(&chart_input, chart_json,
+                       sizeof(chart_json) - 1u));
+    struct zcl_command_request chart_request = {.input = &chart_input};
+    struct zcl_command_reply chart_reply;
+    zcl_command_reply_init(&chart_reply, "zcl.app_presentation_show.v1");
+    zcl_native_handle_presentation_show(&chart_request, &chart_reply);
+    const char *typed_chart_text =
+        json_get_str(json_get(&chart_reply.data, "plain_text"));
+    QR_CHECK("agent chart command exports the exact plotted fraction",
+             chart_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             typed_chart_text &&
+             strstr(typed_chart_text, "kind: chart") != NULL &&
+             strstr(typed_chart_text, "chart-point: 81/100") != NULL &&
+             strcmp(json_get_str(json_get(&chart_reply.data, "authority")),
+                    "display-only") == 0);
+    zcl_command_reply_free(&chart_reply);
+    json_free(&chart_input);
 
     struct json_value text_delivery;
     json_init(&text_delivery);

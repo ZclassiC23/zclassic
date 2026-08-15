@@ -25,6 +25,11 @@ layout makes the same bounded item sequence produce the same page count and
 pixels independently of window size, while aspect-fit scaling and clipping
 remain backend concerns.
 
+Chart points are real bounded fractions, not decorative labels:
+`numerator/denominator` must be valid and the native compositor draws that
+exact proportion. The deterministic text companion emits the same fraction,
+so a visual bar and its accessible/exported form cannot disagree.
+
 `app/views/src/ui_present_document.c` is the only model-to-window compositor.
 It owns validation, every rendered page, QR specialization, application icon,
 window title, exact copy text, and action count for the duration of one native

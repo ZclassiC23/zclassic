@@ -269,10 +269,14 @@ bool zcl_present_model_validate_v1(const struct zcl_present_model_v1 *model,
             item->parent_index >= model->item_count)
             return model_error(error, error_cap,
                                "visual model graph parent is out of range");
-        if (item->kind == ZCL_PRESENT_ITEM_PROGRESS &&
+        if ((item->kind == ZCL_PRESENT_ITEM_PROGRESS ||
+             item->kind == ZCL_PRESENT_ITEM_CHART_POINT) &&
             (item->denominator == 0 || item->numerator > item->denominator))
-            return model_error(error, error_cap,
-                               "visual model progress fraction is invalid");
+            return model_error(
+                error, error_cap,
+                item->kind == ZCL_PRESENT_ITEM_PROGRESS
+                    ? "visual model progress fraction is invalid"
+                    : "visual model chart-point fraction is invalid");
     }
     for (uint32_t i = 0; i < model->action_count; i++) {
         const struct zcl_present_model_action_v1 *action = &model->actions[i];

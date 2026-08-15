@@ -135,8 +135,11 @@ static bool text_item(struct text_writer *writer,
         !field(writer, "  label", item->label) ||
         !field(writer, "  value", item->value))
         return false;
-    if (item->kind == ZCL_PRESENT_ITEM_PROGRESS &&
-        (!text_literal(writer, "  progress: ") ||
+    if ((item->kind == ZCL_PRESENT_ITEM_PROGRESS ||
+         item->kind == ZCL_PRESENT_ITEM_CHART_POINT) &&
+        (!text_literal(writer,
+                       item->kind == ZCL_PRESENT_ITEM_PROGRESS
+                           ? "  progress: " : "  chart-point: ") ||
          !text_u32(writer, item->numerator) ||
          !text_literal(writer, "/") ||
          !text_u32(writer, item->denominator) ||

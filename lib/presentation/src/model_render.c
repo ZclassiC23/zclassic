@@ -80,6 +80,28 @@ static int32_t render_progress(struct zcl_present_canvas *canvas,
     return y + 58;
 }
 
+static int32_t render_chart_point(
+    struct zcl_present_canvas *canvas,
+    const struct zcl_present_model_item_v1 *item, int32_t y)
+{
+    enum { CHART_X = 238, CHART_WIDTH = 300 };
+    char fraction[32];
+    (void)snprintf(fraction, sizeof(fraction), "%u / %u",
+                   item->numerator, item->denominator);
+    text_fit(canvas, 42, y + 2, item->label, 15u, 108u, INK);
+    text_fit(canvas, 160, y + 2, item->value, 14u, 66u, MUTED);
+    text_fit(canvas, 552, y + 2, fraction, 14u, 126u, MUTED);
+    zcl_present_canvas_fill_rect(canvas, CHART_X, y + 5,
+                                 CHART_WIDTH, 18u, RULE);
+    uint32_t filled = (uint32_t)(
+        (uint64_t)CHART_WIDTH * item->numerator / item->denominator);
+    zcl_present_canvas_fill_rect(canvas, CHART_X, y + 5,
+                                 filled, 18u,
+                                 status_color(item->status));
+    zcl_present_canvas_line(canvas, 42, y + 36, 678, y + 36, RULE);
+    return y + 43;
+}
+
 static int32_t render_diff(struct zcl_present_canvas *canvas,
                            const struct zcl_present_model_item_v1 *item,
                            int32_t y)
@@ -120,6 +142,8 @@ static int32_t render_item(struct zcl_present_canvas *canvas,
 {
     if (item->kind == ZCL_PRESENT_ITEM_PROGRESS)
         return render_progress(canvas, item, y);
+    if (item->kind == ZCL_PRESENT_ITEM_CHART_POINT)
+        return render_chart_point(canvas, item, y);
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
@@ -135,6 +159,7 @@ static int32_t render_item(struct zcl_present_canvas *canvas,
 static uint32_t item_height(const struct zcl_present_model_item_v1 *item)
 {
     if (item->kind == ZCL_PRESENT_ITEM_PROGRESS) return 58u;
+    if (item->kind == ZCL_PRESENT_ITEM_CHART_POINT) return 43u;
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
