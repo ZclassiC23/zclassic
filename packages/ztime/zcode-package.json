@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "ztime/ztime",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/ztime/ztime.h",
+    "src/ztime.c",
+    "tests/test_ztime.c",
+    "zcode-package.json"
+  ]
+}
