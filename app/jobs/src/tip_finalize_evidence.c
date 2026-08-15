@@ -11,7 +11,7 @@
 #include "utxo_apply_log_store.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
-#include "util/log_throttle.h"
+#include "support/log_throttle.h"
 
 #include <sqlite3.h>
 #include <stdio.h>

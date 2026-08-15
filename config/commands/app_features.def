@@ -245,12 +245,15 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_COMMAND(
     "app.presentation.publication-confirm", "app.presentation", "",
-    "Ask for an exact local package-publication decision in native C23",
+    "Ask for an exact local package-commit decision in native C23",
     "Re-runs the ordinary read-only ZCODE package publication plan over the "
     "exact signed release, manifest, recipe, and local chunk source. Only a "
     "ready plan receives ZClassic23-authored confirmation chrome and fixed "
     "Confirm/Cancel actions. The returned human decision is bound to the "
-    "exact plan and view identities. This command cannot publish; the "
+    "exact plan and view identities. Six fixed evidence stages make clear "
+    "that confirmation, local commit, pointer announcement, provider "
+    "announcement, peer discovery, and exact peer fetch are distinct. This "
+    "command cannot commit or publish; the "
     "separate commit command independently re-validates current inputs and "
     "policy before any local-store effect.", 0,
     "presentation,native,confirmation,publication,package,plan,human",

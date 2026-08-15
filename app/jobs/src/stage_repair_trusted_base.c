@@ -9,7 +9,7 @@
 #include "platform/time_compat.h"
 #include "tip_finalize_log_store.h"
 #include "util/log_macros.h"
-#include "util/log_throttle.h"
+#include "support/log_throttle.h"
 
 #include <sqlite3.h>
 #include <stdint.h>

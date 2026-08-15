@@ -1979,11 +1979,11 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_zcode_publish_commit)
 
 ZCL_COMMAND_BRANCH("zcode.package", "zcode",
-                   "Published packages",
+                   "Locally committed packages",
                    ZCL_COMMAND_LAYER_APP)
 
 ZCL_COMMAND_BRANCH("zcode.package.publish", "zcode.package",
-                   "Publish a signed release into the store (plan, "
+                   "Commit a signed release into the local store (plan, "
                    "then commit)",
                    ZCL_COMMAND_LAYER_APP)
 
@@ -2022,7 +2022,11 @@ ZCL_COMMAND_READY_COMMAND(
     "into the content-addressed store (verify-before-store, dedup, atomic "
     "rename — a crash mid-commit leaves resumable staging, never partial "
     "visibility) and the release envelope into releases/. Idempotent: a "
-    "redelivered release id reports result=duplicate. `chunks_stored` "
+    "fresh release reports result=committed and a redelivered release id "
+    "reports result=duplicate. `local_commit_complete:true` proves only "
+    "this node's exact local-store admission; pointer/provider publication, "
+    "peer discovery, and exact peer fetch remain explicitly unobserved. "
+    "`chunks_stored` "
     "counts chunk admissions including dedup no-ops. Slice 11 policy "
     "checkpoint: a FRESH release is admitted only within the publisher "
     "key's per-ISO-week publish allowance for its tier (new user: 1/week "
@@ -2068,7 +2072,7 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "zcode.package.search", "zcode.package", "",
-    "Search locally published packages",
+    "Search locally committed packages",
     "Bounded rows over the package index — a projection rebuilt from the "
     "persisted release/manifest wires at call time, never a second truth — "
     "filtered by `publisher` (pubkey hex prefix), `name_prefix` "

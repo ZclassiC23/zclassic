@@ -14,7 +14,7 @@
 #include "storage/progress_store.h"
 #include "storage/repair_marker.h"
 #include "util/log_macros.h"
-#include "util/log_throttle.h"
+#include "support/log_throttle.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 

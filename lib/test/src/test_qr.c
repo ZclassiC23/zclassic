@@ -593,6 +593,7 @@ int test_qr(void)
                  why, sizeof(why)) &&
              publication_model.kind == ZCL_PRESENT_MODEL_CONFIRMATION &&
              strcmp(publication_model.exact_root, root_a) == 0 &&
+             publication_model.item_count == 13 &&
              publication_model.action_count == 2 &&
              publication_model.actions[0].kind ==
                  ZCL_PRESENT_ACTION_CONFIRM &&
@@ -600,12 +601,21 @@ int test_qr(void)
                  ZCL_PRESENT_ACTION_CANCEL);
     QR_CHECK("confirmation chrome and effect text are ZClassic23-authored",
              strcmp(publication_model.actions[0].label,
-                    "Confirm exact local publication") == 0 &&
+                    "Confirm exact local commit") == 0 &&
              strcmp(publication_model.actions[1].label,
                     "Cancel - make no change") == 0 &&
              strncmp(publication_model.items[0].label,
                      "LOCAL OBSERVATION - ", 20) == 0 &&
              strstr(publication_model.summary, "HUMAN DECISION - ") != NULL);
+    QR_CHECK("confirmation names every later publication evidence boundary",
+             strcmp(publication_model.items[7].value,
+                    "Pending this exact decision") == 0 &&
+             strcmp(publication_model.items[8].value,
+                    "Not started - separate commit required") == 0 &&
+             strcmp(publication_model.items[9].value, "Not observed") == 0 &&
+             strcmp(publication_model.items[10].value, "Not observed") == 0 &&
+             strcmp(publication_model.items[11].value, "Not observed") == 0 &&
+             strcmp(publication_model.items[12].value, "Not observed") == 0);
     json_free(&publication_plan);
     json_init(&publication_plan); json_set_object(&publication_plan);
     QR_CHECK("agent facts alone cannot fabricate a ready confirmation",

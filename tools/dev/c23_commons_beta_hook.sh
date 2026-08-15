@@ -111,7 +111,7 @@ beta_visual_confirm_publication() {
         --input="$input" >"$reply_file" 2>&1 &
     pid="$!"
     "$C23_BETA_NATIVE_UI_DRIVER" \
-        --title='Publish this exact package locally?' --key=1 \
+        --title='Commit this exact package locally?' --key=1 \
         --timeout-ms=5000 >/dev/null || {
             kill "$pid" 2>/dev/null || true
             wait "$pid" 2>/dev/null || true
@@ -125,6 +125,12 @@ beta_visual_confirm_publication() {
     plan_identity="$(printf '%s' "$reply" | beta_jget \
         'd["data"].get("plan_identity","")')"
     [ "$decision" = CONFIRM ] && [ "$plan_identity" = "$expected_identity" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("human_confirmed",False)')" = True ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("local_commit_complete",True)')" = False ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("provider_publication_observed",True)')" = False ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
         'd["data"].get("privileged_action_performed",True)')" = False ] ||
         beta_die "human decision was not bound to the exact inert plan"

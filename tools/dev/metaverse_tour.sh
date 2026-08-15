@@ -490,10 +490,10 @@ tour_assert_ok "$PLAN1" "zcode package publish plan"
 COMMIT1="$(tour_native zcode package publish commit --input="$PUB_INPUT")"
 tour_assert_ok "$COMMIT1" "zcode package publish commit"
 [ "$(printf '%s' "$COMMIT1" | tour_jget 'd["data"]["stage"]')" = "commit" ] &&
-[ "$(printf '%s' "$COMMIT1" | tour_jget 'd["data"]["result"]')" = "published" ] &&
+[ "$(printf '%s' "$COMMIT1" | tour_jget 'd["data"]["result"]')" = "committed" ] &&
 [ "$(printf '%s' "$COMMIT1" | tour_jget 'd["data"]["package_root"]')" = "$PACKAGE_ROOT" ] \
-    || tour_fail "publish commit did not publish: $COMMIT1"
-tour_pass 1 "package tour/ring-buffer published (root ${PACKAGE_ROOT:0:16}…)"
+    || tour_fail "publish commit did not commit locally: $COMMIT1"
+tour_pass 1 "package tour/ring-buffer committed locally (root ${PACKAGE_ROOT:0:16}…)"
 
 # ── Step 2: design + commit a signed space manifest ───────────────────
 TOUR_STEP="2 space plan|commit|show"

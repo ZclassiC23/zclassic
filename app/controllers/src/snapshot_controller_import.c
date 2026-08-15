@@ -45,7 +45,7 @@
 #include <pthread.h>
 #include "util/blocker.h"
 #include "util/log_macros.h"
-#include "util/log_throttle.h"
+#include "support/log_throttle.h"
 #include "util/thread_registry.h"
 
 /* ---- Thread 1: Block index LevelDB → SQLite blocks table ---- */

@@ -6,7 +6,7 @@
 #include "crypto/chacha20poly1305.h"
 #include "support/cleanse.h"
 #include "platform/time_compat.h"
-#include "util/log_throttle.h"
+#include "support/log_throttle.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include <stdlib.h>

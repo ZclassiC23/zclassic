@@ -8,7 +8,7 @@
 #include "core/serialize.h"
 #include "core/hash.h"
 #include "util/log_macros.h"
-#include "util/log_throttle.h"
+#include "support/log_throttle.h"
 #include "platform/time_compat.h"
 #include <errno.h>
 #include <stdint.h>
