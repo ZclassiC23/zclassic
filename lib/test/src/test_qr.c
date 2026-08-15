@@ -753,6 +753,16 @@ int test_qr(void)
              next_page == table_pages - 1u &&
              zcl_present_window_page_step_v1(
                  0, table_pages, -1, &next_page) && next_page == 0u);
+    uint32_t next_action = UINT32_MAX;
+    QR_CHECK("keyboard action focus wraps without selecting authority",
+             zcl_present_window_action_focus_step_v1(
+                 0, 2, 1, &next_action) && next_action == 1u &&
+             zcl_present_window_action_focus_step_v1(
+                 1, 2, 1, &next_action) && next_action == 0u &&
+             zcl_present_window_action_focus_step_v1(
+                 0, 2, -1, &next_action) && next_action == 1u &&
+             !zcl_present_window_action_focus_step_v1(
+                 0, 0, 1, &next_action));
 
     static const char model_json[] =
         "{\"kind\":\"code-diff\",\"request_id\":\"diff-1\","

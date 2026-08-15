@@ -25,6 +25,11 @@ layout makes the same bounded item sequence produce the same page count and
 pixels independently of window size, while aspect-fit scaling and clipping
 remain backend concerns.
 
+Interactive models always open with one visible two-tone action focus ring.
+Tab and Shift-Tab wrap through the bounded action row; Enter or Space returns
+the focused action, while number keys retain direct exact selection. Moving
+focus is display-local state and never returns an action or grants authority.
+
 The companion `include/presentation/canvas.h` is a bounded caller-owned RGB canvas
 with clipped rectangles, lines, alpha logo blits, and embedded Basic Latin
 text. It is the reusable layer for deposit cards, current balances, metadata,
