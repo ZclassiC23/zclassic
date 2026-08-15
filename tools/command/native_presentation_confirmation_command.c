@@ -210,8 +210,6 @@ void zcl_native_handle_presentation_publication_confirm(
                            "provider_publication_observed", false);
     (void)json_push_kv_bool(&reply->data, "peer_discovery_observed", false);
     (void)json_push_kv_bool(&reply->data, "exact_fetch_observed", false);
-    (void)json_push_kv_bool(&reply->data,
-                           "privileged_action_performed", false);
     (void)json_push_kv_str(&reply->data, "effect_boundary",
                           "separate_commit_revalidates_everything");
 }

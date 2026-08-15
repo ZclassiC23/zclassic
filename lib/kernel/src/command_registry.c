@@ -719,6 +719,28 @@ bool zcl_command_registry_validate(const struct zcl_command_registry *registry,
                               "read effect/risk conflict for %s", spec->path);
             return false;
         }
+        const uint32_t known_traits =
+            ZCL_COMMAND_TRAIT_DETERMINISTIC |
+            ZCL_COMMAND_TRAIT_REVERSIBLE |
+            ZCL_COMMAND_TRAIT_IDEMPOTENT |
+            ZCL_COMMAND_TRAIT_DRY_RUN |
+            ZCL_COMMAND_TRAIT_DEV_ONLY |
+            ZCL_COMMAND_TRAIT_DISPLAY_ONLY;
+        if ((spec->traits & ~known_traits) != 0) {
+            if (why) snprintf(why, why_size,
+                              "unknown command trait for %s", spec->path);
+            return false;
+        }
+        if ((spec->traits & ZCL_COMMAND_TRAIT_DISPLAY_ONLY) != 0 &&
+            (spec->effect != ZCL_COMMAND_EFFECT_MUTATE ||
+             spec->risk != ZCL_COMMAND_RISK_APP_WRITE ||
+             spec->confirmation != ZCL_COMMAND_CONFIRM_NONE ||
+             spec->required_capabilities != ZCL_COMMAND_CAP_NONE)) {
+            if (why) snprintf(why, why_size,
+                              "display-only contract conflict for %s",
+                              spec->path);
+            return false;
+        }
         for (size_t j = 0; j < i; j++) {
             const struct zcl_command_spec *other = &registry->commands[j];
             if (strcmp(spec->path, other->path) == 0 ||
@@ -1689,6 +1711,9 @@ size_t zcl_command_registry_describe_json(
                            (spec->traits & ZCL_COMMAND_TRAIT_DETERMINISTIC) != 0) &&
          json_push_kv_bool(&policy, "idempotent",
                            (spec->traits & ZCL_COMMAND_TRAIT_IDEMPOTENT) != 0) &&
+         json_push_kv_bool(&policy, "display_only",
+                           (spec->traits &
+                            ZCL_COMMAND_TRAIT_DISPLAY_ONLY) != 0) &&
          json_push_kv_int(&policy, "allowed_lanes", spec->allowed_lanes) &&
          json_push_kv_int(&policy, "required_capabilities",
                           (int64_t)spec->required_capabilities) &&

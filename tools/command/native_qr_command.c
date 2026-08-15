@@ -175,6 +175,8 @@ void zcl_native_present_model(
         (void)json_push_kv_str(&reply->data, "plain_text", plain_text);
         (void)json_push_kv_bool(&reply->data, "event_return", false);
         (void)json_push_kv_str(&reply->data, "authority", "display-only");
+        (void)json_push_kv_bool(&reply->data,
+                               "privileged_action_performed", false);
         (void)json_push_kv_str(&reply->data, "backend",
                                "c23-deterministic-text");
         (void)json_push_kv_str(&reply->data, "platform",
@@ -236,6 +238,8 @@ void zcl_native_present_model(
                                    model->exact_root);
     }
     (void)json_push_kv_str(&reply->data, "authority", "display-only");
+    (void)json_push_kv_bool(&reply->data,
+                           "privileged_action_performed", false);
     (void)json_push_kv_str(&reply->data, "backend",
                            zcl_present_backend_name());
     (void)json_push_kv_str(&reply->data, "platform",

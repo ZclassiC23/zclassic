@@ -206,6 +206,9 @@ enum zcl_command_trait {
     ZCL_COMMAND_TRAIT_IDEMPOTENT = 1U << 2,
     ZCL_COMMAND_TRAIT_DRY_RUN = 1U << 3,
     ZCL_COMMAND_TRAIT_DEV_ONLY = 1U << 4,
+    /* May create only a bounded native window/process and return bounded
+     * display input. It carries no domain write or software authority. */
+    ZCL_COMMAND_TRAIT_DISPLAY_ONLY = 1U << 5,
 };
 
 enum zcl_command_transport {

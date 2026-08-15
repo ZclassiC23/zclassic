@@ -55,5 +55,21 @@ TX_NONCHAIN_COMMAND("zcode.commons.shadow.attribution.commit", "commons_simulati
     "Stores one verified creation-attribution wire in an explicit scratch CAS; it creates, signs, submits, and confirms no chain transaction.")
 TX_NONCHAIN_COMMAND("zcode.commons.shadow.epoch.commit", "commons_simulation",
     "Stores one verified epoch-accounting wire in an explicit scratch CAS; it creates, signs, submits, and confirms no chain transaction.")
+TX_NONCHAIN_COMMAND("app.qr.show", "local_presentation",
+    "Shows inert QR pixels or text through the display-only presentation boundary; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("app.presentation.show", "local_presentation",
+    "Shows one bounded inert visual model and returns only bounded display input; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("app.presentation.status", "local_presentation",
+    "Shows canonical node facts through the display-only presentation boundary; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("app.presentation.corpus", "local_presentation",
+    "Shows canonical C23 corpus facts through the display-only presentation boundary; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("app.presentation.code-change", "local_presentation",
+    "Shows an exact inert code-change model through the display-only presentation boundary; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("app.presentation.reproduction", "local_presentation",
+    "Shows exact reproduction progress through the display-only presentation boundary; it creates no chain transaction.")
+TX_NONCHAIN_COMMAND("app.presentation.publication-confirm", "local_presentation",
+    "Returns one bounded human display decision without committing or publishing the package and creates no chain transaction.")
+TX_NONCHAIN_COMMAND("app.presentation.publication-status", "local_presentation",
+    "Shows exact package publication facts without committing, publishing, fetching, or creating a chain transaction.")
 TX_NONCHAIN_COMMAND("app.market.offer", "p2p_market_offer",
     "Builds, signs, persists, and gossips one self-authenticating paid file offer; settlement is the buyer's separate payment transaction, so this command creates no chain transaction.")
