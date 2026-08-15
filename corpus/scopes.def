@@ -113,3 +113,4 @@ package zurl/zurl | root 588899b84c51e0624431112c145d0ea173f3119f5c154574d1f86a6
 package zarg/zarg | root 350aa0de13413c2506d6f5cf50314007260b86db17bf348091a326cbe1a39c8e | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zpath/zpath | root d7ee2ac72e0990f5af3091043ac4a67156e90693977c432a19cb6b33550a3a4a | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zhash/zhash | root 5c36f2f55cc0f42ce06d174bf0238528326620af873becb29b54adb6d89accc4 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zpct/zpct | root 2167080f5f6b0557bf601bfa69cac99efa0c4c79e84f8348c1e52b67c2452709 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
