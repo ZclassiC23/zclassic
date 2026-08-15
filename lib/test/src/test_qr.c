@@ -532,6 +532,59 @@ int test_qr(void)
     zcl_present_model_bitmap_free_v1(&timeline_pixels);
     zcl_present_model_bitmap_free_v1(&row_pixels);
 
+    struct zcl_present_model_v1 graph;
+    zcl_present_model_init_v1(&graph, ZCL_PRESENT_MODEL_EVIDENCE_GRAPH);
+    (void)snprintf(graph.request_id, sizeof(graph.request_id),
+                   "evidence-graph");
+    (void)snprintf(graph.title, sizeof(graph.title),
+                   "Candidate evidence");
+    graph.item_count = 3;
+    for (uint32_t i = 0; i < graph.item_count; i++) {
+        graph.items[i].kind = ZCL_PRESENT_ITEM_GRAPH_NODE;
+        graph.items[i].status = i == 2 ? ZCL_PRESENT_STATUS_GREEN
+                                       : ZCL_PRESENT_STATUS_INFO;
+        graph.items[i].parent_index = i == 0
+            ? ZCL_PRESENT_MODEL_PARENT_NONE : (uint16_t)(i - 1u);
+        (void)snprintf(graph.items[i].id, sizeof(graph.items[i].id),
+                       "evidence-%u", i);
+        (void)snprintf(graph.items[i].label,
+                       sizeof(graph.items[i].label), "%s",
+                       i == 0 ? "Candidate root" :
+                       i == 1 ? "Story observation" : "Verified receipt");
+        (void)snprintf(graph.items[i].value,
+                       sizeof(graph.items[i].value), "exact node %u", i + 1u);
+    }
+    struct zcl_present_model_bitmap_v1 graph_pixels = {0};
+    struct zcl_present_model_bitmap_v1 graph_rows_pixels = {0};
+    bool graph_ok = zcl_present_model_render_v1(
+        &graph, &graph_pixels, why, sizeof(why));
+    struct zcl_present_model_v1 graph_rows = graph;
+    graph_rows.kind = ZCL_PRESENT_MODEL_STATUS_CARD;
+    for (uint32_t i = 0; i < graph_rows.item_count; i++) {
+        graph_rows.items[i].kind = ZCL_PRESENT_ITEM_KEY_VALUE;
+        graph_rows.items[i].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+    }
+    bool graph_rows_ok = zcl_present_model_render_v1(
+        &graph_rows, &graph_rows_pixels, why, sizeof(why));
+    QR_CHECK("evidence graph renders parent connectors, not generic rows",
+             graph_ok && graph_rows_ok &&
+             memcmp(graph_pixels.pixels, graph_rows_pixels.pixels,
+                    ZCL_PRESENT_MODEL_BITMAP_BYTES) != 0);
+    zcl_present_model_bitmap_free_v1(&graph_pixels);
+    zcl_present_model_bitmap_free_v1(&graph_rows_pixels);
+    char graph_text[ZCL_PRESENT_MODEL_TEXT_MAX];
+    size_t graph_text_len = 0;
+    QR_CHECK("evidence graph text preserves the exact parent chain",
+             zcl_present_model_text_all_v1(
+                 &graph, graph_text, sizeof(graph_text), &graph_text_len,
+                 why, sizeof(why)) &&
+             strstr(graph_text, "parent-item: 1") != NULL &&
+             strstr(graph_text, "parent-item: 2") != NULL);
+    graph.items[1].parent_index = 2u;
+    QR_CHECK("forward evidence-graph parent fails closed",
+             !zcl_present_model_validate_v1(&graph, why, sizeof(why)) &&
+             strstr(why, "earlier graph node") != NULL);
+
     uint8_t model_wire[ZCL_PRESENT_MODEL_WIRE_MAX];
     size_t model_wire_len = 0;
     struct zcl_present_model_v1 decoded;
@@ -1161,6 +1214,37 @@ int test_qr(void)
                     "display-only") == 0);
     zcl_command_reply_free(&timeline_reply);
     json_free(&timeline_input);
+
+    static const char graph_json[] =
+        "{\"kind\":\"evidence-graph\",\"request_id\":\"evidence-graph\","
+        "\"title\":\"Candidate evidence\",\"output\":\"text\","
+        "\"items\":[{\"kind\":\"graph-node\",\"status\":\"info\","
+        "\"id\":\"candidate\",\"label\":\"Candidate root\","
+        "\"value\":\"exact source\"},{\"kind\":\"graph-node\","
+        "\"status\":\"green\",\"id\":\"receipt\","
+        "\"label\":\"Verified receipt\",\"value\":\"independent signer\","
+        "\"parent_index\":0}]}";
+    struct json_value graph_input;
+    json_init(&graph_input);
+    QR_CHECK("typed evidence graph parses as one bounded parent chain",
+             json_read(&graph_input, graph_json,
+                       sizeof(graph_json) - 1u));
+    struct zcl_command_request graph_request = {.input = &graph_input};
+    struct zcl_command_reply graph_reply;
+    zcl_command_reply_init(&graph_reply,
+                           "zcl.app_presentation_show.v1");
+    zcl_native_handle_presentation_show(&graph_request, &graph_reply);
+    const char *typed_graph_text =
+        json_get_str(json_get(&graph_reply.data, "plain_text"));
+    QR_CHECK("agent evidence graph exports the exact parent relationship",
+             graph_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             typed_graph_text &&
+             strstr(typed_graph_text, "kind: evidence-graph") != NULL &&
+             strstr(typed_graph_text, "parent-item: 1") != NULL &&
+             strcmp(json_get_str(json_get(&graph_reply.data, "authority")),
+                    "display-only") == 0);
+    zcl_command_reply_free(&graph_reply);
+    json_free(&graph_input);
 
     struct json_value text_delivery;
     json_init(&text_delivery);

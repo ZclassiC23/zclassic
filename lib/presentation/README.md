@@ -33,6 +33,11 @@ Timeline events render on one deterministic vertical sequence, with each
 event's existing semantic status providing its visible marker color. Event
 labels and values remain inert model text and are preserved verbatim in the
 plain-text companion.
+Evidence-graph nodes may refer only to an earlier graph node in the same
+bounded model. The compositor derives indentation and connectors from that
+closed parent chain; forward references, cycles, and non-node parents fail
+before pixels or input events exist. The text companion names the same exact
+one-based parent item.
 
 `app/views/src/ui_present_document.c` is the only model-to-window compositor.
 It owns validation, every rendered page, QR specialization, application icon,

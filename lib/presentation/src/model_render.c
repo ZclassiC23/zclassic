@@ -115,6 +115,42 @@ static int32_t render_timeline_event(
     return y + 48;
 }
 
+static uint32_t graph_depth(const struct zcl_present_model_v1 *model,
+                            uint32_t index)
+{
+    uint32_t depth = 0;
+    uint16_t parent = model->items[index].parent_index;
+    while (parent != ZCL_PRESENT_MODEL_PARENT_NONE && depth < 8u) {
+        depth++;
+        parent = model->items[parent].parent_index;
+    }
+    return depth;
+}
+
+static int32_t render_graph_node(
+    struct zcl_present_canvas *canvas,
+    const struct zcl_present_model_v1 *model, uint32_t index, int32_t y)
+{
+    const struct zcl_present_model_item_v1 *item = &model->items[index];
+    uint32_t depth = graph_depth(model, index);
+    int32_t node_x = 48 + (int32_t)(depth * 18u);
+    for (uint32_t level = 0; level < depth; level++) {
+        int32_t branch_x = 54 + (int32_t)(level * 18u);
+        zcl_present_canvas_line(canvas, branch_x, y,
+                               branch_x, y + 44, RULE);
+    }
+    if (depth > 0)
+        zcl_present_canvas_line(canvas, node_x - 12, y + 12,
+                               node_x, y + 12, RULE);
+    zcl_present_canvas_fill_rect(canvas, node_x, y + 6, 13u, 13u,
+                                 status_color(item->status));
+    uint32_t label_width = node_x < 312 ? (uint32_t)(312 - node_x) : 72u;
+    text_fit(canvas, node_x + 20, y + 2, item->label,
+             15u, label_width, INK);
+    text_fit(canvas, 350, y + 2, item->value, 14u, 328u, MUTED);
+    return y + 45;
+}
+
 static int32_t render_diff(struct zcl_present_canvas *canvas,
                            const struct zcl_present_model_item_v1 *item,
                            int32_t y)
@@ -150,15 +186,18 @@ static int32_t render_row(struct zcl_present_canvas *canvas,
 }
 
 static int32_t render_item(struct zcl_present_canvas *canvas,
-                           const struct zcl_present_model_item_v1 *item,
-                           int32_t y)
+                           const struct zcl_present_model_v1 *model,
+                           uint32_t index, int32_t y)
 {
+    const struct zcl_present_model_item_v1 *item = &model->items[index];
     if (item->kind == ZCL_PRESENT_ITEM_PROGRESS)
         return render_progress(canvas, item, y);
     if (item->kind == ZCL_PRESENT_ITEM_CHART_POINT)
         return render_chart_point(canvas, item, y);
     if (item->kind == ZCL_PRESENT_ITEM_TIMELINE_EVENT)
         return render_timeline_event(canvas, item, y);
+    if (item->kind == ZCL_PRESENT_ITEM_GRAPH_NODE)
+        return render_graph_node(canvas, model, index, y);
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
@@ -316,7 +355,7 @@ bool zcl_present_model_render_page_v1(
 
     int32_t y = MODEL_CONTENT_TOP;
     for (uint32_t i = start; i < end; i++)
-        y = render_item(&canvas, &model->items[i], y);
+        y = render_item(&canvas, model, i, y);
     if (page_count > 1u) {
         char page[96];
         (void)snprintf(page, sizeof(page),

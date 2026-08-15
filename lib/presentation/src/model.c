@@ -269,6 +269,14 @@ bool zcl_present_model_validate_v1(const struct zcl_present_model_v1 *model,
             item->parent_index >= model->item_count)
             return model_error(error, error_cap,
                                "visual model graph parent is out of range");
+        if (item->kind == ZCL_PRESENT_ITEM_GRAPH_NODE &&
+            item->parent_index != ZCL_PRESENT_MODEL_PARENT_NONE &&
+            (item->parent_index >= i ||
+             model->items[item->parent_index].kind !=
+                 ZCL_PRESENT_ITEM_GRAPH_NODE))
+            return model_error(
+                error, error_cap,
+                "visual model graph parent must be an earlier graph node");
         if ((item->kind == ZCL_PRESENT_ITEM_PROGRESS ||
              item->kind == ZCL_PRESENT_ITEM_CHART_POINT) &&
             (item->denominator == 0 || item->numerator > item->denominator))
