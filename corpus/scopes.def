@@ -106,3 +106,4 @@ package zutf8/zutf8 | root 6495fd455de7b7dca7c9fd5e5e6a4e1f8b0637252cc558635fe6c
 package ztime/ztime | root 6f0dbbec7acb7ffc62fd11d4b22bb0766573e8e297d65013f5960bcd27972a9e | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zlru/zlru | root 39029891486280a8d72b7364ffe2192bdd31986743c8e184f81fa36d20dabd58 | store /home/rhett/.zclassic-c23-commons-factory-c | kind human | spdx MIT
 package zpool/zpool | root 36278394be0af171d0d6bfed09d637e42f289539037b92c54b6b4fad860d8a3b | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zjson/zjson | root c093252d4dbc485cbd830774b2dc1e81c53fd04e2c7c10dfc8f1da4991ae519d | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT

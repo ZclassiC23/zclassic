@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "name": "zjson/zjson",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "name": "zutf8/zutf8",
+      "root": "6495fd455de7b7dca7c9fd5e5e6a4e1f8b0637252cc558635fe6c99e9cb90b3c",
+      "semver": "0.1.0"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zjson/zjson.h",
+    "src/zjson.c",
+    "tests/test_zjson.c",
+    "zcode-package.json"
+  ]
+}
