@@ -479,10 +479,23 @@ void zcl_native_handle_zcode_commons_corpus_status(
     (void)json_push_kv_str(&reply->data, "resident_checkpoint",
         resident_ok ? "loaded" : resident_present ? "rejected" : "missing");
     if (resident_ok) {
+        uint8_t checkpoint_root[32];
+        char checkpoint_root_hex[65];
+        if (vcs_zcode_c23_corpus_checkpoint_v1_root(
+                &resident, checkpoint_root) == VCS_ZCODE_C23_OK) {
+            zcl_hex_encode(checkpoint_root, sizeof(checkpoint_root),
+                           checkpoint_root_hex);
+            (void)json_push_kv_str(&reply->data, "checkpoint_root",
+                                   checkpoint_root_hex);
+        }
         (void)json_push_kv_int(&reply->data, "checkpoint_sequence",
                                (int64_t)resident.sequence);
         (void)json_push_kv_int(&reply->data, "checkpoint_cutoff_height",
                                (int64_t)resident.cutoff_height);
+        (void)json_push_kv_int(&reply->data, "packages_admitted",
+            (int64_t)(resident.total_entries - resident.excluded_entries));
+        (void)json_push_kv_int(&reply->data, "packages_excluded",
+                               (int64_t)resident.excluded_entries);
     }
     zcl_hotswap_service_release(&lease);
 }

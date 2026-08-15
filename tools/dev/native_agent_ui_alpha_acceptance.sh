@@ -388,6 +388,17 @@ json_has "$STATUS_TEXT_REPLY" 'kind: status' ||
     fail "status text companion lost its model kind: $STATUS_TEXT_REPLY"
 json_has "$STATUS_TEXT_REPLY" 'NODE FACT - presentation host' ||
     fail "status text companion lost its exact item: $STATUS_TEXT_REPLY"
+CORPUS_TEXT_REPLY="$(env -u DISPLAY "$NODE_BIN" app presentation corpus \
+    --input='{"output":"text"}')" ||
+    fail "headless canonical corpus instrument failed"
+json_has "$CORPUS_TEXT_REPLY" 'title: 10 Million Exact C23' ||
+    fail "corpus instrument lost its product identity: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" 'CORPUS FACT - Admitted production' ||
+    fail "corpus instrument lost canonical status facts: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" '"global_completeness_claimed":false' ||
+    fail "corpus instrument overstated completeness: $CORPUS_TEXT_REPLY"
+json_has "$CORPUS_TEXT_REPLY" '"authority":"display-only"' ||
+    fail "corpus instrument lost the authority boundary: $CORPUS_TEXT_REPLY"
 DIFF_TEXT_MODEL='{"kind":"code-diff","request_id":"alpha-diff-text","title":"Alpha exact code diff","exact_root":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","items":[{"kind":"diff-remove","label":"before","value":"return 0;"},{"kind":"diff-add","status":"green","label":"candidate","value":"return verified;"}],"output":"text","page":1}'
 DIFF_TEXT_REPLY="$(env -u DISPLAY "$NODE_BIN" app presentation show \
     --input="$DIFF_TEXT_MODEL")" ||
@@ -411,4 +422,4 @@ AFTER_BROWSERS="$(browser_snapshot)"
     fail "browser process set changed during the native journey"
 
 printf '%s\n' \
-    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"
+    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"corpus_status_instrument\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"

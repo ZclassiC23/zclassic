@@ -446,6 +446,77 @@ int test_qr(void)
     json_free(&health_facts);
     json_free(&status_facts);
 
+    struct json_value corpus_facts;
+    json_init(&corpus_facts); json_set_object(&corpus_facts);
+    json_push_kv_bool(&corpus_facts, "projection_ready", true);
+    json_push_kv_str(&corpus_facts, "checkpoint_root",
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd");
+    json_push_kv_int(&corpus_facts, "admitted_production_loc", 201600);
+    json_push_kv_int(&corpus_facts, "admitted_test_loc", 390954);
+    json_push_kv_int(&corpus_facts, "durably_hosted_loc", 0);
+    json_push_kv_int(&corpus_facts, "unique_semantic_units", 434817);
+    json_push_kv_int(&corpus_facts, "packages_admitted", 50);
+    json_push_kv_int(&corpus_facts, "packages_excluded", 18);
+    json_push_kv_str(&corpus_facts, "progress_stage", "below_50m");
+    json_push_kv_str(&corpus_facts, "blocker",
+                     "verified lower bound is 592554 LOC");
+    struct zcl_present_model_v1 corpus_model;
+    QR_CHECK("canonical corpus status builds one exact native instrument",
+             zcl_native_presentation_corpus_model_from_facts(
+                 &corpus_facts, &corpus_model, why, sizeof(why)) &&
+             corpus_model.kind == ZCL_PRESENT_MODEL_STATUS_CARD &&
+             strcmp(corpus_model.title, "10 Million Exact C23") == 0 &&
+             strcmp(corpus_model.exact_root,
+                "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd")
+                == 0 &&
+             corpus_model.item_count == 10);
+    bool corpus_package_exact = false;
+    bool corpus_used_honest = false;
+    bool corpus_velocity_honest = false;
+    for (uint32_t i = 0; i < corpus_model.item_count; i++) {
+        const struct zcl_present_model_item_v1 *item =
+            &corpus_model.items[i];
+        corpus_package_exact |= strcmp(item->id, "packages") == 0 &&
+                                strcmp(item->value, "50 packages") == 0;
+        corpus_used_honest |= strcmp(item->id, "used-loc") == 0 &&
+            strcmp(item->value, "unavailable (not checkpoint-bound)") == 0 &&
+            item->status == ZCL_PRESENT_STATUS_YELLOW;
+        corpus_velocity_honest |= strcmp(item->id, "velocity") == 0 &&
+            strcmp(item->value,
+                   "unavailable (previous checkpoint not bound)") == 0 &&
+            item->status == ZCL_PRESENT_STATUS_YELLOW;
+    }
+    QR_CHECK("corpus instrument preserves exact package and exclusion facts",
+             corpus_package_exact &&
+             strcmp(corpus_model.items[6].value,
+                    "18 entries; reason LOC unavailable") == 0);
+    QR_CHECK("corpus instrument never fabricates used LOC or velocity",
+             corpus_used_honest && corpus_velocity_honest);
+    json_free(&corpus_facts);
+
+    struct json_value corpus_request_input;
+    json_init(&corpus_request_input); json_set_object(&corpus_request_input);
+    json_push_kv_str(&corpus_request_input, "output", "text");
+    struct zcl_command_request corpus_request = {
+        .input = &corpus_request_input,
+    };
+    struct zcl_command_reply corpus_reply;
+    zcl_command_reply_init(&corpus_reply,
+                           "zcl.app_presentation_corpus.v1");
+    zcl_native_handle_presentation_corpus(&corpus_request, &corpus_reply);
+    const char *corpus_text =
+        json_get_str(json_get(&corpus_reply.data, "plain_text"));
+    QR_CHECK("typed corpus instrument is headless and display-only end to end",
+             corpus_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             !json_get_bool(json_get(&corpus_reply.data, "launched")) &&
+             corpus_text && strstr(corpus_text, "10 Million Exact C23") &&
+             strstr(corpus_text, "CORPUS FACT - Admitted production") &&
+             strstr(corpus_text, "value: unavailable") &&
+             strcmp(json_get_str(json_get(&corpus_reply.data, "authority")),
+                    "display-only") == 0);
+    zcl_command_reply_free(&corpus_reply);
+    json_free(&corpus_request_input);
+
     static const uint8_t code_before[] =
         "#include \"presentation/model.h\"\n"
         "int exact_value(void) {\n"

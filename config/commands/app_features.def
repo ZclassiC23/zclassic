@@ -175,6 +175,29 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_presentation_status)
 
 ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.corpus", "app.presentation", "",
+    "Show the canonical C23 corpus lower bound in a native status card",
+    "Calls the existing typed corpus-status path and turns its exact signed-"
+    "checkpoint facts into one display-only model. Production, test, durable, "
+    "semantic-unit, admitted-package and exclusion counts stay bound to the "
+    "canonical checkpoint. Downstream-used LOC, velocity, and exclusion "
+    "reason LOC remain visibly unavailable until the canonical status binds "
+    "them; the instrument never guesses or starts another census. The display "
+    "host receives only inert facts and no corpus, package, filesystem, "
+    "publication, or node authority.", 0,
+    "presentation,native,status,corpus,c23,loc,packages,exact,agent",
+    "zcl.app_presentation_corpus.input.v1",
+    "zcl.app_presentation_corpus.v1", "output,page", "",
+    "zclassic23 app presentation corpus",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_NONE,
+    zcl_native_handle_presentation_corpus)
+
+ZCL_COMMAND_READY_COMMAND(
     "app.presentation.code-change", "app.presentation", "",
     "Show an exact ZVCS-backed C code change in a native window",
     "Loads and rederives two immutable ZVCS source manifests, verifies the "

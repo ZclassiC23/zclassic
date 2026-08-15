@@ -522,12 +522,21 @@ build/bin/zclassic23 app presentation show \
   --input='{"kind":"status","request_id":"check-1","title":"Node",\
 "items":[{"kind":"key-value","label":"tip","value":"3216084"}],\
 "output":"text"}'
+build/bin/zclassic23 app presentation corpus \
+  --input='{"output":"text"}'
 ```
 
 QR payloads are split only at the model's existing exact 256-byte chunk
 boundaries. Structured instruments use one complete item per page and repeat
 the bounded actions and authority label, so no row or decision is silently
 truncated to fit the command-result ceiling.
+
+The corpus instrument calls the existing
+`zcode commons corpus status` reader rather than scanning source or creating a
+second projection. Signed-checkpoint counts and the exact checkpoint root are
+shown as corpus facts. Metrics that the canonical checkpoint does not yet bind,
+including downstream-used LOC and cross-checkpoint velocity, are named
+`unavailable` instead of being inferred from repository or agent state.
 
 ### C23 node and the C++ differential oracle
 
