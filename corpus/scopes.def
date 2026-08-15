@@ -142,3 +142,6 @@ package zmath/zmath | root 0aaa3de4ca99c9b11405d28bbd5d666b662d3e0333c02010fbba7
 package zfmt/zfmt | root d1e99f0605a1125b40eaa95ce9dd300714ea43d55d11381556737906d0e2c80a | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zlog/zlog | root 0b06c6c3ee940b25bbb281d1618f794b6465704aa286d15a80e109b1c13755b4 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zrate/zrate | root 7c26e756c6ea84170483181f663c515e581938097e5bd6fb2e60437fcd5bd42a | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zbase58/zbase58 | root 9fb0beaa23ad19b035d387a3f4fd71e0900cd83aaf24c2d7f7f80ce564192a7d | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zpq/zpq | root c4b6939596774d2394edffeebccf83dad3c78a59a485c70b7aca70dd126599e2 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zstats/zstats | root 6e0e35d6d10d0274d5b1a7097cf7f13f83e71231ce09cac3c95e2bc39fdb2c40 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
