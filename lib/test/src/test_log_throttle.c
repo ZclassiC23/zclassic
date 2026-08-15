@@ -10,7 +10,7 @@
 
 #include "test/test_core.h"
 
-#include "util/log_throttle.h"
+#include "base/log_throttle.h"
 
 #include <stdbool.h>
 #include <stdint.h>

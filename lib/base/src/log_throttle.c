@@ -1,18 +1,8 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * log_throttle — implementation. See util/log_throttle.h. */
+ * Purpose: dependency-free shared log de-storm decision primitive. */
 
-#include "util/log_throttle.h"
+#include "base/log_throttle.h"
 
-/* Core decision shared by both entry points. `changed` is true on the first
- * key / a key transition (the caller has already swapped the new key in for the
- * key-based path). Cadence:
- *
- *   changed   -> emit; out_reps = the PRIOR key's accumulated count; reset the
- *                counter to 0 for the new key; stamp last_emit = now.
- *   !changed  -> increment the counter; out_reps = the running count (incl.
- *                this tick); emit only if keepalive_secs have elapsed since the
- *                last emit, and stamp last_emit only when emitting. The counter
- *                is NOT reset on a keep-alive emit. */
 static bool throttle_decide(struct log_throttle *t, bool changed,
                             int64_t now_unix, int64_t keepalive_secs,
                             uint64_t *out_reps)
@@ -44,13 +34,13 @@ bool log_throttle_should_emit(struct log_throttle *t, uint64_t key,
             *out_reps = 0;
         return false;
     }
-    /* Swap the new key in and detect a transition in one atomic step. */
     bool changed = atomic_exchange(&t->last_key, key) != key;
     return throttle_decide(t, changed, now_unix, keepalive_secs, out_reps);
 }
 
 bool log_throttle_should_emit_changed(struct log_throttle *t, bool changed,
-                                      int64_t now_unix, int64_t keepalive_secs,
+                                      int64_t now_unix,
+                                      int64_t keepalive_secs,
                                       uint64_t *out_reps)
 {
     if (!t) {

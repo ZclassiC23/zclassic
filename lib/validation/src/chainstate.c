@@ -8,7 +8,7 @@
 #include "validation/chain_linkage_check.h"
 #include "platform/time_compat.h"
 #include "util/log_macros.h"
-#include "util/log_throttle.h"
+#include "base/log_throttle.h"
 #include "storage/progress_store.h"
 #include <limits.h>
 #include <sqlite3.h>

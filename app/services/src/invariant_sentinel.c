@@ -33,7 +33,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/blocker.h"
 #include "util/log_macros.h"
-#include "util/log_throttle.h"
+#include "base/log_throttle.h"
 #include "util/supervisor.h"
 #include "validation/chain_linkage_check.h"
 
