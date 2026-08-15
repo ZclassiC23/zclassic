@@ -267,7 +267,7 @@ bool zcl_present_model_render_page_v1(
         text_fit(&canvas, 42, 104, model->summary, 15u, 636u, MUTED);
     if (model->exact_root[0]) {
         char root_line[86];
-        (void)snprintf(root_line, sizeof(root_line), "Exact root  %.16s...",
+        (void)snprintf(root_line, sizeof(root_line), "Exact root  %s",
                        model->exact_root);
         text_fit(&canvas, 42, 134, root_line, 12u, 636u, MUTED);
     }

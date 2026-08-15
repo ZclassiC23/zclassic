@@ -489,6 +489,20 @@ int test_qr(void)
     QR_CHECK("exact confirmation binds a root and two explicit actions",
              zcl_present_model_validate_v1(
                  &confirmation, why, sizeof(why)));
+    struct zcl_present_model_bitmap_v1 exact_root_a = {0};
+    struct zcl_present_model_bitmap_v1 exact_root_b = {0};
+    bool exact_root_a_ok = zcl_present_model_render_v1(
+        &confirmation, &exact_root_a, why, sizeof(why));
+    confirmation.exact_root[ZCL_PRESENT_MODEL_ROOT_MAX - 1u] = 'b';
+    bool exact_root_b_ok = zcl_present_model_render_v1(
+        &confirmation, &exact_root_b, why, sizeof(why));
+    QR_CHECK("root suffix changes remain visible in exact confirmation pixels",
+             exact_root_a_ok && exact_root_b_ok &&
+             memcmp(exact_root_a.pixels, exact_root_b.pixels,
+                    ZCL_PRESENT_MODEL_BITMAP_BYTES) != 0);
+    zcl_present_model_bitmap_free_v1(&exact_root_a);
+    zcl_present_model_bitmap_free_v1(&exact_root_b);
+    confirmation.exact_root[ZCL_PRESENT_MODEL_ROOT_MAX - 1u] = 'a';
     confirmation.exact_root[0] = '\0';
     QR_CHECK("rootless publication confirmation fails closed",
              !zcl_present_model_validate_v1(
