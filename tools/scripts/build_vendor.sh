@@ -100,7 +100,7 @@ PROVENANCE_CONTRACT_REV="vp3"
 RECIPE_TOR_STUB="tor-stub-r2"
 RECIPE_SQLITE="sqlite-r2"
 RECIPE_ZLIB="zlib-r2"
-RECIPE_OPENSSL="openssl-r3"
+RECIPE_OPENSSL="openssl-r4"
 RECIPE_LIBEVENT="libevent-r5"
 RECIPE_LEVELDB="leveldb-r5"
 RECIPE_RUSTZCASH="rustzcash-r3"
@@ -426,6 +426,18 @@ build_openssl() {      # FETCHED: OpenSSL -> libcrypto.a + libssl.a
         && ./Configure no-shared no-tests \
              --prefix=/usr/local --openssldir=/etc/ssl --libdir=lib >/dev/null \
         && make -j"$JOBS" build_libs >/dev/null 2>&1 )
+    # OpenSSL also records the literal compiler command in its version data.
+    # Reject an absolute checkout/home compiler here, before the archive can
+    # reach the node; test_no_hardcoded_home remains the final backstop.
+    local archive forbidden
+    for archive in "$d/libcrypto.a" "$d/libssl.a"; do
+        for forbidden in "$REPO_ROOT" "$WORK" "${HOME:-}"; do
+            [[ -n "$forbidden" ]] || continue
+            if LC_ALL=C grep -aF "$forbidden" "$archive" >/dev/null; then
+                die "$(basename "$archive") embeds build-host path: $forbidden"
+            fi
+        done
+    done
     install_archive "$d/libcrypto.a" libcrypto.a
     install_archive "$d/libssl.a" libssl.a
     rm -rf "$INC/openssl"; mkdir -p "$INC/openssl"

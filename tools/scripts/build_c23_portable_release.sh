@@ -45,9 +45,14 @@ fi
 
 CC_WRAPPER="$($SCRIPT_DIR/c23_portable_sysroot.sh prepare)"
 SYSROOT="$($SCRIPT_DIR/c23_portable_sysroot.sh root-path)"
+PORTABLE_CC_DIR="$(dirname "$CC_WRAPPER")"
 
 echo "c23-portable-release: rebuilding linked archives through $CC_WRAPPER" >&2
-VENDOR_CC="$CC_WRAPPER" "$SCRIPT_DIR/build_vendor.sh" \
+# Put the exact wrapper first but pass its stable command name to third-party
+# build systems. OpenSSL records the literal CC command in libcrypto; giving it
+# the absolute wrapper path would leak this checkout's /home/<user> into the
+# supposedly portable final binary even though all generated code is correct.
+PATH="$PORTABLE_CC_DIR:$PATH" VENDOR_CC=cc "$SCRIPT_DIR/build_vendor.sh" \
     libtor_stub.a libsqlite3.a libz.a libcrypto.a libssl.a \
     libevent.a libevent_openssl.a libevent_pthreads.a
 
@@ -68,7 +73,7 @@ products=(zclassic23 zcl-rpc zclassic23-package-sign zclassic23-package-verify)
 # The two tiny stable-name helpers are FORCE-built by their canonical rules;
 # changing this compiler also changes vendor provenance, which invalidates the
 # two whole-program products without making every source prerequisite phony.
-make -C "$REPO_ROOT" CC="$CC_WRAPPER" VENDOR_CC="$CC_WRAPPER" \
+PATH="$PORTABLE_CC_DIR:$PATH" make -C "$REPO_ROOT" CC=cc VENDOR_CC=cc \
     ZCL_C23_PORTABLE_RELEASE=1 TOR_FULL= "${products[@]}"
 for product in "${products[@]}"; do
     ZCL_C23_MAX_GLIBC=GLIBC_2.31 \
