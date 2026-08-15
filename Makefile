@@ -1286,6 +1286,7 @@ $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
         check-proof-server-pin \
         check-promotion-receipt-chain \
         check-verification-coverage \
+        check-ship-remote-transaction \
         check-identity-parser-single \
         check-status-reason-single \
         check-operator-needed-sink check-systemd-memory-budget check-doc-accuracy check-doc-counts check-doc-claims check-no-stale-pinned-facts check-markdown-links check-doc-inline-paths \
@@ -8006,6 +8007,14 @@ check-verification-coverage:
 	@echo "══ LINT: hosted CI verification coverage ══"
 	@./tools/lint/check_verification_coverage.sh
 
+# Gate — execute the exact remote activation transaction embedded in ship.sh.
+# Fault injection at daemon-reload and restart must restore both the executable
+# and its systemd identity intent; the success case must qualify the /proc
+# executable bytes and status command before considering activation complete.
+check-ship-remote-transaction:
+	@echo "══ LINT: remote ship transaction rollback + process qualification ══"
+	@./tools/lint/check_ship_remote_transaction.sh
+
 # Gate — stop a tenth copy of the source-identity JSON parser from growing
 # back. tools/scripts/source_identity_lib.sh is the one canonical reader
 # (anchored on the FIRST "source_id_sha256" occurrence — a greedy copy
@@ -8452,6 +8461,7 @@ LINT_GATES := \
     check-proof-server-pin \
     check-promotion-receipt-chain \
     check-verification-coverage \
+    check-ship-remote-transaction \
     check-identity-parser-single \
     check-status-reason-single \
     check-pipefail-status-pipe \

@@ -19,10 +19,11 @@
 #     and those bytes are copied to every target. Fleet agreement is then a
 #     string compare, not an inference.
 #
-# Every host is verified by asking the RUNNING daemon for the source id baked
-# into it and requiring it to equal the candidate's. A host that does not come
-# back healthy is rolled back to the binary it was running, automatically,
-# before the next host is touched.
+# Every host is verified from the RUNNING process: its /proc executable must be
+# the candidate's exact bytes, its process environment must contain the exact
+# deploy identity, and those bytes must answer status. A host that does not
+# qualify is rolled back to the binary and identity it was running before the
+# next host is touched.
 #
 # Usage:
 #   tools/ship.sh                     # gate, build, deploy local, deploy remote
@@ -232,10 +233,17 @@ else
     # prove which code a node is running.
     agentbuild="$(timeout 30 "$CANDIDATE" agentbuild 2>&1)" || \
         die "frozen candidate failed its agentbuild preflight"
-    CAND_SOURCE_ID="$(zcl_json_first_sha256 "$agentbuild" source_id_sha256)"
+    CAND_SOURCE_ID="$(zcl_agentbuild_v2_top_source_id "$agentbuild")"
     zcl_is_sha256 "$CAND_SOURCE_ID" || \
         die "frozen candidate reports no valid source_id_sha256"
-    say "candidate  source_id ${CAND_SOURCE_ID:0:16}…  sha256 ${ARTIFACT_SHA:0:16}…  $(du -h "$CANDIDATE" | cut -f1)"
+    [ "$CAND_SOURCE_ID" = "$SOURCE_ID" ] || \
+        die "frozen candidate source id differs from the gated checkout"
+    CAND_BUILD_COMMIT="$(zcl_agentbuild_v2_top_build_commit "$agentbuild")"
+    case "$CAND_BUILD_COMMIT" in
+        ''|*[!A-Za-z0-9._-]*)
+            die "frozen candidate reports an invalid display build_commit" ;;
+    esac
+    say "candidate  source_id ${CAND_SOURCE_ID:0:16}…  commit $CAND_BUILD_COMMIT  sha256 ${ARTIFACT_SHA:0:16}…  $(du -h "$CANDIDATE" | cut -f1)"
 fi
 
 # ── 4. Deploy, host by host ─────────────────────────────────────────────────
@@ -253,10 +261,13 @@ deploy_remote() {
     step "Deploy → $REMOTE_HOST"
     local svc_bin prev_sha
     svc_bin="$(ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" \
-        'systemctl --user show zclassic23 -p ExecStart --value | tr " " "\n" | sed -n "s/^path=//p" | head -1')"
+        'set -eu
+         pid="$(systemctl --user show zclassic23 -p MainPID --value)"
+         case "$pid" in ""|*[!0-9]*|0) exit 1 ;; esac
+         readlink -f "/proc/$pid/exe"')"
     case "$svc_bin" in
         /*) ;;
-        *) die "remote ExecStart path is missing or not absolute: '$svc_bin'" ;;
+        *) die "remote running executable path is missing or not absolute: '$svc_bin'" ;;
     esac
     say "remote bin $svc_bin"
     if [ "$DRY_RUN" -eq 1 ]; then say "would install candidate + restart + verify"; return 0; fi
@@ -271,42 +282,150 @@ deploy_remote() {
         die "could not copy the candidate to $REMOTE_HOST"
 
     ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" bash -s -- \
-        "$svc_bin" "$ARTIFACT_SHA" "$CAND_SOURCE_ID" <<'REMOTE_SCRIPT'
+        "$svc_bin" "$ARTIFACT_SHA" "$CAND_SOURCE_ID" "$CAND_BUILD_COMMIT" <<'REMOTE_SCRIPT'
 set -euo pipefail
-svc_bin="$1"; want_sha="$2"; want_src="$3"
+svc_bin="$1"; want_sha="$2"; want_src="$3"; want_commit="$4"
+dropin_dir="$HOME/.config/systemd/user/zclassic23.service.d"
+dropin="$dropin_dir/90-build-identity.conf"
+rollback_bin="${svc_bin}.rollback"
+rollback_dropin="${dropin}.ship.rollback"
+dropin_absent="${dropin}.ship.absent"
+dropin_tmp=""
+prior_sha=""
+rollback_armed=0
+
+restore_prior() {
+    install -m 755 "$rollback_bin" "$svc_bin" || return 1
+    if [ -f "$rollback_dropin" ]; then
+        install -m 644 "$rollback_dropin" "$dropin" || return 1
+    elif [ -f "$dropin_absent" ]; then
+        rm -f "$dropin" || return 1
+    fi
+    systemctl --user daemon-reload || return 1
+    systemctl --user restart zclassic23 || return 1
+
+    restore_deadline=$(( $(date +%s) + ${ZCL_SHIP_ROLLBACK_HEALTH_SECONDS:-60} ))
+    while [ "$(date +%s)" -lt "$restore_deadline" ]; do
+        restore_pid="$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)"
+        case "$restore_pid" in
+            ""|*[!0-9]*|0) ;;
+            *)
+                restore_sha="$(sha256sum < "/proc/$restore_pid/exe" 2>/dev/null | awk '{print $1}' || true)"
+                if [ "$restore_sha" = "$prior_sha" ] && \
+                   timeout 20 "/proc/$restore_pid/exe" status >/dev/null 2>&1; then
+                    return 0
+                fi
+                ;;
+        esac
+        sleep 2
+    done
+    return 1
+}
+
+restore_on_failure() {
+    rc=$?
+    trap - EXIT HUP INT TERM
+    if [ "$rollback_armed" -eq 1 ]; then
+        echo "remote: activation failed; restoring prior executable and identity" >&2
+        if restore_prior; then
+            echo "remote: rollback process-qualified"
+        else
+            echo "remote: CRITICAL — rollback could not be process-qualified" >&2
+            rc=70
+        fi
+    fi
+    [ -z "$dropin_tmp" ] || rm -f "$dropin_tmp"
+    exit "$rc"
+}
+trap restore_on_failure EXIT HUP INT TERM
+
 got="$(sha256sum < "${svc_bin}.incoming" | awk '{print $1}')"
 [ "$got" = "$want_sha" ] || { echo "remote: transferred bytes differ from candidate" >&2; exit 1; }
 chmod 755 "${svc_bin}.incoming"
-# zcl-identity-parser-allow: this heredoc runs on the REMOTE host verbatim
-# (bash -s -- ... <<'REMOTE_SCRIPT') and cannot `source` a local library file
-# that only exists in this checkout — the inline grep/sed pair is the only
-# option here. See tools/scripts/source_identity_lib.sh for why it is
-# anchored on the FIRST occurrence rather than greedy.
-got_src="$(timeout 30 "${svc_bin}.incoming" agentbuild 2>&1 | \
-    grep -oE '"source_id_sha256"[[:space:]]*:[[:space:]]*"[^"]*"' | head -1 | \
-    sed -E 's/.*"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
-[ "$got_src" = "$want_src" ] || { echo "remote: staged binary reports source id '$got_src'" >&2; exit 1; }
-cp -f "$svc_bin" "${svc_bin}.rollback" 2>/dev/null || true
+
+# The transferred SHA-256 is the source binding. The local preflight already
+# asked these exact bytes for their baked source id; re-parsing the same large
+# JSON through a remote grep|head pipeline added no authority and could fail
+# with SIGPIPE after extracting the right value.
+pid="$(systemctl --user show zclassic23 -p MainPID --value)"
+case "$pid" in ""|*[!0-9]*|0) echo "remote: no running MainPID" >&2; exit 1 ;; esac
+install -m 755 "/proc/$pid/exe" "$rollback_bin"
+prior_sha="$(sha256sum < "$rollback_bin" | awk '{print $1}')"
+install -d "$dropin_dir"
+rm -f "$rollback_dropin" "$dropin_absent"
+if [ -f "$dropin" ]; then
+    install -m 644 "$dropin" "$rollback_dropin"
+else
+    : > "$dropin_absent"
+fi
+# Every dependency needed for restoration now exists. Arm rollback before the
+# first mutation, including the identity install and daemon-reload; otherwise
+# a failure in that small window could leave intent describing bytes that were
+# never activated.
+rollback_armed=1
+dropin_tmp="$(mktemp "${dropin}.tmp.XXXXXX")"
+{
+    printf '[Service]\n'
+    printf 'Environment="ZCL_AGENT_EXPECT_SOURCE_ID=%s"\n' "$want_src"
+    printf 'Environment="ZCL_AGENT_EXPECT_BUILD_COMMIT=%s"\n' "$want_commit"
+    printf 'Environment="ZCL_AGENT_EXPECT_BUILD_SOURCE=ship"\n'
+} > "$dropin_tmp"
+install -m 644 "$dropin_tmp" "$dropin"
+rm -f "$dropin_tmp"; dropin_tmp=""
+systemctl --user daemon-reload
 mv -f "${svc_bin}.incoming" "$svc_bin"
 systemctl --user restart zclassic23
-echo "remote: installed and restarted"
+
+# Keep the rollback transaction armed until the new process proves both exact
+# bytes and useful RPC behavior. A successful `systemctl restart` only proves
+# that systemd accepted a request; it does not prove the daemon stayed alive.
+deadline=$(( $(date +%s) + ${ZCL_SHIP_REMOTE_HEALTH_SECONDS:-300} ))
+healthy=0
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    new_pid="$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)"
+    case "$new_pid" in
+        ""|*[!0-9]*|0) ;;
+        *)
+            running_sha="$(sha256sum < "/proc/$new_pid/exe" 2>/dev/null | awk '{print $1}' || true)"
+            identity_ok="$(tr '\000' '\n' < "/proc/$new_pid/environ" 2>/dev/null |
+                awk -v src="ZCL_AGENT_EXPECT_SOURCE_ID=$want_src" \
+                    -v commit="ZCL_AGENT_EXPECT_BUILD_COMMIT=$want_commit" \
+                    -v origin="ZCL_AGENT_EXPECT_BUILD_SOURCE=ship" '
+                        $0 == src { have_src=1 }
+                        $0 == commit { have_commit=1 }
+                        $0 == origin { have_origin=1 }
+                        END { if (have_src && have_commit && have_origin) print "yes" }
+                    ' || true)"
+            if [ "$running_sha" = "$want_sha" ] && \
+               [ "$identity_ok" = yes ] && \
+               timeout 20 "/proc/$new_pid/exe" status >/dev/null 2>&1; then
+                healthy=1
+                break
+            fi
+            ;;
+    esac
+    sleep 2
+done
+[ "$healthy" -eq 1 ] || { echo "remote: candidate failed process-byte/identity/RPC qualification" >&2; exit 1; }
+rollback_armed=0
+trap - EXIT HUP INT TERM
+echo "remote: installed, restarted, and process-qualified"
 REMOTE_SCRIPT
 
-    # Verify against the RUNNING daemon, not the file on disk. The file proves
-    # what was installed; only the daemon proves what is being served.
-    local deadline running_src ok=0
+    # Verify the executable inode held by the RUNNING MainPID, not only the
+    # pathname on disk. Exact process bytes bind the already-proven candidate
+    # source id without another fallible JSON parser.
+    local deadline running_sha rollback_rc ok=0
     deadline=$(( $(date +%s) + 300 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        # zcl-identity-parser-allow: the whole pipeline (agentbuild | grep |
-        # sed) is one double-quoted string handed to the REMOTE shell over
-        # ssh, so it executes on that host, which cannot source a local
-        # library file from this checkout — the inline extraction is the
-        # only option here.
-        running_src="$(ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" \
-            "timeout 15 '$svc_bin' agentbuild 2>/dev/null | grep -oE '\"source_id_sha256\"[[:space:]]*:[[:space:]]*\"[^\"]*\"' | head -1 | sed -E 's/.*\"[[:space:]]*:[[:space:]]*\"([^\"]*)\".*/\\1/'" 2>/dev/null || true)"
-        if [ "$running_src" = "$CAND_SOURCE_ID" ] && \
-           ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" \
-               "timeout 20 '$svc_bin' status >/dev/null 2>&1"; then
+        running_sha="$(ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" \
+            'set -eu
+             pid="$(systemctl --user show zclassic23 -p MainPID --value)"
+             case "$pid" in ""|*[!0-9]*|0) exit 1 ;; esac
+             timeout 20 "/proc/$pid/exe" status >/dev/null 2>&1
+             sha256sum < "/proc/$pid/exe" | awk '\''{print $1}'\''' \
+            2>/dev/null || true)"
+        if [ "$running_sha" = "$ARTIFACT_SHA" ]; then
             ok=1; break
         fi
         sleep 10
@@ -314,15 +433,59 @@ REMOTE_SCRIPT
 
     if [ "$ok" -ne 1 ]; then
         say "remote did not come back healthy — ROLLING BACK"
-        ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" \
-            "if [ -f '${svc_bin}.rollback' ]; then mv -f '${svc_bin}.rollback' '$svc_bin'; systemctl --user restart zclassic23; echo 'remote: rolled back'; fi" || true
-        die "remote deploy failed and was rolled back"
+        rollback_rc=0
+        ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" bash -s -- "$svc_bin" <<'ROLLBACK_SCRIPT' || rollback_rc=$?
+set -eu
+svc_bin="$1"
+dropin="$HOME/.config/systemd/user/zclassic23.service.d/90-build-identity.conf"
+if [ -f "${svc_bin}.rollback" ]; then
+    prior_sha="$(sha256sum < "${svc_bin}.rollback" | awk '{print $1}')"
+    install -m 755 "${svc_bin}.rollback" "$svc_bin"
+    if [ -f "${dropin}.ship.rollback" ]; then
+        install -m 644 "${dropin}.ship.rollback" "$dropin"
+    elif [ -f "${dropin}.ship.absent" ]; then
+        rm -f "$dropin"
     fi
-    say "remote ok  running source_id ${running_src:0:16}… and answering status"
+    if ! systemctl --user daemon-reload; then
+        echo "remote: CRITICAL — rollback daemon-reload failed" >&2
+        exit 1
+    fi
+    if ! systemctl --user restart zclassic23; then
+        echo "remote: CRITICAL — rollback restart request failed" >&2
+        exit 1
+    fi
+    deadline=$(( $(date +%s) + ${ZCL_SHIP_ROLLBACK_HEALTH_SECONDS:-60} ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        pid="$(systemctl --user show zclassic23 -p MainPID --value 2>/dev/null || true)"
+        case "$pid" in
+            ""|*[!0-9]*|0) ;;
+            *)
+                running_sha="$(sha256sum < "/proc/$pid/exe" 2>/dev/null | awk '{print $1}' || true)"
+                if [ "$running_sha" = "$prior_sha" ] && \
+                   timeout 20 "/proc/$pid/exe" status >/dev/null 2>&1; then
+                    echo "remote: rollback executable and identity restored; old process qualified"
+                    exit 0
+                fi
+                ;;
+        esac
+        sleep 2
+    done
+    echo "remote: CRITICAL — rollback restart did not qualify the old process" >&2
+    exit 1
+fi
+echo "remote: CRITICAL — rollback executable is missing" >&2
+exit 1
+ROLLBACK_SCRIPT
+        if [ "$rollback_rc" -eq 0 ]; then
+            die "remote deploy failed; rollback process-qualified"
+        fi
+        die "remote deploy failed; CRITICAL: rollback is unverified (ssh rc=$rollback_rc)"
+    fi
+    say "remote ok  running sha256 ${running_sha:0:16}… (source_id ${CAND_SOURCE_ID:0:16}…) and answering status"
 
     # Record the pin at the one moment this script provably holds the
-    # binding: the running daemon just proved it reports the candidate's
-    # source id. A failure here must not undo or fail an already-successful
+    # binding: the running process just proved exact candidate bytes, deploy
+    # identity, and status. A failure here must not undo or fail a successful
     # deploy — report it loudly and move on.
     tools/scripts/proof_server_pin.sh record "$HEAD_SHA" "$CAND_SOURCE_ID" "$ARTIFACT_SHA" "$REMOTE_HOST" || \
         say "WARNING: could not record the proof-server pin for $HEAD_SHA / ${CAND_SOURCE_ID:0:16}… on $REMOTE_HOST — the deploy itself succeeded; re-run by hand: tools/scripts/proof_server_pin.sh record $HEAD_SHA $CAND_SOURCE_ID $ARTIFACT_SHA $REMOTE_HOST"
