@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "name": "zbigint/zbigint",
+  "semver": "0.1.1",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zbigint/zbigint.h",
+    "src/zbigint.c",
+    "tests/test_zbigint.c",
+    "tests/vectors.h",
+    "zcode-package.json"
+  ]
+}
