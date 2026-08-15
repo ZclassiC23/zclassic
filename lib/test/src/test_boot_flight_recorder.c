@@ -263,7 +263,24 @@ int test_boot_flight_recorder(void)
         json_free(&v);
     }
 
-    /* ── Quick boots: two MORE boots seeded well inside the window, plus
+    /* The spaced and quick scenarios must not share finish()'s wall-clock
+     * boot_epoch.  A fast isolated run used to land both finishes in one
+     * second and accidentally deduplicate them, while a loaded suite crossed
+     * the second boundary and counted four boots.  Reset the fixture so the
+     * threshold proof is independent of scheduler timing. */
+    {
+        char *errmsg = NULL;
+        int rc = sqlite3_exec(ndb.db, "DELETE FROM boot_stage_timings",
+                              NULL, NULL, &errmsg);
+        BFR_CHECK("reset history between spaced and quick boot scenarios",
+                  rc == SQLITE_OK);
+        if (errmsg) sqlite3_free(errmsg);
+    }
+    blocker_clear(BOOT_LOOP_GUARD_BLOCKER_ID);
+    boot_loop_guard_reset_for_testing();
+    bl_now = platform_time_wall_unix();
+
+    /* ── Quick boots: two boots seeded well inside the window, plus
      * this finish() call's own real-time row -> 3 distinct boot_epochs in
      * the last 15 minutes -> threshold (3) reached -> blocker fires. */
     BFR_CHECK("seed quick boot (10 min ago)",
