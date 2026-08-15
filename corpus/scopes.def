@@ -122,3 +122,6 @@ package zutf16/zutf16 | root 3e4362557aec5e38b2128441b1fc48add99f53001982f7c0ba1
 package zb32/zb32 | root 9e7c443c6dc37f149b4939ef08882bf6f050684c0b33b9d0bf5073b72d0d07a2 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zbuf/zbuf | root 3b34b548c9abad342e6c73aed5dae0b7d023dcfe2d660e2b0f44a37d5a5a8fa3 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zbits/zbits | root eccfb349eb0b6ab90e8c40528243a5193932922b038f700c85a4ff80da05f52b | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zslug/zslug | root fbe71d404fe260f19c0a60ce6c4ac1cb5e86150fc7230fffbdb3026245296939 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zcron/zcron | root 35909689ad111042aab31f62bf8ae80b2eae23657916d89d2a0f3f1c650e233b | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zcidr/zcidr | root 8c453dfb7d10b7831e06c72ade9c30d519e5264a9762442579e3814c2eba01d8 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT

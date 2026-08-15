@@ -1,0 +1,1 @@
+{"schema":1,"name":"zcron/zcron","semver":"0.1.0","language":"c23","license":"MIT","include_dir":"include","source_dir":"src","dependencies":[],"files":["LICENSE","README.md","app/main.c","include/zcron/zcron.h","src/zcron.c","tests/test_zcron.c","zcode-package.json"]}
