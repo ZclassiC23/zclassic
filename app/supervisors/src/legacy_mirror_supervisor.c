@@ -111,7 +111,12 @@ static void legacy_mirror_on_tick(struct liveness_contract *c)
             &g_legacy_mirror_consecutive_failures, 1) + 1;
         supervisor_set_period(id, legacy_mirror_supervisor_backoff_secs(
             atomic_load(&g_legacy_mirror_base_cadence), failures));
-        supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
+        /* -legacyoracle=auto is an OPTIONAL reference observer.  A missing
+         * zclassicd is legitimate idle/degraded dependency state, not a
+         * failure of this sovereign node.  Keep cumulative error evidence and
+         * exponential retry, but do not raise a supervisor stall (which also
+         * launches an expensive all-subsystem debug bundle). */
+        supervisor_progress_idle(id);
     } else {
         atomic_store(&g_legacy_mirror_consecutive_failures, 0);
         supervisor_set_period(id,

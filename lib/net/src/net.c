@@ -15,6 +15,7 @@
 #include "util/blocker.h"
 #include "util/log_json.h"
 #include "util/log_macros.h"
+#include "util/log_throttle.h"
 #include "core/hash.h"
 #include "core/random.h"
 #include "core/utiltime.h"
@@ -64,6 +65,7 @@
  * tests can tune it mid-process without a re-init hook.
  */
 static _Atomic size_t g_recv_total_bytes = 0;
+static struct log_throttle g_banned_accept_log = LOG_THROTTLE_INIT;
 
 static size_t recv_total_bytes_cap(void)
 {
@@ -1813,7 +1815,15 @@ bool accept_connection(struct net_manager *nm, const struct listen_socket *ls)
 
     if (is_banned(nm, &addr.svc.addr) && !is_whitelisted) {
         close_socket(&sock);
-        LOG_FAIL("net", "rejected banned peer on accept");
+        uint64_t suppressed = 0;
+        if (log_throttle_should_emit(
+                &g_banned_accept_log, 1,
+                (int64_t)platform_time_wall_time_t(), 300, &suppressed)) {
+            LOG_WARN("net", "rejected banned peer on accept "
+                     "(suppressed=%llu)",
+                     (unsigned long long)suppressed);
+        }
+        return false;
     }
 
     /* Per-IP inbound limit — sybil defence: one IP must not be able to

@@ -257,6 +257,14 @@ const char *cli_flag_client_whitelist_csv(void)
     return buf;
 }
 
+bool args_should_auto_add_local_peer(bool connect_only, int own_p2p_port,
+                                     int legacy_p2p_port,
+                                     bool already_listed)
+{
+    return !connect_only && !already_listed && own_p2p_port > 0 &&
+           legacy_p2p_port > 0 && own_p2p_port != legacy_p2p_port;
+}
+
 int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
                             bool *show_metrics)
 {

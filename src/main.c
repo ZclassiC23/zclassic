@@ -614,7 +614,13 @@ int main(int argc, char **argv)
                         break;
                     }
                 }
-                if (!already_listed) {
+                if (p2p_port == ctx.p2p_port) {
+                    printf("auto-addnode: skipped local zclassicd candidate "
+                           "%s because it is this node's listening endpoint\n",
+                           hostport);
+                } else if (args_should_auto_add_local_peer(
+                               ctx.connect_only, ctx.p2p_port, p2p_port,
+                               already_listed)) {
                     printf("auto-addnode: local zclassicd at %s "
                            "(zclassic.conf detected)\n", hostport);
                     app_add_node("127.0.0.1", p2p_port);

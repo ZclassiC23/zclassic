@@ -332,8 +332,13 @@ static void zclassicd_oracle_on_tick(struct liveness_contract *c)
 
     if (id != SUPERVISOR_INVALID_ID) {
         supervisor_progress(id, zclassicd_oracle_progress_marker());
-        if (atomic_load(&g_oracle.rpc_errors) > errors_before)
-            supervisor_report_stall(id, SUPERVISOR_STALL_CHILD_REPORTED);
+        if (atomic_load(&g_oracle.rpc_errors) > errors_before) {
+            /* Auto mode is advisory.  Preserve the typed reachability/error
+             * counters but classify an absent external oracle as idle, not a
+             * node liveness stall.  A CHILD_REPORTED stall used to trigger a
+             * debug-bundle capture every time the rate limiter opened. */
+            supervisor_progress_idle(id);
+        }
     }
 }
 
