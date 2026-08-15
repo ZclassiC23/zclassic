@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "name": "zpem/zpem",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "name": "zbase64/zbase64",
+      "root": "e82a1c1410dcc4f22e4e53cc0eea9d4e8b794f18f7a70731d065ebb2922b4eb7",
+      "semver": "0.1.0"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zpem/zpem.h",
+    "src/zpem.c",
+    "tests/test_zpem.c",
+    "zcode-package.json"
+  ]
+}

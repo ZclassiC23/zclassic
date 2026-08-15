@@ -154,3 +154,4 @@ package znetstring/znetstring | root d13b56d9b13af4cda54baaf9b3e7c6a8ec941145eb7
 package zmd5/zmd5 | root 2dc59d540076085aac2ff2178e40b6f16c1940bc1d326ac7f9a9a31eda4570ed | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zsha1/zsha1 | root a7c6b1b72b7300c15194c053c4808c163c75638a764bf6f52ce269b477281167 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zdeque/zdeque | root fde6a9285d03c4d97fd456bf72095c4625675b6a2d966b8c18482d3cb454876d | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zpem/zpem | root 0b187d177b120743b7b423df2f2e79153a4ec826f246309db94b79dcd3d58564 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
