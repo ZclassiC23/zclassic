@@ -139,7 +139,14 @@
  *   corpus-census --repo <repo root> --def <scopes.def> --out <dir> \
  *       --cutoff-height N --cutoff-mtp N \
  *       [--signer-seed-file PATH] [--sequence N] [--predecessor-root HEX64] \
- *       [--quality-attested 0|1]
+ *       [--quality-attested 0|1] [--install <datadir>] \
+ *       [--previous-report PATH]
+ *
+ * --install atomically drops the signed checkpoint wire at
+ * <datadir>/zcode/corpus/checkpoint.hex, where `zcode commons corpus
+ * status` picks it up. --previous-report reads the previous sequence's
+ * report JSON and adds the growth-delta KPI block (raw deltas plus floor
+ * per-day rates when >= 1 day elapsed between cutoffs).
  */
 
 #define _GNU_SOURCE
@@ -2460,6 +2467,8 @@ struct census_args {
     const char *def;
     const char *out;
     const char *seed_path;
+    const char *install_datadir;
+    const char *previous_report;
     uint64_t cutoff_height;
     int64_t cutoff_mtp;
     uint64_t sequence;
@@ -2497,7 +2506,8 @@ static void usage(FILE *stream)
         "--out <dir>\n"
         "       --cutoff-height N --cutoff-mtp N [--signer-seed-file PATH]\n"
         "       [--sequence N] [--predecessor-root HEX64] "
-        "[--quality-attested 0|1]\n");
+        "[--quality-attested 0|1]\n"
+        "       [--install <datadir>] [--previous-report PATH]\n");
 }
 
 static bool args_parse(int argc, char **argv, struct census_args *args)
@@ -2542,6 +2552,10 @@ static bool args_parse(int argc, char **argv, struct census_args *args)
                 !zcl_hex_decode_lower(value, args->predecessor, 32))
                 return false;
             args->predecessor_given = true;
+        } else if (strcmp(key, "--install") == 0) {
+            args->install_datadir = value;
+        } else if (strcmp(key, "--previous-report") == 0) {
+            args->previous_report = value;
         } else {
             return false;
         }
@@ -3191,6 +3205,46 @@ int main(int argc, char **argv)
             return 1;
     }
 
+    /* Optional install: drop the signed checkpoint wire where
+     * `zcode commons corpus status` reads it back
+     * (<datadir>/zcode/corpus/checkpoint.hex). Write-only, atomic, never
+     * touches any other datadir content. */
+    if (args.install_datadir) {
+        size_t dir_cap = strlen(args.install_datadir) + 32u;
+        char *zcode_dir = zcl_malloc(dir_cap, "corpus.install.dir");
+        if (!zcode_dir)
+            LOG_ERR(CENSUS_LOG, "install dir alloc");
+        (void)snprintf(zcode_dir, dir_cap, "%s/zcode", args.install_datadir);
+        if (mkdir(zcode_dir, 0755) != 0 && errno != EEXIST) {
+            LOG_ERROR(CENSUS_LOG, "install mkdir %s: %s", zcode_dir,
+                      strerror(errno));
+            free(zcode_dir);
+            return 1;
+        }
+        size_t cdir_cap = dir_cap + 8u;
+        char *corpus_dir = zcl_malloc(cdir_cap, "corpus.install.cdir");
+        if (!corpus_dir) {
+            free(zcode_dir);
+            LOG_ERR(CENSUS_LOG, "install corpus dir alloc");
+        }
+        (void)snprintf(corpus_dir, cdir_cap, "%s/corpus", zcode_dir);
+        free(zcode_dir);
+        if (mkdir(corpus_dir, 0755) != 0 && errno != EEXIST) {
+            LOG_ERROR(CENSUS_LOG, "install mkdir %s: %s", corpus_dir,
+                      strerror(errno));
+            free(corpus_dir);
+            return 1;
+        }
+        bool installed = write_hex_artifact(corpus_dir, "checkpoint.hex",
+                                            checkpoint_wire,
+                                            checkpoint_wire_len);
+        free(corpus_dir);
+        if (!installed)
+            return 1;
+        LOG_INFO(CENSUS_LOG, "installed resident checkpoint into %s/zcode/"
+                 "corpus/checkpoint.hex", args.install_datadir);
+    }
+
     /* git provenance for the report (unsigned). */
     char head_hex[128] = {0};
     char dirty_probe[8192] = {0};
@@ -3489,6 +3543,41 @@ int main(int argc, char **argv)
         uint64_t admitted = 0;
         (void)zcl_u64_add(assembly.production_loc, assembly.test_loc,
                           &admitted);
+        /* Downstream-used LOC: admitted package scopes whose exact package
+         * root is pinned in another scope's dependency closure. Counted
+         * once per depended-upon package. */
+        uint64_t downstream = 0;
+        {
+            bool *used = zcl_calloc(scope_count ? scope_count : 1,
+                                    sizeof(*used), "corpus.kpi.used");
+            if (!used)
+                LOG_ERR(CENSUS_LOG, "downstream-used alloc");
+            for (size_t t = 0; t < scope_count; t++) {
+                const struct json_value *deps = runs[t].measure.deps;
+                if (!deps || deps->type != JSON_ARR) continue;
+                for (size_t d = 0; d < deps->num_children; d++) {
+                    const char *droot =
+                        json_get_str(json_get(json_at(deps, d), "root"));
+                    if (!droot || strlen(droot) != 64) continue;
+                    for (size_t s = 0; s < scope_count; s++) {
+                        if (s == t || used[s] || !defs[s].is_package ||
+                            !(runs[s].result.entry.flags &
+                              VCS_ZCODE_C23_ENTRY_COUNTED))
+                            continue;
+                        char hex[65];
+                        root_hex(defs[s].package_root, hex);
+                        if (strcmp(droot, hex) != 0) continue;
+                        used[s] = true;
+                        uint64_t loc = 0;
+                        if (!zcl_u64_add(runs[s].measure.prod_loc,
+                                         runs[s].measure.test_loc, &loc) ||
+                            !zcl_u64_add(downstream, loc, &downstream))
+                            LOG_ERR(CENSUS_LOG, "downstream-used overflow");
+                    }
+                }
+            }
+            free(used);
+        }
         struct json_value kpis;
         json_init(&kpis);
         json_set_object(&kpis);
@@ -3500,6 +3589,8 @@ int main(int argc, char **argv)
                                (int64_t)admitted);
         (void)json_push_kv_int(&kpis, "durably_hosted_loc",
                                (int64_t)assembly.durable_loc);
+        (void)json_push_kv_int(&kpis, "downstream_used_loc",
+                               (int64_t)downstream);
         (void)json_push_kv_int(&kpis, "physical_lines",
                                (int64_t)assembly.physical_lines);
         (void)json_push_kv_int(&kpis, "unique_semantic_units",
@@ -3511,6 +3602,64 @@ int main(int argc, char **argv)
                                (int64_t)assembly.excluded_entries);
         (void)json_push_kv(&report, "kpis", &kpis);
         json_free(&kpis);
+    }
+    /* Growth-rate KPI: raw deltas against the previous sequence's report.
+     * Per-day rates are floor integers emitted only when at least one full
+     * day elapsed between the two cutoffs (never fake precision). */
+    if (args.previous_report) {
+        uint8_t *prev_wire = NULL;
+        size_t prev_len = 0;
+        if (!store_file_read(args.previous_report, 4u * 1024u * 1024u,
+                             &prev_wire, &prev_len) || !prev_wire)
+            LOG_ERR(CENSUS_LOG, "previous report %s unreadable",
+                    args.previous_report);
+        struct json_value prev;
+        json_init(&prev);
+        bool ok = json_read(&prev, (const char *)prev_wire, prev_len);
+        free(prev_wire);
+        const struct json_value *pk =
+            ok ? json_get(&prev, "kpis") : NULL;
+        const struct json_value *pc =
+            ok ? json_get(&prev, "cutoff") : NULL;
+        int64_t prev_total = pk ? json_get_int(json_get(
+            pk, "admitted_total_loc")) : -1;
+        int64_t prev_pkgs = pk ? json_get_int(json_get(
+            pk, "packages_admitted")) : -1;
+        int64_t prev_mtp = pc ? json_get_int(json_get(pc, "mtp")) : -1;
+        int64_t prev_seq = ok ? json_get_int(json_get(&prev, "sequence"))
+                              : -1;
+        if (!ok || prev_total < 0 || prev_pkgs < 0 || prev_mtp <= 0 ||
+            prev_seq < 0) {
+            json_free(&prev);
+            LOG_ERR(CENSUS_LOG, "previous report %s lacks the KPI fields",
+                    args.previous_report);
+        }
+        uint64_t this_total_u = 0;
+        if (!zcl_u64_add(assembly.production_loc, assembly.test_loc,
+                         &this_total_u))
+            LOG_ERR(CENSUS_LOG, "delta total overflow");
+        int64_t this_total = (int64_t)this_total_u;
+        int64_t this_pkgs =
+            (int64_t)(census_count - assembly.excluded_entries);
+        int64_t days = (args.cutoff_mtp - prev_mtp) / 86400;
+        struct json_value delta;
+        json_init(&delta);
+        json_set_object(&delta);
+        (void)json_push_kv_int(&delta, "previous_sequence", prev_seq);
+        (void)json_push_kv_int(&delta, "days_elapsed", days);
+        (void)json_push_kv_int(&delta, "admitted_loc_added",
+                               this_total - prev_total);
+        (void)json_push_kv_int(&delta, "packages_added",
+                               this_pkgs - prev_pkgs);
+        if (days > 0) {
+            (void)json_push_kv_int(&delta, "admitted_loc_per_day",
+                (this_total - prev_total) / days);
+            (void)json_push_kv_int(&delta, "packages_per_day_x100",
+                (this_pkgs - prev_pkgs) * 100 / days);
+        }
+        (void)json_push_kv(&report, "delta_vs_previous", &delta);
+        json_free(&delta);
+        json_free(&prev);
     }
     {
         struct json_value excluded, file, entry;

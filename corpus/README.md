@@ -18,20 +18,38 @@ offline driver is `tools/corpus_census.c`, built as
   (≤28 entries each, inside the 8192-byte inline reader bound).
 - `evidence-NNNNNN.json` — every per-scope source assignment and admission
   wire, every constructed root, and the exact construction recipes.
-- `report-NNNNNN.json` — the KPI report: admitted/excluded LOC, per-scope
-  breakdown, missing evidence bits, and the honesty disclosures.
+- `report-NNNNNN.json` — the KPI report: admitted/excluded LOC (production
+  and test separately), downstream-used LOC (admitted packages pinned by
+  another scope's dependency closure), growth deltas against the previous
+  sequence's report (`--previous-report`), per-scope breakdown, missing
+  evidence bits, and the honesty disclosures.
+
+## Live status
+
+`zcode commons corpus status` reads the resident signed checkpoint at
+`<datadir>/zcode/corpus/checkpoint.hex` when the census was run with
+`--install <datadir>` (or `CORPUS_INSTALL=<datadir>` via the make target).
+The reply carries `resident_checkpoint`: `loaded` (decoded, signature and
+shape re-validated), `rejected` (present but failed validation — logged,
+never trusted), or `missing` (the historical `checkpoint_missing`
+rendering).
 
 ## Re-run
 
 ```bash
-make corpus-census            # builds the driver, runs the canonical args
+make corpus-census            # builds the driver, runs a SMOKE census
+                              # into build/corpus-census/ (never corpus/)
 ```
 
-The cutoff coordinates and the lint attestation are operator inputs:
+Advancing the committed sequence is explicit:
 
 ```bash
-make corpus-census CORPUS_CUTOFF_HEIGHT=3050000 \
-    CORPUS_CUTOFF_MTP=1754000000 CORPUS_QUALITY_ATTESTED=1
+make corpus-census CORPUS_OUT=corpus CORPUS_SEQUENCE=<n> \
+    CORPUS_PREDECESSOR_ROOT=<seq n-1 checkpoint root> \
+    CORPUS_CUTOFF_HEIGHT=3050000 CORPUS_CUTOFF_MTP=1754000000 \
+    CORPUS_QUALITY_ATTESTED=1 \
+    CORPUS_PREVIOUS_REPORT=corpus/report-<n-1>.json \
+    CORPUS_INSTALL=<datadir>
 ```
 
 The signer seed lives OUTSIDE the repo at

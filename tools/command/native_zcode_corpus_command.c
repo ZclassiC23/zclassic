@@ -9,6 +9,7 @@
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "services/zcode_c23_corpus_service.h"
+#include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "vcs/zcode_c23_corpus.h"
 
@@ -352,6 +353,68 @@ zcl_native_zcode_corpus_service_contract(void)
     return &k_corpus_contract;
 }
 
+/* Resident signed checkpoint: the census driver (--install) drops the
+ * verified wire at <datadir>/zcode/corpus/checkpoint.hex. Presence is
+ * optional: a missing file renders checkpoint_missing exactly as before; a
+ * present but undecodable or signature-invalid file is logged and also
+ * degrades to checkpoint_missing (never trusted, never fatal to the read).
+ * Returns true only when *out holds a fully validated checkpoint. */
+#define CORPUS_RESIDENT_WIRE_CAP 8192u
+#define CORPUS_RESIDENT_SHARD_CAP 256u
+
+static bool corpus_resident_load(
+    struct vcs_zcode_c23_corpus_checkpoint_v1 *out,
+    struct vcs_zcode_c23_checkpoint_shard_v1 *shards, size_t shard_cap,
+    bool *present)
+{
+    if (present) *present = false;
+    if (!out || !shards || !shard_cap) return false;
+    const char *datadir = zcl_native_command_datadir();
+    if (!datadir || !datadir[0]) return false;
+    char path[4400];
+    int n = snprintf(path, sizeof(path), "%s/zcode/corpus/checkpoint.hex",
+                     datadir);
+    if (n < 0 || (size_t)n >= sizeof(path)) {
+        LOG_FAIL("zcode.corpus", "resident checkpoint path too long");
+        return false;
+    }
+    FILE *f = fopen(path, "rb");
+    if (!f) return false; /* the ordinary not-installed case */
+    if (present) *present = true;
+    char hex[2u * CORPUS_RESIDENT_WIRE_CAP + 2u];
+    size_t len = fread(hex, 1, sizeof(hex) - 1u, f);
+    bool truncated = ferror(f) || !feof(f);
+    (void)fclose(f);
+    if (truncated || !len || len > 2u * CORPUS_RESIDENT_WIRE_CAP) {
+        LOG_FAIL("zcode.corpus", "resident checkpoint unreadable or "
+                 "oversize (%zu hex chars)", len);
+        return false;
+    }
+    while (len && (hex[len - 1] == '\n' || hex[len - 1] == '\r' ||
+                   hex[len - 1] == ' ' || hex[len - 1] == '\t'))
+        len--;
+    if (!len || (len & 1u)) {
+        LOG_FAIL("zcode.corpus", "resident checkpoint hex length %zu", len);
+        return false;
+    }
+    hex[len] = '\0';
+    uint8_t wire[CORPUS_RESIDENT_WIRE_CAP];
+    size_t wire_len = len / 2u;
+    if (!zcl_hex_decode_lower(hex, wire, wire_len)) {
+        LOG_FAIL("zcode.corpus", "resident checkpoint is not lowercase hex");
+        return false;
+    }
+    enum vcs_zcode_c23_error error =
+        vcs_zcode_c23_corpus_checkpoint_v1_decode(out, shards, shard_cap,
+                                                  wire, wire_len);
+    if (error != VCS_ZCODE_C23_OK) {
+        LOG_FAIL("zcode.corpus", "resident checkpoint rejected: %s",
+                 vcs_zcode_c23_error_string(error));
+        return false;
+    }
+    return true;
+}
+
 void zcl_native_handle_zcode_commons_corpus_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -364,8 +427,14 @@ void zcl_native_handle_zcode_commons_corpus_status(
     const struct zcode_c23_corpus_service_v1 *service =
         zcl_hotswap_service_acquire(ZCODE_C23_CORPUS_SERVICE_ID, &lease);
     if (!service) service = zcode_c23_corpus_service_builtin();
+    struct vcs_zcode_c23_corpus_checkpoint_v1 resident;
+    struct vcs_zcode_c23_checkpoint_shard_v1
+        resident_shards[CORPUS_RESIDENT_SHARD_CAP];
+    bool resident_present = false;
+    bool resident_ok = corpus_resident_load(&resident, resident_shards,
+        CORPUS_RESIDENT_SHARD_CAP, &resident_present);
     struct zcode_c23_corpus_status_result_v1 status;
-    if (!service->render_status(NULL, &status)) {
+    if (!service->render_status(resident_ok ? &resident : NULL, &status)) {
         zcl_hotswap_service_release(&lease);
         corpus_fail(reply, "CORPUS_SERVICE_FAILED",
                     "the pure corpus calculation service refused its input");
@@ -407,6 +476,14 @@ void zcl_native_handle_zcode_commons_corpus_status(
                            status.progress_stage);
     (void)json_push_kv_str(&reply->data, "next_command",
                            status.next_command);
+    (void)json_push_kv_str(&reply->data, "resident_checkpoint",
+        resident_ok ? "loaded" : resident_present ? "rejected" : "missing");
+    if (resident_ok) {
+        (void)json_push_kv_int(&reply->data, "checkpoint_sequence",
+                               (int64_t)resident.sequence);
+        (void)json_push_kv_int(&reply->data, "checkpoint_cutoff_height",
+                               (int64_t)resident.cutoff_height);
+    }
     zcl_hotswap_service_release(&lease);
 }
 

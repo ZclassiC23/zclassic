@@ -1913,7 +1913,7 @@ static int cmd_run(const struct run_args *args)
     memset(&sa, 0, sizeof(sa));
     memset(&sb, 0, sizeof(sb));
     bool corpus_registered = false;
-    char corpus_note[128] = {0};
+    char corpus_note[320] = {0};
     uint64_t t_start = now_ms();
 
     /* 1. GATE */
@@ -2117,8 +2117,10 @@ admission_done:
                                     error, sizeof(error))) {
             corpus_registered = true;
             (void)snprintf(corpus_note, sizeof(corpus_note),
-                "rerun: make corpus-census CORPUS_CUTOFF_HEIGHT=<h> "
-                "CORPUS_CUTOFF_MTP=<m> CORPUS_QUALITY_ATTESTED=<0|1>");
+                "rerun: make corpus-census CORPUS_OUT=corpus "
+                "CORPUS_SEQUENCE=<n> CORPUS_PREDECESSOR_ROOT=<root> "
+                "CORPUS_CUTOFF_HEIGHT=<h> CORPUS_CUTOFF_MTP=<m> "
+                "CORPUS_QUALITY_ATTESTED=<0|1>");
             pf_step_ok(s, t0);
         } else {
             (void)pf_step_fail(&rep, s, t0, error);

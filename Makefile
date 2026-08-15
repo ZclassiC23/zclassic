@@ -3636,16 +3636,27 @@ $(BIN_DIR)/corpus-census: tools/corpus_census.c \
 	    -Ilib/core/include -Ivendor/include \
 	    -o $@ $^ -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
 
-# Run the corpus census with the canonical args. The cutoff coordinates and
-# the lint attestation are operator inputs, never baked in:
-#   make corpus-census CORPUS_CUTOFF_HEIGHT=... CORPUS_CUTOFF_MTP=... \
-#       CORPUS_QUALITY_ATTESTED=1
+# Run the corpus census. The default is a SMOKE run into build/corpus-census/
+# (unsigned, cutoff 1, quality unattested) so it can never overwrite the
+# committed signed artifacts under corpus/. Advancing the canonical sequence
+# is an explicit operator act:
+#   make corpus-census CORPUS_OUT=corpus CORPUS_SEQUENCE=N \
+#       CORPUS_PREDECESSOR_ROOT=<seq N-1 checkpoint root> \
+#       CORPUS_CUTOFF_HEIGHT=... CORPUS_CUTOFF_MTP=... \
+#       CORPUS_QUALITY_ATTESTED=1 \
+#       CORPUS_PREVIOUS_REPORT=corpus/report-NNNNNN.json \
+#       CORPUS_INSTALL=<datadir>   # drops <datadir>/zcode/corpus/checkpoint.hex
 .PHONY: corpus-census
 corpus-census: $(BIN_DIR)/corpus-census
-	$(BIN_DIR)/corpus-census --repo . --def corpus/scopes.def --out corpus \
+	$(BIN_DIR)/corpus-census --repo . --def corpus/scopes.def \
+	    --out $${CORPUS_OUT:-build/corpus-census} \
 	    --cutoff-height $${CORPUS_CUTOFF_HEIGHT:-1} \
 	    --cutoff-mtp $${CORPUS_CUTOFF_MTP:-1700000000} \
-	    --quality-attested $${CORPUS_QUALITY_ATTESTED:-0}
+	    --quality-attested $${CORPUS_QUALITY_ATTESTED:-0} \
+	    $${CORPUS_SEQUENCE:+--sequence $${CORPUS_SEQUENCE}} \
+	    $${CORPUS_PREDECESSOR_ROOT:+--predecessor-root $${CORPUS_PREDECESSOR_ROOT}} \
+	    $${CORPUS_INSTALL:+--install $${CORPUS_INSTALL}} \
+	    $${CORPUS_PREVIOUS_REPORT:+--previous-report $${CORPUS_PREVIOUS_REPORT}}
 
 # package-factory: the one reusable package pipeline (slice 2). Gates a
 # fixed-layout package dir, prepares + seals + publishes a signed release
