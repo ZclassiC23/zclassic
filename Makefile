@@ -3610,6 +3610,8 @@ $(BIN_DIR)/corpus-census: tools/corpus_census.c \
 		lib/vcs/src/zcode_family_moderation.c \
 		lib/vcs/src/signed_evidence.c \
 		lib/vcs/src/package_score.c lib/vcs/src/package_release.c \
+		lib/vcs/src/package_manifest.c lib/vcs/src/package_recipe.c \
+		lib/vcs/src/package_build.c lib/vcs/src/package_reproduce.c \
 		lib/vcs/src/vcs_object.c \
 		lib/crypto/src/ed25519.c lib/crypto/src/sha512.c \
 		lib/sha3/src/sha3.c \
@@ -3640,6 +3642,52 @@ corpus-census: $(BIN_DIR)/corpus-census
 	    --cutoff-height $${CORPUS_CUTOFF_HEIGHT:-1} \
 	    --cutoff-mtp $${CORPUS_CUTOFF_MTP:-1700000000} \
 	    --quality-attested $${CORPUS_QUALITY_ATTESTED:-0}
+
+# package-factory: the one reusable package pipeline (slice 2). Gates a
+# fixed-layout package dir, prepares + seals + publishes a signed release
+# into two independent local stores, files a second distinct confined-build
+# receipt (quick + standard flag profiles on one host, disclosed), verifies
+# reproduction, and prints a JSON report. It drives the zclassic23 CLI and
+# the package-sign/package-verify helpers as subprocesses; the only linked
+# vcs code is the pure evidence-object layer (no DB, no Tor). `pin-dep`
+# splices a published dependency root into zcode-package.json when the
+# dependency still carries the all-zero placeholder. `selftest` runs the
+# full journey on the tiny-lines fixture and then drives corpus-census over
+# the published store to prove the census package-scope intake end to end.
+.PHONY: tools/package-factory
+tools/package-factory: $(BIN_DIR)/package-factory
+$(BIN_DIR)/package-factory: tools/package_factory.c \
+		lib/vcs/src/package_prepare.c lib/vcs/src/package_manifest.c \
+		lib/vcs/src/package_recipe.c lib/vcs/src/package_deps.c \
+		lib/vcs/src/package_capsule.c lib/vcs/src/package_release.c \
+		lib/vcs/src/package_build.c lib/vcs/src/package_reproduce.c \
+		lib/vcs/src/zcode_c23_corpus_objects.c \
+		lib/vcs/src/zcode_family_admission_object.c \
+		lib/vcs/src/zcode_family_moderation.c \
+		lib/vcs/src/signed_evidence.c \
+		lib/crypto/src/ed25519.c lib/crypto/src/sha512.c \
+		lib/sha3/src/sha3.c \
+		lib/base/src/cleanse.c lib/base/src/log_level.c \
+		lib/base/src/safe_alloc.c \
+		lib/codec/src/cursor.c lib/json/src/json.c \
+		lib/platform/src/rng.c lib/platform/src/clock.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+	    -Ilib/vcs/include -Ilib/base/include -Ilib/util/include \
+	    -Ilib/crypto/include -Ilib/sha3/include -Ilib/codec/include \
+	    -Ilib/json/include -Ilib/platform/include -Ilib/support/include \
+	    -Ilib/core/include -Ivendor/include \
+	    -o $@ $^ -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
+
+# End-to-end proof of the factory plus the census package-scope intake on
+# the tiny-lines fixture, entirely under test-tmp/.
+.PHONY: package-factory-selftest
+package-factory-selftest: $(BIN_DIR)/package-factory $(BIN_DIR)/corpus-census \
+		zclassic23 zclassic23-package-sign zclassic23-package-verify
+	$(BIN_DIR)/package-factory selftest --repo . --bin-dir $(BIN_DIR)
 
 # gen_utxo_root_ladder: one-shot tool that reads a COPY of a zclassic23
 # node.db (never the live datadir) and overwrites

@@ -53,6 +53,48 @@ Both return `"verified":true` after decoding and validating the wires
 (signature, canonical order, aggregate consistency). The readers are
 fail-closed: anything malformed is rejected with a named reason.
 
+## Admitting a published Commons package
+
+`scopes.def` has a second line form for packages published through the C23
+Commons package store:
+
+```
+package <name> | root <64hex> | store <datadir> | kind <human|ai|import> | spdx <id>
+```
+
+Unlike repo scopes (enumerated via `git ls-files`), a package scope is
+enumerated from the **package store** at `<datadir>/zcode`, so every
+evidence bit binds the exact published bytes, not a working tree:
+
+- `root` is the package manifest root. The census loads the stored manifest
+  and re-derives the root; a mismatch refuses the scope.
+- Exactly one signature-verified release under `releases/` may name the
+  root; its declared license must equal the `spdx` field, and the census
+  re-derives the recipe root from `recipes/<recipe-root-hex>`.
+- Files are reassembled from the chunk-hash-verified CAS, read-only — the
+  census never opens the store through `vcs_package_store_open`, so no
+  recovery sweep, GC, or access-count mutation happens as a side effect.
+- REPRODUCIBLE requires >= 2 DISTINCT byte-identical confined build
+  receipts filed under `<datadir>/zcode/receipts/`; QUALITY maps to
+  "confined build+test receipt green". The assignment author binding is the
+  release publisher's pubkey.
+
+The one pipeline that produces all of this evidence is the package factory
+(`tools/package_factory.c`, `build/bin/package-factory`): it gates the
+package layout, prepares/seals/signs the release, publishes into two
+independent local stores, files the second distinct confined-build receipt
+(quick + standard flag profiles on one host — disclosed), verifies
+reproduction, and optionally registers the scope line
+(`--register-corpus --census-def corpus/scopes.def`). Prove it end to end
+with:
+
+```bash
+make package-factory-selftest
+```
+
+After registering a package scope, re-run the census (above) so the signed
+checkpoint binds the new package evidence.
+
 ## Honesty disclosures (carried in every report)
 
 - **Founding self-screen admission.** Every scope's admission is a
@@ -61,6 +103,9 @@ fail-closed: anything malformed is rejected with a named reason.
 - **Reproduction** is dual-worktree source rederivation (`git worktree`
   at HEAD, byte-identical release roots), NOT independent build
   reproduction. Scopes with uncommitted content honestly lose the bit.
+  Package scopes use the stronger receipt binding (>= 2 distinct
+  byte-identical confined build receipts) — but on ONE host; independent
+  operator reproduction is future work.
 - **Quality** is the operator's `--quality-attested` flag (`make lint`
   pass state at census time), not an independent review. With it unset,
   every entry is excluded `REVIEW_REQUIRED` and admitted LOC is zero —
