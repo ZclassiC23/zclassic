@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zprng/zprng",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zprng/zprng.h",
+    "src/zprng.c",
+    "tests/test_zprng.c",
+    "zcode-package.json"
+  ]
+}
