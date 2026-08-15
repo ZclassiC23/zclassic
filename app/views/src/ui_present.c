@@ -5,11 +5,9 @@
 
 #include "json/json.h"
 #include "platform/os_proc.h"
-#include "presentation/model_render.h"
 #include "presentation/presentation.h"
-#include "presentation/zclassic_brand.h"
 #include "util/spawn.h"
-#include "views/qr_popup.h"
+#include "views/ui_present_document.h"
 
 #include <errno.h>
 #include <limits.h>
@@ -312,58 +310,21 @@ struct zcl_result ui_present_model_launch(
 static bool ui_present_model_show(const uint8_t *wire, size_t wire_len,
                                   char *error, size_t error_cap)
 {
-    struct zcl_present_model_v1 model;
-    if (!zcl_present_model_decode_v1(wire, wire_len, &model,
-                                     error, error_cap))
-        return false; // raw-return-ok:model decoder supplied bounded error
-    struct zcl_present_model_bitmap_v1 bitmap = {0};
-    struct qr_popup_card qr_card = {0};
-    char qr_payload[ZCL_PRESENT_MODEL_QR_PAYLOAD_MAX + 1u] = {0};
-    bool is_qr = model.kind == ZCL_PRESENT_MODEL_QR_CARD;
-    if (is_qr) {
-        if (!qr_popup_card_render(&model, &qr_card, error, error_cap) ||
-            !zcl_present_model_qr_payload_v1(&model, qr_payload,
-                                             error, error_cap)) {
-            qr_popup_card_free(&qr_card);
-            return false;
-        }
-    } else if (!zcl_present_model_render_v1(&model, &bitmap,
-                                            error, error_cap)) {
-        return false; // raw-return-ok:model renderer supplied bounded error
-    }
-    uint8_t icon[ZCL_PRESENT_ZCLASSIC_ICON_RGBA_BYTES];
-    if (!zcl_present_zclassic_icon_rgba(icon, sizeof(icon))) {
-        if (is_qr) qr_popup_card_free(&qr_card);
-        else zcl_present_model_bitmap_free_v1(&bitmap);
-        ui_present_error(error, error_cap,
-                         "ZClassic presentation icon is unavailable");
-        return false;
-    }
-    char title[ZCL_PRESENT_TITLE_MAX + 1u];
-    if (is_qr) {
-        const char *kind = qr_card.is_deposit ? "Deposit ZCL" : model.title;
-        (void)snprintf(title, sizeof(title),
-                       "ZClassic23 — %s — C copies, Esc closes", kind);
-    } else {
-        (void)snprintf(title, sizeof(title), "ZClassic23 — %s", model.title);
-    }
-    struct zcl_present_window_v1 request = {
-        .struct_size = sizeof(request),
+    struct ui_present_document document;
+    if (!ui_present_document_from_wire(
+            wire, wire_len, &document, error, error_cap))
+        return false; // raw-return-ok:compositor supplied bounded error
+    struct zcl_present_window_pages_v1 pages = {
+        .struct_size = sizeof(pages),
         .abi_version = ZCL_PRESENT_ABI_V1,
-        .title = title,
-        .pixels = is_qr ? qr_card.pixels : bitmap.pixels,
-        .width = is_qr ? qr_card.width : bitmap.width,
-        .height = is_qr ? qr_card.height : bitmap.height,
-        .pixel_format = ZCL_PRESENT_RGB8,
-        .icon_rgba = icon,
-        .icon_width = ZCL_PRESENT_ZCLASSIC_ICON_WIDTH,
-        .icon_height = ZCL_PRESENT_ZCLASSIC_ICON_HEIGHT,
-        .copy_text = is_qr ? qr_payload :
-            (model.exact_root[0] ? model.exact_root : NULL),
+        .pages = document.windows,
+        .page_count = document.page_count,
     };
-    bool shown = zcl_present_window_run_v1(&request, error, error_cap);
-    if (is_qr) qr_popup_card_free(&qr_card);
-    else zcl_present_model_bitmap_free_v1(&bitmap);
+    struct zcl_present_window_event_v1 event;
+    bool shown = zcl_present_window_run_pages_actions_v1(
+        &pages, document.action_count, NULL, NULL, &event,
+        error, error_cap);
+    ui_present_document_free(&document);
     return shown;
 }
 
