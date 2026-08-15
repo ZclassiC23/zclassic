@@ -125,6 +125,29 @@ static bool confirmation_shape(const struct zcl_present_model_v1 *model)
     return confirm && cancel;
 }
 
+static bool choice_shape(const struct zcl_present_model_v1 *model)
+{
+    if (model->kind != ZCL_PRESENT_MODEL_CHOICE) return true;
+    if (model->item_count == 0 ||
+        model->item_count > ZCL_PRESENT_MODEL_ACTIONS_MAX ||
+        model->action_count != model->item_count)
+        return false;
+    uint32_t selected = 0;
+    for (uint32_t i = 0; i < model->item_count; i++) {
+        const struct zcl_present_model_item_v1 *item = &model->items[i];
+        const struct zcl_present_model_action_v1 *action =
+            &model->actions[i];
+        if (item->kind != ZCL_PRESENT_ITEM_CHOICE ||
+            item->parent_index != ZCL_PRESENT_MODEL_PARENT_NONE ||
+            (item->flags & ~(uint16_t)ZCL_PRESENT_ITEM_SELECTED) != 0 ||
+            action->kind != ZCL_PRESENT_ACTION_SELECT ||
+            !item->id[0] || strcmp(item->id, action->id) != 0)
+            return false;
+        selected += !!(item->flags & ZCL_PRESENT_ITEM_SELECTED);
+    }
+    return selected <= 1u;
+}
+
 static bool qr_shape(const struct zcl_present_model_v1 *model)
 {
     if (model->kind != ZCL_PRESENT_MODEL_QR_CARD) return true;
@@ -302,6 +325,10 @@ bool zcl_present_model_validate_v1(const struct zcl_present_model_v1 *model,
     if (!confirmation_shape(model))
         return model_error(error, error_cap,
                            "confirmation must bind one root and confirm/cancel");
+    if (!choice_shape(model))
+        return model_error(
+            error, error_cap,
+            "choice must bind one to four rows to matching select actions");
     if (!qr_shape(model))
         return model_error(error, error_cap,
                            "QR model must contain ordered payload chunks only");

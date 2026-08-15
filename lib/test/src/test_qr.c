@@ -585,6 +585,67 @@ int test_qr(void)
              !zcl_present_model_validate_v1(&graph, why, sizeof(why)) &&
              strstr(why, "earlier graph node") != NULL);
 
+    struct zcl_present_model_v1 choice;
+    zcl_present_model_init_v1(&choice, ZCL_PRESENT_MODEL_CHOICE);
+    (void)snprintf(choice.request_id, sizeof(choice.request_id),
+                   "proof-choice");
+    (void)snprintf(choice.title, sizeof(choice.title),
+                   "Choose the next proof");
+    choice.item_count = 2;
+    choice.action_count = 2;
+    for (uint32_t i = 0; i < choice.item_count; i++) {
+        choice.items[i].kind = ZCL_PRESENT_ITEM_CHOICE;
+        choice.items[i].status = ZCL_PRESENT_STATUS_INFO;
+        choice.items[i].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+        choice.items[i].flags = i == 0 ? ZCL_PRESENT_ITEM_SELECTED : 0;
+        choice.actions[i].kind = ZCL_PRESENT_ACTION_SELECT;
+        (void)snprintf(choice.items[i].id, sizeof(choice.items[i].id),
+                       "proof-%u", i + 1u);
+        (void)snprintf(choice.actions[i].id, sizeof(choice.actions[i].id),
+                       "proof-%u", i + 1u);
+        (void)snprintf(choice.items[i].label,
+                       sizeof(choice.items[i].label), "%s",
+                       i == 0 ? "Focused story" : "Broader suite");
+        (void)snprintf(choice.items[i].value,
+                       sizeof(choice.items[i].value), "%s",
+                       i == 0 ? "fast exact evidence" : "slower coverage");
+        (void)snprintf(choice.actions[i].label,
+                       sizeof(choice.actions[i].label), "%s",
+                       i == 0 ? "Focused story" : "Broader suite");
+    }
+    struct zcl_present_model_bitmap_v1 choice_pixels = {0};
+    struct zcl_present_model_bitmap_v1 choice_rows_pixels = {0};
+    bool choice_ok = zcl_present_model_render_v1(
+        &choice, &choice_pixels, why, sizeof(why));
+    struct zcl_present_model_v1 choice_rows = choice;
+    choice_rows.kind = ZCL_PRESENT_MODEL_STATUS_CARD;
+    choice_rows.action_count = 0;
+    for (uint32_t i = 0; i < choice_rows.item_count; i++) {
+        choice_rows.items[i].kind = ZCL_PRESENT_ITEM_KEY_VALUE;
+        choice_rows.items[i].flags = 0;
+    }
+    bool choice_rows_ok = zcl_present_model_render_v1(
+        &choice_rows, &choice_rows_pixels, why, sizeof(why));
+    QR_CHECK("choice options render as numbered radios, not generic rows",
+             choice_ok && choice_rows_ok &&
+             memcmp(choice_pixels.pixels, choice_rows_pixels.pixels,
+                    ZCL_PRESENT_MODEL_BITMAP_BYTES) != 0);
+    zcl_present_model_bitmap_free_v1(&choice_pixels);
+    zcl_present_model_bitmap_free_v1(&choice_rows_pixels);
+    char choice_text[ZCL_PRESENT_MODEL_TEXT_MAX];
+    size_t choice_text_len = 0;
+    QR_CHECK("choice text binds selected row and returned action IDs",
+             zcl_present_model_text_all_v1(
+                 &choice, choice_text, sizeof(choice_text), &choice_text_len,
+                 why, sizeof(why)) &&
+             strstr(choice_text, "flags: selected") != NULL &&
+             strstr(choice_text, "id: proof-1") != NULL &&
+             strstr(choice_text, "action 1: select") != NULL);
+    choice.actions[1].id[6] = '9';
+    QR_CHECK("choice/action ID drift fails closed",
+             !zcl_present_model_validate_v1(&choice, why, sizeof(why)) &&
+             strstr(why, "matching select actions") != NULL);
+
     uint8_t model_wire[ZCL_PRESENT_MODEL_WIRE_MAX];
     size_t model_wire_len = 0;
     struct zcl_present_model_v1 decoded;
@@ -1245,6 +1306,41 @@ int test_qr(void)
                     "display-only") == 0);
     zcl_command_reply_free(&graph_reply);
     json_free(&graph_input);
+
+    static const char choice_json[] =
+        "{\"kind\":\"choice\",\"request_id\":\"proof-choice\","
+        "\"title\":\"Choose the next proof\",\"output\":\"text\","
+        "\"items\":[{\"kind\":\"choice\",\"status\":\"info\","
+        "\"id\":\"focused\",\"label\":\"Focused story\","
+        "\"value\":\"fast exact evidence\",\"selected\":true},"
+        "{\"kind\":\"choice\",\"status\":\"neutral\","
+        "\"id\":\"broad\",\"label\":\"Broader suite\","
+        "\"value\":\"slower coverage\"}],\"actions\":["
+        "{\"kind\":\"select\",\"id\":\"focused\","
+        "\"label\":\"Focused story\"},{\"kind\":\"select\","
+        "\"id\":\"broad\",\"label\":\"Broader suite\"}]}";
+    struct json_value choice_input;
+    json_init(&choice_input);
+    QR_CHECK("typed choice parses only matching bounded action IDs",
+             json_read(&choice_input, choice_json,
+                       sizeof(choice_json) - 1u));
+    struct zcl_command_request choice_request = {.input = &choice_input};
+    struct zcl_command_reply choice_reply;
+    zcl_command_reply_init(&choice_reply,
+                           "zcl.app_presentation_show.v1");
+    zcl_native_handle_presentation_show(&choice_request, &choice_reply);
+    const char *typed_choice_text =
+        json_get_str(json_get(&choice_reply.data, "plain_text"));
+    QR_CHECK("agent choice exports the exact display/action mapping",
+             choice_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             typed_choice_text &&
+             strstr(typed_choice_text, "kind: choice") != NULL &&
+             strstr(typed_choice_text, "flags: selected") != NULL &&
+             strstr(typed_choice_text, "action 2: select") != NULL &&
+             strcmp(json_get_str(json_get(&choice_reply.data, "authority")),
+                    "display-only") == 0);
+    zcl_command_reply_free(&choice_reply);
+    json_free(&choice_input);
 
     struct json_value text_delivery;
     json_init(&text_delivery);

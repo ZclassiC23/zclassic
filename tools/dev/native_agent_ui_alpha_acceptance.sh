@@ -304,6 +304,44 @@ UPDATE_HANDOFF_US="$(tail -1 "$HANDOFFS")"
 [ "$HOST_RESTART_TOTAL_US" -le 500000 ] ||
     fail "progress host restart ${HOST_RESTART_TOTAL_US}us exceeds 500000us"
 
+# A choice is a closed one-to-one display/action mapping. The first radio is
+# the initial visible selection and action focus; Tab must visibly move to the
+# second exact option, and Enter returns only that inert action ID.
+CHOICE_MODEL='{"kind":"choice","request_id":"alpha-proof-choice","title":"Alpha proof choice","summary":"HUMAN CHOICE - select one bounded proof path","exact_root":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd","items":[{"kind":"choice","status":"info","id":"focused-proof","label":"Focused story","value":"fast exact evidence","selected":true},{"kind":"choice","status":"neutral","id":"broad-proof","label":"Broader suite","value":"slower coverage"}],"actions":[{"kind":"select","id":"focused-proof","label":"Focused story"},{"kind":"select","id":"broad-proof","label":"Broader suite"}]}'
+CHOICE_REPLY_FILE="$RUN_ROOT/choice.json"
+"$NODE_BIN" app presentation show --input="$CHOICE_MODEL" \
+    >"$CHOICE_REPLY_FILE" 2>&1 &
+CHOICE_PID="$!"
+"$DRIVER_BIN" --title='Alpha proof choice' --expect-count=1 \
+    --timeout-ms=3000 >/dev/null || {
+        kill "$CHOICE_PID" 2>/dev/null || true
+        wait "$CHOICE_PID" 2>/dev/null || true
+        fail "physical choice window did not appear"
+    }
+"$DRIVER_BIN" --title='Alpha proof choice' --key=tab \
+    --expect-pixels-change --timeout-ms=3000 >/dev/null || {
+        kill "$CHOICE_PID" 2>/dev/null || true
+        wait "$CHOICE_PID" 2>/dev/null || true
+        fail "physical choice focus did not advance"
+    }
+"$DRIVER_BIN" --title='Alpha proof choice' --key=enter \
+    --timeout-ms=3000 >/dev/null || {
+        kill "$CHOICE_PID" 2>/dev/null || true
+        wait "$CHOICE_PID" 2>/dev/null || true
+        fail "physical choice action was not delivered"
+    }
+wait "$CHOICE_PID" || fail "interactive choice command failed"
+CHOICE_REPLY="$(<"$CHOICE_REPLY_FILE")"
+assert_display_reply "$CHOICE_REPLY"
+json_has "$CHOICE_REPLY" '"event_return":true' ||
+    fail "bounded choice event did not return"
+json_has "$CHOICE_REPLY" '"action_id":"broad-proof"' ||
+    fail "choice returned an action not bound to the visible second row"
+json_has "$CHOICE_REPLY" '"exact_root":"dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"' ||
+    fail "choice event lost its exact correlation root"
+"$DRIVER_BIN" --title='Alpha proof choice' --expect-count=0 \
+    --timeout-ms=3000 >/dev/null
+
 # An interactive model blocks only for one bounded action. The physical driver
 # clicks inside action zero; the command must return its ID and exact root, but
 # performs no publication or other software effect.
@@ -446,4 +484,4 @@ AFTER_BROWSERS="$(browser_snapshot)"
     fail "browser process set changed during the native journey"
 
 printf '%s\n' \
-    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"corpus_status_instrument\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"visible_action_focus\":true,\"tab_enter_actions\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"
+    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"corpus_status_instrument\":true,\"code_diff\":true,\"deterministic_text_companion\":true,\"headless_text_delivery\":true,\"bounded_keyboard_pagination\":true,\"visible_action_focus\":true,\"tab_enter_actions\":true,\"exact_choice_event\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"

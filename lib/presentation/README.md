@@ -39,6 +39,12 @@ closed parent chain; forward references, cycles, and non-node parents fail
 before pixels or input events exist. The text companion names the same exact
 one-based parent item.
 
+A choice instrument contains one to four radio-style rows and exactly the same
+number of `select` actions. Each row ID must equal the action ID at the same
+index, so the visible numbered option and returned bounded action cannot drift.
+At most one row may describe the initial selection. The event remains an inert
+ID; the full node independently rechecks every fact and policy before acting.
+
 `app/views/src/ui_present_document.c` is the only model-to-window compositor.
 It owns validation, every rendered page, QR specialization, application icon,
 window title, exact copy text, and action count for the duration of one native

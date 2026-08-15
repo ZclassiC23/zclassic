@@ -151,6 +151,27 @@ static int32_t render_graph_node(
     return y + 45;
 }
 
+static int32_t render_choice(
+    struct zcl_present_canvas *canvas,
+    const struct zcl_present_model_item_v1 *item, uint32_t index, int32_t y)
+{
+    bool selected = (item->flags & ZCL_PRESENT_ITEM_SELECTED) != 0;
+    if (selected)
+        zcl_present_canvas_fill_rect(canvas, 36, y, 648u, 42u, PANEL);
+    zcl_present_canvas_fill_rect(canvas, 46, y + 9, 20u, 20u, RULE);
+    zcl_present_canvas_fill_rect(canvas, 49, y + 12, 14u, 14u, PAPER);
+    if (selected)
+        zcl_present_canvas_fill_rect(canvas, 53, y + 16, 6u, 6u,
+                                     status_color(item->status));
+    char number[16];
+    (void)snprintf(number, sizeof(number), "%u", index + 1u);
+    text_fit(canvas, 76, y + 10, number, 13u, 20u, MUTED);
+    text_fit(canvas, 106, y + 6, item->label, 16u, 260u, INK);
+    text_fit(canvas, 382, y + 7, item->value, 14u, 296u, MUTED);
+    zcl_present_canvas_line(canvas, 42, y + 43, 678, y + 43, RULE);
+    return y + 50;
+}
+
 static int32_t render_diff(struct zcl_present_canvas *canvas,
                            const struct zcl_present_model_item_v1 *item,
                            int32_t y)
@@ -198,6 +219,8 @@ static int32_t render_item(struct zcl_present_canvas *canvas,
         return render_timeline_event(canvas, item, y);
     if (item->kind == ZCL_PRESENT_ITEM_GRAPH_NODE)
         return render_graph_node(canvas, model, index, y);
+    if (item->kind == ZCL_PRESENT_ITEM_CHOICE)
+        return render_choice(canvas, item, index, y);
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
@@ -215,6 +238,7 @@ static uint32_t item_height(const struct zcl_present_model_item_v1 *item)
     if (item->kind == ZCL_PRESENT_ITEM_PROGRESS) return 58u;
     if (item->kind == ZCL_PRESENT_ITEM_CHART_POINT) return 43u;
     if (item->kind == ZCL_PRESENT_ITEM_TIMELINE_EVENT) return 48u;
+    if (item->kind == ZCL_PRESENT_ITEM_CHOICE) return 50u;
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
