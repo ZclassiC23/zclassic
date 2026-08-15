@@ -95,6 +95,54 @@ static _Atomic int    g_reactor_configured_max_connections = 0;
 static _Atomic int64_t g_connman_start_us = 0;   /* 0 = connman not started */
 static _Atomic int64_t g_first_peer_us    = 0;   /* delta us; 0 = no peer yet */
 
+/* Optional discovery must never hold shutdown hostage.  The production
+ * incident behind this helper was a healthy discovery thread parked in a
+ * single sleep(300): connman_signal_stop() set g_stop immediately, but
+ * connman_join() could not own the thread again before the pre-durability
+ * shutdown watchdog expired.  Sleep in short monotonic slices instead, so
+ * every nominal multi-minute cadence has a bounded stop latency. */
+static bool connman_wait_for_stop(int seconds)
+{
+    if (atomic_load_explicit(&g_stop, memory_order_acquire))
+        return true;
+    if (seconds <= 0)
+        return false;
+
+    int64_t deadline_us = platform_time_monotonic_us() +
+                          (int64_t)seconds * 1000000LL;
+    while (!atomic_load_explicit(&g_stop, memory_order_acquire)) {
+        int64_t remaining_us = deadline_us - platform_time_monotonic_us();
+        if (remaining_us <= 0)
+            return false;
+
+        /* 100ms is intentionally far below every shutdown stage budget and
+         * cheap for a thread whose ordinary cadence is 3..300 seconds. */
+        if (remaining_us > 100000)
+            remaining_us = 100000;
+        struct timespec slice = {
+            .tv_sec = (time_t)(remaining_us / 1000000LL),
+            .tv_nsec = (long)((remaining_us % 1000000LL) * 1000LL),
+        };
+        while (nanosleep(&slice, &slice) != 0 && errno == EINTR) {
+            if (atomic_load_explicit(&g_stop, memory_order_acquire))
+                return true;
+        }
+    }
+    return true;
+}
+
+#ifdef ZCL_TESTING
+bool connman_wait_for_stop_for_test(int seconds)
+{
+    return connman_wait_for_stop(seconds);
+}
+
+void connman_set_stop_for_test(bool stop)
+{
+    atomic_store_explicit(&g_stop, stop, memory_order_release);
+}
+#endif
+
 void connman_note_first_handshaked_peer(void)
 {
     int64_t start = atomic_load(&g_connman_start_us);
@@ -562,8 +610,9 @@ static void *thread_dns_seed(void *arg)
     /* Add fixed seeds immediately — don't wait */
     seed_from_fixed(cm);
 
-    /* DNS seeds after 3 seconds (not 11) */
-    sleep(3);
+    /* DNS seeds after 3 seconds (not 11). The wait is shutdown-aware: a
+     * healthy node must not turn this optional delay into an unclean stop. */
+    (void)connman_wait_for_stop(3);
     if (!g_stop)
         dns_seed_resolve(cm);
 
@@ -614,8 +663,8 @@ static void *thread_dns_seed(void *arg)
             try_onion_seed_fetch(cm, discovered[i].hostname);
     }
 
-    /* If still no peers after 15s, retry everything */
-    sleep(12);
+    /* If still no peers after 15s, retry everything. */
+    (void)connman_wait_for_stop(12);
     if (!g_stop && cm->manager.num_nodes == 0) {
         printf("No peers found, retrying all discovery methods...\n");
         seed_from_fixed(cm);
@@ -647,7 +696,7 @@ static void *thread_dns_seed(void *arg)
     while (!g_stop) {
         size_t n = cm->manager.num_nodes;
         int interval = (n == 0) ? 30 : (n < 3) ? 60 : 300;
-        sleep(interval);
+        (void)connman_wait_for_stop(interval);
         if (g_stop) break;
         thread_liveness_beat(&g_dns_seed_liveness, (int64_t)++seed_rounds);
         size_t cur = cm->manager.num_nodes;
@@ -2583,22 +2632,9 @@ void connman_free(struct connman *cm)
 {
     if (cm->started)
         connman_stop(cm);
-    /* Serialize peers.dat under addrman.cs — safe even if a detached message
-     * thread is still mutating addrman (cs mutually excludes it). */
+    /* connman_stop() retains and joins every worker before this point, so the
+     * addrman snapshot and teardown below have exclusive lifecycle ownership. */
     connman_save_addrman(cm);
-
-    /* ORDERING GUARD: if the message-cycle thread was detached during
-     * connman_join() (bounded join timed out) it is STILL RUNNING and keeps
-     * dereferencing cm->manager (addrman entries, node array, cs mutexes) on
-     * the addr/inv path. Freeing that state now is a use-after-free (an
-     * addrman_add SIGSEGV after "[shutdown] connman stopped").
-     * The process is terminating, so deliberately leak the network state rather
-     * than free it under the live thread. addrman_add()'s fail-closed guard is
-     * the second line of defense should this branch ever be bypassed. */
-    if (cm->message_thread_detached) {
-        LOG_WARN("connman", "message thread detached and still running — leaking net_manager/addrman/nodes to avoid use-after-free (process terminating)");
-        return;
-    }
 
     net_manager_free(&cm->manager);
     zcl_mutex_destroy(&cm->dht_hint_lock);

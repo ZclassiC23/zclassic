@@ -209,14 +209,6 @@ struct connman {
     bool socket_thread_started;
     bool open_thread_started;
     bool message_thread_started;
-    /* Set when connman_join()'s bounded timed_join on the message-cycle thread
-     * times out and the thread is detached while STILL RUNNING. A detached
-     * message thread keeps dereferencing cm->manager (addrman entries, nodes,
-     * mutexes) on the addr/inv path, so connman_free() must NOT tear that state
-     * down — doing so is a use-after-free (addrman_add
-     * SIGSEGV after "[shutdown] connman stopped"). The process is terminating,
-     * so the state is deliberately leaked instead. */
-    bool message_thread_detached;
     struct p2p_node **deferred_free;
     size_t num_deferred_free;
     size_t deferred_free_cap;
@@ -461,6 +453,10 @@ size_t connman_gather_dial_candidates(struct connman *cm,
                                       size_t max);
 
 #ifdef ZCL_TESTING
+/* Regression seam for the owned discovery-thread shutdown wait. A nominally
+ * long cadence must observe connman_signal_stop() within one 100ms slice. */
+bool connman_wait_for_stop_for_test(int seconds);
+void connman_set_stop_for_test(bool stop);
 /* Pure form of the -connect idle gate. A pending chain-bound DHT hint must
  * keep the dialer awake even after every explicit addnode has a connection. */
 bool connman_connect_only_wait_needed_for_test(bool connect_only,

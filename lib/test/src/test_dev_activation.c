@@ -1260,9 +1260,27 @@ static int test_in_progress_marker_cleared(void)
     return failures;
 }
 
+static int test_null_result_refused(void)
+{
+    int failures = 0;
+    TEST("dev_activation: null result is refused without dereference") {
+        struct dev_activation_request req = {0};
+        struct dev_activation_ops ops = {0};
+        uint8_t generation[32] = {0};
+        ASSERT_EQ(dev_activation_run(&req, &ops, NULL),
+                  DEV_ACTIVATION_E_INTERNAL);
+        ASSERT_EQ(dev_activation_activate_generation(
+                      generation, &req, &ops, NULL),
+                  DEV_ACTIVATION_E_INTERNAL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_dev_activation(void)
 {
     int failures = 0;
+    failures += test_null_result_refused();
     failures += test_happy_activation();
     failures += test_stage_rejects_hash_copy_race();
     failures += test_source_id_required();

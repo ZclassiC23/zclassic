@@ -1,3 +1,5 @@
+#define _DEFAULT_SOURCE
+
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Regression: addrman shutdown-ordering race.
@@ -16,9 +18,10 @@
  * create_entry() and dereferenced the freed am->entries.
  *
  * The fix is defense in depth:
- *  1. ORDERING — connman_join() records message_thread_detached; connman_free()
- *     defers (leaks) net_manager/addrman teardown when the thread is still live,
- *     so the detached thread never touches freed state.
+ *  1. OWNERSHIP — connman_join() never detaches a timed-out worker; it retains
+ *     dependencies until the worker exits. Optional discovery cadence waits
+ *     are stop-aware, so a healthy 300-second wait returns promptly instead
+ *     of forcing a pre-durability watchdog exit.
  *  2. FAIL-CLOSED — addrman_add() guards the SAME condition find_addr() does
  *     (torn-down/invalid addrman) BEFORE locking, returning false rather than
  *     dereferencing freed entries or locking a destroyed mutex.
@@ -131,39 +134,42 @@ static int test_mp_handle_addr_survives_torndown_addrman(void)
     return failures;
 }
 
-/* Layer 1: connman_free() defers net_manager/addrman teardown when the message
- * thread was detached (still running), so the detached thread never dereferences
- * freed state. Assert the addrman is intentionally left intact (leaked). */
-static int test_connman_free_defers_teardown_when_detached(void)
+struct discovery_wait_ctx {
+    _Atomic bool observed_stop;
+};
+
+static void *discovery_wait_worker(void *arg)
+{
+    struct discovery_wait_ctx *ctx = arg;
+    atomic_store(&ctx->observed_stop,
+                 connman_wait_for_stop_for_test(2));
+    return NULL;
+}
+
+/* Layer 1: the exact production failure was a healthy DNS discovery thread in
+ * sleep(300) while shutdown waited in connman_join(). Exercise a nominal wait
+ * in another owned thread, request stop, and prove the thread returns in well
+ * under the two-second cadence instead of sleeping to its deadline. */
+static int test_connman_discovery_wait_is_interruptible(void)
 {
     int failures = 0;
-    TEST("addrman_shutdown_race: connman_free defers addrman teardown when message thread detached") {
-        struct connman cm;
-        memset(&cm, 0, sizeof(cm));
-        addrman_init(&cm.manager.addrman);   /* allocates entries */
-        ASSERT(cm.manager.addrman.entries != NULL);
+    TEST("addrman_shutdown_race: discovery cadence observes stop promptly") {
+        struct discovery_wait_ctx ctx;
+        atomic_init(&ctx.observed_stop, false);
+        connman_set_stop_for_test(false);
 
-        cm.started = false;                  /* skip connman_stop */
-        cm.datadir = NULL;                   /* connman_save_addrman early-returns */
-        cm.message_thread_detached = true;   /* the join-timeout condition */
+        int64_t start_us = platform_time_monotonic_us();
+        pthread_t thread;
+        ASSERT(pthread_create(&thread, NULL, discovery_wait_worker, &ctx) == 0);
+        usleep(50000);
+        connman_signal_stop(NULL);
+        ASSERT(pthread_join(thread, NULL) == 0);
+        int64_t elapsed_us = platform_time_monotonic_us() - start_us;
+        bool observed_stop = atomic_load(&ctx.observed_stop);
+        connman_set_stop_for_test(false);
 
-        /* Must NOT free the addrman — the (simulated) detached thread would
-         * dereference it. entries stays live. */
-        connman_free(&cm);
-        ASSERT(cm.manager.addrman.entries != NULL);
-
-        /* Cleanup the deliberately-leaked state ourselves (no live thread here). */
-        addrman_free(&cm.manager.addrman);
-
-        /* Control: NOT detached -> normal teardown frees the addrman. */
-        struct connman cm2;
-        memset(&cm2, 0, sizeof(cm2));
-        net_manager_init(&cm2.manager);      /* full init so destroy is valid */
-        cm2.started = false;
-        cm2.datadir = NULL;
-        cm2.message_thread_detached = false;
-        connman_free(&cm2);
-        ASSERT(cm2.manager.addrman.entries == NULL);  /* freed on the clean path */
+        ASSERT(observed_stop);
+        ASSERT(elapsed_us >= 0 && elapsed_us < 500000);
 
         PASS();
     } _test_next:;
@@ -205,7 +211,7 @@ int test_addrman_shutdown_race(void)
     int failures = 0;
     failures += test_addrman_add_failclosed_on_teardown();
     failures += test_mp_handle_addr_survives_torndown_addrman();
-    failures += test_connman_free_defers_teardown_when_detached();
+    failures += test_connman_discovery_wait_is_interruptible();
     failures += test_addrman_diagnostic_fails_closed_after_teardown();
     return failures;
 }

@@ -66,6 +66,21 @@ static int t_registry_stress_50_threads(void)
         thread_registry_request_shutdown();
         ASSERT(thread_registry_shutdown_requested());
 
+        /* Returned registry-owned pthreads are no longer live, but they stay
+         * tracked until join_all reaps their pthread resources. This is the
+         * distinction TSan's thread-leak detector requires. */
+        waited_ms = 0;
+        while ((atomic_load_explicit(&ctx.exited, memory_order_relaxed) < N ||
+                thread_registry_live_count() != 0)
+               && waited_ms < 5000) {
+            struct timespec ts = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
+            nanosleep(&ts, NULL);
+            waited_ms += 10;
+        }
+        ASSERT_EQ(atomic_load_explicit(&ctx.exited, memory_order_relaxed), N);
+        ASSERT_EQ(thread_registry_live_count(), 0);
+        ASSERT_EQ(thread_registry_unreaped_count(), N);
+
         /* Join with 10s per-thread budget. Returns the count of
          * stragglers; expect 0 because workers poll at 10 ms. */
         int stragglers = thread_registry_join_all(10);
@@ -73,6 +88,7 @@ static int t_registry_stress_50_threads(void)
         ASSERT_EQ(atomic_load_explicit(&ctx.exited, memory_order_relaxed),
                   N);
         ASSERT_EQ(thread_registry_live_count(), 0);
+        ASSERT_EQ(thread_registry_unreaped_count(), 0);
 
         PASS();
     } _test_next:;
@@ -120,6 +136,58 @@ static int t_registry_owned_join_waits_for_straggler(void)
         ASSERT_EQ(thread_registry_join_all(0), 1);
         thread_registry_join_all_owned();
         ASSERT_EQ(thread_registry_live_count(), 0);
+        ASSERT_EQ(thread_registry_unreaped_count(), 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+struct excluded_worker_ctx {
+    _Atomic bool started;
+    _Atomic bool release;
+};
+
+static void *tr_excluded_worker(void *arg)
+{
+    struct excluded_worker_ctx *ctx = arg;
+    atomic_store_explicit(&ctx->started, true, memory_order_release);
+    while (!atomic_load_explicit(&ctx->release, memory_order_acquire)) {
+        struct timespec ts = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
+        nanosleep(&ts, NULL);
+    }
+    return NULL;
+}
+
+static int t_registry_exact_exclusion_retains_provider(void)
+{
+    int failures = 0;
+    thread_registry_reset_for_test();
+
+    TEST("thread_registry: exact exclusion retains dependency provider") {
+        struct excluded_worker_ctx ctx;
+        atomic_init(&ctx.started, false);
+        atomic_init(&ctx.release, false);
+        pthread_t provider;
+        ASSERT_EQ(thread_registry_spawn("tr-provider", tr_excluded_worker,
+                                        &ctx, &provider), 0);
+        for (int i = 0; i < 100 &&
+                        !atomic_load_explicit(&ctx.started,
+                                              memory_order_acquire); i++) {
+            struct timespec ts = {.tv_sec = 0, .tv_nsec = 10 * 1000 * 1000};
+            nanosleep(&ts, NULL);
+        }
+        ASSERT(atomic_load_explicit(&ctx.started, memory_order_acquire));
+
+        /* The consumer sweep must neither join nor report this exact provider. */
+        ASSERT_EQ(thread_registry_join_all_except(0, &provider, 1), 0);
+        ASSERT_EQ(thread_registry_live_count(), 1);
+        ASSERT_EQ(thread_registry_unreaped_count(), 1);
+
+        atomic_store_explicit(&ctx.release, true, memory_order_release);
+        /* out_tid transferred join ownership to this subsystem fixture. */
+        ASSERT_EQ(pthread_join(provider, NULL), 0);
+        ASSERT_EQ(thread_registry_live_count(), 0);
+        ASSERT_EQ(thread_registry_unreaped_count(), 0);
         PASS();
     } _test_next:;
     return failures;
@@ -137,6 +205,7 @@ static int t_registry_rejects_null_entry(void)
         int rc = thread_registry_spawn("bad", NULL, NULL, NULL);
         ASSERT(rc != 0);
         ASSERT_EQ(thread_registry_live_count(), 0);
+        ASSERT_EQ(thread_registry_unreaped_count(), 0);
         PASS();
     } _test_next:;
     return failures;
@@ -152,5 +221,6 @@ int test_thread_registry(void)
     failures += t_registry_stress_50_threads();
     failures += t_registry_reports_straggler();
     failures += t_registry_owned_join_waits_for_straggler();
+    failures += t_registry_exact_exclusion_retains_provider();
     return failures;
 }
