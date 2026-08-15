@@ -112,6 +112,7 @@
 #include "services/zslp_ledger_backfill_service.h"
 #include "services/state_auditor.h"
 #include "services/telemetry_watch_service.h"
+#include "controllers/rpc_client.h"
 #include "controllers/messaging_controller.h"
 #include "controllers/swap_controller.h"
 #include "controllers/blog_controller.h"
@@ -549,11 +550,7 @@ bool app_init_services(struct app_context *ctx,
                         const struct chain_params *params,
                         struct boot_svc_ctx *svc)
 {
-    /* Timing-only: break p2p_services_start into its synchronous
-     * sub-stages so projection-storage / file-sync / network /
-     * RPC-register / frontend(Tor) / runtime costs are individually
-     * visible. Markers reuse the existing [boot] <phase> Nms idiom on the
-     * same monotonic-ms basis. */
+    /* Report synchronous service sub-stage timing on the monotonic clock. */
     int64_t t_svc = svc_clock_ms();
 
     node_db_sync_catchup_job_init(&svc->catchup_job);
@@ -561,6 +558,8 @@ bool app_init_services(struct app_context *ctx,
     snapsync_init(&svc->snapshot_sync, svc->node_db);
     svc->app_ctx = ctx;
     svc->params = params;
+    /* Bind resident diagnostics to this node before callbacks can run. */
+    node_rpc_client_init(ctx->datadir, ctx->rpc_port);
     tx_mempool_init(svc->mempool, 1000);
     zcl_service_kernel_init(&svc->service_kernel);
     zcl_service_kernel_init(&svc->network_kernel);

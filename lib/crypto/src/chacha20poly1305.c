@@ -5,10 +5,18 @@
 
 #include "crypto/chacha20poly1305.h"
 #include "support/cleanse.h"
+#include "platform/time_compat.h"
+#include "util/log_throttle.h"
 #include "util/safe_alloc.h"
 #include "util/log_macros.h"
 #include <stdlib.h>
 #include <string.h>
+
+/* Authentication failures are attacker-controlled input on encrypted public
+ * transports.  Preserve the first occurrence and a five-minute keepalive with
+ * its cumulative suppressed count; never let a remote sender turn the crypto
+ * primitive into an unbounded disk-log writer. */
+static struct log_throttle g_auth_failure_log = LOG_THROTTLE_INIT;
 
 static uint32_t rotl32(uint32_t v, int n)
 {
@@ -362,10 +370,18 @@ bool chacha20poly1305_decrypt(const uint8_t *ciphertext, size_t clen,
      * return paths are covered. `diff` (the verdict) is preserved. */
     memory_cleanse(poly_key, sizeof(poly_key));
     memory_cleanse(computed_tag, sizeof(computed_tag));
-    if (diff != 0)
-        LOG_FAIL("chacha20poly1305",
-                 "decrypt: Poly1305 tag mismatch (authentication failed): clen=%zu aad_len=%zu",
-                 clen, aad_len);
+    if (diff != 0) {
+        uint64_t suppressed = 0;
+        if (log_throttle_should_emit(
+                &g_auth_failure_log, 1,
+                (int64_t)platform_time_wall_time_t(), 300, &suppressed)) {
+            LOG_WARN("chacha20poly1305",
+                     "decrypt: Poly1305 tag mismatch (authentication failed): "
+                     "clen=%zu aad_len=%zu suppressed=%llu",
+                     clen, aad_len, (unsigned long long)suppressed);
+        }
+        return false;
+    }
 
     /* Decrypt */
     chacha20_encrypt(key, 1, nonce, ciphertext, plen, plaintext);

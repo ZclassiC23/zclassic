@@ -49,6 +49,16 @@ enum cli_flag_kind cli_flag_classify(const char *arg, char *suggest,
  * static internal buffer — read-only, single-threaded CLI process only. */
 const char *cli_flag_client_whitelist_csv(void);
 
+/* Decide whether node mode may auto-add the co-located legacy peer.  A
+ * zclassic.conf whose P2P port equals this process's listening port describes
+ * this node (or a stale/shared config), not an independent oracle.  Dialling
+ * it creates a permanent self-connection retry loop, so equality is an
+ * unconditional refusal.  Pure and exported so the production decision is
+ * covered without starting a daemon. */
+bool args_should_auto_add_local_peer(bool connect_only, int own_p2p_port,
+                                     int legacy_p2p_port,
+                                     bool already_listed);
+
 /* The -help / --help usage text. */
 void print_usage(const char *prog);
 

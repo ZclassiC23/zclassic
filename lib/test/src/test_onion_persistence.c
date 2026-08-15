@@ -342,6 +342,26 @@ static int test_stability_control_args_parse(void)
     return failures;
 }
 
+static int test_auto_local_peer_refuses_self_endpoint(void)
+{
+    int failures = 0;
+    printf("test_auto_local_peer_refuses_self_endpoint: ");
+    bool ok =
+        !args_should_auto_add_local_peer(false, 8033, 8033, false) &&
+        args_should_auto_add_local_peer(false, 8033, 8034, false) &&
+        !args_should_auto_add_local_peer(true, 8033, 8034, false) &&
+        !args_should_auto_add_local_peer(false, 8033, 8034, true) &&
+        !args_should_auto_add_local_peer(false, 0, 8034, false) &&
+        !args_should_auto_add_local_peer(false, 8033, 0, false);
+    if (ok) {
+        printf("OK\n");
+    } else {
+        printf("FAIL\n");
+        failures++;
+    }
+    return failures;
+}
+
 int test_onion_persistence(void)
 {
     int failures = 0;
@@ -354,6 +374,7 @@ int test_onion_persistence(void)
     failures += test_onion_ephemeral_default();
     failures += test_onion_persist_args_parse();
     failures += test_stability_control_args_parse();
+    failures += test_auto_local_peer_refuses_self_endpoint();
 
     printf("Persistent onion identity: %d failures\n", failures);
     return failures;

@@ -961,6 +961,64 @@ int test_zclassicd_oracle(void)
         unsetenv("ZCL_ORACLE_TIP_MARGIN");
     }
 
+    /* Auto mode is advisory: an absent co-located zclassicd must remain
+     * visible in oracle.rpc_errors but must not become a node/supervisor
+     * liveness stall (or launch a debug-bundle storm). */
+    {
+        setenv("ZCL_ORACLE_TIP_MARGIN", "0", 1);
+        zo_build_fixture(AGREE_HEX);
+        struct zclassicd_oracle_config cfg = {
+            .rpc_host = "127.0.0.1",
+            .rpc_port = 1, /* closed by contract in this hermetic fixture */
+            .rpc_user = "u", .rpc_password = "p",
+            .cadence_secs = 1,
+            .heights_per_tick = 1,
+        };
+        ZO_CHECK("init (absent optional oracle)",
+                 zclassicd_oracle_init(&cfg).ok);
+
+        supervisor_reset_for_testing();
+        supervisor_set_tick_ms_for_testing(50);
+        ZO_CHECK("oracle_start (absent optional oracle)",
+                 zclassicd_oracle_start().ok);
+
+        bool saw_error = false;
+        for (int i = 0; i < 60; i++) {
+            struct zclassicd_oracle_stats st;
+            zclassicd_oracle_stats_snapshot(&st);
+            if (st.rpc_errors >= 1) {
+                saw_error = true;
+                break;
+            }
+            struct timespec ts = {
+                .tv_sec = 0, .tv_nsec = 50 * 1000 * 1000,
+            };
+            nanosleep(&ts, NULL);
+        }
+        ZO_CHECK("absent optional oracle records the dependency error",
+                 saw_error);
+
+        struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+        int snap_n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+        const struct supervisor_snapshot *oracle = NULL;
+        for (int i = 0; i < snap_n; i++) {
+            if (strcmp(snaps[i].name, "oracle.zclassicd") == 0) {
+                oracle = &snaps[i];
+                break;
+            }
+        }
+        ZO_CHECK("absent optional oracle contract remains registered",
+                 oracle != NULL);
+        ZO_CHECK("absent optional oracle is idle, never stalled",
+                 oracle && oracle->stall_reason == SUPERVISOR_STALL_NONE &&
+                 oracle->stall_fires == 0 && oracle->idle_ticks >= 1);
+
+        zclassicd_oracle_stop();
+        supervisor_reset_for_testing();
+        zo_teardown();
+        unsetenv("ZCL_ORACLE_TIP_MARGIN");
+    }
+
     {
         /* F-1e: scope/auth machinery deleted. Tests now verify the
          * surviving observability primitives:

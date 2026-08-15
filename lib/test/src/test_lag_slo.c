@@ -242,6 +242,20 @@ static int test_legacy_mirror_backs_off_when_rpc_is_absent(void)
         ASSERT(observed_period >= 2);
         ASSERT(observed_period <= 300);
 
+        struct supervisor_snapshot snaps[SUPERVISOR_CAP];
+        int snap_n = supervisor_snapshot_all(snaps, SUPERVISOR_CAP);
+        const struct supervisor_snapshot *mirror = NULL;
+        for (int i = 0; i < snap_n; i++) {
+            if (strcmp(snaps[i].name, "chain.legacy_mirror") == 0) {
+                mirror = &snaps[i];
+                break;
+            }
+        }
+        ASSERT(mirror != NULL);
+        ASSERT(mirror->stall_reason == SUPERVISOR_STALL_NONE);
+        ASSERT(mirror->stall_fires == 0);
+        ASSERT(mirror->idle_ticks >= 1);
+
         legacy_mirror_sync_stop();
         legacy_mirror_sync_reset_for_test();
         supervisor_reset_for_testing();
