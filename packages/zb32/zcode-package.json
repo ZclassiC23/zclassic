@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zb32/zb32",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zb32/zb32.h",
+    "src/zb32.c",
+    "tests/test_zb32.c",
+    "zcode-package.json"
+  ]
+}
