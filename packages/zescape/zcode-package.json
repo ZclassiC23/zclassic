@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zescape/zescape",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zescape/zescape.h",
+    "src/zescape.c",
+    "tests/test_zescape.c",
+    "zcode-package.json"
+  ]
+}
