@@ -1598,7 +1598,7 @@ static bool seed_load_or_create(const char *path, const char *repo_real,
 
     /* Generate. Resolve the parent against the repo to enforce the
      * never-under-the-repo boundary before writing anything. */
-    char *slash = strrchr(path, '/');
+    const char *slash = strrchr(path, '/');
     if (!slash)
         LOG_FAIL(CENSUS_LOG, "signer seed path %s has no directory", path);
     size_t dir_len = (size_t)(slash - path);
