@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zpool/zpool",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zpool/zpool.h",
+    "src/zpool.c",
+    "tests/test_zpool.c",
+    "zcode-package.json"
+  ]
+}
