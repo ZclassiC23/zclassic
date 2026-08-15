@@ -150,3 +150,5 @@ package zpuny/zpuny | root 1fea52d0ebae0a62a3194f93e667a413736d258b4fceb05c01a0c
 package ztemplate/ztemplate | root e37ff36394c939a37d0a4e59fb731d86b86f48dfb175c28d2803a559f3396456 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zintern/zintern | root 0718d979a69f62863414f62aac3665b020ee0e72a74c37cd145800d9f0ac4ccf | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zu256/zu256 | root aceed4bddfb4a595f4a141fce141291767d73453a5208b9cc1da7b7815b359f4 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package znetstring/znetstring | root d13b56d9b13af4cda54baaf9b3e7c6a8ec941145eb72485c6e66be7c85d0412e | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zmd5/zmd5 | root 2dc59d540076085aac2ff2178e40b6f16c1940bc1d326ac7f9a9a31eda4570ed | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT

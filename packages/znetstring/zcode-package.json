@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "znetstring/znetstring",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/znetstring/znetstring.h",
+    "src/znetstring.c",
+    "tests/test_znetstring.c",
+    "zcode-package.json"
+  ]
+}
