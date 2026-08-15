@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "name": "zscrypt/zscrypt",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "name": "zsha256/zsha256",
+      "root": "a39759e55a6346f259d1da3fe36519c341aae46de6631bae7c26645d2319a047",
+      "semver": "0.1.0"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zscrypt/zscrypt.h",
+    "src/zscrypt.c",
+    "tests/test_zscrypt.c",
+    "zcode-package.json"
+  ]
+}
