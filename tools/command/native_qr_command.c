@@ -57,10 +57,12 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
     struct ui_present_host_result host;
     struct zcl_result launched = ui_present_host_submit(&model, false, &host);
     bool cold_fallback = false;
+#if !defined(__linux__)
     if (!launched.ok) {
         launched = ui_present_model_launch(&model);
         cold_fallback = launched.ok;
     }
+#endif
     int64_t handoff_us = platform_time_monotonic_us() - started_us;
     if (!launched.ok) {
         nqr_fail(reply, "QR_LAUNCH_FAILED", launched.message);
@@ -152,10 +154,12 @@ void zcl_native_present_model(
     struct zcl_result launched = ui_present_host_submit(
         model, wait_for_event, &host);
     bool cold_fallback = false;
+#if !defined(__linux__)
     if (!launched.ok && !wait_for_event) {
         launched = ui_present_model_launch(model);
         cold_fallback = launched.ok;
     }
+#endif
     int64_t handoff_us = platform_time_monotonic_us() - started_us;
     if (!launched.ok) {
         np_fail(reply, "PRESENTATION_LAUNCH_FAILED", launched.message, leaf);

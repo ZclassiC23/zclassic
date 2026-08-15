@@ -30,6 +30,7 @@ BETA_VISUAL_PLAN_IDENTITY=""
 BETA_VISUAL_BEFORE_SOURCE_ROOT=""
 BETA_VISUAL_CANDIDATE_SOURCE_ROOT=""
 BETA_VISUAL_CHANGED_PATH=""
+BETA_VISUAL_CORE_PACKAGE_CONCURRENT=false
 BETA_VISUAL_ENABLED=false
 
 beta_browser_snapshot() {
@@ -133,7 +134,7 @@ beta_visual_confirm_publication() {
 }
 
 beta_visual_reproduction() {
-    local role="$1" action="$2" phase="$3" reply
+    local role="$1" action="$2" phase="$3" reply proof_state
     [ "$BETA_VISUAL_ENABLED" = true ] || return 0
     reply="$(beta_native "$role" app presentation reproduction \
         --input="{\"action_id\":\"$action\"}")"
@@ -141,6 +142,17 @@ beta_visual_reproduction() {
     [ "$(printf '%s' "$reply" | beta_jget \
         'd["data"].get("action_id","")')" = "$action" ] ||
         beta_die "reproduction view lost its exact action identity"
+    proof_state="$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("proof_state","")')"
+    [ -n "${PIDS[$role]:-}" ] && kill -0 "${PIDS[$role]}" 2>/dev/null ||
+        beta_die "native reproduction view outlived its full-node fact owner"
+    if [ "$phase" = ready ]; then
+        case "$proof_state" in
+            REPRODUCED|READY_FOR_ACCEPTANCE)
+                BETA_VISUAL_CORE_PACKAGE_CONCURRENT=true ;;
+            *) beta_die "ready reproduction view lacked completed package evidence: $reply" ;;
+        esac
+    fi
     printf '%s\n' "reproduction-$phase" \
         >>"$DHT_WORK/native-ui-agent-requests"
 }
@@ -1189,6 +1201,7 @@ if [ "$BETA_VISUAL_ENABLED" = true ]; then
     [ "$BETA_VISUAL_BEFORE_SOURCE_ROOT" != \
         "$BETA_VISUAL_CANDIDATE_SOURCE_ROOT" ] &&
     [ "$BETA_VISUAL_CHANGED_PATH" = src/note.c ] &&
+    [ "$BETA_VISUAL_CORE_PACKAGE_CONCURRENT" = true ] &&
     [ "$BETA_VISUAL_PLAN_IDENTITY" = "$BETA_V2_RELEASE_ID" ] ||
         beta_die "native journey action accounting or exact plan binding drifted"
 fi

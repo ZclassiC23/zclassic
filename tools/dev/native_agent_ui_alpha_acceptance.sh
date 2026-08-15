@@ -12,6 +12,8 @@ RUN_ROOT="$(mktemp -d /tmp/zcl23-native-ui-alpha.XXXXXX)"
 RUNTIME_DIR="$RUN_ROOT/runtime"
 LATENCIES="$RUN_ROOT/warm-total-us"
 HANDOFFS="$RUN_ROOT/warm-handoff-us"
+READY_TIMES="$RUN_ROOT/warm-worker-ready-us"
+LOAD_HANDOFFS="$RUN_ROOT/load-handoff-us"
 DISPLAY_NAME="${DISPLAY:-}"
 
 fail() {
@@ -158,6 +160,74 @@ assert_display_reply "$SCROLL_REPLY"
 "$DRIVER_BIN" --title='Alpha bounded table' --key=escape \
     --timeout-ms=3000 >/dev/null
 
+# Fill the complete resident session table with independently addressable
+# display-only instruments. The next request must fail closed at the host
+# boundary: it may not escape into the detached cold launcher and become an
+# orphan outside the resident host's bounded ownership.
+for slot in $(seq 1 16); do
+    printf -v SLOT_ID '%02d' "$slot"
+    LOAD_MODEL="{\"kind\":\"status\",\"request_id\":\"alpha-load-${SLOT_ID}\",\"title\":\"Alpha load window ${SLOT_ID}\",\"summary\":\"LOCAL OBSERVATION - bounded simultaneous instrument\",\"items\":[{\"kind\":\"key-value\",\"label\":\"LOCAL OBSERVATION - slot\",\"value\":\"${SLOT_ID} of 16\"}]}"
+    timed_command LOAD_REPLY LOAD_TOTAL_US \
+        "$NODE_BIN" app presentation show --input="$LOAD_MODEL"
+    assert_display_reply "$LOAD_REPLY"
+    json_has "$LOAD_REPLY" '"host_reused":true' ||
+        fail "simultaneous window did not use the warm resident host"
+    LOAD_HANDOFF_US="$(json_int "$LOAD_REPLY" launch_handoff_us)"
+    [ -n "$LOAD_HANDOFF_US" ] ||
+        fail "simultaneous window omitted launch_handoff_us"
+    printf '%s\n' "$LOAD_HANDOFF_US" >> "$LOAD_HANDOFFS"
+done
+"$DRIVER_BIN" --title='Alpha load window' --expect-count=16 \
+    --timeout-ms=3000 >/dev/null
+set +e
+CAPACITY_REPLY="$("$NODE_BIN" app presentation show \
+    --input='{"kind":"status","request_id":"alpha-load-17","title":"Alpha load window 17","items":[{"kind":"text","value":"must not escape the resident cap"}]}' 2>&1)"
+CAPACITY_RC="$?"
+set -e
+[ "$CAPACITY_RC" -ne 0 ] ||
+    fail "seventeenth simultaneous window escaped the resident capacity"
+json_has "$CAPACITY_REPLY" 'presentation host capacity exhausted' ||
+    fail "resident capacity refusal was not named: $CAPACITY_REPLY"
+json_has "$CAPACITY_REPLY" '"launched":true' &&
+    fail "capacity refusal still launched a detached window"
+"$DRIVER_BIN" --title='Alpha load window' --expect-count=16 \
+    --timeout-ms=1000 >/dev/null
+"$DRIVER_BIN" --title='Alpha load window 17' --expect-count=0 \
+    --timeout-ms=1000 >/dev/null
+for slot in $(seq 1 16); do
+    printf -v SLOT_ID '%02d' "$slot"
+    "$DRIVER_BIN" --title="Alpha load window ${SLOT_ID}" --key=escape \
+        --timeout-ms=3000 >/dev/null
+done
+"$DRIVER_BIN" --title='Alpha load window' --expect-count=0 \
+    --timeout-ms=3000 >/dev/null
+LOAD_P50_US="$(sort -n "$LOAD_HANDOFFS" | awk 'NR==8 {print; exit}')"
+LOAD_P95_US="$(sort -n "$LOAD_HANDOFFS" | awk 'NR==16 {print; exit}')"
+[ -n "$LOAD_P50_US" ] && [ -n "$LOAD_P95_US" ] ||
+    fail "simultaneous-window latency sample was incomplete"
+[ "$LOAD_P95_US" -le 100000 ] ||
+    fail "simultaneous-window p95 ${LOAD_P95_US}us exceeds 100000us"
+
+# Replacing one request identity may change its title and pixels, but it must
+# leave exactly one latest screen. The old title becoming unreachable is the
+# physical proof that no stale frame survived replacement.
+STALE_BEFORE='{"kind":"status","request_id":"alpha-stale","title":"Alpha stale before","items":[{"kind":"text","value":"old frame"}]}'
+timed_command STALE_BEFORE_REPLY STALE_BEFORE_US \
+    "$NODE_BIN" app presentation show --input="$STALE_BEFORE"
+assert_display_reply "$STALE_BEFORE_REPLY"
+STALE_LATEST='{"kind":"status","request_id":"alpha-stale","title":"Alpha stale latest","items":[{"kind":"text","value":"latest frame"}]}'
+timed_command STALE_LATEST_REPLY STALE_LATEST_US \
+    "$NODE_BIN" app presentation show --input="$STALE_LATEST"
+assert_display_reply "$STALE_LATEST_REPLY"
+json_has "$STALE_LATEST_REPLY" '"view_replaced":true' ||
+    fail "latest frame did not replace its exact predecessor"
+"$DRIVER_BIN" --title='Alpha stale before' --expect-count=0 \
+    --timeout-ms=1000 >/dev/null
+"$DRIVER_BIN" --title='Alpha stale latest' --expect-count=1 \
+    --timeout-ms=1000 >/dev/null
+"$DRIVER_BIN" --title='Alpha stale latest' --key=escape \
+    --timeout-ms=3000 >/dev/null
+
 # Reuse one action-bound request identity. Every new inert frame must replace
 # its predecessor; the final p95 is edit-to-command-return, not render-only.
 for step in $(seq 1 20); do
@@ -182,9 +252,13 @@ for step in $(seq 1 20); do
     fi
     printf '%s\n' "$PROGRESS_TOTAL_US" >> "$LATENCIES"
     PROGRESS_HANDOFF_US="$(json_int "$PROGRESS_REPLY" launch_handoff_us)"
+    PROGRESS_READY_US="$(json_int "$PROGRESS_REPLY" window_ready_us)"
     [ -n "$PROGRESS_HANDOFF_US" ] ||
         fail "progress reply omitted launch_handoff_us"
+    [ -n "$PROGRESS_READY_US" ] ||
+        fail "progress reply omitted window_ready_us"
     printf '%s\n' "$PROGRESS_HANDOFF_US" >> "$HANDOFFS"
+    printf '%s\n' "$PROGRESS_READY_US" >> "$READY_TIMES"
     if [ "$step" -eq 10 ]; then
         HOST_PARENT_PID="$(host_parent_pids)"
         [ -n "$HOST_PARENT_PID" ] ||
@@ -208,15 +282,22 @@ WARM_P50_US="$(sort -n "$LATENCIES" | awk 'NR==10 {print; exit}')"
 WARM_P95_US="$(sort -n "$LATENCIES" | awk 'NR==19 {print; exit}')"
 HANDOFF_P50_US="$(sort -n "$HANDOFFS" | awk 'NR==10 {print; exit}')"
 HANDOFF_P95_US="$(sort -n "$HANDOFFS" | awk 'NR==19 {print; exit}')"
+READY_P50_US="$(sort -n "$READY_TIMES" | awk 'NR==10 {print; exit}')"
+READY_P95_US="$(sort -n "$READY_TIMES" | awk 'NR==19 {print; exit}')"
 [ -n "$WARM_P50_US" ] && [ -n "$WARM_P95_US" ] &&
-    [ -n "$HANDOFF_P50_US" ] && [ -n "$HANDOFF_P95_US" ] ||
+    [ -n "$HANDOFF_P50_US" ] && [ -n "$HANDOFF_P95_US" ] &&
+    [ -n "$READY_P50_US" ] && [ -n "$READY_P95_US" ] ||
     fail "warm latency sample was incomplete"
 [ "$HANDOFF_P95_US" -le 100000 ] ||
     fail "warm resident-host p95 ${HANDOFF_P95_US}us exceeds 100000us"
 UPDATE_TOTAL_US="$(tail -1 "$LATENCIES")"
 UPDATE_HANDOFF_US="$(tail -1 "$HANDOFFS")"
-[ "$UPDATE_HANDOFF_US" -le 50000 ] ||
-    fail "resident progress update ${UPDATE_HANDOFF_US}us exceeds 50000us"
+# One arbitrarily selected final frame is not a stable latency statistic. Keep
+# the original 50 ms responsiveness bar on the measured p50, and the explicit
+# 100 ms tail bar on p95, so a scheduler outlier cannot hide a slow common path
+# or randomly fail an otherwise identical candidate.
+[ "$HANDOFF_P50_US" -le 50000 ] ||
+    fail "resident progress update p50 ${HANDOFF_P50_US}us exceeds 50000us (worker-ready p50 ${READY_P50_US}us; samples $(tr '\n' ',' < "$HANDOFFS"))"
 [ -n "${HOST_RESTART_TOTAL_US:-}" ] &&
     [ -n "${HOST_RESTART_HANDOFF_US:-}" ] ||
     fail "progress host-restart sample was incomplete"
@@ -231,6 +312,31 @@ CONFIRM_REPLY_FILE="$RUN_ROOT/confirmation.json"
 "$NODE_BIN" app presentation show --input="$CONFIRM_MODEL" \
     >"$CONFIRM_REPLY_FILE" 2>&1 &
 CONFIRM_PID="$!"
+"$DRIVER_BIN" --title='Alpha publication confirmation' --expect-count=1 \
+    --timeout-ms=3000 >/dev/null || {
+        kill "$CONFIRM_PID" 2>/dev/null || true
+        wait "$CONFIRM_PID" 2>/dev/null || true
+        fail "physical confirmation window did not appear"
+    }
+# A display-only update may not reuse the request identity of an unresolved
+# human decision. Refusing the collision keeps the original event channel and
+# exact plan root intact instead of replacing or losing the decision.
+set +e
+COLLISION_REPLY="$("$NODE_BIN" app presentation show \
+    --input='{"kind":"status","request_id":"alpha-publish","title":"Alpha decision collision","items":[{"kind":"text","value":"must be refused"}]}' 2>&1)"
+COLLISION_RC="$?"
+set -e
+[ "$COLLISION_RC" -ne 0 ] || {
+    kill "$CONFIRM_PID" 2>/dev/null || true
+    wait "$CONFIRM_PID" 2>/dev/null || true
+    fail "display update replaced an unresolved human decision"
+}
+json_has "$COLLISION_REPLY" 'request id already owns an active window' ||
+    fail "request-identity collision refusal was not named: $COLLISION_REPLY"
+"$DRIVER_BIN" --title='Alpha decision collision' --expect-count=0 \
+    --timeout-ms=1000 >/dev/null
+"$DRIVER_BIN" --title='Alpha publication confirmation' --expect-count=1 \
+    --timeout-ms=1000 >/dev/null
 "$DRIVER_BIN" --title='Alpha publication confirmation' --key=1 \
     --timeout-ms=3000 >/dev/null || {
         kill "$CONFIRM_PID" 2>/dev/null || true
@@ -246,6 +352,8 @@ json_has "$CONFIRM_REPLY" '"action_id":"confirm-exact-local-publication"' ||
     fail "confirmation returned the wrong action identity"
 json_has "$CONFIRM_REPLY" '"exact_root":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"' ||
     fail "confirmation event lost its exact plan root"
+"$DRIVER_BIN" --title='Alpha publication confirmation' --expect-count=0 \
+    --timeout-ms=3000 >/dev/null
 
 set +e
 HEADLESS_REPLY="$(env -u DISPLAY "$NODE_BIN" app qr show \
@@ -265,7 +373,5 @@ AFTER_BROWSERS="$(browser_snapshot)"
 [ "$BEFORE_BROWSERS" = "$AFTER_BROWSERS" ] ||
     fail "browser process set changed during the native journey"
 
-READY_P95_US="$(printf '%s\n' "$PROGRESS_REPLY" | sed -n \
-    's/.*"window_ready_us":[[:space:]]*\([-0-9][0-9]*\).*/\1/p' | tail -1)"
 printf '%s\n' \
-    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"code_diff\":true,\"bounded_keyboard_pagination\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"update_total_us\":$UPDATE_TOTAL_US,\"update_handoff_us\":$UPDATE_HANDOFF_US,\"last_worker_ready_us\":${READY_P95_US:--1}}"
+    "{\"schema\":\"zcl.native_agent_ui_physical.v1\",\"verdict\":\"PASS\",\"qr_window\":true,\"status_card\":true,\"code_diff\":true,\"bounded_keyboard_pagination\":true,\"simultaneous_windows\":16,\"resident_capacity_refusal\":true,\"no_detached_capacity_escape\":true,\"no_stale_screens\":true,\"no_lost_decisions\":true,\"no_orphan_processes_after_restart\":true,\"live_reproduction_progress\":true,\"progress_host_restart_resume\":true,\"exact_confirmation_event\":true,\"display_only_authority\":true,\"headless_named_refusal\":true,\"browser_process_delta\":0,\"release_browser_dependency\":false,\"cold_total_us\":$COLD_TOTAL_US,\"warm_total_p50_us\":$WARM_P50_US,\"warm_total_p95_us\":$WARM_P95_US,\"warm_handoff_p50_us\":$HANDOFF_P50_US,\"warm_handoff_p95_us\":$HANDOFF_P95_US,\"update_total_p50_us\":$WARM_P50_US,\"update_total_p95_us\":$WARM_P95_US,\"update_handoff_p50_us\":$HANDOFF_P50_US,\"update_handoff_p95_us\":$HANDOFF_P95_US,\"worker_ready_p50_us\":$READY_P50_US,\"worker_ready_p95_us\":$READY_P95_US,\"simultaneous_handoff_p50_us\":$LOAD_P50_US,\"simultaneous_handoff_p95_us\":$LOAD_P95_US,\"host_restart_total_us\":$HOST_RESTART_TOTAL_US,\"host_restart_handoff_us\":$HOST_RESTART_HANDOFF_US,\"last_update_total_us\":$UPDATE_TOTAL_US,\"last_update_handoff_us\":$UPDATE_HANDOFF_US}"

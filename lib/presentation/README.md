@@ -42,11 +42,20 @@ nonce, and forks disposable window workers from one warm same-binary parent.
 It never opens the canonical datadir. QR cards and renderer-neutral models share this transport without
 changing their separate deterministic compositors. The first software blit is
 acknowledged separately from a later numbered action/dismissal event.
+One 16-slot table owns every display-only and interactive worker. Capacity
+exhaustion is a named refusal on Linux; it cannot escape into the detached
+cold launcher. An unresolved interactive request ID is busy and cannot be
+replaced by a display update, so the original exact decision channel remains
+intact.
 Non-interactive models with the same bounded request ID replace only their
 prior display worker, so an agent can publish live reproduction/progress
 frames without accumulating windows or putting authority in the visual
-process. Child ownership is reaped before replacement, preventing PID reuse
-from redirecting the replacement signal. Linux display workers also bind a
+process. The replacement worker renders first, then the host retires the old
+owned worker before acknowledging the new frame. This keeps display-server
+teardown outside the new window's creation path without acknowledging while a
+stale prior frame remains. Child ownership is reaped before replacement,
+preventing PID reuse from redirecting the replacement signal. Linux display
+workers also bind a
 parent-death signal before creating a window, so a crashed resident host cannot
 leave orphan instruments behind; the authoritative caller can resubmit the
 same exact request ID and latest inert progress frame to a fresh host. The event
@@ -54,8 +63,8 @@ carries no authority: the calling
 node or agent command must recheck the exact root, authentication, capability,
 local policy, and plan/commit state. This early-dispatch host code path opens
 no Internet socket or canonical datadir and calls no wallet, package execution,
-publication, deployment, or consensus surface. Other
-desktop platforms retain the existing same-binary native cold path while the
+publication, deployment, or consensus surface. Other desktop platforms retain
+the existing same-binary native cold path while the
 resident transport is ported; the renderer/model library itself remains
 cross-linked on Linux, Windows, and macOS.
 
