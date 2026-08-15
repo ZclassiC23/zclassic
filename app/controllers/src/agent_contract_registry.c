@@ -121,6 +121,10 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
       "publication_status",
       "zclassic23 app presentation publication-status --input='<exact-package-identities>'",
       "show local commit, pointer, provider, peer discovery, and exact peer fetch as separate evidence stages"),
+    DIRECT_COMMAND("agentinterface.visual_instruments", 8,
+      "bounded_display",
+      "zclassic23 app presentation show --input='<bounded-inert-model>'",
+      "show agent-supplied tables, charts, timelines, graphs, choices, or forms; use typed instruments for node-owned facts and confirmations"),
 
     DIRECT_COMMAND("agentmap.telemetry", 1, "compact_status",
       "zclassic23 status",

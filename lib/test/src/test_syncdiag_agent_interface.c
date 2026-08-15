@@ -112,6 +112,9 @@ int syncdiag_cases_agent_interface(void)
         const struct json_value *visual_publication =
             find_object_with_str(visual_instruments, "name",
                                  "publication_status");
+        const struct json_value *visual_bounded =
+            find_object_with_str(visual_instruments, "name",
+                                 "bounded_display");
         const struct json_value *availability =
             json_get(&interface, "runtime_availability");
         const struct json_value *availability_methods =
@@ -225,7 +228,7 @@ int syncdiag_cases_agent_interface(void)
             strcmp(json_get_str(json_get(development_loop, "database")),
                    "zclassic23 dbquery <SELECT>") == 0;
         ok = ok && visual_instruments &&
-            json_size(visual_instruments) == 7;
+            json_size(visual_instruments) == 8;
         ok = ok && visual_qr &&
             strcmp(json_get_str(json_get(visual_qr, "native")),
                    "zclassic23 app qr show '<bounded-payload>'") == 0;
@@ -247,6 +250,9 @@ int syncdiag_cases_agent_interface(void)
         ok = ok && visual_publication &&
             strstr(json_get_str(json_get(visual_publication, "native")),
                    "app presentation publication-status") != NULL;
+        ok = ok && visual_bounded &&
+            strstr(json_get_str(json_get(visual_bounded, "native")),
+                   "app presentation show") != NULL;
         ok = ok && visual_loop &&
             strcmp(json_get_str(json_get(visual_loop, "schema")),
                    "zcl.agent_visual_loop.v1") == 0;
@@ -258,7 +264,7 @@ int syncdiag_cases_agent_interface(void)
         ok = ok && visual_loop &&
             strstr(json_get_str(json_get(visual_loop,
                                          "generic_model_policy")),
-                   "not the configured-agent path") != NULL;
+                   "only for inert agent-supplied visuals") != NULL;
         ok = ok && machine &&
             strcmp(json_get_str(json_get(machine, "schema")),
                    "zcl.agent_machine_contract.v2") == 0;

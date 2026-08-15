@@ -269,7 +269,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv_str(&visual_loop, "authority_rule",
                      "the full node owns facts and independently rechecks every effect; the visual host owns none");
     json_push_kv_str(&visual_loop, "generic_model_policy",
-                     "app presentation show is not the configured-agent path for privileged facts or confirmations");
+                     "app presentation show is only for inert agent-supplied visuals; node-owned facts and confirmations use their typed instruments");
     json_push_kv_bool(&visual_loop, "browser_required", false);
     json_push_kv_bool(&visual_loop, "python_required", false);
     json_push_kv(result, "native_visual_loop", &visual_loop);
