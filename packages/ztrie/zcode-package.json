@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "ztrie/ztrie",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/ztrie/ztrie.h",
+    "src/ztrie.c",
+    "tests/test_ztrie.c",
+    "zcode-package.json"
+  ]
+}

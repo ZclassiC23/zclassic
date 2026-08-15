@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zintern/zintern",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zintern/zintern.h",
+    "src/zintern.c",
+    "tests/test_zintern.c",
+    "zcode-package.json"
+  ]
+}

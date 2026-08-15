@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zpuny/zpuny",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zpuny/zpuny.h",
+    "src/zpuny.c",
+    "tests/test_zpuny.c",
+    "zcode-package.json"
+  ]
+}
