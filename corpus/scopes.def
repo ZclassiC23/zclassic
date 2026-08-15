@@ -117,3 +117,4 @@ package zpct/zpct | root 2167080f5f6b0557bf601bfa69cac99efa0c4c79e84f8348c1e52b6
 package ztoml/ztoml | root ded95915d3787c38a6a84a5881c29cebc644c432353d6e45e9a65836a3e7c109 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zlev/zlev | root d3bf2491747a8f8a0d4d081bb25137f6ada843da4d338f00fe9a1eed921dd0f3 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zring/zring | root 11e0d020646d281f10daba4775fb7f2736e4a561caa5d15f30f90ff704e6afcc | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zhtml/zhtml | root 49b8c06f6b3d3fe1d9c3e156c608d38e6faa6f061d899381826d3f69c147e0de | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
