@@ -102,6 +102,19 @@ static int32_t render_chart_point(
     return y + 43;
 }
 
+static int32_t render_timeline_event(
+    struct zcl_present_canvas *canvas,
+    const struct zcl_present_model_item_v1 *item, int32_t y)
+{
+    struct zcl_present_color accent = status_color(item->status);
+    zcl_present_canvas_line(canvas, 54, y, 54, y + 47, RULE);
+    zcl_present_canvas_fill_rect(canvas, 48, y + 5, 13u, 13u, PAPER);
+    zcl_present_canvas_fill_rect(canvas, 51, y + 8, 7u, 7u, accent);
+    text_fit(canvas, 76, y + 2, item->label, 15u, 242u, INK);
+    text_fit(canvas, 332, y + 2, item->value, 14u, 346u, MUTED);
+    return y + 48;
+}
+
 static int32_t render_diff(struct zcl_present_canvas *canvas,
                            const struct zcl_present_model_item_v1 *item,
                            int32_t y)
@@ -144,6 +157,8 @@ static int32_t render_item(struct zcl_present_canvas *canvas,
         return render_progress(canvas, item, y);
     if (item->kind == ZCL_PRESENT_ITEM_CHART_POINT)
         return render_chart_point(canvas, item, y);
+    if (item->kind == ZCL_PRESENT_ITEM_TIMELINE_EVENT)
+        return render_timeline_event(canvas, item, y);
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)
@@ -160,6 +175,7 @@ static uint32_t item_height(const struct zcl_present_model_item_v1 *item)
 {
     if (item->kind == ZCL_PRESENT_ITEM_PROGRESS) return 58u;
     if (item->kind == ZCL_PRESENT_ITEM_CHART_POINT) return 43u;
+    if (item->kind == ZCL_PRESENT_ITEM_TIMELINE_EVENT) return 48u;
     if (item->kind == ZCL_PRESENT_ITEM_DIFF_CONTEXT ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_ADD ||
         item->kind == ZCL_PRESENT_ITEM_DIFF_REMOVE)

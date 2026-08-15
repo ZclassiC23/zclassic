@@ -494,6 +494,44 @@ int test_qr(void)
              !zcl_present_model_validate_v1(&chart, why, sizeof(why)) &&
              strstr(why, "chart-point fraction") != NULL);
 
+    struct zcl_present_model_v1 timeline;
+    zcl_present_model_init_v1(&timeline, ZCL_PRESENT_MODEL_TIMELINE);
+    (void)snprintf(timeline.request_id, sizeof(timeline.request_id),
+                   "proof-timeline");
+    (void)snprintf(timeline.title, sizeof(timeline.title),
+                   "Exact proof sequence");
+    timeline.item_count = 2;
+    for (uint32_t i = 0; i < timeline.item_count; i++) {
+        timeline.items[i].kind = ZCL_PRESENT_ITEM_TIMELINE_EVENT;
+        timeline.items[i].status = i == 0 ? ZCL_PRESENT_STATUS_INFO
+                                          : ZCL_PRESENT_STATUS_GREEN;
+        timeline.items[i].parent_index = ZCL_PRESENT_MODEL_PARENT_NONE;
+        (void)snprintf(timeline.items[i].id,
+                       sizeof(timeline.items[i].id), "event-%u", i);
+        (void)snprintf(timeline.items[i].label,
+                       sizeof(timeline.items[i].label), "%s",
+                       i == 0 ? "Candidate observed" : "Receipt verified");
+        (void)snprintf(timeline.items[i].value,
+                       sizeof(timeline.items[i].value), "%s",
+                       i == 0 ? "source epoch exact" : "independent signer");
+    }
+    struct zcl_present_model_bitmap_v1 timeline_pixels = {0};
+    struct zcl_present_model_bitmap_v1 row_pixels = {0};
+    bool timeline_ok = zcl_present_model_render_v1(
+        &timeline, &timeline_pixels, why, sizeof(why));
+    struct zcl_present_model_v1 rows = timeline;
+    rows.kind = ZCL_PRESENT_MODEL_STATUS_CARD;
+    rows.items[0].kind = ZCL_PRESENT_ITEM_KEY_VALUE;
+    rows.items[1].kind = ZCL_PRESENT_ITEM_KEY_VALUE;
+    bool rows_ok = zcl_present_model_render_v1(
+        &rows, &row_pixels, why, sizeof(why));
+    QR_CHECK("timeline events render as a native sequence, not generic rows",
+             timeline_ok && rows_ok &&
+             memcmp(timeline_pixels.pixels, row_pixels.pixels,
+                    ZCL_PRESENT_MODEL_BITMAP_BYTES) != 0);
+    zcl_present_model_bitmap_free_v1(&timeline_pixels);
+    zcl_present_model_bitmap_free_v1(&row_pixels);
+
     uint8_t model_wire[ZCL_PRESENT_MODEL_WIRE_MAX];
     size_t model_wire_len = 0;
     struct zcl_present_model_v1 decoded;
@@ -1093,6 +1131,36 @@ int test_qr(void)
                     "display-only") == 0);
     zcl_command_reply_free(&chart_reply);
     json_free(&chart_input);
+
+    static const char timeline_json[] =
+        "{\"kind\":\"timeline\",\"request_id\":\"proof-timeline\","
+        "\"title\":\"Exact proof sequence\",\"output\":\"text\","
+        "\"items\":[{\"kind\":\"timeline-event\",\"status\":\"green\","
+        "\"id\":\"receipt\",\"label\":\"Receipt verified\","
+        "\"value\":\"independent signer\"}]}";
+    struct json_value timeline_input;
+    json_init(&timeline_input);
+    QR_CHECK("typed timeline request parses as one bounded model",
+             json_read(&timeline_input, timeline_json,
+                       sizeof(timeline_json) - 1u));
+    struct zcl_command_request timeline_request = {.input = &timeline_input};
+    struct zcl_command_reply timeline_reply;
+    zcl_command_reply_init(&timeline_reply,
+                           "zcl.app_presentation_show.v1");
+    zcl_native_handle_presentation_show(&timeline_request, &timeline_reply);
+    const char *typed_timeline_text =
+        json_get_str(json_get(&timeline_reply.data, "plain_text"));
+    QR_CHECK("agent timeline command preserves the exact event companion",
+             timeline_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             typed_timeline_text &&
+             strstr(typed_timeline_text, "kind: timeline") != NULL &&
+             strstr(typed_timeline_text, "timeline-event [green]") != NULL &&
+             strstr(typed_timeline_text,
+                    "value: independent signer") != NULL &&
+             strcmp(json_get_str(json_get(&timeline_reply.data, "authority")),
+                    "display-only") == 0);
+    zcl_command_reply_free(&timeline_reply);
+    json_free(&timeline_input);
 
     struct json_value text_delivery;
     json_init(&text_delivery);

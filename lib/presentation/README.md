@@ -29,6 +29,10 @@ Chart points are real bounded fractions, not decorative labels:
 `numerator/denominator` must be valid and the native compositor draws that
 exact proportion. The deterministic text companion emits the same fraction,
 so a visual bar and its accessible/exported form cannot disagree.
+Timeline events render on one deterministic vertical sequence, with each
+event's existing semantic status providing its visible marker color. Event
+labels and values remain inert model text and are preserved verbatim in the
+plain-text companion.
 
 `app/views/src/ui_present_document.c` is the only model-to-window compositor.
 It owns validation, every rendered page, QR specialization, application icon,
