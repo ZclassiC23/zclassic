@@ -11,31 +11,33 @@
 #include <string.h>
 #include <time.h>
 
-static Window find_window(Display *display, Window window,
-                          const char *title, unsigned int depth)
+static unsigned int matching_windows(Display *display, Window window,
+                                     const char *title, unsigned int depth,
+                                     Window *first)
 {
-    Window found = None;
+    unsigned int matches = 0;
+    char *name = NULL;
+    if (XFetchName(display, window, &name) && name) {
+        if (strstr(name, title) != NULL) {
+            if (*first == None)
+                *first = window;
+            matches++;
+        }
+        XFree(name);
+    }
     if (depth > 0) {
         Window root = None, parent = None, *children = NULL;
         unsigned int child_count = 0;
         if (XQueryTree(display, window, &root, &parent,
                        &children, &child_count)) {
-            for (unsigned int i = 0; i < child_count && found == None; i++)
-                found = find_window(display, children[i], title, depth - 1u);
+            for (unsigned int i = 0; i < child_count; i++)
+                matches += matching_windows(display, children[i], title,
+                                            depth - 1u, first);
             if (children)
                 XFree(children);
         }
     }
-    if (found != None)
-        return found;
-    char *name = NULL;
-    if (XFetchName(display, window, &name) && name) {
-        bool match = strstr(name, title) != NULL;
-        XFree(name);
-        if (match)
-            return window;
-    }
-    return found;
+    return matches;
 }
 
 static void sleep_20ms(void)
@@ -98,7 +100,8 @@ static int usage(const char *program)
 {
     fprintf(stderr,
             "usage: %s --title=<substring> "
-            "--key=1|pagedown|pageup|escape [--timeout-ms=N]\n",
+            "(--key=1|pagedown|pageup|escape | --expect-count=N) "
+            "[--timeout-ms=N]\n",
             program);
     return 2;
 }
@@ -107,12 +110,22 @@ int main(int argc, char **argv)
 {
     const char *title = NULL;
     const char *key = NULL;
+    bool expect_count_set = false;
+    unsigned int expected_count = 0;
     unsigned int timeout_ms = 5000;
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--title=", 8) == 0)
             title = argv[i] + 8;
         else if (strncmp(argv[i], "--key=", 6) == 0)
             key = argv[i] + 6;
+        else if (strncmp(argv[i], "--expect-count=", 15) == 0) {
+            char *end = NULL;
+            unsigned long parsed = strtoul(argv[i] + 15, &end, 10);
+            if (!end || *end || parsed > 1024)
+                return usage(argv[0]);
+            expect_count_set = true;
+            expected_count = (unsigned int)parsed;
+        }
         else if (strncmp(argv[i], "--timeout-ms=", 13) == 0) {
             char *end = NULL;
             unsigned long parsed = strtoul(argv[i] + 13, &end, 10);
@@ -123,13 +136,13 @@ int main(int argc, char **argv)
             return usage(argv[0]);
         }
     }
-    if (!title || !title[0] || !key)
+    if (!title || !title[0] || (!!key == expect_count_set))
         return usage(argv[0]);
-    bool first_action = strcmp(key, "1") == 0;
-    bool page_down = strcmp(key, "pagedown") == 0;
-    bool page_up = strcmp(key, "pageup") == 0;
-    bool close = strcmp(key, "escape") == 0;
-    if (!first_action && !page_down && !page_up && !close)
+    bool first_action = key && strcmp(key, "1") == 0;
+    bool page_down = key && strcmp(key, "pagedown") == 0;
+    bool page_up = key && strcmp(key, "pageup") == 0;
+    bool close = key && strcmp(key, "escape") == 0;
+    if (key && !first_action && !page_down && !page_up && !close)
         return usage(argv[0]);
 
     Display *display = XOpenDisplay(NULL);
@@ -139,11 +152,29 @@ int main(int argc, char **argv)
     }
     Window root = DefaultRootWindow(display);
     Window window = None;
+    unsigned int count = 0;
     unsigned int attempts = timeout_ms / 20u;
-    for (unsigned int i = 0; i <= attempts && window == None; i++) {
-        window = find_window(display, root, title, 4u);
-        if (window == None)
+    for (unsigned int i = 0; i <= attempts; i++) {
+        window = None;
+        count = matching_windows(display, root, title, 4u, &window);
+        if ((expect_count_set && count == expected_count) ||
+            (!expect_count_set && window != None))
+            break;
+        if (i < attempts)
             sleep_20ms();
+    }
+    if (expect_count_set) {
+        (void)XCloseDisplay(display);
+        if (count != expected_count) {
+            fprintf(stderr,
+                    "native_ui_driver: expected %u matching window(s), saw %u: %s\n",
+                    expected_count, count, title);
+            return 1;
+        }
+        printf("{\"schema\":\"zcl.native_ui_window_count.v1\","
+               "\"title\":\"%s\",\"count\":%u,\"matched\":true}\n",
+               title, count);
+        return 0;
     }
     KeySym key_sym = first_action ? XK_1
         : (page_down ? XK_Page_Down : XK_Page_Up);

@@ -17,6 +17,8 @@
 #define UI_HOST_PHASE_EVENT 2u
 #define UI_HOST_STATUS_OK 0u
 #define UI_HOST_STATUS_REJECTED 1u
+#define UI_HOST_STATUS_CAPACITY 2u
+#define UI_HOST_STATUS_REQUEST_BUSY 3u
 
 int ui_host_transport_connect_once(void);
 int ui_host_transport_listen(void);
