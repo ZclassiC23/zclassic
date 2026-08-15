@@ -502,6 +502,33 @@ Notes:
 <!-- claim: file-present vendor/x11/SHA256SUMS # vendored X11 header pin -->
 <!-- claim: symbol-present vendor/x11/include Makefile # the include wiring -->
 
+### Native instruments and deterministic text
+
+The primary visual path is the bounded renderer-neutral C23 model in
+`lib/presentation`. A typed `app presentation ...` command submits that inert
+model to the warm same-binary native host; the host owns pixels and bounded
+input events, never node, wallet, package, publication, network, or consensus
+authority. No browser or web runtime participates.
+
+Every admitted model also has a deterministic paged plain-text companion from
+the same C23 model. Add `"output":"text"` to the command input to receive it
+without opening a window or requiring `DISPLAY`; add the zero-based
+`"page":N` when the reply names more than one page. For example:
+
+```bash
+build/bin/zclassic23 app qr show \
+  --input='{"payload":"zclassic:t1...","output":"text"}'
+build/bin/zclassic23 app presentation show \
+  --input='{"kind":"status","request_id":"check-1","title":"Node",\
+"items":[{"kind":"key-value","label":"tip","value":"3216084"}],\
+"output":"text"}'
+```
+
+QR payloads are split only at the model's existing exact 256-byte chunk
+boundaries. Structured instruments use one complete item per page and repeat
+the bounded actions and authority label, so no row or decision is silently
+truncated to fit the command-result ceiling.
+
 ### C23 node and the C++ differential oracle
 
 `libleveldb.a` remains only as a test/dev oracle. Nothing in the shipped node

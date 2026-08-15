@@ -199,7 +199,6 @@ bool zcl_native_presentation_dumpstate(const char *name, const char *key,
 void zcl_native_handle_presentation_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
-    (void)request;
     zcl_native_bridge_ensure_rpc();
     struct zcl_native_body_err body_error = {0};
     struct json_value status, health, backup, work;
@@ -231,7 +230,7 @@ void zcl_native_handle_presentation_status(
         nps_fail(reply, "STATUS_MODEL_INVALID", why);
         return;
     }
-    zcl_native_present_model(&model, NPS_LEAF, reply);
+    zcl_native_present_model(&model, NPS_LEAF, request->input, reply);
     if (reply->status == ZCL_COMMAND_STATUS_PASSED) {
         (void)json_push_kv_str(&reply->data, "fact_authority", "target_node");
         (void)json_push_kv_str(&reply->data, "claim_class", "NODE_FACT");

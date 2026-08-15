@@ -4,11 +4,14 @@
 #include "command/native_command.h"
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "presentation/model_text.h"
 #include "presentation/presentation.h"
 #include "util/log_macros.h"
 #include "views/ui_present.h"
 #include "views/ui_present_host.h"
 
+#include <stdint.h>
+#include <stdio.h>
 #include <string.h>
 
 #define NQR_TAG "native.qr"
@@ -48,44 +51,10 @@ void zcl_native_handle_qr_show(const struct zcl_command_request *request,
         nqr_fail(reply, "INVALID_QR_MODEL", model_why);
         return;
     }
-    char display_why[96];
-    if (!ui_present_host_display_ready(display_why, sizeof(display_why))) {
-        nqr_fail(reply, "HEADLESS_DISPLAY_UNAVAILABLE", display_why);
-        return;
-    }
-    int64_t started_us = platform_time_monotonic_us();
-    struct ui_present_host_result host;
-    struct zcl_result launched = ui_present_host_submit(&model, false, &host);
-    bool cold_fallback = false;
-#if !defined(__linux__)
-    if (!launched.ok) {
-        launched = ui_present_model_launch(&model);
-        cold_fallback = launched.ok;
-    }
-#endif
-    int64_t handoff_us = platform_time_monotonic_us() - started_us;
-    if (!launched.ok) {
-        nqr_fail(reply, "QR_LAUNCH_FAILED", launched.message);
-        return;
-    }
-    (void)json_push_kv_bool(&reply->data, "launched", true);
-    (void)json_push_kv_str(&reply->data, "presentation_kind", "qr");
-    (void)json_push_kv_int(&reply->data, "payload_bytes",
-                           (int64_t)payload_len);
-    (void)json_push_kv_int(&reply->data, "launch_handoff_us", handoff_us);
-    (void)json_push_kv_bool(&reply->data, "resident_host",
-                            !cold_fallback && host.resident_host);
-    (void)json_push_kv_bool(&reply->data, "host_reused",
-                            !cold_fallback && host.host_reused);
-    (void)json_push_kv_bool(&reply->data, "view_replaced",
-                            !cold_fallback && host.view_replaced);
-    (void)json_push_kv_int(&reply->data, "window_ready_us",
-                           cold_fallback ? -1 : host.ready_us);
-    (void)json_push_kv_str(&reply->data, "authority", "display-only");
-    (void)json_push_kv_str(&reply->data, "backend",
-                           zcl_present_backend_name());
-    (void)json_push_kv_str(&reply->data, "platform",
-                           zcl_present_platform_name());
+    zcl_native_present_model(&model, "app.qr.show", request->input, reply);
+    if (reply->status == ZCL_COMMAND_STATUS_PASSED)
+        (void)json_push_kv_int(&reply->data, "payload_bytes",
+                               (int64_t)payload_len);
 }
 
 static void np_fail(struct zcl_command_reply *reply, const char *code,
@@ -99,7 +68,8 @@ static void np_fail(struct zcl_command_reply *reply, const char *code,
 
 static bool np_supported_kind(uint16_t kind)
 {
-    return kind == ZCL_PRESENT_MODEL_STATUS_CARD ||
+    return kind == ZCL_PRESENT_MODEL_QR_CARD ||
+           kind == ZCL_PRESENT_MODEL_STATUS_CARD ||
            kind == ZCL_PRESENT_MODEL_TABLE ||
            kind == ZCL_PRESENT_MODEL_PROGRESS ||
            kind == ZCL_PRESENT_MODEL_CHART ||
@@ -123,24 +93,92 @@ void zcl_native_handle_presentation_show(
                 "app.presentation.show");
         return;
     }
-    if (!np_supported_kind(model.kind)) {
+    if (model.kind == ZCL_PRESENT_MODEL_QR_CARD ||
+        !np_supported_kind(model.kind)) {
         np_fail(reply, "UNSUPPORTED_PRESENTATION_KIND",
                 "use app.qr.show for QR; raw canvas documents are not admitted",
                 "app.presentation.show");
         return;
     }
-    zcl_native_present_model(&model, "app.presentation.show", reply);
+    zcl_native_present_model(&model, "app.presentation.show",
+                             request->input, reply);
+}
+
+static bool np_output_mode(const struct json_value *input, bool *text_only,
+                           uint32_t *text_page, char *why, size_t why_cap)
+{
+    *text_only = false;
+    *text_page = 0;
+    const struct json_value *output_value = json_get(input, "output");
+    const char *output = json_get_str(output_value);
+    if (output_value && (!output || (strcmp(output, "native") != 0 &&
+                                    strcmp(output, "text") != 0))) {
+        (void)snprintf(why, why_cap,
+                       "output must be exactly native or text");
+        return false;
+    }
+    *text_only = output && strcmp(output, "text") == 0;
+    const struct json_value *page = json_get(input, "page");
+    if (page && (page->type != JSON_INT || page->val.i < 0 ||
+                 (uint64_t)page->val.i > UINT32_MAX)) {
+        (void)snprintf(why, why_cap,
+                       "page must be a non-negative integer");
+        return false;
+    }
+    if (page && !*text_only) {
+        (void)snprintf(why, why_cap,
+                       "page is valid only when output is text");
+        return false;
+    }
+    if (page) *text_page = (uint32_t)page->val.i;
+    return true;
 }
 
 void zcl_native_present_model(
     const struct zcl_present_model_v1 *model, const char *leaf,
-    struct zcl_command_reply *reply)
+    const struct json_value *input, struct zcl_command_reply *reply)
 {
     if (!model || !leaf || !reply) return;
     if (!np_supported_kind(model->kind)) {
         np_fail(reply, "UNSUPPORTED_PRESENTATION_KIND",
                 "use app.qr.show for QR; raw canvas documents are not admitted",
                 leaf);
+        return;
+    }
+    bool text_only = false;
+    uint32_t text_page = 0;
+    char why[192];
+    if (!np_output_mode(input, &text_only, &text_page, why, sizeof(why))) {
+        np_fail(reply, "INVALID_PRESENTATION_OUTPUT", why, leaf);
+        return;
+    }
+    if (text_only) {
+        char plain_text[ZCL_PRESENT_MODEL_TEXT_MAX];
+        size_t text_len = 0;
+        uint32_t text_pages = 0;
+        if (!zcl_present_model_text_page_v1(
+                model, text_page, plain_text, sizeof(plain_text), &text_len,
+                &text_pages, why, sizeof(why))) {
+            np_fail(reply, "PRESENTATION_TEXT_EXPORT_FAILED", why, leaf);
+            return;
+        }
+        (void)json_push_kv_bool(&reply->data, "launched", false);
+        (void)json_push_kv_str(&reply->data, "delivery", "text");
+        (void)json_push_kv_str(&reply->data, "presentation_kind",
+                               zcl_present_model_kind_name(model->kind));
+        (void)json_push_kv_str(&reply->data, "request_id", model->request_id);
+        (void)json_push_kv_int(&reply->data, "item_count", model->item_count);
+        (void)json_push_kv_bool(&reply->data, "text_export", true);
+        (void)json_push_kv_int(&reply->data, "text_page", text_page);
+        (void)json_push_kv_int(&reply->data, "text_page_count", text_pages);
+        (void)json_push_kv_int(&reply->data, "text_bytes", text_len);
+        (void)json_push_kv_str(&reply->data, "plain_text", plain_text);
+        (void)json_push_kv_bool(&reply->data, "event_return", false);
+        (void)json_push_kv_str(&reply->data, "authority", "display-only");
+        (void)json_push_kv_str(&reply->data, "backend",
+                               "c23-deterministic-text");
+        (void)json_push_kv_str(&reply->data, "platform",
+                               zcl_present_platform_name());
         return;
     }
     char display_why[96];
@@ -166,10 +204,12 @@ void zcl_native_present_model(
         return;
     }
     (void)json_push_kv_bool(&reply->data, "launched", true);
+    (void)json_push_kv_str(&reply->data, "delivery", "native");
     (void)json_push_kv_str(&reply->data, "presentation_kind",
                            zcl_present_model_kind_name(model->kind));
     (void)json_push_kv_str(&reply->data, "request_id", model->request_id);
     (void)json_push_kv_int(&reply->data, "item_count", model->item_count);
+    (void)json_push_kv_bool(&reply->data, "text_export_available", true);
     (void)json_push_kv_int(&reply->data, "launch_handoff_us", handoff_us);
     (void)json_push_kv_bool(&reply->data, "resident_host",
                             !cold_fallback && host.resident_host);

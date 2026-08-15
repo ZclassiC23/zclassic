@@ -392,7 +392,7 @@ bool zcl_native_presentation_publication_confirm_model_from_plan(
  * The model is inert; this helper performs no node read or privileged effect. */
 void zcl_native_present_model(
     const struct zcl_present_model_v1 *model, const char *leaf,
-    struct zcl_command_reply *reply);
+    const struct json_value *input, struct zcl_command_reply *reply);
 void zcl_native_handle_vault_swap_redeem(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

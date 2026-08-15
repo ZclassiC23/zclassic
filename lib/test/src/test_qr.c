@@ -6,6 +6,7 @@
 #include "presentation/canvas.h"
 #include "presentation/model.h"
 #include "presentation/model_render.h"
+#include "presentation/model_text.h"
 #include "presentation/presentation.h"
 #include "presentation/zclassic_brand.h"
 #include "views/qr_popup.h"
@@ -268,6 +269,27 @@ int test_qr(void)
              zcl_present_model_qr_payload_v1(
                  &rejected_qr, recovered_qr, why, sizeof(why)) &&
              strcmp(recovered_qr, max_qr) == 0);
+    char qr_text[ZCL_PRESENT_MODEL_TEXT_MAX];
+    size_t qr_text_len = 0;
+    uint32_t qr_text_pages = 0;
+    QR_CHECK("QR text companion pages the exact model payload chunks",
+             zcl_present_model_text_page_v1(
+                 &rejected_qr, 0, qr_text, sizeof(qr_text), &qr_text_len,
+                 &qr_text_pages, why, sizeof(why)) &&
+             qr_text_pages == ZCL_PRESENT_MODEL_QR_CHUNKS_MAX &&
+             qr_text_len < sizeof(qr_text) &&
+             strstr(qr_text, "page: 1/8") != NULL &&
+             strstr(qr_text, "payload-bytes: 1-256 of 2048") != NULL &&
+             strstr(qr_text, rejected_qr.items[0].value) != NULL &&
+             zcl_present_model_text_page_v1(
+                 &rejected_qr, ZCL_PRESENT_MODEL_QR_CHUNKS_MAX - 1u,
+                 qr_text, sizeof(qr_text), &qr_text_len, &qr_text_pages,
+                 why, sizeof(why)) &&
+             strstr(qr_text, "payload-bytes: 1793-2048 of 2048") != NULL &&
+             !zcl_present_model_text_page_v1(
+                 &rejected_qr, ZCL_PRESENT_MODEL_QR_CHUNKS_MAX,
+                 qr_text, sizeof(qr_text), &qr_text_len, &qr_text_pages,
+                 why, sizeof(why)));
     rejected_qr.items[1].id[0] = 'x';
     QR_CHECK("reordered QR payload chunks fail closed",
              !zcl_present_model_validate_v1(
@@ -306,6 +328,26 @@ int test_qr(void)
                    sizeof(visual.actions[0].label), "Close");
     QR_CHECK("renderer-neutral progress model validates",
              zcl_present_model_validate_v1(&visual, why, sizeof(why)));
+    char visual_text[ZCL_PRESENT_MODEL_TEXT_MAX];
+    char visual_text_again[ZCL_PRESENT_MODEL_TEXT_MAX];
+    size_t visual_text_len = 0, visual_text_len_again = 0;
+    uint32_t visual_text_pages = 0, visual_text_pages_again = 0;
+    bool visual_text_ok = zcl_present_model_text_page_v1(
+        &visual, 0, visual_text, sizeof(visual_text), &visual_text_len,
+        &visual_text_pages, why, sizeof(why));
+    bool visual_text_again_ok = zcl_present_model_text_page_v1(
+        &visual, 0, visual_text_again, sizeof(visual_text_again),
+        &visual_text_len_again, &visual_text_pages_again,
+        why, sizeof(why));
+    QR_CHECK("same model produces one deterministic text companion",
+             visual_text_ok && visual_text_again_ok &&
+             visual_text_pages == 1u && visual_text_pages_again == 1u &&
+             visual_text_len == visual_text_len_again &&
+             strcmp(visual_text, visual_text_again) == 0 &&
+             strstr(visual_text, "kind: progress") != NULL &&
+             strstr(visual_text, "progress: 7/10") != NULL &&
+             strstr(visual_text, "action 1: close") != NULL &&
+             strstr(visual_text, "authority: display-only") != NULL);
 
     uint8_t model_wire[ZCL_PRESENT_MODEL_WIRE_MAX];
     size_t model_wire_len = 0;
@@ -592,6 +634,20 @@ int test_qr(void)
              zcl_present_model_page_count_v1(
                  &long_table, &table_pages, why, sizeof(why)) &&
              table_pages == 8u);
+    char table_text[ZCL_PRESENT_MODEL_TEXT_MAX];
+    size_t table_text_len = 0;
+    uint32_t table_text_pages = 0;
+    QR_CHECK("maximum table text export is bounded and fully paged",
+             zcl_present_model_text_page_v1(
+                 &long_table, 63u, table_text, sizeof(table_text),
+                 &table_text_len, &table_text_pages, why, sizeof(why)) &&
+             table_text_pages == 64u &&
+             table_text_len < sizeof(table_text) &&
+             strstr(table_text, "id: row-64") != NULL &&
+             !zcl_present_model_text_page_v1(
+                 &long_table, table_text_pages, table_text,
+                 sizeof(table_text), &table_text_len, &table_text_pages,
+                 why, sizeof(why)));
     struct zcl_present_model_bitmap_v1 first_page, last_page;
     bool first_page_ok = zcl_present_model_render_page_v1(
         &long_table, 0, &first_page, why, sizeof(why));

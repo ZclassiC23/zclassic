@@ -176,7 +176,7 @@ void zcl_native_handle_presentation_publication_confirm(
         return;
     }
 
-    zcl_native_present_model(&model, NPCF_LEAF, reply);
+    zcl_native_present_model(&model, NPCF_LEAF, request->input, reply);
     if (reply->status != ZCL_COMMAND_STATUS_PASSED) return;
     const char *action = npcf_str(&reply->data, "action_id");
     if (action && (strcmp(action, "confirm") == 0 ||

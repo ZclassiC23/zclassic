@@ -108,12 +108,14 @@ ZCL_COMMAND_READY_COMMAND(
     "Launches a portable C QR window through the warm same-binary presentation "
     "host, retaining the detached reviewed child as a portable fallback. The "
     "bounded payload crosses only length-framed local IPC or framed stdin, "
-    "never argv, environment, node transport, logs, or the result. The "
+    "never argv, environment, node transport, or logs. The native result "
+    "does not echo it; explicit output=text returns deterministic bounded "
+    "payload pages without launching a window. The "
     "window copies with C, closes with Escape/Q, and uses an integer-scaled "
     "four-module quiet zone for reliable scanning. RGFW and the QR encoder are "
     "pinned permissive source in this repository.", 0,
     "qr,display,popup,payment,uri,presentation", "zcl.app_qr_show.input.v1",
-    "zcl.app_qr_show.v1", "payload,title", "payload",
+    "zcl.app_qr_show.v1", "payload,title,output,page", "payload",
     "zclassic23 app qr show 'zclassic:t1...?amount=0.01'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
@@ -135,10 +137,12 @@ ZCL_COMMAND_READY_COMMAND(
     "confirmations return only a numbered action ID or dismissal; the full "
     "node must independently recheck policy and plan/commit state before "
     "acting. The host receives no wallet, Internet, datadir, package, "
-    "publication, deployment, or consensus authority.", 0,
+    "publication, deployment, or consensus authority. Set output=text and "
+    "an optional zero-based page to receive the deterministic paged "
+    "plain-text companion without opening a window.", 0,
     "presentation,native,status,progress,diff,evidence,agent",
     "zcl.app_presentation_show.input.v1", "zcl.app_presentation_show.v1",
-    "kind,request_id,title,summary,exact_root,items,actions",
+    "kind,request_id,title,summary,exact_root,items,actions,output,page",
     "kind,request_id,title",
     "zclassic23 app presentation show --input='<bounded-model>'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
@@ -160,7 +164,7 @@ ZCL_COMMAND_READY_COMMAND(
     "holds no node authority.", 0,
     "presentation,native,status,node,facts,backup,onion,workers",
     "zcl.app_presentation_status.input.v1",
-    "zcl.app_presentation_status.v1", "", "",
+    "zcl.app_presentation_status.v1", "output,page", "",
     "zclassic23 app presentation status",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
@@ -183,7 +187,7 @@ ZCL_COMMAND_READY_COMMAND(
     "presentation,native,code,diff,zvcs,source,tests,dependencies,agent",
     "zcl.app_presentation_code_change.input.v1",
     "zcl.app_presentation_code_change.v1",
-    "workspace,before_root,candidate_root,path,requested_behavior,before_behavior,after_behavior",
+    "workspace,before_root,candidate_root,path,requested_behavior,before_behavior,after_behavior,output,page",
     "workspace,before_root,candidate_root,path,requested_behavior,before_behavior,after_behavior",
     "zclassic23 app presentation code-change --input='<exact-roots-and-summaries>'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
@@ -206,7 +210,7 @@ ZCL_COMMAND_READY_COMMAND(
     "text or evidence facts.", 0,
     "presentation,native,reproduction,progress,proof,receipt,agent",
     "zcl.app_presentation_reproduction.input.v1",
-    "zcl.app_presentation_reproduction.v1", "action_id", "action_id",
+    "zcl.app_presentation_reproduction.v1", "action_id,output,page", "action_id",
     "zclassic23 app presentation reproduction --input='{\"action_id\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
@@ -229,7 +233,7 @@ ZCL_COMMAND_READY_COMMAND(
     "presentation,native,confirmation,publication,package,plan,human",
     "zcl.zcode_publish_plan.input.v1",
     "zcl.app_presentation_publication_confirm.v1",
-    "release_hex,manifest_hex,recipe_hex,dir,datadir", "",
+    "release_hex,manifest_hex,recipe_hex,dir,datadir,output,page", "",
     "zclassic23 app presentation publication-confirm --input='"
     "{\"release_hex\":\"..\",\"manifest_hex\":\"..\","
     "\"recipe_hex\":\"..\",\"dir\":\"/tmp/pkg\"}'",
