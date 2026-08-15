@@ -1000,7 +1000,7 @@ static bool pf_seed_load_or_create(const char *path, uint8_t seed[32])
     }
     if (errno != ENOENT)
         LOG_FAIL(PF_LOG, "open signer seed %s: %s", path, strerror(errno));
-    char *slash = strrchr(path, '/');
+    const char *slash = strrchr(path, '/');
     if (!slash)
         LOG_FAIL(PF_LOG, "signer seed path %s has no directory", path);
     {
