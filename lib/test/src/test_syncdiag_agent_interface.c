@@ -257,6 +257,16 @@ int syncdiag_cases_agent_interface(void)
             strcmp(json_get_str(json_get(visual_loop, "schema")),
                    "zcl.agent_visual_loop.v1") == 0;
         ok = ok && visual_loop &&
+            strcmp(json_get_str(json_get(visual_loop,
+                                         "input_discovery")),
+                   "zclassic23 discover schema <leaf>") == 0;
+        ok = ok && visual_loop &&
+            strstr(json_get_str(json_get(visual_loop, "text_companion")),
+                   "output=text") != NULL;
+        ok = ok && visual_loop &&
+            strstr(json_get_str(json_get(visual_loop, "selection_rule")),
+                   "typed instrument for node-owned facts") != NULL;
+        ok = ok && visual_loop &&
             !json_get_bool(json_get(visual_loop, "browser_required"));
         ok = ok && visual_loop &&
             strstr(json_get_str(json_get(visual_loop, "authority_rule")),
