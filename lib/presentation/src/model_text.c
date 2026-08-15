@@ -170,26 +170,21 @@ static bool text_actions(struct text_writer *writer,
     return true;
 }
 
-bool zcl_present_model_text_page_v1(
-    const struct zcl_present_model_v1 *model, uint32_t page_index,
-    char *out, size_t out_cap, size_t *out_len, uint32_t *page_count,
+static bool text_document(
+    const struct zcl_present_model_v1 *model,
+    uint32_t begin, uint32_t end, uint32_t page_index, uint32_t pages,
+    char *out, size_t out_cap, size_t *out_len,
     char *error, size_t error_cap)
 {
-    if (!out || out_cap == 0 || !out_len || !page_count)
+    if (!out || out_cap == 0 || !out_len)
         return text_error(error, error_cap,
                           "presentation text output is incomplete");
     out[0] = '\0';
     *out_len = 0;
-    *page_count = 0;
     char model_why[192];
     if (!zcl_present_model_validate_v1(model, model_why, sizeof(model_why)))
         return text_error(error, error_cap, model_why);
-    uint32_t pages =
-        (model->item_count + ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE - 1u) /
-        ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE;
-    if (pages == 0) pages = 1u;
-    *page_count = pages;
-    if (page_index >= pages)
+    if (page_index >= pages || begin > end || end > model->item_count)
         return text_error(error, error_cap,
                           "presentation text page is out of range");
 
@@ -208,9 +203,6 @@ bool zcl_present_model_text_page_v1(
                           "presentation text page exceeds its byte bound");
 
     if (model->kind == ZCL_PRESENT_MODEL_QR_CARD) {
-        uint32_t begin = page_index * ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE;
-        uint32_t end = begin + ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE;
-        if (end > model->item_count) end = model->item_count;
         uint32_t payload_begin = 0;
         uint32_t payload_total = 0;
         for (uint32_t i = 0; i < model->item_count; i++) {
@@ -226,14 +218,17 @@ bool zcl_present_model_text_page_v1(
             !text_literal(&writer, "-") || !text_u32(&writer, payload_end) ||
             !text_literal(&writer, " of ") ||
             !text_u32(&writer, payload_total) ||
-            !text_literal(&writer, "\n") ||
-            !field(&writer, "payload-fragment", model->items[begin].value))
+            !text_literal(&writer, "\npayload-fragment: "))
+            return text_error(error, error_cap,
+                              "QR text page exceeds its byte bound");
+        for (uint32_t i = begin; i < end; i++)
+            if (!text_escaped(&writer, model->items[i].value))
+                return text_error(error, error_cap,
+                                  "QR text page exceeds its byte bound");
+        if (!text_literal(&writer, "\n"))
             return text_error(error, error_cap,
                               "QR text page exceeds its byte bound");
     } else {
-        uint32_t begin = page_index * ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE;
-        uint32_t end = begin + ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE;
-        if (end > model->item_count) end = model->item_count;
         bool items_ok = text_literal(&writer, "items: ");
         if (model->item_count == 0)
             items_ok = items_ok && text_literal(&writer, "0 of 0\n");
@@ -258,4 +253,43 @@ bool zcl_present_model_text_page_v1(
     *out_len = writer.used;
     if (error && error_cap > 0) error[0] = '\0';
     return true;
+}
+
+bool zcl_present_model_text_all_v1(
+    const struct zcl_present_model_v1 *model,
+    char *out, size_t out_cap, size_t *out_len,
+    char *error, size_t error_cap)
+{
+    if (!model)
+        return text_error(error, error_cap,
+                          "presentation text model is missing");
+    return text_document(model, 0, model->item_count, 0, 1,
+                         out, out_cap, out_len, error, error_cap);
+}
+
+bool zcl_present_model_text_page_v1(
+    const struct zcl_present_model_v1 *model, uint32_t page_index,
+    char *out, size_t out_cap, size_t *out_len, uint32_t *page_count,
+    char *error, size_t error_cap)
+{
+    if (!page_count)
+        return text_error(error, error_cap,
+                          "presentation text output is incomplete");
+    *page_count = 0;
+    if (!model)
+        return text_error(error, error_cap,
+                          "presentation text model is missing");
+    uint32_t pages =
+        (model->item_count + ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE - 1u) /
+        ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE;
+    if (pages == 0) pages = 1u;
+    *page_count = pages;
+    if (page_index >= pages)
+        return text_error(error, error_cap,
+                          "presentation text page is out of range");
+    uint32_t begin = page_index * ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE;
+    uint32_t end = begin + ZCL_PRESENT_MODEL_TEXT_ITEMS_PER_PAGE;
+    if (end > model->item_count) end = model->item_count;
+    return text_document(model, begin, end, page_index, pages,
+                         out, out_cap, out_len, error, error_cap);
 }
