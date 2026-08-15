@@ -1,0 +1,25 @@
+{
+  "schema": 1,
+  "name": "zrange/zrange",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "name": "zsemver/zsemver",
+      "root": "b919d97ad8a9f9754d2357a3cda8f1cace35e677fe38cdc1452f321c38562ab5",
+      "semver": "0.1.0"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zrange/zrange.h",
+    "src/zrange.c",
+    "tests/test_zrange.c",
+    "zcode-package.json"
+  ]
+}
