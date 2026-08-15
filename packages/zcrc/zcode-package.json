@@ -1,0 +1,1 @@
+{"schema":1,"name":"zcrc/zcrc","semver":"0.1.0","language":"c23","license":"MIT","include_dir":"include","source_dir":"src","dependencies":[],"files":["LICENSE","README.md","app/main.c","include/zcrc/zcrc.h","src/zcrc.c","tests/test_zcrc.c","zcode-package.json"]}
