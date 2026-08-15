@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "name": "zclassic23-commons/zini",
+  "name": "zini/zini",
   "semver": "0.1.0",
   "language": "c23",
   "license": "MIT",
@@ -8,8 +8,8 @@
   "source_dir": "src",
   "dependencies": [
     {
-      "root": "0000000000000000000000000000000000000000000000000000000000000000",
-      "name": "zclassic23-commons/zmap",
+      "root": "ae1c1bb4922688ea0020c4831c833bbf5410956719c1347ebe9f74a6a65e65d6",
+      "name": "zmap/zmap",
       "semver": "0.1.0"
     }
   ],

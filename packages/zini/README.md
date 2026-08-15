@@ -3,7 +3,7 @@
 INI configuration parser for C23 over caller-supplied bytes — no filesystem
 I/O in the library. Parsed entries are stored in **zmap** hash maps (one map
 of section name → `zmap*` of key → value copy), so this package genuinely
-depends on `zclassic23-commons/zmap`.
+depends on `zmap/zmap`.
 
 ## Grammar (documented, deliberately small)
 
@@ -55,7 +55,7 @@ zini_destroy(ini);
 
 ## Dependency: FACTORY-PINNED
 
-`zcode-package.json` lists `zclassic23-commons/zmap` with a **placeholder
+`zcode-package.json` lists `zmap/zmap` with a **placeholder
 content root** (`0000…0000`). The real content root only exists once zmap
 has been published to the Commons; the factory slice replaces the
 placeholder with the published root before publishing zini. // FACTORY-PINNED

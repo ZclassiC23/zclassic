@@ -95,3 +95,6 @@ scope zclassic23/lib/zid | kind human | spdx Apache-2.0 | src lib/zid/ | tests l
 scope zclassic23/lib/znam | kind human | spdx Apache-2.0 | src lib/znam/ | tests lib/test/src/test_znam_
 scope zclassic23/lib/zslp | kind human | spdx Apache-2.0 | src lib/zslp/ | tests lib/test/src/test_zslp_
 scope zclassic23/lib/zswap | kind human | spdx Apache-2.0 | src lib/zswap/ | tests lib/test/src/test_zswap_
+package zclassic23-commons/zcsv | root f864f254758d5da85058ca18c6411cd5cf71999eaaaae00ecee73fc6b6a08638 | store /home/rhett/.zclassic-c23-commons-factory-a | kind ai | spdx MIT
+package zmap/zmap | root ae1c1bb4922688ea0020c4831c833bbf5410956719c1347ebe9f74a6a65e65d6 | store /home/rhett/.zclassic-c23-commons-factory-c | kind ai | spdx MIT
+package zini/zini | root 2b08ba41a58a837cfafbdb10921a86da096df74f428a06ad99e8d7e0b7f3ed03 | store /home/rhett/.zclassic-c23-commons-factory-c | kind ai | spdx MIT
