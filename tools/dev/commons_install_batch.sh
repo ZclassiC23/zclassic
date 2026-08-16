@@ -22,8 +22,12 @@ cd "$ROOT"
 SIGN=build/bin/zclassic23-package-sign
 FACTORY=build/bin/package-factory
 KEYDIR="$HOME/.config/zclassic23"
-STORE_A="$HOME/.zclassic-c23-commons-factory-a"
-STORE_B="$HOME/.zclassic-c23-commons-factory-b"
+# Store pair and declared provenance kind are overridable so a poisoned
+# package name (a failed publish claims the name in that store) can be
+# rerouted to a fresh store pair, and AI-drafted batches are labeled ai.
+STORE_A="${ZCL_COMMONS_STORE_A:-$HOME/.zclassic-c23-commons-factory-a}"
+STORE_B="${ZCL_COMMONS_STORE_B:-$HOME/.zclassic-c23-commons-factory-b}"
+KIND="${ZCL_COMMONS_KIND:-human}"
 CUTOFF_HEIGHT=3203194
 CUTOFF_MTP=1754524800
 
@@ -52,24 +56,48 @@ while [ "$#" -ge 2 ]; do
     cp packages/zglob/LICENSE "packages/$name/LICENSE"
 
     # Dependency sources join the local test build (the factory resolves
-    # them from the store for the pinned reproduction builds).
+    # them from the store for the pinned reproduction builds). The closure
+    # is TRANSITIVE (a pinned dep's own pins are compiled too, e.g.
+    # zotp -> zsha1) and every src/*.c of a multi-file dep participates.
     dep_includes=()
     dep_srcs=()
     while IFS= read -r dep; do
         [ -z "$dep" ] && continue
         dep_includes+=("-Ipackages/$dep/include")
-        dep_srcs+=("packages/$dep/src/$dep.c")
+        for s in "packages/$dep"/src/*.c; do
+            dep_srcs+=("$s")
+        done
     done < <(python3 -c "
 import json
+seen = []
+def visit(name):
+    short = name.split('/')[0]
+    if short in seen:
+        return
+    try:
+        m = json.load(open('packages/%s/zcode-package.json' % short))
+    except OSError:
+        return
+    for d in m.get('dependencies', []):
+        visit(d['name'])
+    seen.append(short)
 m = json.load(open('packages/$name/zcode-package.json'))
 for d in m.get('dependencies', []):
-    print(d['name'].split('/')[0])
+    visit(d['name'])
+for short in seen:
+    print(short)
 ")
+
+    # The package itself may be multi-file (src/*.c).
+    pkg_srcs=()
+    for s in "packages/$name"/src/*.c; do
+        pkg_srcs+=("$s")
+    done
 
     cc -std=c23 -O1 -g -Wall -Wextra -Werror -pedantic \
        -fsanitize=address,undefined \
        -I"packages/$name/include" "${dep_includes[@]}" \
-       "packages/$name/src/$name.c" "packages/$name/tests/test_$name.c" \
+       "${pkg_srcs[@]}" "packages/$name/tests/test_$name.c" \
        "${dep_srcs[@]}" \
        -o "/tmp/commons-install-$name"
     "/tmp/commons-install-$name"
@@ -86,7 +114,7 @@ for d in m.get('dependencies', []):
         --publisher-key-file "$key" --publisher-pubkey "$pubkey" \
         --store-a "$STORE_A" --store-b "$STORE_B" \
         --report "corpus/factory/$name.report.json" \
-        --kind human \
+        --kind "$KIND" \
         --cutoff-height "$CUTOFF_HEIGHT" --cutoff-mtp "$CUTOFF_MTP" \
         --register-corpus --census-def corpus/scopes.def
 

@@ -161,3 +161,7 @@ package zscrypt/zscrypt | root e0e5a09074d166274a59c6e077bd724e8c64ee8b6126cade5
 package zripemd/zripemd | root d08855f817b1bf66b45032f53aff713757c67dd856424c4018850af2b289b796 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zprng/zprng | root 91e9406a1016bcc224bb5e229377b1841e21c8ede1e0a00bc0d45d1989c41563 | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
 package zarena/zarena | root 02c59d23224e07c30ba9128310d65042ab152988bc0e63bb682eaa7751ad610c | store /home/rhett/.zclassic-c23-commons-factory-a | kind human | spdx MIT
+package zmd/zmd | root c913aee9624951a0ce5fef6665a24e8119e8a1c82ad4aadab10b2670b064d0f5 | store /home/rhett/.zclassic-c23-commons-factory-a | kind ai | spdx MIT
+package zwalk/zwalk | root 2423c3486ce669d8bfa16ba8fb1e75b9e634526a3e00d6fd5b3c5c28824eec77 | store /home/rhett/.zclassic-c23-commons-fast-d | kind ai | spdx MIT
+package zre/zre | root 469991668432703c0dfc7486ac21ffece405a1e2e7468ba58269e782d6b282a6 | store /home/rhett/.zclassic-c23-commons-factory-a | kind ai | spdx MIT
+package zxml/zxml | root 1dae888755e91b5723298318c003076e18a1b4d9329a6d542a1107ee6c3bd4ab | store /home/rhett/.zclassic-c23-commons-factory-a | kind ai | spdx MIT
