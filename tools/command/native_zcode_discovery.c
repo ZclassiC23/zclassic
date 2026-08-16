@@ -73,6 +73,26 @@ bool zcl_native_zcode_records_local(
          zcode_read_rpc("zcode_dht_status", "records", selector, result);
 }
 
+bool zcl_native_zcode_publication_snapshot_read(
+    const char *namespace_name, const char *package_root,
+    const char *transport_root, struct json_value *result)
+{
+  if (!namespace_name || !namespace_name[0] ||
+      !discovery_root(package_root) || !discovery_root(transport_root) ||
+      !result)
+    return false;
+  struct json_value input;
+  json_init(&input);
+  json_set_object(&input);
+  json_push_kv_str(&input, "namespace", namespace_name);
+  json_push_kv_str(&input, "semantic_root", package_root);
+  json_push_kv_str(&input, "transport_root", transport_root);
+  bool ok = zcode_read_rpc(
+      "zcode_dht_status", "publication_snapshot", &input, result);
+  json_free(&input);
+  return ok;
+}
+
 bool zcl_native_zcode_package_status_read(
     const char *package_root, const char *transport_root,
     struct json_value *result)

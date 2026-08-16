@@ -299,6 +299,29 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_presentation_publication_confirm)
 
 ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.release-confirm", "app.presentation", "",
+    "Ask for one exact proven-candidate decision in native C23",
+    "Rebuilds the canonical work status and proof evaluation, then shows a "
+    "ZClassic23-authored Confirm/Cancel decision only when the exact candidate "
+    "satisfies its task-bound proof policy. The inert confirmation identity "
+    "binds task, candidate, proof-policy and proof-set roots. This command "
+    "cannot accept, apply, sign or publish anything; the separate zcode work "
+    "accept command re-derives the identity and rechecks current evidence.", 0,
+    "presentation,native,confirmation,release,candidate,proof,human",
+    "zcl.app_presentation_release_confirm.input.v1",
+    "zcl.app_presentation_release_confirm.v1",
+    "workspace,work,output,page", "",
+    "zclassic23-dev app presentation release-confirm --input='"
+    "{\"workspace\":\".\",\"work\":\"latest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_DISPLAY_ONLY,
+    zcl_native_handle_presentation_release_confirm)
+
+ZCL_COMMAND_READY_COMMAND(
     "app.presentation.publication-status", "app.presentation", "",
     "Show exact package publication progress in native C23",
     "Reads this node's resident package store, completed carrier-download "

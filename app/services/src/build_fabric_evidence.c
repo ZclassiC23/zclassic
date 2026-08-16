@@ -447,9 +447,9 @@ static bool bf_has_local_match(
 
 // long-function-ok:proof-policy-transaction — selection, proof-set creation,
 // and trust promotion must use one verified snapshot of the receipt ledger.
-struct zcl_result build_fabric_proof_evaluate(
+static struct zcl_result bf_proof_evaluate(
     struct node_db *ndb, const char *workspace, const char *action_id,
-    int64_t now, struct build_fabric_proof_evaluation *out)
+    int64_t now, bool persist, struct build_fabric_proof_evaluation *out)
 {
     if (out) memset(out, 0, sizeof(*out));
     if (!ndb || !ndb->open || !workspace || !workspace[0] || !action_id ||
@@ -731,10 +731,11 @@ struct zcl_result build_fabric_proof_evaluate(
         vcs_zcode_proof_set_root(
             (const uint8_t (*)[32])proof_roots, proof_count, proof_root) !=
             VCS_ZCODE_DEV_OK ||
-        !vcs_object_put_addressed(workspace, proof_root, proof_wire,
-                                  proof_len))
+        (persist && !vcs_object_put_addressed(workspace, proof_root,
+                                              proof_wire, proof_len)))
         return ZCL_ERR(-1, "canonical proof set could not enter CAS");
     zcl_hex_encode(proof_root, 32, out->proof_set_root_sha3);
+    if (!persist) return ZCL_OK;
     if (!node_db_begin(ndb))
         return ZCL_ERR(-1, "cannot begin receipt trust promotion");
     bool saved = true;
@@ -774,4 +775,18 @@ struct zcl_result build_fabric_proof_evaluate(
         return ZCL_ERR(-1, "receipt trust promotion could not persist");
     }
     return ZCL_OK;
+}
+
+struct zcl_result build_fabric_proof_evaluate(
+    struct node_db *ndb, const char *workspace, const char *action_id,
+    int64_t now, struct build_fabric_proof_evaluation *out)
+{
+    return bf_proof_evaluate(ndb, workspace, action_id, now, true, out);
+}
+
+struct zcl_result build_fabric_proof_evaluate_readonly(
+    struct node_db *ndb, const char *workspace, const char *action_id,
+    int64_t now, struct build_fabric_proof_evaluation *out)
+{
+    return bf_proof_evaluate(ndb, workspace, action_id, now, false, out);
 }

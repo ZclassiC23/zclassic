@@ -26,6 +26,7 @@
 #define VCS_ZCODE_REVIEW_DOMAIN "zcl.zcode.review.v1"
 #define VCS_ZCODE_WORK_RECEIPT_DOMAIN "zcl.zcode.work_receipt.v1"
 #define VCS_ZCODE_PROOF_SET_DOMAIN "zcl.zcode.proof_set.v1"
+#define VCS_ZCODE_ACCEPTANCE_PLAN_DOMAIN "zcl.zcode.acceptance_plan.v1"
 
 #define VCS_ZCODE_TASK_WIRE_BYTES 318u
 #define VCS_ZCODE_CANDIDATE_WIRE_BYTES 218u
@@ -270,6 +271,15 @@ enum vcs_zcode_dev_error vcs_zcode_proof_set_parse(
     size_t roots_cap, size_t *count);
 enum vcs_zcode_dev_error vcs_zcode_proof_set_root(
     const uint8_t (*receipt_roots)[32], size_t count, uint8_t out[32]);
+
+/* Deterministic identity for one inert human decision. It binds the exact
+ * task, candidate, proof policy and verified proof set shown to the human;
+ * it is not a stored object and grants no acceptance or publication
+ * authority. The later accept command re-derives it before writing PROVEN. */
+enum vcs_zcode_dev_error vcs_zcode_acceptance_plan_root(
+    const uint8_t task_root[32], const uint8_t candidate_root[32],
+    const uint8_t proof_policy_root[32], const uint8_t proof_set_root[32],
+    uint8_t out[32]);
 enum vcs_zcode_dev_error vcs_zcode_work_receipt_seal(
     struct vcs_zcode_work_receipt_v1 *receipt, const uint8_t secret[32],
     const uint8_t pubkey[32]);

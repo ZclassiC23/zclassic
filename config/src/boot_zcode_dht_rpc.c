@@ -294,7 +294,6 @@ static bool rpc_provider_route(const struct json_value *, bool, struct json_valu
 
 static bool rpc_status(const struct json_value *params, bool help,
                        struct json_value *result) {
-  (void)params;
   if (help) {
     json_set_str(result, "zcode_dht_status\nBounded authenticated DHT state");
     return true;
@@ -303,6 +302,8 @@ static bool rpc_status(const struct json_value *params, bool help,
   const char *operation = input_str(in, "operation");
   if (operation && strcmp(operation, "records") == 0)
     return rpc_records(params, false, result);
+  if (operation && strcmp(operation, "publication_snapshot") == 0)
+    return boot_zcode_dht_publication_snapshot_rpc(params, false, result);
   if (operation && strcmp(operation, "publish") == 0)
     return rpc_publish(params, false, result);
   if (operation && strcmp(operation, "storage_ack") == 0)
@@ -536,7 +537,6 @@ static bool parse_selector(const struct json_value *in,
                         ? "semantic_root" : "transport_root";
   return input_root(in, key, selector->root, false);
 }
-
 static bool rpc_records(const struct json_value *params, bool help,
                         struct json_value *result) {
   if (help) {

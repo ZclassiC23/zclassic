@@ -74,15 +74,15 @@ zclassic23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 697 |
+| Registry entries (branches + leaves) | 698 |
 | Top-level roots | 11 |
 | Branches | 162 |
-| Leaves (dispatchable command paths) | 535 |
-| … `ready` (live handler in this build) | 481 |
+| Leaves (dispatchable command paths) | 536 |
+| … `ready` (live handler in this build) | 482 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | 24 |
-| Leaves with `effect=mutate` | 183 |
+| Leaves with `effect=mutate` | 184 |
 | Leaves with `effect=destructive` | 4 |
 | Leaves requiring **owner** authority | 112 |
 
@@ -93,7 +93,7 @@ Per source file:
 | `config/commands/root.def` | 10 | 5 | 5 |
 | `config/commands/core.def` | 118 | 29 | 89 |
 | `config/commands/apps.def` | 16 | 3 | 13 |
-| `config/commands/app_features.def` | 70 | 19 | 51 |
+| `config/commands/app_features.def` | 71 | 19 | 52 |
 | `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 55 | 13 | 42 |
@@ -594,6 +594,7 @@ represented by its children's sections.
 | `app presentation development` | ready | mutate / app-write / operator, display-only · fast/low | `workspace`, `receipt_id`, `output`, `page` | `zcl.app_presentation_development.v1` | `zclassic23 app presentation development` | Show the latest exact local development consequence in native C23 |
 | `app presentation reproduction` | ready | mutate / app-write / operator, display-only · fast/low | **`action_id`**, `output`, `page` | `zcl.app_presentation_reproduction.v1` | `zclassic23 app presentation reproduction --input='{"action_id":"<64hex>"}'` | Show live independent-reproduction progress in one native window |
 | `app presentation publication-confirm` | ready | mutate / app-write / operator, display-only · foreground/moderate | `release_hex`, `manifest_hex`, `recipe_hex`, `dir`, `datadir`, `output`, `page` | `zcl.app_presentation_publication_confirm.v1` | `zclassic23 app presentation publication-confirm --input='{"release_hex":"..","manifest_hex":"..","recipe_hex":"..","dir":"/tmp/pkg"}'` | Ask for an exact local package-commit decision in native C23 |
+| `app presentation release-confirm` | ready | mutate / app-write / operator, display-only · fast/low | `workspace`, `work`, `output`, `page` | `zcl.app_presentation_release_confirm.v1` | `zclassic23-dev app presentation release-confirm --input='{"workspace":".","work":"latest"}'` | Ask for one exact proven-candidate decision in native C23 |
 | `app presentation publication-status` | ready | mutate / app-write / operator, display-only · fast/low | **`package_root`**, **`transport_root`**, **`confirmation_identity`**, `output`, `page` | `zcl.app_presentation_publication_status.v1` | `zclassic23 app presentation publication-status --input='{"package_root":"<64hex>","transport_root":"<64hex>","confirmation_identity":"<64hex>"}'` | Show exact package publication progress in native C23 |
 
 #### `app.blog` — Blog
@@ -998,7 +999,7 @@ represented by its children's sections.
 | `zcode work status` | ready | read / read / operator · fast/low | `workspace`, `work` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work status --input='{"work":"latest"}'` | Show one human-first work status |
 | `zcode work show` | ready | read / read / operator · fast/low | `workspace`, `work` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work show --input='{"work":"latest"}'` | Show one human-first work result |
 | `zcode work run` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter`, `datadir` | `zcl.zcode_work_run.v1` | `zclassic23-dev zcode work run --input='{"work":"latest","adapter":"manual"}'` | Run one contained adapter handoff |
-| `zcode work accept` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work` | `zcl.zcode_work_accept.v1` | `zclassic23-dev zcode work accept --input='{"work":"latest"}'` | Accept one exact proven candidate |
+| `zcode work accept` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `confirmation_identity` | `zcl.zcode_work_accept.v1` | `zclassic23-dev zcode work accept --input='{"work":"latest"}'` | Accept one exact proven candidate |
 | `zcode work review` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter`, **`verdict`**, **`findings`** | `zcl.zcode_work_review.v1` | `zclassic23-dev zcode work review --input='{"work":"latest","adapter":"manual","verdict":"approve","findings":"No blocking findings."}'` | Review one exact candidate |
 
 #### `zcode.passport` — Signed C23 module Passports

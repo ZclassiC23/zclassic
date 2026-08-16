@@ -707,6 +707,8 @@ void zcl_native_handle_zcode_work_status(
                          entry->proof_policy_root_hex) &&
         json_push_kv_str(&expert, "toolchain_capsule_root",
                          entry->toolchain_capsule_root_hex) &&
+        json_push_kv_str(&expert, "action_id",
+                         entry->latest_action_root_hex) &&
         json_push_kv_str(&expert, "candidate_root",
                          entry->latest_candidate_root_hex) &&
         json_push_kv_str(&expert, "patch_root",
@@ -1185,6 +1187,8 @@ void zcl_native_handle_zcode_work_accept(
     if (!request || !reply) return;
     const char *workspace_arg = zwork_str(request->input, "workspace");
     const char *work = zwork_str(request->input, "work");
+    const char *confirmed_identity =
+        zwork_str(request->input, "confirmation_identity");
     if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
     char workspace[ZWORK_PATH_MAX];
     if (!realpath(workspace_arg, workspace)) {
@@ -1220,6 +1224,45 @@ void zcl_native_handle_zcode_work_accept(
         zwork_fail(reply, "ACCEPT_PATH_FAILED", "resolve",
                    "task-local ZBuild path is too long", false, false);
         vcs_zcode_task_index_free(index); return;
+    }
+    char acceptance_hex[65] = {0};
+    if (confirmed_identity) {
+        char db_path[ZWORK_PATH_MAX];
+        int dbn = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+        struct node_db identity_db = {0};
+        struct build_fabric_proof_evaluation identity_facts;
+        bool identity_ready = dbn > 0 && (size_t)dbn < sizeof(db_path) &&
+            node_db_open_existing_runtime(
+                &identity_db, db_path, "zcode.work.accept.confirmation");
+        if (identity_ready) {
+            identity_ready = build_fabric_proof_evaluate_readonly(
+                &identity_db, workspace, entry->latest_action_root_hex,
+                (int64_t)platform_time_wall_unix(), &identity_facts).ok;
+            node_db_close(&identity_db);
+        }
+        uint8_t task_root[32], candidate_root[32], policy_root[32];
+        uint8_t proof_root[32], acceptance_root[32], supplied_root[32];
+        identity_ready = identity_ready &&
+            zcl_hex_decode_lower(entry->task_root_hex, task_root, 32) &&
+            zcl_hex_decode_lower(entry->latest_candidate_root_hex,
+                                 candidate_root, 32) &&
+            zcl_hex_decode_lower(entry->proof_policy_root_hex,
+                                 policy_root, 32) &&
+            zcl_hex_decode_lower(identity_facts.proof_set_root_sha3,
+                                 proof_root, 32) &&
+            vcs_zcode_acceptance_plan_root(
+                task_root, candidate_root, policy_root, proof_root,
+                acceptance_root) == VCS_ZCODE_DEV_OK;
+        if (identity_ready)
+            zcl_hex_encode(acceptance_root, 32, acceptance_hex);
+        if (!identity_ready ||
+            !zcl_hex_decode_lower(confirmed_identity, supplied_root, 32) ||
+            memcmp(supplied_root, acceptance_root, 32) != 0) {
+            zwork_fail(reply, "CONFIRMATION_IDENTITY_STALE", "accept",
+                       "the confirmed native decision no longer matches the exact candidate proof set",
+                       false, false);
+            vcs_zcode_task_index_free(index); return;
+        }
     }
     struct zcl_command_reply lane_reply;
     zcl_command_reply_init(&lane_reply, "zcl.zcode_lane.v1");
@@ -1296,6 +1339,11 @@ void zcl_native_handle_zcode_work_accept(
         bool ok = json_push_kv_str(&reply->data, "work_id", work_id) &&
             json_push_kv_str(&reply->data, "goal_decision", "accepted") &&
             json_push_kv_str(&reply->data, "state", "PROVEN") &&
+            (!confirmed_identity ||
+             json_push_kv_str(&reply->data, "confirmation_identity",
+                              acceptance_hex)) &&
+            json_push_kv_bool(&reply->data, "confirmation_identity_checked",
+                              confirmed_identity != NULL) &&
             json_push_kv_bool(&reply->data, "idempotent", already_proven) &&
             json_push_kv_str(&reply->data, "authoritative_workspace",
                              "unchanged") &&

@@ -367,6 +367,31 @@ enum vcs_zcode_dev_error vcs_zcode_proof_policy_root(
                ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
 }
 
+enum vcs_zcode_dev_error vcs_zcode_acceptance_plan_root(
+    const uint8_t task_root[32], const uint8_t candidate_root[32],
+    const uint8_t proof_policy_root[32], const uint8_t proof_set_root[32],
+    uint8_t out[32])
+{
+    if (!out || !task_root || !candidate_root || !proof_policy_root ||
+        !proof_set_root)
+        return VCS_ZCODE_DEV_ERR_NULL;
+    if (!nonzero(task_root) || !nonzero(candidate_root) ||
+        !nonzero(proof_policy_root) || !nonzero(proof_set_root))
+        return VCS_ZCODE_DEV_ERR_ROOT_ZERO;
+    uint8_t roots[4u * VCS_ZCODE_ROOT_BYTES];
+    memcpy(roots, task_root, VCS_ZCODE_ROOT_BYTES);
+    memcpy(roots + VCS_ZCODE_ROOT_BYTES, candidate_root,
+           VCS_ZCODE_ROOT_BYTES);
+    memcpy(roots + 2u * VCS_ZCODE_ROOT_BYTES, proof_policy_root,
+           VCS_ZCODE_ROOT_BYTES);
+    memcpy(roots + 3u * VCS_ZCODE_ROOT_BYTES, proof_set_root,
+           VCS_ZCODE_ROOT_BYTES);
+    static const char domain[] = VCS_ZCODE_ACCEPTANCE_PLAN_DOMAIN;
+    return vcs_signed_evidence_root(domain, sizeof(domain), roots,
+                                    sizeof(roots), out)
+        ? VCS_ZCODE_DEV_OK : VCS_ZCODE_DEV_ERR_NULL;
+}
+
 enum vcs_zcode_dev_error vcs_zcode_candidate_serialize(
     const struct vcs_zcode_candidate_v1 *c,
     uint8_t out[VCS_ZCODE_CANDIDATE_WIRE_BYTES])

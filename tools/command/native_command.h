@@ -372,6 +372,8 @@ void zcl_native_handle_presentation_reproduction(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_publication_confirm(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_presentation_release_confirm(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_publication_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 bool zcl_native_presentation_dumpstate(
@@ -398,6 +400,10 @@ bool zcl_native_presentation_reproduction_model_from_facts(
     char *why, size_t why_cap);
 bool zcl_native_presentation_publication_confirm_model_from_plan(
     const struct json_value *plan, struct zcl_present_model_v1 *model,
+    char *why, size_t why_cap);
+bool zcl_native_presentation_release_confirm_model_from_facts(
+    const struct json_value *status, const struct json_value *evidence,
+    struct zcl_present_model_v1 *model, char identity[65],
     char *why, size_t why_cap);
 bool zcl_native_presentation_publication_status_model_from_facts(
     const struct json_value *facts, struct zcl_present_model_v1 *model,
