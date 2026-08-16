@@ -146,6 +146,11 @@ volatile sig_atomic_t g_shutdown_requested = 0;
  * add without depending on the host's background load. */
 #define PV_COMPILE_NPROC 256u
 #define PV_COMPILE_NOFILE 1024u
+/* The exact one-TU build action has a much smaller, action-keyed budget than
+ * the general package verifier (which may run multi-source compiler and
+ * sanitizer matrices). Keep the two policies distinct. */
+#define PV_ZBUILD_COMPILE_NPROC 16u
+#define PV_ZBUILD_COMPILE_NOFILE 64u
 /* Test-run fixed caps beyond the recipe's AS/CPU. */
 #define PV_TEST_FSIZE_BYTES (UINT64_C(64) * 1024u * 1024u)
 #define PV_TEST_NPROC 64u
@@ -878,6 +883,7 @@ static bool pv_load_release(const char *store_dir,
 
 struct pv_compiler {
     const char *id; /* "gcc" / "clang" (attestation tokens) */
+    const char *path; /* absolute executable selected by the supervisor */
     char version[VCS_PACKAGE_ATTEST_COMPILER_VERSION_MAX + 1u];
     bool available;
     uint8_t outcome; /* enum vcs_package_attest_outcome (build verdict) */
@@ -1164,6 +1170,55 @@ static bool pv_copy_file(const char *src, const char *dst, mode_t mode)
     return ok;
 }
 
+static bool pv_directory_has_exact_files(const char *path,
+                                         const char *first,
+                                         const char *second)
+{
+    DIR *dir = opendir(path);
+    if (!dir) return false;
+    bool saw_first = false, saw_second = second == NULL, ok = true;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (strcmp(entry->d_name, ".") == 0 ||
+            strcmp(entry->d_name, "..") == 0)
+            continue;
+        if (strcmp(entry->d_name, first) == 0 && !saw_first)
+            saw_first = true;
+        else if (second && strcmp(entry->d_name, second) == 0 && !saw_second)
+            saw_second = true;
+        else {
+            ok = false;
+            break;
+        }
+        char full[4200];
+        struct stat st;
+        int n = snprintf(full, sizeof(full), "%s/%s", path, entry->d_name);
+        if (n <= 0 || (size_t)n >= sizeof(full) || lstat(full, &st) != 0 ||
+            !S_ISREG(st.st_mode)) {
+            ok = false;
+            break;
+        }
+    }
+    if (closedir(dir) != 0) ok = false;
+    return ok && saw_first && saw_second;
+}
+
+static bool pv_directory_is_empty(const char *path)
+{
+    DIR *dir = opendir(path);
+    if (!dir) return false;
+    bool empty = true;
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL)
+        if (strcmp(entry->d_name, ".") != 0 &&
+            strcmp(entry->d_name, "..") != 0) {
+            empty = false;
+            break;
+        }
+    if (closedir(dir) != 0) empty = false;
+    return empty;
+}
+
 /* Install-relative header destination: strip the LONGEST recipe include-dir
  * prefix so `#include <ringbuffer.h>` keeps working after install; a header
  * under no include dir keeps its full package-relative path. */
@@ -1260,6 +1315,14 @@ static int pv_zbuild_compile_mode(int argc, char **argv)
         return 4;
     }
 
+    char home_dir[4200];
+    int hn = snprintf(home_dir, sizeof(home_dir), "%s/.home", src_dir);
+    if (hn <= 0 || (size_t)hn >= sizeof(home_dir) ||
+        mkdir(home_dir, 0500) != 0) {
+        fprintf(stdout, "zbuild-error=fresh-home-unavailable\n");
+        return 5;
+    }
+
     struct os_sandbox_path_rule rules[10];
     size_t n_rules = pv_child_grants(src_dir, build_dir, NULL, 0, rules,
                                      sizeof(rules) / sizeof(rules[0]));
@@ -1270,19 +1333,28 @@ static int pv_zbuild_compile_mode(int argc, char **argv)
     const struct os_sandbox_rlimits limits = {
         .as_bytes = UINT64_C(2048) * 1024u * 1024u,
         .cpu_seconds = 120,
-        .nproc = PV_COMPILE_NPROC,
+        .nproc = PV_ZBUILD_COMPILE_NPROC,
         .fsize_bytes = PV_COMPILE_FSIZE_BYTES,
-        .nofile = PV_COMPILE_NOFILE,
+        .nofile = PV_ZBUILD_COMPILE_NOFILE,
         .core_bytes = 0,
     };
-    char env_tmpdir[4200];
+    char env_tmpdir[4200], env_home[4200];
     (void)snprintf(env_tmpdir, sizeof(env_tmpdir), "TMPDIR=%s", build_dir);
-    const char *const env[] = { env_tmpdir, NULL };
-    const char *const cc_argv[] = {
-        "/usr/bin/gcc", "-x", "cpp-output", "-std=c23", "-O2",
-        "-march=x86-64-v3", "-fno-ident", "-c", input, "-o", output,
+    (void)snprintf(env_home, sizeof(env_home), "HOME=%s", home_dir);
+    const char *const env[] = {
+        env_tmpdir, env_home, "LANG=C", "TZ=UTC", "SOURCE_DATE_EPOCH=0",
         NULL,
     };
+    const char *const cc_argv[] = {
+        VCS_BUILD_COMPILER_V1, "-x", "cpp-output", "-std=c23", "-O2",
+        "-march=x86-64-v3", "-fno-ident", "-c", input, "-o", output, NULL,
+    };
+    uint8_t input_before[32], input_after[32];
+    uint64_t input_before_bytes = 0, input_after_bytes = 0;
+    if (!pv_sha3_file(input, input_before, &input_before_bytes)) {
+        fprintf(stdout, "zbuild-error=input-observation-failed\n");
+        return 5;
+    }
     struct pv_run run = pv_run_child(cc_argv, build_dir, &limits, true,
                                      rules, n_rules, env,
                                      PV_COMPILE_TIMEOUT_MS);
@@ -1296,18 +1368,36 @@ static int pv_zbuild_compile_mode(int argc, char **argv)
         return 5;
     }
     struct stat output_st;
-    if (stat(output, &output_st) != 0 || !S_ISREG(output_st.st_mode) ||
-        output_st.st_size <= 0 ||
-        (uint64_t)output_st.st_size > VCS_BUILD_ARTIFACT_MAX_BYTES ||
-        chmod(output, 0400) != 0) {
-        fprintf(stdout, "zbuild-error=output-invalid-or-oversize\n");
+    bool output_shape = stat(output, &output_st) == 0 &&
+        S_ISREG(output_st.st_mode) && output_st.st_size > 0 &&
+        (uint64_t)output_st.st_size <= VCS_BUILD_ARTIFACT_MAX_BYTES;
+    bool output_read_only = output_shape && chmod(output, 0400) == 0;
+    bool input_stable = pv_sha3_file(
+        input, input_after, &input_after_bytes) &&
+        input_before_bytes == input_after_bytes &&
+        memcmp(input_before, input_after, 32) == 0;
+    bool writes_exact = pv_directory_has_exact_files(
+        build_dir, VCS_BUILD_OUTPUT_V1, NULL);
+    bool home_empty = pv_directory_is_empty(home_dir);
+    if (!output_shape || !output_read_only || !input_stable ||
+        !writes_exact || !home_empty) {
+        fprintf(stdout,
+                "zbuild-error=physical-observation-refused output=%d "
+                "readonly=%d input_stable=%d writes=%d home=%d\n",
+                output_shape ? 1 : 0, output_read_only ? 1 : 0,
+                input_stable ? 1 : 0, writes_exact ? 1 : 0,
+                home_empty ? 1 : 0);
         (void)unlink(output);
         return 5;
     }
+    char input_sha3_hex[65];
+    zcl_hex_encode(input_after, 32, input_sha3_hex);
     fprintf(stdout,
             "zbuild-ok=1 landlock=1 seccomp=1 rlimits=1 network=0 "
-            "compiler=/usr/bin/gcc bytes=%lld\n",
-            (long long)output_st.st_size);
+            "compiler=%s bytes=%lld input_sha3=%s observed_reads=2 "
+            "observed_writes=1\n",
+            VCS_BUILD_COMPILER_V1, (long long)output_st.st_size,
+            input_sha3_hex);
     return 0;
 }
 
@@ -2179,17 +2269,24 @@ int main(int argc, char **argv)
 
     /* Compiler probes (version strings are recorded in the attestation). */
     struct pv_compiler compilers[2] = {
-        { .id = "clang", .available = false,
+        { .id = "clang", .path = "/usr/bin/clang", .available = false,
           .outcome = VCS_PACKAGE_ATTEST_OUTCOME_UNAVAILABLE },
-        { .id = "gcc", .available = false,
+        { .id = "gcc", .path = VCS_BUILD_COMPILER_V1, .available = false,
           .outcome = VCS_PACKAGE_ATTEST_OUTCOME_UNAVAILABLE },
     };
     for (size_t i = 0; i < 2; i++) {
-        const char *vargv[] = { compilers[i].id, "--version", NULL };
+        const char *vargv[] = { compilers[i].path, "--version", NULL };
+        const char *cargv[] = {
+            compilers[i].path, "-std=c23", "-fsyntax-only", "-x", "c",
+            "/dev/null", NULL,
+        };
         struct pv_run pr = pv_run_child(vargv, NULL, NULL, landlock, rules,
                                         n_rules, NULL, 10000);
+        struct pv_run capability = pv_run_child(
+            cargv, NULL, NULL, false, NULL, 0, NULL, 10000);
         if (pr.launched && pr.exited && pr.exit_code == 0 &&
-            pr.stdout_buf[0]) {
+            pr.stdout_buf[0] && capability.launched && capability.exited &&
+            capability.exit_code == 0) {
             compilers[i].available = true;
             size_t vl = strcspn(pr.stdout_buf, "\r\n");
             if (vl >= sizeof(compilers[i].version))
@@ -2285,7 +2382,8 @@ int main(int argc, char **argv)
     for (size_t ci = 0; ci < 2 && build_ok; ci++) {
         if (!compilers[ci].available)
             continue;
-        const char *cc = compilers[ci].id;
+        const char *cc = compilers[ci].path;
+        const char *cc_id = compilers[ci].id;
         bool cc_ok = true;
         for (int variant = 0; variant < 2 && cc_ok; variant++) {
             const bool sanitize = variant == 1;
@@ -2294,7 +2392,7 @@ int main(int argc, char **argv)
                 (!have_tests || ci != sanitizer_compiler))
                 continue;
             char fail_prefix[32];
-            snprintf(fail_prefix, sizeof(fail_prefix), "%s%s", cc,
+            snprintf(fail_prefix, sizeof(fail_prefix), "%s%s", cc_id,
                      sanitize ? "+san" : "");
             const size_t total_sources =
                 recipe.sources.count +
@@ -2308,7 +2406,7 @@ int main(int argc, char **argv)
                 char obj_file[4200];
                 snprintf(src_file, sizeof(src_file), "%s/%s", src_root, rel);
                 snprintf(obj_file, sizeof(obj_file),
-                         "%s/%s_%d_%zu.o", build_root, cc, variant, si);
+                         "%s/%s_%d_%zu.o", build_root, cc_id, variant, si);
                 struct pv_compile_args args;
                 memset(&args, 0, sizeof(args));
                 pv_compile_argv(&args, cc, sanitize, standard_profile,
@@ -2348,7 +2446,7 @@ int main(int argc, char **argv)
             if (cc_ok && have_tests) {
                 char bin_file[4200];
                 snprintf(bin_file, sizeof(bin_file), "%s/%s_%d_test",
-                         build_root, cc, variant);
+                         build_root, cc_id, variant);
                 const char *largv[560];
                 char lobjs[512][96];
                 size_t ln = 0;
@@ -2361,7 +2459,7 @@ int main(int argc, char **argv)
                                    o < sizeof(lobjs) / sizeof(lobjs[0]);
                      o++) {
                     /* cwd is build_root: basenames resolve there. */
-                    snprintf(lobjs[o], sizeof(lobjs[o]), "%s_%d_%zu.o", cc,
+                    snprintf(lobjs[o], sizeof(lobjs[o]), "%s_%d_%zu.o", cc_id,
                              variant, o);
                     largv[ln++] = lobjs[o];
                 }
@@ -2850,6 +2948,9 @@ int main(int argc, char **argv)
                rec.output_count,
                    vcs_package_build_isolation_string(
                    (enum vcs_package_build_isolation)rec.isolation));
+        if (!build_ok)
+            printf("build-failure-detail=%s\n",
+                   build_fail_detail[0] ? build_fail_detail : "unclassified");
         if (candidate_mode) {
             uint64_t source_bytes = 0, output_bytes = 0;
             for (size_t i = 0; i < manifest.count; i++)

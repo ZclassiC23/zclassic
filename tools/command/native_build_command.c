@@ -3,12 +3,14 @@
 
 #include "command/native_command.h"
 
+#include "base/hex.h"
 #include "config/runtime.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
+#include "vcs/build_action.h"
 
 #include <sqlite3.h>
 #include <stdio.h>
@@ -192,6 +194,19 @@ void zcl_native_handle_metaverse_build_plan(
                 "discover schema metaverse.build.plan", false);
         return;
     }
+    uint8_t fixed_flags[32], fixed_environment[32];
+    char fixed_flags_hex[65], fixed_environment_hex[65];
+    vcs_build_action_v1_fixed_flags_root(fixed_flags);
+    vcs_build_action_v1_fixed_environment_root(fixed_environment);
+    zcl_hex_encode(fixed_flags, 32, fixed_flags_hex);
+    zcl_hex_encode(fixed_environment, 32, fixed_environment_hex);
+    if (strcmp(flags, fixed_flags_hex) != 0 ||
+        strcmp(environment, fixed_environment_hex) != 0) {
+        bf_fail(reply, "FIXED_PROFILE_MISMATCH",
+                "the supervisor, not the requester, defines flags and environment",
+                VCS_BUILD_PROFILE_SECURE_CANDIDATE_V1, false);
+        return;
+    }
     int64_t now = platform_time_wall_unix();
     struct db_build_job job = {0};
     struct db_build_action action = {0};
@@ -206,12 +221,14 @@ void zcl_native_handle_metaverse_build_plan(
     (void)snprintf(action.state, sizeof(action.state), "SNAPSHOTTED");
     (void)snprintf(action.input_root_sha3, sizeof(action.input_root_sha3), "%s", input_root);
     (void)snprintf(action.target, sizeof(action.target), "linux-x86_64-v3");
-    (void)snprintf(action.flags_sha3, sizeof(action.flags_sha3), "%s", flags);
-    (void)snprintf(action.environment_sha3, sizeof(action.environment_sha3), "%s", environment);
+    (void)snprintf(action.flags_sha3, sizeof(action.flags_sha3), "%s",
+                   fixed_flags_hex);
+    (void)snprintf(action.environment_sha3, sizeof(action.environment_sha3),
+                   "%s", fixed_environment_hex);
     (void)snprintf(action.virtual_workdir, sizeof(action.virtual_workdir), "/zbuild/src");
     (void)snprintf(action.declared_outputs, sizeof(action.declared_outputs), "unit.o");
     (void)snprintf(action.resource_policy, sizeof(action.resource_policy),
-                   "cpu=1,memory_mb=2048,timeout_s=120,network=0");
+                   "%s", VCS_BUILD_RESOURCE_POLICY_V1);
     action.created_at = action.updated_at = now;
     struct zcl_result result = build_fabric_action_id(&job, &action,
                                                        action.action_id);

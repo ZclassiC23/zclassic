@@ -93,6 +93,7 @@ struct db_build_receipt {
     char lease_id[BUILD_FABRIC_ID_HEX + 1];
     char action_sha3[BUILD_FABRIC_ID_HEX + 1];
     char output_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char observation_sha3[BUILD_FABRIC_ID_HEX + 1];
     char work_receipt_sha3[BUILD_FABRIC_ID_HEX + 1];
     char signature[BUILD_FABRIC_SIGNATURE_HEX + 1];
     char confinement[BUILD_FABRIC_CONFINEMENT_MAX + 1];

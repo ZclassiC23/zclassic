@@ -9,6 +9,7 @@
 #include <stdint.h>
 
 #define VCS_BUILD_TARGET_V1 "linux-x86_64-v3"
+#define VCS_BUILD_COMPILER_V1 "/usr/bin/cc"
 #define VCS_BUILD_ACTION_KIND_V1 "c23.compile.preprocessed.v1"
 #define VCS_BUILD_ACTION_KIND_PACKAGE_V1 "c23.package.recipe.v1"
 #define VCS_BUILD_ACTION_KIND_TEST_V1 "c23.package.test.v1"
@@ -21,10 +22,14 @@
 #define VCS_BUILD_PACKAGE_PROFILE_QUICK_V1 "zcode-quick-v0.1"
 #define VCS_BUILD_PACKAGE_PROFILE_STANDARD_A_V1 "zcode-standard-a-v0.1"
 #define VCS_BUILD_PACKAGE_PROFILE_STANDARD_B_V1 "zcode-standard-b-v0.1"
+#define VCS_BUILD_PROFILE_SECURE_CANDIDATE_V1 "secure-candidate-v1"
+#define VCS_BUILD_PROFILE_CLEAN_SHADOW_V1 "clean-shadow-v1"
+#define VCS_BUILD_PROFILE_PHYSICAL_REPRODUCTION_V1 "physical-reproduction-v1"
 #define VCS_BUILD_VIRTUAL_ROOT_V1 "/zbuild/src"
 #define VCS_BUILD_OUTPUT_V1 "unit.o"
 #define VCS_BUILD_RESOURCE_POLICY_V1 \
-    "cpu=1,memory_mb=2048,timeout_s=120,network=0"
+    "cpu=1,cpu_s=120,memory_mb=2048,processes=16,files=64," \
+    "file_bytes=268435456,output_bytes=268435456,timeout_s=120,network=0"
 #define VCS_BUILD_PACKAGE_VIRTUAL_ROOT_V1 "/zbuild/package"
 #define VCS_BUILD_PACKAGE_OUTPUT_V1 "build-report"
 #define VCS_BUILD_PACKAGE_RESOURCE_POLICY_V1 \

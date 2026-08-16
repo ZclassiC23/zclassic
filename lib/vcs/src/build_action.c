@@ -98,7 +98,7 @@ static bool build_sha3_file(const char *path, uint8_t out[32],
 
 static bool build_gcc_query(const char *arg, char *out, size_t cap)
 {
-    const char *const argv[] = { "/usr/bin/gcc", arg, NULL };
+    const char *const argv[] = { VCS_BUILD_COMPILER_V1, arg, NULL };
     if (zcl_spawn_capture(argv, out, cap, 10000) != 0 || !out[0])
         return false;
     out[strcspn(out, "\r\n")] = '\0';
@@ -195,7 +195,7 @@ static bool build_toolchain_capture_uncached(
            sizeof(struct build_toolchain_file) * BUILD_TOOLCHAIN_FILE_COUNT);
     size_t file_count = 0;
     char driver[4096];
-    if (!realpath("/usr/bin/gcc", driver) ||
+    if (!realpath(VCS_BUILD_COMPILER_V1, driver) ||
         strlen(driver) >= sizeof(files[file_count].path))
         return false;
     (void)snprintf(files[file_count].path, sizeof(files[file_count].path),
@@ -300,7 +300,7 @@ void vcs_build_action_v1_fixed_flags_root(uint8_t out[32])
 {
     static const char domain[] = "zcl.build_action.fixed_flags.v1";
     static const char *const values[] = {
-        "/usr/bin/gcc", "-x", "cpp-output", "-std=c23", "-O2",
+        VCS_BUILD_COMPILER_V1, "-x", "cpp-output", "-std=c23", "-O2",
         "-march=x86-64-v3", "-fno-ident", "-c", "/zbuild/src/unit.i",
         "-o", "/zbuild/out/unit.o",
     };
@@ -317,7 +317,8 @@ void vcs_build_action_v1_fixed_environment_root(uint8_t out[32])
     static const char domain[] = "zcl.build_action.fixed_environment.v1";
     static const char *const values[] = {
         "PATH=/usr/local/bin:/usr/bin:/bin", "LC_ALL=C",
-        "TMPDIR=/zbuild/out",
+        "LANG=C", "TZ=UTC", "HOME=/zbuild/home",
+        "SOURCE_DATE_EPOCH=0", "TMPDIR=/zbuild/out",
     };
     struct sha3_256_ctx sha;
     sha3_256_init(&sha);

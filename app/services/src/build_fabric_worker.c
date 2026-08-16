@@ -488,6 +488,11 @@ struct zcl_result build_fabric_worker_execute(
     }
     uint64_t input_bytes = package_action
         ? VCS_ZCODE_PACKAGE_ACTION_INPUT_WIRE_BYTES : input_len;
+    uint8_t observed_input_bytes_root[32] = {0};
+    if (!package_action) sha3_256(input, input_len, observed_input_bytes_root);
+    char observed_input_hex[65] = {0};
+    if (!package_action)
+        zcl_hex_encode(observed_input_bytes_root, 32, observed_input_hex);
     int64_t input_reconstruction_us =
         platform_time_monotonic_us() - worker_started_us - action_lookup_us;
     int64_t work_started = (int64_t)platform_time_wall_unix();
@@ -659,6 +664,8 @@ struct zcl_result build_fabric_worker_execute(
     int64_t output_verify_us =
         platform_time_monotonic_us() - output_verify_started_us;
     uint8_t output_root[32];
+    uint8_t output_bytes_root[32];
+    sha3_256(output, output_len, output_bytes_root);
     int64_t output_cas_started_us = platform_time_monotonic_us();
     struct zcl_result stored = build_fabric_worker_store_transferable_output(
         workspace, action_id, zcode_context, output, output_len, output_root);
@@ -666,6 +673,64 @@ struct zcl_result build_fabric_worker_execute(
     bfw_paths_cleanup(&paths);
     if (!stored.ok)
         return bfw_fail(ndb, action_id, lease_id, stored.message);
+    uint8_t evidence_root[32];
+    memcpy(evidence_root, output_root, sizeof(evidence_root));
+    bool compile_action = strcmp(
+        action.kind, VCS_BUILD_ACTION_KIND_V1) == 0;
+    if (compile_action) {
+        char observed_input_marker[80];
+        (void)snprintf(observed_input_marker, sizeof(observed_input_marker),
+                       "input_sha3=%s", observed_input_hex);
+        if (!strstr(capture, observed_input_marker) ||
+            !strstr(capture, "observed_reads=2") ||
+            !strstr(capture, "observed_writes=1"))
+            return bfw_fail(ndb, action_id, lease_id,
+                            "physical-observation-incomplete");
+        struct vcs_build_execution_observation_v1 observation = {
+            .schema_version = VCS_BUILD_EXECUTION_OBSERVATION_VERSION,
+            .flags = VCS_BUILD_OBS_REQUIRED_FLAGS,
+            .exit_status = work_exit_status,
+            .cpu_seconds_limit = 120,
+            .memory_bytes_limit = UINT64_C(2048) * 1024u * 1024u,
+            .process_limit = 16,
+            .file_limit = 64,
+            .file_bytes_limit = UINT64_C(256) * 1024u * 1024u,
+            .output_bytes_limit = VCS_BUILD_ARTIFACT_MAX_BYTES,
+            .wall_millis_limit = 120000,
+        };
+        if (!zcl_hex_decode_lower(action.action_id,
+                                  observation.action_root, 32) ||
+            !zcl_hex_decode_lower(action.input_root_sha3,
+                                  observation.action_input_root, 32) ||
+            !zcl_hex_decode_lower(job.toolchain_sha3,
+                                  observation.toolchain_root, 32) ||
+            !zcl_hex_decode_lower(action.flags_sha3,
+                                  observation.flags_root, 32) ||
+            !zcl_hex_decode_lower(action.environment_sha3,
+                                  observation.environment_root, 32))
+            return bfw_fail(ndb, action_id, lease_id,
+                            "physical-observation-roots-invalid");
+        memcpy(observation.artifact_root, output_root, 32);
+        memcpy(observation.observed_input_bytes_root,
+               observed_input_bytes_root, 32);
+        memcpy(observation.output_bytes_root, output_bytes_root, 32);
+        vcs_build_execution_read_set_root(
+            observation.action_input_root,
+            observation.observed_input_bytes_root,
+            observation.toolchain_root,
+            observation.declared_reads_root);
+        memcpy(observation.observed_reads_root,
+               observation.declared_reads_root, 32);
+        vcs_build_execution_declared_write_set_root(
+            action.declared_outputs, observation.declared_writes_root);
+        vcs_build_execution_observed_write_set_root(
+            action.declared_outputs, observation.output_bytes_root,
+            observation.observed_writes_root);
+        struct zcl_result observed = build_fabric_worker_store_observation(
+            workspace, &observation, evidence_root);
+        if (!observed.ok)
+            return bfw_fail(ndb, action_id, lease_id, observed.message);
+    }
     int64_t output_cas_us =
         platform_time_monotonic_us() - output_cas_started_us;
     int64_t work_finished = (int64_t)platform_time_wall_unix();
@@ -731,14 +796,16 @@ struct zcl_result build_fabric_worker_execute(
     }
     (void)snprintf(receipt.confinement, sizeof(receipt.confinement),
                    "%s", confinement);
+    if (compile_action)
+        zcl_hex_encode(evidence_root, 32, receipt.observation_sha3);
     (void)snprintf(receipt.trust_state, sizeof(receipt.trust_state),
-                   "LOCAL_ACCEPTED");
+                   "REMOTE_OBSERVED");
     receipt.exit_status = work_exit_status;
     receipt.created_at = work_finished;
     if (zcode_context) {
         struct zcl_result canonical = build_fabric_worker_canonical_receipt(
             workspace, &action, &zcode_task, &zcode_candidate, output_root,
-            work_started, work_finished, work_kind, work_status,
+            work_started, work_finished, evidence_root, work_kind, work_status,
             work_exit_status, confinement, signer_secret, signer_pubkey,
             receipt.work_receipt_sha3);
         if (!canonical.ok)
@@ -755,7 +822,7 @@ struct zcl_result build_fabric_worker_execute(
     int64_t receipt_sign_us =
         platform_time_monotonic_us() - receipt_started_us;
     int64_t projection_started_us = platform_time_monotonic_us();
-    struct zcl_result accepted = build_fabric_receipt_accept(
+    struct zcl_result accepted = build_fabric_receipt_quarantine(
         ndb, &receipt, receipt.created_at);
     if (!accepted.ok) return accepted;
     int64_t projection_us =

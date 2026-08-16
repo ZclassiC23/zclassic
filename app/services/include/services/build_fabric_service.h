@@ -34,10 +34,10 @@ struct zcl_result build_fabric_plan(struct node_db *ndb,
                                     const struct db_build_job *job,
                                     const struct db_build_action *action);
 
-/* Plan a second immutable execution of an existing action under a distinct
- * canonical profile.  The source, input, task, candidate, proof policy,
- * target, toolchain, flags, environment and declared outputs are copied from
- * the primary plan; no lifecycle or worker ownership is inherited. */
+/* Plan a cross-profile reproduction action. Because profile participates in
+ * build_action.v1 this deliberately creates a DIFFERENT action id; it is not
+ * the clean-shadow primitive. Clean shadow uses two receipts for one exact
+ * action and build_fabric_clean_shadow_compare(). */
 struct zcl_result build_fabric_plan_reproduction(
     struct node_db *ndb, const char *primary_action_id,
     const char *reproduction_profile, int64_t now,
@@ -81,10 +81,40 @@ struct zcl_result build_fabric_worker_approve(
 struct zcl_result build_fabric_worker_revoke(
     struct node_db *ndb, const char *worker_id, int64_t now);
 
-/* Verify action binding, canonical receipt id, signer approval/expiry and the
- * Ed25519 signature over receipt_id before accepting the evidence. A zero
- * exit advances the action; an authentic nonzero fixed-action result stores
- * the receipt and atomically finishes the action/job as FAILED. */
+/* A worker may only quarantine its signed bytes and physical observation.
+ * It cannot advance the action or admit a shared cache result. */
+struct zcl_result build_fabric_receipt_quarantine(
+    struct node_db *ndb, const struct db_build_receipt *receipt, int64_t now);
+
+/* Supervisor-owned admission. Reload and re-hash the canonical observation
+ * from CAS, compare it with the immutable action, then atomically promote the
+ * quarantined receipt and action. Missing or undeclared observation is RED. */
+struct zcl_result build_fabric_receipt_admit(
+    struct node_db *ndb, const char *workspace, const char *receipt_id,
+    int64_t now);
+
+struct build_fabric_shadow_match {
+    bool same_action;
+    bool distinct_signers;
+    bool artifact_match;
+    bool declared_reads_match;
+    bool observed_reads_match;
+    bool declared_writes_match;
+    bool observed_writes_match;
+    char artifact_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char first_bad_invariant[BUILD_FABRIC_ERROR_MAX + 1];
+};
+
+/* Compare two preserved physical observations of one exact action. This is a
+ * pure admission proof: it never retries, substitutes a clean build, mutates
+ * either receipt, or infers physical independence from hostnames. */
+struct zcl_result build_fabric_clean_shadow_compare(
+    struct node_db *ndb, const char *workspace,
+    const char *primary_receipt_id, const char *shadow_receipt_id,
+    struct build_fabric_shadow_match *out);
+
+/* Low-level supervisor transition retained for exact ledger tests and older
+ * callers. New worker paths must call quarantine, never this function. */
 struct zcl_result build_fabric_receipt_accept(
     struct node_db *ndb, const struct db_build_receipt *receipt, int64_t now);
 
