@@ -31,6 +31,9 @@ bool zcl_native_zcode_records_discover(
 bool zcl_native_zcode_dht_status_read(struct json_value *result);
 bool zcl_native_zcode_records_local(
     struct json_value *selector, struct json_value *result);
+bool zcl_native_zcode_publication_snapshot_read(
+    const char *namespace_name, const char *package_root,
+    const char *transport_root, struct json_value *result);
 bool zcl_native_zcode_package_status_read(
     const char *package_root, const char *transport_root,
     struct json_value *result);

@@ -528,13 +528,15 @@ ZCL_COMMAND_READY_COMMAND(
     "signed work evidence and current signed lane, requires the exact proof "
     "policy, then advances the existing CANDIDATE and PROVEN lane receipts. "
     "CANDIDATE remains proof readiness; only this command's PROVEN result is "
-    "human acceptance. "
+    "human acceptance. An optional confirmation_identity binds this write to "
+    "the exact task, candidate, proof policy and proof set previously shown by "
+    "app presentation release-confirm; stale or mismatched facts are refused. "
     "It does not edit source files, publish a package, or give the adapter "
     "acceptance authority. Repeating an already-PROVEN acceptance is "
     "idempotent.", ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,accept,human,proven,lane,evidence",
     "zcl.zcode_work_accept.input.v1", "zcl.zcode_work_accept.v1",
-    "workspace,work", "",
+    "workspace,work,confirmation_identity", "",
     "zclassic23-dev zcode work accept --input='{\"work\":\"latest\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,

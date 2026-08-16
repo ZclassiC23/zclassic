@@ -115,6 +115,9 @@ int syncdiag_cases_agent_interface(void)
         const struct json_value *visual_bounded =
             find_object_with_str(visual_instruments, "name",
                                  "bounded_display");
+        const struct json_value *visual_release_confirmation =
+            find_object_with_str(visual_instruments, "name",
+                                 "release_confirmation");
         const struct json_value *availability =
             json_get(&interface, "runtime_availability");
         const struct json_value *availability_methods =
@@ -228,7 +231,7 @@ int syncdiag_cases_agent_interface(void)
             strcmp(json_get_str(json_get(development_loop, "database")),
                    "zclassic23 dbquery <SELECT>") == 0;
         ok = ok && visual_instruments &&
-            json_size(visual_instruments) == 8;
+            json_size(visual_instruments) == 9;
         ok = ok && visual_qr &&
             strcmp(json_get_str(json_get(visual_qr, "native")),
                    "zclassic23 app qr show 'zclassic:t1...?amount=0.01'") == 0;
@@ -268,6 +271,10 @@ int syncdiag_cases_agent_interface(void)
         ok = ok && visual_bounded &&
             strcmp(json_get_str(json_get(visual_bounded, "discover_input")),
                    "zclassic23 discover schema app.presentation.show") == 0;
+        ok = ok && visual_release_confirmation &&
+            strstr(json_get_str(json_get(visual_release_confirmation,
+                                         "native")),
+                   "app presentation release-confirm") != NULL;
         ok = ok && visual_loop &&
             strcmp(json_get_str(json_get(visual_loop, "schema")),
                    "zcl.agent_visual_loop.v1") == 0;

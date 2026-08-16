@@ -2340,6 +2340,7 @@ static int test_presentation_leaves_are_display_only(void)
             "app.presentation.code-change",
             "app.presentation.reproduction",
             "app.presentation.publication-confirm",
+            "app.presentation.release-confirm",
             "app.presentation.publication-status",
         };
         for (size_t i = 0; i < sizeof(paths) / sizeof(paths[0]); i++) {

@@ -130,6 +130,10 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
       "bounded_display",
       "app.presentation.show",
       "show agent-supplied tables, charts, timelines, graphs, choices, or forms; use typed instruments for node-owned facts and confirmations"),
+    CATALOG_COMMAND("agentinterface.visual_instruments", 9,
+      "release_confirmation",
+      "app.presentation.release-confirm",
+      "ask for one exact proven-candidate decision after canonical proof; the visual command cannot accept or publish"),
 
     DIRECT_COMMAND("agentmap.telemetry", 1, "compact_status",
       "zclassic23 status",

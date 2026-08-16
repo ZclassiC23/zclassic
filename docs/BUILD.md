@@ -504,6 +504,13 @@ Notes:
 
 ### Native instruments and deterministic text
 
+The AI conversation is the default user interface. Status, proofs, diffs, and
+explanations should be returned directly as typed data or plain text; a command
+must not open a window merely because a visual instrument exists. Open native
+pixels only for an explicit visual need, such as a QR code, image/media preview,
+or direct manipulation/confirmation that is materially clearer on screen. The
+agent returns to the conversation after that bounded interaction.
+
 The primary visual path is the bounded renderer-neutral C23 model in
 `lib/presentation`. A typed `app presentation ...` command submits that inert
 model to the warm same-binary native host; the host owns pixels and bounded

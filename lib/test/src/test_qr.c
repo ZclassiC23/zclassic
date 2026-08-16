@@ -1318,6 +1318,61 @@ int test_qr(void)
                  why, sizeof(why)));
     json_free(&publication_plan);
 
+    struct json_value release_status, release_expert, release_evidence;
+    json_init(&release_status); json_set_object(&release_status);
+    json_push_kv_str(&release_status, "state", "EVIDENCE_READY");
+    json_push_kv_str(&release_status, "goal",
+                     "Reject an empty note before hashing");
+    json_init(&release_expert); json_set_object(&release_expert);
+    json_push_kv_str(&release_expert, "task_root", root_a);
+    json_push_kv_str(&release_expert, "candidate_root", root_b);
+    json_push_kv_str(&release_expert, "proof_policy_root", tree_root);
+    json_push_kv_str(&release_status, "work_id", "work-aaaaaaaaaaaa");
+    json_push_kv(&release_status, "expert", &release_expert);
+    json_free(&release_expert);
+    json_init(&release_evidence); json_set_object(&release_evidence);
+    json_push_kv_str(&release_evidence, "proof_set_root", root_a);
+    json_push_kv_str(&release_evidence, "authority",
+                     "LOCAL_CLEAN_SHADOW");
+    json_push_kv_int(&release_evidence, "compile_receipts", 2);
+    json_push_kv_int(&release_evidence, "test_receipts", 2);
+    json_push_kv_int(&release_evidence, "approved_distinct_signers", 2);
+    json_push_kv_bool(&release_evidence, "local_reproduced", true);
+    json_push_kv_bool(&release_evidence, "quorum_satisfied", true);
+    json_push_kv_bool(&release_evidence, "compile_satisfied", true);
+    json_push_kv_bool(&release_evidence, "test_satisfied", true);
+    json_push_kv_bool(&release_evidence, "policy_satisfied", true);
+    struct zcl_present_model_v1 release_model;
+    char release_identity[65], changed_release_identity[65];
+    QR_CHECK("proven candidate facts build one exact inert release decision",
+             zcl_native_presentation_release_confirm_model_from_facts(
+                 &release_status, &release_evidence, &release_model,
+                 release_identity, why, sizeof(why)) &&
+             release_model.kind == ZCL_PRESENT_MODEL_CONFIRMATION &&
+             strcmp(release_model.exact_root, release_identity) == 0 &&
+             release_model.action_count == 2 &&
+             release_model.actions[0].kind == ZCL_PRESENT_ACTION_CANCEL &&
+             release_model.actions[1].kind == ZCL_PRESENT_ACTION_CONFIRM &&
+             strstr(release_model.items[0].value,
+                    "source and network stay unchanged") != NULL);
+    struct json_value *candidate_value = (struct json_value *)json_get(
+        json_get(&release_status, "expert"), "candidate_root");
+    json_set_str(candidate_value, tree_root);
+    QR_CHECK("changed candidate bytes change the human decision identity",
+             zcl_native_presentation_release_confirm_model_from_facts(
+                 &release_status, &release_evidence, &release_model,
+                 changed_release_identity, why, sizeof(why)) &&
+             strcmp(release_identity, changed_release_identity) != 0);
+    json_set_str(candidate_value, root_b);
+    json_set_bool((struct json_value *)json_get(
+                      &release_evidence, "policy_satisfied"), false);
+    QR_CHECK("incomplete proof policy cannot fabricate release confirmation",
+             !zcl_native_presentation_release_confirm_model_from_facts(
+                 &release_status, &release_evidence, &release_model,
+                 release_identity, why, sizeof(why)));
+    json_free(&release_evidence);
+    json_free(&release_status);
+
     struct json_value publication_facts;
     struct zcl_present_model_v1 publication_status;
     qr_publication_facts(&publication_facts, root_b, tree_root, root_a,

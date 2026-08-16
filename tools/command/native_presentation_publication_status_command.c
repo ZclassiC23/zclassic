@@ -256,28 +256,6 @@ static void npps_fail(struct zcl_command_reply *reply, const char *code,
         NPPS_LEAF);
 }
 
-static void npps_empty_projection(struct json_value *out)
-{
-    json_init(out);
-    json_set_object(out);
-    json_push_kv_bool(out, "local_projection", false);
-}
-
-static bool npps_record_read(const char *kind, const char *root_key,
-                             const char *root, struct json_value *out)
-{
-    struct json_value selector;
-    json_init(&selector);
-    json_set_object(&selector);
-    json_push_kv_str(&selector, "kind", kind);
-    json_push_kv_str(&selector, "namespace", NPPS_NAMESPACE);
-    json_push_kv_str(&selector, root_key, root);
-    bool ok = zcl_native_zcode_records_local(&selector, out);
-    json_free(&selector);
-    if (!ok) npps_empty_projection(out);
-    return ok;
-}
-
 void zcl_native_handle_presentation_publication_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -309,19 +287,25 @@ void zcl_native_handle_presentation_publication_status(
     json_free(&show_input);
 
     zcl_native_bridge_ensure_rpc();
-    struct json_value package, dht, pointer, provider;
+    struct json_value package, publication;
     if (!zcl_native_zcode_package_status_read(
             package_root, transport_root, &package)) {
         npps_fail(reply, "PACKAGE_FACTS_UNAVAILABLE",
                   "the target node did not return exact package observations");
         return;
     }
-    bool have_dht = zcl_native_zcode_dht_status_read(&dht);
-    (void)npps_record_read("pointer", "semantic_root", package_root,
-                           &pointer);
-    (void)npps_record_read("provider", "transport_root", transport_root,
-                           &provider);
-    const char *local_node_id = have_dht ? npps_str(&dht, "local_node_id") : NULL;
+    if (!zcl_native_zcode_publication_snapshot_read(
+            NPPS_NAMESPACE, package_root, transport_root, &publication)) {
+        json_free(&package);
+        npps_fail(reply, "PUBLICATION_SNAPSHOT_UNAVAILABLE",
+                  "the target node did not return one coherent DHT publication snapshot");
+        return;
+    }
+    const char *local_node_id = npps_str(&publication, "local_node_id");
+    const struct json_value *pointer =
+        npps_object(&publication, "pointer_records");
+    const struct json_value *provider =
+        npps_object(&publication, "provider_records");
 
     struct json_value facts;
     json_init(&facts);
@@ -333,17 +317,15 @@ void zcl_native_handle_presentation_publication_status(
     json_push_kv_str(&facts, "local_node_id", local_node_id ? local_node_id : "");
     json_push_kv_bool(&facts, "local_package_committed", local_committed);
     json_push_kv(&facts, "package", &package);
-    json_push_kv(&facts, "pointer_records", &pointer);
-    json_push_kv(&facts, "provider_records", &provider);
+    if (pointer) json_push_kv(&facts, "pointer_records", pointer);
+    if (provider) json_push_kv(&facts, "provider_records", provider);
     struct zcl_present_model_v1 model;
     char why[192];
     bool built = zcl_native_presentation_publication_status_model_from_facts(
         &facts, &model, why, sizeof(why));
     json_free(&facts);
     json_free(&package);
-    if (have_dht) json_free(&dht);
-    json_free(&pointer);
-    json_free(&provider);
+    json_free(&publication);
     if (!built) {
         npps_fail(reply, "PUBLICATION_FACTS_INVALID", why);
         return;

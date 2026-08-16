@@ -62,6 +62,17 @@ bool boot_zcode_dht_peers(uint64_t wall_now,
 bool boot_zcode_dht_record_query(
     uint64_t wall_now, const struct vcs_zcode_dht_record_selector *selector,
     struct vcs_zcode_dht_record *out, size_t max, size_t *count_out);
+/* One lock-owned view for UI/status consumers that must not combine pointer
+ * and provider records from different propagation instants. */
+bool boot_zcode_dht_publication_snapshot(
+    uint64_t wall_now,
+    const struct vcs_zcode_dht_record_selector *pointer_selector,
+    const struct vcs_zcode_dht_record_selector *provider_selector,
+    uint8_t local_node_id[32], uint64_t *generation_out,
+    struct vcs_zcode_dht_record *pointers, size_t pointers_max,
+    size_t *pointers_count_out,
+    struct vcs_zcode_dht_record *providers, size_t providers_max,
+    size_t *providers_count_out);
 bool boot_zcode_dht_provider_route(
     uint64_t wall_now,
     const struct vcs_zcode_dht_record_selector *selector,
@@ -137,6 +148,9 @@ bool boot_zcode_dht_dump_state_json(struct json_value *out, const char *key);
 /* Renderer for the lock-owned service snapshot; caller owns synchronization. */
 void boot_zcode_dht_status_json(
     struct json_value *out, const struct vcs_zcode_dht_service *service);
+/* Internal RPC composition for one lock-owned pointer/provider projection. */
+bool boot_zcode_dht_publication_snapshot_rpc(
+    const struct json_value *params, bool help, struct json_value *result);
 void boot_zcode_dht_register_rpc(struct rpc_table *table);
 void boot_zcode_package_register_rpc(struct rpc_table *table);
 

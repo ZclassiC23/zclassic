@@ -647,6 +647,43 @@ bool boot_zcode_dht_record_query(
   zcl_mutex_unlock(&g_dht_lock);
   return ok;
 }
+
+bool boot_zcode_dht_publication_snapshot(
+    uint64_t wall_now,
+    const struct vcs_zcode_dht_record_selector *pointer_selector,
+    const struct vcs_zcode_dht_record_selector *provider_selector,
+    uint8_t local_node_id[32], uint64_t *generation_out,
+    struct vcs_zcode_dht_record *pointers, size_t pointers_max,
+    size_t *pointers_count_out,
+    struct vcs_zcode_dht_record *providers, size_t providers_max,
+    size_t *providers_count_out) {
+  if (!pointer_selector || !provider_selector || !local_node_id ||
+      !generation_out || !pointers || !pointers_max ||
+      !pointers_count_out || !providers || !providers_max ||
+      !providers_count_out ||
+      pointer_selector->kind != VCS_ZCODE_DHT_RECORD_POINTER ||
+      provider_selector->kind != VCS_ZCODE_DHT_RECORD_PROVIDER) {
+    return false;
+  }
+  memset(local_node_id, 0, 32);
+  *generation_out = 0;
+  *pointers_count_out = 0;
+  *providers_count_out = 0;
+  dht_lock();
+  bool ok = g_dht && vcs_zcode_dht_service_enabled(g_dht);
+  if (ok) {
+    struct vcs_zcode_dht_service_status status;
+    vcs_zcode_dht_service_status(g_dht, &status);
+    memcpy(local_node_id, status.local_node_id, 32);
+    *generation_out = g_dht_generation;
+    *pointers_count_out = vcs_zcode_dht_service_record_local_query(
+        g_dht, wall_now, pointer_selector, pointers, pointers_max);
+    *providers_count_out = vcs_zcode_dht_service_record_local_query(
+        g_dht, wall_now, provider_selector, providers, providers_max);
+  }
+  zcl_mutex_unlock(&g_dht_lock);
+  return ok;
+}
 bool boot_zcode_dht_provider_route(
     uint64_t wall_now,
     const struct vcs_zcode_dht_record_selector *selector,

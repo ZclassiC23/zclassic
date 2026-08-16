@@ -1052,8 +1052,31 @@ static int zpd_test_work_start(void)
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "review_verdict")),
                       "approve") == 0);
+        const struct json_value *status_expert =
+            json_get(&reply.data, "expert");
         ASSERT(strlen(json_get_str(json_get(
-                   json_get(&reply.data, "expert"), "review_root"))) == 64);
+                   status_expert, "review_root"))) == 64);
+        const char *status_action = json_get_str(json_get(
+            status_expert, "action_id"));
+        const char *status_task = json_get_str(json_get(
+            status_expert, "task_root"));
+        const char *status_candidate = json_get_str(json_get(
+            status_expert, "candidate_root"));
+        const char *status_policy = json_get_str(json_get(
+            status_expert, "proof_policy_root"));
+        ASSERT(status_action && status_task && status_candidate &&
+               status_policy);
+        char status_action_saved[65], status_task_saved[65];
+        char status_candidate_saved[65], status_policy_saved[65];
+        (void)snprintf(status_action_saved, sizeof(status_action_saved),
+                       "%s", status_action);
+        (void)snprintf(status_task_saved, sizeof(status_task_saved),
+                       "%s", status_task);
+        (void)snprintf(status_candidate_saved,
+                       sizeof(status_candidate_saved), "%s",
+                       status_candidate);
+        (void)snprintf(status_policy_saved, sizeof(status_policy_saved),
+                       "%s", status_policy);
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -1069,6 +1092,61 @@ static int zpd_test_work_start(void)
         struct node_db acceptance_db = {0};
         ASSERT(node_db_open(&acceptance_db, zbuild_db));
         struct zcode_accepted_work_status accepted_status;
+        struct build_fabric_proof_evaluation confirmation_facts;
+        ASSERT(build_fabric_proof_evaluate_readonly(
+                   &acceptance_db, root, status_action_saved,
+                   (int64_t)platform_time_wall_unix(),
+                   &confirmation_facts).ok);
+        ASSERT(confirmation_facts.policy_satisfied);
+        uint8_t status_task_root[32], status_candidate_root[32];
+        uint8_t status_policy_root[32], status_proof_root[32];
+        uint8_t confirmation_root[32];
+        ASSERT(zcl_hex_decode_lower(status_task_saved,
+                                    status_task_root, 32));
+        ASSERT(zcl_hex_decode_lower(status_candidate_saved,
+                                    status_candidate_root, 32));
+        ASSERT(zcl_hex_decode_lower(status_policy_saved,
+                                    status_policy_root, 32));
+        ASSERT(zcl_hex_decode_lower(confirmation_facts.proof_set_root_sha3,
+                                    status_proof_root, 32));
+        ASSERT(vcs_zcode_acceptance_plan_root(
+                   status_task_root, status_candidate_root,
+                   status_policy_root, status_proof_root,
+                   confirmation_root) == VCS_ZCODE_DEV_OK);
+        char confirmation_identity[65];
+        zcl_hex_encode(confirmation_root, 32, confirmation_identity);
+        struct json_value release_confirm_input;
+        json_init(&release_confirm_input);
+        json_set_object(&release_confirm_input);
+        ASSERT(json_push_kv_str(&release_confirm_input, "workspace", root));
+        ASSERT(json_push_kv_str(&release_confirm_input, "work",
+                                saved_work_id));
+        ASSERT(json_push_kv_str(&release_confirm_input, "output", "text"));
+        struct zcl_command_request release_confirm_request = {
+            .input = &release_confirm_input,
+        };
+        struct zcl_command_reply release_confirm_reply;
+        zcl_command_reply_init(
+            &release_confirm_reply,
+            "zcl.app_presentation_release_confirm.v1");
+        zcl_native_handle_presentation_release_confirm(
+            &release_confirm_request, &release_confirm_reply);
+        ASSERT(release_confirm_reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(!json_get_bool(json_get(
+            &release_confirm_reply.data, "launched")));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &release_confirm_reply.data,
+                          "confirmation_identity")),
+                      confirmation_identity) == 0);
+        ASSERT(!json_get_bool(json_get(
+            &release_confirm_reply.data, "candidate_accepted")));
+        ASSERT(!json_get_bool(json_get(
+            &release_confirm_reply.data, "publication_performed")));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &release_confirm_reply.data, "authority")),
+                      "display-only") == 0);
+        zcl_command_reply_free(&release_confirm_reply);
+        json_free(&release_confirm_input);
         struct zcl_result before_accept = zcode_accepted_work_find(
             &acceptance_db, root, candidate_source_hex,
             (int64_t)platform_time_wall_unix(), false, &accepted_status);
@@ -1078,12 +1156,31 @@ static int zpd_test_work_start(void)
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        char stale_confirmation[65];
+        (void)snprintf(stale_confirmation, sizeof(stale_confirmation), "%s",
+                       confirmation_identity);
+        stale_confirmation[0] = stale_confirmation[0] == '0' ? '1' : '0';
+        ASSERT(json_push_kv_str(&input, "confirmation_identity",
+                                stale_confirmation));
         request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_accept_test.v1");
+        zcl_native_handle_zcode_work_accept(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(strcmp(reply.error.code, "CONFIRMATION_IDENTITY_STALE") == 0);
+        zcl_command_reply_free(&reply);
+        json_set_str((struct json_value *)json_get(
+                         &input, "confirmation_identity"),
+                     confirmation_identity);
         zcl_command_reply_init(&reply, "zcl.zcode_work_accept_test.v1");
         zcl_native_handle_zcode_work_accept(&request, &reply);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "PROVEN") == 0);
+        ASSERT(json_get_bool(json_get(
+            &reply.data, "confirmation_identity_checked")));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "confirmation_identity")),
+                      confirmation_identity) == 0);
         const char *accepted_root_text = json_get_str(json_get(
             json_get(&reply.data, "expert"), "lane_receipt_root"));
         ASSERT(accepted_root_text && strlen(accepted_root_text) == 64);

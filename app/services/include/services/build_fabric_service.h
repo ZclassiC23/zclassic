@@ -186,6 +186,13 @@ struct zcl_result build_fabric_proof_evaluate(
     struct node_db *ndb, const char *workspace, const char *action_id,
     int64_t now, struct build_fabric_proof_evaluation *out);
 
+/* Same canonical verification and policy calculation, without writing the
+ * proof-set object or promoting receipt trust. Presentation/status readers
+ * use this to show current facts without acquiring evidence authority. */
+struct zcl_result build_fabric_proof_evaluate_readonly(
+    struct node_db *ndb, const char *workspace, const char *action_id,
+    int64_t now, struct build_fabric_proof_evaluation *out);
+
 /* Canonical build_receipt.v2 projection id (signature excluded). */
 struct zcl_result build_fabric_receipt_id(
     const struct db_build_receipt *receipt,

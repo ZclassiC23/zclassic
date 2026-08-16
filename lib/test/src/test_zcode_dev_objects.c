@@ -3583,6 +3583,16 @@ static int test_zd_improve_command(void)
         ASSERT(build_fabric_worker_approve(&ndb, &second_worker, now).ok);
         struct build_fabric_proof_evaluation evaluation;
         int64_t evaluation_now = (int64_t)platform_time_wall_unix();
+        ASSERT(build_fabric_proof_evaluate_readonly(
+            &ndb, workspace, action_id, evaluation_now, &evaluation).ok);
+        ASSERT(evaluation.local_reproduced);
+        ASSERT(evaluation.quorum_satisfied);
+        ASSERT(strlen(evaluation.proof_set_root_sha3) == 64);
+        ASSERT(db_build_receipt_find(&ndb, observed_id, &observed));
+        ASSERT_STR_EQ(observed.trust_state, "REMOTE_OBSERVED");
+        ASSERT(db_build_receipt_find(&ndb, second_observed_id,
+                                     &second_observed));
+        ASSERT_STR_EQ(second_observed.trust_state, "REMOTE_OBSERVED");
         ASSERT(build_fabric_proof_evaluate(
             &ndb, workspace, action_id, evaluation_now, &evaluation).ok);
         ASSERT(evaluation.local_reproduced);
