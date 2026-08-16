@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "name": "zdogace/zdogace",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "name": "zdogfight/zdogfight",
+      "root": "3ea608b29cdee1df15d560a930455faa264b3ac9ded8b557efc28e3e720ef40a",
+      "semver": "0.1.0"
+    },
+    {
+      "name": "zprng/zprng",
+      "root": "91e9406a1016bcc224bb5e229377b1841e21c8ede1e0a00bc0d45d1989c41563",
+      "semver": "0.1.0"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zdogace/zdogace.h",
+    "src/zdogace.c",
+    "tests/test_zdogace.c",
+    "zcode-package.json"
+  ]
+}

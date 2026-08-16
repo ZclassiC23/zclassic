@@ -165,3 +165,6 @@ package zmd/zmd | root c913aee9624951a0ce5fef6665a24e8119e8a1c82ad4aadab10b2670b
 package zwalk/zwalk | root 2423c3486ce669d8bfa16ba8fb1e75b9e634526a3e00d6fd5b3c5c28824eec77 | store /home/rhett/.zclassic-c23-commons-fast-d | kind ai | spdx MIT
 package zre/zre | root 469991668432703c0dfc7486ac21ffece405a1e2e7468ba58269e782d6b282a6 | store /home/rhett/.zclassic-c23-commons-factory-a | kind ai | spdx MIT
 package zxml/zxml | root 1dae888755e91b5723298318c003076e18a1b4d9329a6d542a1107ee6c3bd4ab | store /home/rhett/.zclassic-c23-commons-factory-a | kind ai | spdx MIT
+package zdogfight/zdogfight | root 3ea608b29cdee1df15d560a930455faa264b3ac9ded8b557efc28e3e720ef40a | store /home/rhett/.zclassic-c23-commons-arena-a | kind ai | spdx MIT
+package zdogdrone/zdogdrone | root 10568ebc2876a6e3ecded390b012b0b8983613f3717949db1c9144ede2d78cf8 | store /home/rhett/.zclassic-c23-commons-arena-a | kind ai | spdx MIT
+package zdogace/zdogace | root ea4bda864dc08eb67afed16445469242d621eaec3da3beb9137b03ceddb68c07 | store /home/rhett/.zclassic-c23-commons-arena-a | kind ai | spdx MIT
