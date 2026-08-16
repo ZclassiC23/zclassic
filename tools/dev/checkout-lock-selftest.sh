@@ -106,4 +106,51 @@ case "$FAST_CI_RECIPE" in
     *) fail 'fast-ci source-wide proof is outside the checkout lock' ;;
 esac
 
-printf 'checkout-lock-selftest: PASS uncontended=true watcher_defers=true foreground_blocks=true nested_no_deadlock=true releases_on_failure=true fast_ci_serialized=true\n'
+# 7. Public test entry points must acquire the lock before asking a recursive
+# make to construct prerequisites. A prerequisite on the public target itself
+# runs before its recipe and therefore outside the critical section — exactly
+# the depfile race this contract exists to prevent.
+assert_build_and_run_locked()
+{
+    local public="$1" inner="$2" header block inner_header
+    header="$(awk -v target="$public" '$0 == target ":" { print; exit }' \
+        "$MAKEFILE")"
+    [ "$header" = "$public:" ] ||
+        fail "$public has prerequisites outside the checkout lock"
+    block="$(awk -v target="$public" \
+        '$0 == target ":" { found=1; left=8 } \
+         found && left-- > 0 { print }' "$MAKEFILE")"
+    case "$block" in
+        *'$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)"'*"$inner"*) ;;
+        *) fail "$public does not delegate construction under the checkout lock" ;;
+    esac
+    inner_header="$(awk -v target="$inner" \
+        'index($0, target ":") == 1 { print; exit }' "$MAKEFILE")"
+    case "$inner_header" in
+        "$inner:"*'dev-package-verifier-ensure'*) ;;
+        *) fail "$inner does not own the test binary prerequisites" ;;
+    esac
+}
+
+assert_build_and_run_locked test-parallel test-parallel-locked
+assert_build_and_run_locked test-parallel-active test-parallel-active-locked
+assert_build_and_run_locked test-parallel-fast-active test-parallel-fast-active-locked
+assert_build_and_run_locked t t-locked
+assert_build_and_run_locked t-fast t-fast-locked
+assert_build_and_run_locked t-fast-exact t-fast-exact-locked
+assert_build_and_run_locked test test-locked
+
+# A copied inner target must fail during Make parsing, before it can launch
+# any prerequisite writer outside the critical section.
+set +e
+INNER_ERR="$(ZCL_CHECKOUT_LOCK_HELD=0 make -s -C "$ROOT" -n \
+    t-fast-locked ONLY=build_fabric 2>&1 >/dev/null)"
+INNER_RC=$?
+set -e
+[ "$INNER_RC" -ne 0 ] || fail 'direct inner target unexpectedly ran unlocked'
+case "$INNER_ERR" in
+    *'internal locked test goal requires the checkout lock'*) ;;
+    *) fail "direct inner target did not report the lock invariant: $INNER_ERR" ;;
+esac
+
+printf 'checkout-lock-selftest: PASS uncontended=true watcher_defers=true foreground_blocks=true nested_no_deadlock=true releases_on_failure=true fast_ci_serialized=true build_and_run_serialized=true inner_bypass_refused=true\n'

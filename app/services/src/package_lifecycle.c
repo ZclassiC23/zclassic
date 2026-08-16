@@ -116,6 +116,42 @@ static struct zcl_result pkgl_plan_path(const struct pkgl_ctx *ctx,
     return pkgl_join(ctx, rel, out, cap);
 }
 
+struct zcl_result package_lifecycle_receipt_read(
+    const char *datadir, const uint8_t receipt_id[32],
+    struct vcs_package_build_receipt *out)
+{
+    if (!receipt_id || !out)
+        return ZCL_ERR(-1, "receipt id and output are required");
+    memset(out, 0, sizeof(*out));
+    struct pkgl_ctx ctx;
+    ZCL_CHECK(pkgl_ctx_open(&ctx, datadir));
+    char id_hex[65], relative[96], path[PKGL_PATH_MAX];
+    zcl_hex_encode(receipt_id, 32, id_hex);
+    (void)snprintf(relative, sizeof(relative), "receipts/%s", id_hex);
+    struct zcl_result result = pkgl_join(&ctx, relative, path, sizeof(path));
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (result.ok)
+        result = pkgl_read_file(path, VCS_PACKAGE_BUILD_MAX_WIRE_BYTES,
+                                &wire, &wire_len);
+    if (result.ok) {
+        enum vcs_package_build_error parsed =
+            vcs_package_build_parse(wire, wire_len, out);
+        if (parsed != VCS_PACKAGE_BUILD_OK)
+            result = ZCL_ERR(-1, "filed receipt: %s",
+                             vcs_package_build_error_string(parsed));
+    }
+    uint8_t rederived[32];
+    if (result.ok &&
+        (vcs_package_build_id(out, rederived) != VCS_PACKAGE_BUILD_OK ||
+         memcmp(rederived, receipt_id, 32) != 0))
+        result = ZCL_ERR(-1, "filed receipt does not hash to its exact id");
+    free(wire);
+    pkgl_ctx_close(&ctx);
+    if (!result.ok) memset(out, 0, sizeof(*out));
+    return result;
+}
+
 /* ── plan ───────────────────────────────────────────────────────────── */
 
 // long-function-ok:one-plan-derivation — resolving the target, locking the

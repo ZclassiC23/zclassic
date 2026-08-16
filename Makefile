@@ -185,9 +185,9 @@ else ifneq ($(filter dev-bin zclassic23-dev,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev test-fast
 else ifneq ($(filter dev-package-verifier,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev
-else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active test-parallel-fast-active-locked t-fast-locked t-fast-exact-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-fast
-else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter t test test_parallel test-parallel test-parallel-active test-parallel-active-locked test-parallel-locked t-locked test-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-strict
 else ifneq ($(filter t-asan test-asan asan-ci zcode-package-asan,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-asan
@@ -787,6 +787,14 @@ BUILD_EPOCH_KEEP ?= 3
 CHECKOUT_LOCK_TOOL = tools/dev/checkout-lock.sh
 CHECKOUT_LOCK = $(BUILD_DIR)/.checkout.lock
 CHECKOUT_LOCK_MODE = $(if $(filter 1,$(ZCL_DEV_WATCH_LANE)),watcher,foreground)
+CHECKOUT_LOCKED_TEST_GOALS := test-parallel-active-locked \
+	test-parallel-fast-active-locked test-parallel-locked t-locked \
+	t-fast-locked t-fast-exact-locked test-locked
+ifneq ($(filter $(CHECKOUT_LOCKED_TEST_GOALS),$(MAKECMDGOALS)),)
+ifneq ($(ZCL_CHECKOUT_LOCK_HELD),1)
+$(error internal locked test goal requires the checkout lock; invoke its public target)
+endif
+endif
 BUILD_EPOCH_OBJECT_FORCE = $(if $(ZCL_COMPDB_FORCE),FORCE,)
 ifeq ($(strip $(ZCL_EPOCH_PROFILES)),)
 BUILD_COMPILER_ID := $(ZCL_ZERO_SHA256)
@@ -957,9 +965,9 @@ else ifneq ($(filter fast-compile dev-build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev
 else ifneq ($(filter dev-bin zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev test-fast
-else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active test-parallel-fast-active-locked t-fast-locked t-fast-exact-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-fast
-else ifneq ($(filter t test test_parallel test-parallel test-parallel-active,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter t test test_parallel test-parallel test-parallel-active test-parallel-active-locked test-parallel-locked t-locked test-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-strict
 else ifneq ($(filter t-asan test-asan asan-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-asan
@@ -1723,7 +1731,9 @@ $(eval $(call BUILD_NODE_TOOL,test_parallel_wpo,$(TEST_SRCS_NO_MAIN) lib/test/sr
 # build/bin alias is a locked atomic copy and is FORCE-driven so A -> B -> A
 # cannot be skipped by stable-path mtimes. Internal commands execute the exact
 # candidate, never the concurrently replaceable alias.
-.PHONY: FORCE test_parallel test_parallel_fast test-parallel-active test-parallel-fast-active test-asan test-tsan
+.PHONY: FORCE test_parallel test_parallel_fast test-parallel-active \
+	test-parallel-active-locked test-parallel-fast-active \
+	test-parallel-fast-active-locked test-asan test-tsan
 FORCE:
 
 test_parallel: $(TEST_PARALLEL_BIN)
@@ -1847,10 +1857,20 @@ $(TEST_TSAN_LINK_RSP): $(TEST_TSAN_OBJS)
 # verifier. Build that exact in-tree helper here, not only on the public
 # test-parallel wrapper: fast-ci/pre-push invokes the active fast runner
 # directly, and a clean checkout must not depend on a leftover binary.
-test-parallel-active: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
+test-parallel-active:
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  $(MAKE) --no-print-directory test-parallel-active-locked
+
+test-parallel-active-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
 	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE)
 
-test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
+test-parallel-fast-active:
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  $(MAKE) --no-print-directory test-parallel-fast-active-locked
+
+test-parallel-fast-active-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE)
 
 .PHONY: test-parallel
@@ -1871,10 +1891,15 @@ test-parallel-fast-active: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-
 # TEST_PARALLEL_ARGS is empty by default, so the canonical gate is byte-for-byte
 # the historical cold run; pass e.g. TEST_PARALLEL_ARGS=--cold-audit (verify the
 # content cache) or --no-cache (force cold with ZCL_TEST_CACHE set).
-test-parallel: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
+test-parallel:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)'
+	  $(MAKE) --no-print-directory test-parallel-locked \
+	    TEST_PARALLEL_ARGS='$(TEST_PARALLEL_ARGS)'
+
+.PHONY: test-parallel-locked
+test-parallel-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
+	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)
 
 # ── Fast inner loop ──────────────────────────────────────────────────────
 # The edit -> check -> test loop runs dozens of times per session. Use these,
@@ -2253,28 +2278,42 @@ agent-velocity:
 
 # Run ONE test group, always rebuilding the harness first:
 #   make t ONLY=service_state_driver
-# Checkout-locked — see the `test-parallel` target above for why.
-t: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
+# Checkout-locked around BOTH prerequisite construction and execution. Locking
+# only this target's final recipe allowed a concurrent public invocation to
+# rewrite build depfiles while codeindex was sealing its physical input graph.
+.PHONY: t-locked t-fast-locked t-fast-exact-locked
+t:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)'
+	  $(MAKE) --no-print-directory t-locked ONLY='$(ONLY)'
+
+t-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
+	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE) --only=$(ONLY)
 
 # Hot-path variant for edit loops. It resolves the complete source inventory in
 # a cached, stable (toolchain+flags-keyed) per-file epoch and links a non-LTO harness; use strict `make t`
 # before push/release or when chasing optimizer-dependent behavior.
-# Checkout-locked — see the `test-parallel` target above for why.
-t-fast: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
+# Checkout-locked around prerequisite construction and execution.
+t-fast:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)'
+	  $(MAKE) --no-print-directory t-fast-locked ONLY='$(ONLY)'
+
+t-fast-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
+	ulimit -s unlimited && $(TEST_PARALLEL_FAST_ACTIVE) --only=$(ONLY)
 
 # Proof-facing sibling of t-fast. The human convenience target above keeps its
 # documented substring behavior; impact plans and durable receipts use this
 # exact-ID path so a stale mapping cannot pass by selecting a sibling group.
-t-fast-exact: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
+t-fast-exact:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)'
+	  $(MAKE) --no-print-directory t-fast-exact-locked \
+	    EXACT_ONLY_MATCHED='$(EXACT_ONLY_MATCHED)'
+
+t-fast-exact-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
+	ulimit -s unlimited && \
+	  $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)
 
 .PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance
 zcode-development-acceptance:
@@ -2347,7 +2386,7 @@ native-agent-ui-alpha:
 	  C23_BETA_NATIVE_UI_DRIVER="$(CURDIR)/$(NATIVE_UI_DRIVER_BIN)" \
 	  bash tools/dev/c23_commons_beta_acceptance.sh
 	@printf '%s\n' '{"schema":"zcl.c23_commons_beta_acceptance.v1","verdict":"PASS","alpha_regression_floor":true,"installed_stranger_journey":true,"corrupt_provider_bytes_rejected":true,"alternate_provider_exact_root_repair":true,"interrupted_download_resumes_same_graph":true,"verified_objects_retransmitted_after_restart":0}'
-	@printf '%s\n' '{"schema":"zcl.native_agent_ui_alpha.v1","verdict":"PASS","renderer_neutral_model":true,"resident_same_binary_host":true,"bounded_keyboard_pagination":true,"visible_action_focus":true,"tab_enter_actions":true,"bounded_sessions_under_load":true,"no_detached_capacity_escape":true,"no_stale_screens":true,"no_lost_decisions":true,"no_orphan_processes_after_restart":true,"blockchain_and_package_work_concurrent":true,"progress_host_restart_resume":true,"configured_agent_typed_views":true,"typed_qr":true,"typed_status":true,"typed_code_diff":true,"typed_reproduction_progress":true,"exact_publication_confirmation":true,"exact_publication_progress":true,"installed_package_change_journey":true,"agent_visual_requests":8,"human_actions":1,"visual_authority":"none","authored_ux":"c23","browser_required":false,"headless_refusal_named":true,"stranger_beta_green":true}'
+	@printf '%s\n' '{"schema":"zcl.native_agent_ui_alpha.v1","verdict":"PASS","renderer_neutral_model":true,"resident_same_binary_host":true,"bounded_keyboard_pagination":true,"visible_action_focus":true,"tab_enter_actions":true,"bounded_sessions_under_load":true,"no_detached_capacity_escape":true,"no_stale_screens":true,"no_lost_decisions":true,"no_orphan_processes_after_restart":true,"blockchain_and_package_work_concurrent":true,"progress_host_restart_resume":true,"configured_agent_typed_views":true,"typed_qr":true,"typed_status":true,"typed_code_diff":true,"typed_development_consequence":true,"typed_reproduction_progress":true,"exact_publication_confirmation":true,"exact_publication_progress":true,"installed_package_change_journey":true,"agent_visual_requests":9,"human_actions":1,"visual_authority":"none","authored_ux":"c23","browser_required":false,"headless_refusal_named":true,"stranger_beta_green":true}'
 
 # Measurement-only scaling campaign over the same three interchangeable full
 # nodes.  It creates no lifecycle/cache authority beyond canonical immutable
@@ -3986,11 +4025,17 @@ $(BIN_DIR)/zcl-blog: tools/zcl-blog
 # Default `make test` = the fast fork-based parallel suite (~1min, 282 groups).
 # The slow single-process binary is still available as `make test-full`.
 # Doctrine: never run test_zcl in the inner loop — use `make t ONLY=<group>`.
-# Checkout-locked — see the `test-parallel` target above for why.
-test: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
+# Checkout-locked around prerequisite construction and execution — see the
+# `t` target above for the depfile-integrity failure this boundary prevents.
+test:
 	@mkdir -p "$(BUILD_DIR)"
 	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  sh -c 'ulimit -s unlimited && exec $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)'
+	  $(MAKE) --no-print-directory test-locked \
+	    TEST_PARALLEL_ARGS='$(TEST_PARALLEL_ARGS)'
+
+.PHONY: test-locked
+test-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
+	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE) $(TEST_PARALLEL_ARGS)
 
 test-full: test_zcl
 	ulimit -s unlimited && $(TEST_ZCL_BIN)

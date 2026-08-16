@@ -93,3 +93,7 @@ config/src/consensus_state_producer_receipt.c 805
 config/src/consensus_state_snapshot_install_activate.c 1169 # ADR-0008 (seed-floor declaration)
 app/services/src/header_sync_service.c 846
 app/controllers/src/event_agent_summary.c 853
+# 2026-08-15: worker-side quarantine now records exact input/output hashes and
+# bounded execution observations. Observation assembly will move beside the
+# evidence codec; this reviewed baseline remains a hard no-growth ceiling.
+app/services/src/build_fabric_worker.c 860

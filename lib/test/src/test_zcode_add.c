@@ -698,6 +698,15 @@ static int t_e2e(void)
              commit.steps[0].has_receipt);
     uint8_t ring_receipt[32];
     memcpy(ring_receipt, commit.steps[0].receipt_id, sizeof(ring_receipt));
+    struct vcs_package_build_receipt inspected_receipt;
+    struct zcl_result inspected = package_lifecycle_receipt_read(
+        base, ring_receipt, &inspected_receipt);
+    ZA_CHECK("the filed receipt is readable only through its rederived exact id",
+             inspected.ok &&
+                 memcmp(inspected_receipt.package_root, ring_root, 32) == 0 &&
+                 inspected_receipt.test_ran &&
+                 inspected_receipt.result_class ==
+                     VCS_PACKAGE_BUILD_RESULT_TEST_PASS);
     ZA_CHECK("a newly built package does not claim receipt reuse",
              !commit.steps[0].receipt_reused);
 

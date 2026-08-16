@@ -181,6 +181,30 @@ int node_db_migrate_features_v67_up(struct node_db *ndb, int *version)
         current_ver = 69;
         applied++;
     }
+    if (current_ver < 70) {
+        /* v70: a worker result is quarantined together with the canonical
+         * physical execution observation it names. The receipt remains in
+         * the existing ledger and the bytes remain in the existing CAS;
+         * this column adds no scheduler or cache authority. Empty preserves
+         * historical v2 receipts, which cannot satisfy secure admission. */
+        if (!node_db_exec(ndb,
+                "ALTER TABLE build_receipts ADD COLUMN "
+                "observation_sha3 TEXT NOT NULL DEFAULT '' "
+                "CHECK(length(observation_sha3) IN (0,64))"))
+            LOG_ERR("db", "migrate v70: observation root failed");
+        if (!node_db_exec(ndb,
+                "CREATE INDEX IF NOT EXISTS "
+                "idx_build_receipts_action_observation "
+                "ON build_receipts(action_id,observation_sha3,created_at)"))
+            LOG_ERR("db", "migrate v70: observation index failed");
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('070')"))
+            LOG_ERR("db", "migrate v70: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 70);
+        current_ver = 70;
+        applied++;
+    }
     *version = current_ver;
     return applied;
 }

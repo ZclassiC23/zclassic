@@ -10,6 +10,7 @@
 #include "services/build_fabric_async.h"
 #include "services/build_fabric_runtime.h"
 #include "services/build_fabric_worker.h"
+#include "services/build_fabric_worker_evidence.h"
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "base/hex.h"
@@ -20,6 +21,8 @@
 #include "json/json.h"
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
+#include "vcs/build_execution_observation.h"
+#include "vcs/build_release_qualification.h"
 #include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
@@ -75,15 +78,17 @@ static void bf_action(struct db_build_action *row)
     (void)snprintf(row->input_root_sha3, sizeof(row->input_root_sha3), "%s",
                    id_c);
     (void)snprintf(row->target, sizeof(row->target), "linux-x86_64-v3");
-    (void)snprintf(row->flags_sha3, sizeof(row->flags_sha3), "%s", id_d);
-    (void)snprintf(row->environment_sha3, sizeof(row->environment_sha3), "%s",
-                   id_a);
+    uint8_t fixed_flags[32], fixed_environment[32];
+    vcs_build_action_v1_fixed_flags_root(fixed_flags);
+    vcs_build_action_v1_fixed_environment_root(fixed_environment);
+    zcl_hex_encode(fixed_flags, 32, row->flags_sha3);
+    zcl_hex_encode(fixed_environment, 32, row->environment_sha3);
     (void)snprintf(row->virtual_workdir, sizeof(row->virtual_workdir),
                    "/zbuild/src");
     (void)snprintf(row->declared_outputs, sizeof(row->declared_outputs),
                    "unit.o");
-    (void)snprintf(row->resource_policy, sizeof(row->resource_policy),
-                   "cpu=1,memory_mb=2048,timeout_s=120,network=0");
+    (void)snprintf(row->resource_policy, sizeof(row->resource_policy), "%s",
+                   VCS_BUILD_RESOURCE_POLICY_V1);
     row->created_at = 101;
     row->updated_at = 101;
 }
@@ -99,6 +104,18 @@ static void bf_worker(struct db_build_worker *row)
     row->approved = 1;
     row->approved_at = 102;
     row->last_seen_at = 102;
+}
+
+static void bf_worker_id_from_pubkey(const uint8_t pubkey[32], char out[65])
+{
+    static const char domain[] = "zcl.build_worker.v1";
+    struct sha3_256_ctx sha;
+    uint8_t digest[32];
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&sha, pubkey, 32);
+    sha3_256_finalize(&sha, digest);
+    zcl_hex_encode(digest, 32, out);
 }
 
 static void bf_receipt(struct db_build_receipt *row)
@@ -182,9 +199,10 @@ static int test_bf_migration(void)
         sqlite3_finalize(st);
         ASSERT(sqlite3_prepare_v2(ndb.db,
             "SELECT count(*) FROM pragma_table_info('build_receipts') "
-            "WHERE name='lease_id'", -1, &st, NULL) == SQLITE_OK);
+            "WHERE name IN ('lease_id','observation_sha3')", -1, &st,
+            NULL) == SQLITE_OK);
         ASSERT(sqlite3_step(st) == SQLITE_ROW); /* raw-sql-ok:test-readonly-count */
-        ASSERT_EQ(sqlite3_column_int(st, 0), 1);
+        ASSERT_EQ(sqlite3_column_int(st, 0), 2);
         sqlite3_finalize(st);
         ASSERT(sqlite3_prepare_v2(ndb.db,
             "SELECT count(*) FROM sqlite_master WHERE type='table' AND "
@@ -714,6 +732,62 @@ static int test_bf_leases(void)
     return failures;
 }
 
+static int test_bf_execution_observation_codec(void)
+{
+    int failures = 0;
+    TEST("build_fabric: physical observation codec fails closed on undeclared reads") {
+        struct vcs_build_execution_observation_v1 observation = {
+            .schema_version = VCS_BUILD_EXECUTION_OBSERVATION_VERSION,
+            .flags = VCS_BUILD_OBS_REQUIRED_FLAGS,
+            .exit_status = 0,
+            .cpu_seconds_limit = 120,
+            .memory_bytes_limit = UINT64_C(2048) * 1024u * 1024u,
+            .process_limit = 16,
+            .file_limit = 64,
+            .file_bytes_limit = UINT64_C(256) * 1024u * 1024u,
+            .output_bytes_limit = UINT64_C(256) * 1024u * 1024u,
+            .wall_millis_limit = 120000,
+        };
+        memset(observation.action_root, 1, 32);
+        memset(observation.action_input_root, 2, 32);
+        memset(observation.observed_input_bytes_root, 8, 32);
+        memset(observation.artifact_root, 3, 32);
+        memset(observation.output_bytes_root, 4, 32);
+        memset(observation.toolchain_root, 5, 32);
+        memset(observation.flags_root, 6, 32);
+        memset(observation.environment_root, 7, 32);
+        vcs_build_execution_read_set_root(
+            observation.action_input_root,
+            observation.observed_input_bytes_root,
+            observation.toolchain_root,
+            observation.declared_reads_root);
+        memcpy(observation.observed_reads_root,
+               observation.declared_reads_root, 32);
+        vcs_build_execution_declared_write_set_root(
+            VCS_BUILD_OUTPUT_V1, observation.declared_writes_root);
+        vcs_build_execution_observed_write_set_root(
+            VCS_BUILD_OUTPUT_V1, observation.output_bytes_root,
+            observation.observed_writes_root);
+        uint8_t wire[VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES], root[32];
+        struct vcs_build_execution_observation_v1 parsed;
+        ASSERT(vcs_build_execution_observation_v1_serialize(
+            &observation, wire));
+        ASSERT(vcs_build_execution_observation_v1_root(&observation, root));
+        ASSERT(vcs_build_execution_observation_v1_parse(
+            wire, sizeof(wire), &parsed));
+        ASSERT(parsed.schema_version == observation.schema_version &&
+               parsed.flags == observation.flags &&
+               memcmp(parsed.action_root, observation.action_root, 32) == 0 &&
+               parsed.wall_millis_limit == observation.wall_millis_limit);
+        observation.observed_reads_root[0] ^= 1u;
+        ASSERT(!vcs_build_execution_observation_v1_valid(&observation));
+        ASSERT(!vcs_build_execution_observation_v1_serialize(
+            &observation, wire));
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_confined_worker(void)
 {
     int failures = 0;
@@ -785,6 +859,50 @@ static int test_bf_confined_worker(void)
             printf("worker detail: %s\n", executed.message);
         ASSERT(executed.ok);
         ASSERT(db_build_action_find(&ndb, action_id, &action));
+        ASSERT_STR_EQ(action.state, "VERIFYING");
+        ASSERT_STR_EQ(receipt.trust_state, "REMOTE_OBSERVED");
+        ASSERT(strlen(receipt.observation_sha3) == 64);
+        ASSERT(!build_fabric_receipt_admit(
+            &ndb, "/definitely/not/the/workspace", receipt.receipt_id,
+            now + 1).ok);
+        ASSERT(db_build_action_find(&ndb, action_id, &action));
+        ASSERT_STR_EQ(action.state, "VERIFYING");
+
+        uint8_t good_observation_root[32], *poison_wire = NULL;
+        size_t poison_wire_len = 0;
+        ASSERT(zcl_hex_decode_lower(receipt.observation_sha3,
+                                    good_observation_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+            dir, good_observation_root, &poison_wire, &poison_wire_len), 0);
+        struct vcs_build_execution_observation_v1 poisoned_observation;
+        ASSERT(vcs_build_execution_observation_v1_parse(
+            poison_wire, poison_wire_len, &poisoned_observation));
+        free(poison_wire);
+        poisoned_observation.action_root[0] ^= 1u;
+        uint8_t poisoned_root[32];
+        ASSERT(build_fabric_worker_store_observation(
+            dir, &poisoned_observation, poisoned_root).ok);
+        struct db_build_receipt poisoned_receipt = receipt;
+        zcl_hex_encode(poisoned_root, 32,
+                       poisoned_receipt.observation_sha3);
+        poisoned_receipt.created_at = now + 1;
+        ASSERT(build_fabric_receipt_id(
+            &poisoned_receipt, poisoned_receipt.receipt_id).ok);
+        uint8_t poisoned_id[32], poisoned_signature[64];
+        ASSERT(zcl_hex_decode_lower(
+            poisoned_receipt.receipt_id, poisoned_id, 32));
+        ed25519_sign(poisoned_signature, poisoned_id, 32, secret, pubkey);
+        zcl_hex_encode(poisoned_signature, 64,
+                       poisoned_receipt.signature);
+        ASSERT(build_fabric_receipt_quarantine(
+            &ndb, &poisoned_receipt, now + 1).ok);
+        ASSERT(!build_fabric_receipt_admit(
+            &ndb, dir, poisoned_receipt.receipt_id, now + 1).ok);
+        ASSERT(db_build_action_find(&ndb, action_id, &action));
+        ASSERT_STR_EQ(action.state, "VERIFYING");
+        ASSERT(build_fabric_receipt_admit(
+            &ndb, dir, receipt.receipt_id, now + 1).ok);
+        ASSERT(db_build_action_find(&ndb, action_id, &action));
         ASSERT_STR_EQ(action.state, "ACCEPTED");
         ASSERT_STR_EQ(action.output_root_sha3, receipt.output_sha3);
         uint8_t manifest_root[32];
@@ -805,6 +923,255 @@ static int test_bf_confined_worker(void)
         ASSERT(object_len >= 20 && object[0] == 0x7f && object[1] == 'E' &&
                object[16] == 1 && object[18] == 62);
         free(object);
+
+        /* A clean shadow is a second signed receipt for this SAME action,
+         * never a profile-mutated action. Exact observations match; an
+         * observed write-set divergence remains named RED. */
+        struct db_build_receipt primary;
+        ASSERT(db_build_receipt_find(&ndb, receipt.receipt_id, &primary));
+        uint8_t shadow_seed[32], shadow_pubkey[32], shadow_secret[32];
+        memset(shadow_seed, 41, sizeof(shadow_seed));
+        ed25519_keypair(shadow_pubkey, shadow_secret, shadow_seed);
+        struct db_build_worker shadow_worker;
+        bf_worker(&shadow_worker);
+        (void)snprintf(shadow_worker.worker_id,
+                       sizeof(shadow_worker.worker_id), "%s", id_a);
+        zcl_hex_encode(shadow_pubkey, 32, shadow_worker.signer_pubkey);
+        ASSERT(build_fabric_worker_approve(
+            &ndb, &shadow_worker, now + 2).ok);
+        struct db_build_receipt shadow = primary;
+        (void)snprintf(shadow.worker_id, sizeof(shadow.worker_id), "%s",
+                       shadow_worker.worker_id);
+        (void)snprintf(shadow.lease_id, sizeof(shadow.lease_id), "%s", id_b);
+        (void)snprintf(shadow.trust_state, sizeof(shadow.trust_state),
+                       "REMOTE_OBSERVED");
+        shadow.created_at = now + 2;
+        ASSERT(build_fabric_receipt_id(&shadow, shadow.receipt_id).ok);
+        uint8_t shadow_id[32], shadow_signature[64];
+        ASSERT(zcl_hex_decode_lower(shadow.receipt_id, shadow_id, 32));
+        ed25519_sign(shadow_signature, shadow_id, 32,
+                     shadow_secret, shadow_pubkey);
+        zcl_hex_encode(shadow_signature, 64, shadow.signature);
+        ASSERT(db_build_receipt_save(&ndb, &shadow));
+        struct build_fabric_shadow_match match;
+        ASSERT(build_fabric_clean_shadow_compare(
+            &ndb, dir, primary.receipt_id, shadow.receipt_id, &match).ok);
+        ASSERT(match.same_action && match.distinct_signers &&
+               match.artifact_match && match.observed_reads_match &&
+               match.observed_writes_match);
+
+        struct db_build_worker alias_worker;
+        bf_worker(&alias_worker);
+        (void)snprintf(alias_worker.worker_id,
+                       sizeof(alias_worker.worker_id), "%s", id_d);
+        zcl_hex_encode(pubkey, 32, alias_worker.signer_pubkey);
+        ASSERT(!build_fabric_worker_approve(
+            &ndb, &alias_worker, now + 2).ok);
+
+        /* Release qualification is a third exact execution plus an explicit
+         * signed human decision. It emits an inert CAS artifact and cannot
+         * publish or deploy. */
+        uint8_t reproduction_seed[32], reproduction_pubkey[32];
+        uint8_t reproduction_secret[32];
+        memset(reproduction_seed, 42, sizeof(reproduction_seed));
+        ed25519_keypair(reproduction_pubkey, reproduction_secret,
+                        reproduction_seed);
+        struct db_build_worker reproduction_worker;
+        bf_worker(&reproduction_worker);
+        (void)snprintf(reproduction_worker.worker_id,
+                       sizeof(reproduction_worker.worker_id), "%s", id_b);
+        zcl_hex_encode(reproduction_pubkey, 32,
+                       reproduction_worker.signer_pubkey);
+        ASSERT(build_fabric_worker_approve(
+            &ndb, &reproduction_worker, now + 3).ok);
+        struct db_build_receipt reproduction = primary;
+        (void)snprintf(reproduction.worker_id,
+                       sizeof(reproduction.worker_id), "%s",
+                       reproduction_worker.worker_id);
+        (void)snprintf(reproduction.lease_id,
+                       sizeof(reproduction.lease_id), "%s", id_c);
+        (void)snprintf(reproduction.trust_state,
+                       sizeof(reproduction.trust_state), "REMOTE_OBSERVED");
+        reproduction.created_at = now + 3;
+        ASSERT(build_fabric_receipt_id(
+            &reproduction, reproduction.receipt_id).ok);
+        uint8_t reproduction_id[32], reproduction_signature[64];
+        ASSERT(zcl_hex_decode_lower(
+            reproduction.receipt_id, reproduction_id, 32));
+        ed25519_sign(reproduction_signature, reproduction_id, 32,
+                     reproduction_secret, reproduction_pubkey);
+        zcl_hex_encode(reproduction_signature, 64,
+                       reproduction.signature);
+        ASSERT(db_build_receipt_save(&ndb, &reproduction));
+
+        static const uint8_t machine_evidence[3][32] = {
+            "machine-a-physical-run-1",
+            "machine-b-clean-shadow-2",
+            "machine-c-reproduction-3",
+        };
+        uint8_t machine_roots[3][32];
+        for (size_t i = 0; i < 3; i++) {
+            sha3_256(machine_evidence[i], sizeof(machine_evidence[i]),
+                     machine_roots[i]);
+            ASSERT(vcs_object_put_addressed(
+                dir, machine_roots[i], machine_evidence[i],
+                sizeof(machine_evidence[i])));
+        }
+        uint8_t confirmer_seed[32], confirmer_pubkey[32];
+        uint8_t confirmer_secret[32];
+        memset(confirmer_seed, 43, sizeof(confirmer_seed));
+        ed25519_keypair(confirmer_pubkey, confirmer_secret, confirmer_seed);
+        struct db_build_worker confirmer;
+        bf_worker(&confirmer);
+        bf_worker_id_from_pubkey(confirmer_pubkey, confirmer.worker_id);
+        zcl_hex_encode(confirmer_pubkey, 32, confirmer.signer_pubkey);
+        (void)snprintf(confirmer.capabilities,
+                       sizeof(confirmer.capabilities),
+                       "release-confirmation.v1");
+        ASSERT(build_fabric_worker_approve(&ndb, &confirmer, now + 4).ok);
+        struct vcs_build_release_confirmation_v1 confirmation;
+        vcs_build_release_confirmation_v1_init(&confirmation);
+        confirmation.decision = VCS_BUILD_RELEASE_DECISION_CONFIRM;
+        ASSERT(zcl_hex_decode_lower(action_id, confirmation.action_root, 32));
+        ASSERT(zcl_hex_decode_lower(primary.output_sha3,
+                                    confirmation.artifact_root, 32));
+        ASSERT(zcl_hex_decode_lower(primary.receipt_id,
+                                    confirmation.candidate_receipt_root, 32));
+        ASSERT(zcl_hex_decode_lower(shadow.receipt_id,
+                                    confirmation.shadow_receipt_root, 32));
+        ASSERT(zcl_hex_decode_lower(
+            reproduction.receipt_id,
+            confirmation.reproduction_receipt_root, 32));
+        memcpy(confirmation.candidate_machine_evidence_root,
+               machine_roots[0], 32);
+        memcpy(confirmation.shadow_machine_evidence_root,
+               machine_roots[1], 32);
+        memcpy(confirmation.reproduction_machine_evidence_root,
+               machine_roots[2], 32);
+        confirmation.confirmed_unix = now + 4;
+        ASSERT_EQ(vcs_build_release_confirmation_v1_seal(
+            &confirmation, confirmer_secret, confirmer_pubkey),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        uint8_t confirmation_wire[
+            VCS_BUILD_RELEASE_CONFIRMATION_WIRE_BYTES];
+        uint8_t confirmation_root[32];
+        ASSERT_EQ(vcs_build_release_confirmation_v1_serialize(
+            &confirmation, confirmation_wire),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_root(
+            &confirmation, confirmation_root),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT(vcs_object_put_addressed(
+            dir, confirmation_root, confirmation_wire,
+            sizeof(confirmation_wire)));
+        char confirmation_hex[65];
+        zcl_hex_encode(confirmation_root, 32, confirmation_hex);
+        struct build_fabric_release_qualification_report qualified;
+        ASSERT(build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT(qualified.candidate_admitted &&
+               qualified.clean_shadow_match &&
+               qualified.independent_reproduction_match &&
+               qualified.distinct_executor_signers &&
+               qualified.physical_evidence_present &&
+               qualified.human_confirmed && qualified.confirmer_approved &&
+               !qualified.publication_performed);
+        ASSERT(strlen(qualified.qualification_root_sha3) == 64);
+        uint8_t qualification_root[32], *qualification_wire = NULL;
+        size_t qualification_len = 0;
+        ASSERT(zcl_hex_decode_lower(qualified.qualification_root_sha3,
+                                    qualification_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+            dir, qualification_root, &qualification_wire,
+            &qualification_len), 0);
+        struct vcs_build_release_qualification_v1 parsed_qualification;
+        ASSERT_EQ(vcs_build_release_qualification_v1_parse(
+            qualification_wire, qualification_len, &parsed_qualification),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT(memcmp(parsed_qualification.artifact_root,
+                      confirmation.artifact_root, 32) == 0);
+        qualification_wire[20] ^= 1u;
+        bool repaired_poison = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, qualification_root, qualification_wire,
+            qualification_len, &repaired_poison));
+        ASSERT(repaired_poison);
+        free(qualification_wire);
+        ASSERT(!build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT_STR_EQ(qualified.first_bad_invariant,
+                      "qualified-release-cas-poisoned");
+
+        struct vcs_build_release_confirmation_v1 missing_physical =
+            confirmation;
+        missing_physical.reproduction_machine_evidence_root[0] ^= 1u;
+        ASSERT_EQ(vcs_build_release_confirmation_v1_seal(
+            &missing_physical, confirmer_secret, confirmer_pubkey),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_serialize(
+            &missing_physical, confirmation_wire),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_root(
+            &missing_physical, confirmation_root),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT(vcs_object_put_addressed(
+            dir, confirmation_root, confirmation_wire,
+            sizeof(confirmation_wire)));
+        zcl_hex_encode(confirmation_root, 32, confirmation_hex);
+        ASSERT(!build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT_STR_EQ(qualified.first_bad_invariant,
+                      "physical-machine-evidence-invalid");
+
+        struct vcs_build_release_confirmation_v1 cancelled = confirmation;
+        cancelled.decision = VCS_BUILD_RELEASE_DECISION_CANCEL;
+        ASSERT_EQ(vcs_build_release_confirmation_v1_seal(
+            &cancelled, confirmer_secret, confirmer_pubkey),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_serialize(
+            &cancelled, confirmation_wire),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_root(
+            &cancelled, confirmation_root),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT(vcs_object_put_addressed(
+            dir, confirmation_root, confirmation_wire,
+            sizeof(confirmation_wire)));
+        zcl_hex_encode(confirmation_root, 32, confirmation_hex);
+        ASSERT(!build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT_STR_EQ(qualified.first_bad_invariant,
+                      "human-cancelled-release");
+
+        uint8_t observation_root[32], *observation_wire = NULL;
+        size_t observation_len = 0;
+        ASSERT(zcl_hex_decode_lower(primary.observation_sha3,
+                                    observation_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+            dir, observation_root, &observation_wire, &observation_len), 0);
+        struct vcs_build_execution_observation_v1 divergent;
+        ASSERT(vcs_build_execution_observation_v1_parse(
+            observation_wire, observation_len, &divergent));
+        free(observation_wire);
+        divergent.observed_writes_root[0] ^= 1u;
+        uint8_t divergent_root[32];
+        ASSERT(build_fabric_worker_store_observation(
+            dir, &divergent, divergent_root).ok);
+        struct db_build_receipt red_shadow = shadow;
+        zcl_hex_encode(divergent_root, 32, red_shadow.observation_sha3);
+        red_shadow.created_at = now + 3;
+        ASSERT(build_fabric_receipt_id(
+            &red_shadow, red_shadow.receipt_id).ok);
+        ASSERT(zcl_hex_decode_lower(red_shadow.receipt_id, shadow_id, 32));
+        ed25519_sign(shadow_signature, shadow_id, 32,
+                     shadow_secret, shadow_pubkey);
+        zcl_hex_encode(shadow_signature, 64, red_shadow.signature);
+        ASSERT(db_build_receipt_save(&ndb, &red_shadow));
+        ASSERT(!build_fabric_clean_shadow_compare(
+            &ndb, dir, primary.receipt_id, red_shadow.receipt_id,
+            &match).ok);
+        ASSERT_STR_EQ(match.first_bad_invariant,
+                      "physical-observation-root-mismatch");
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();
@@ -927,6 +1294,10 @@ static int test_bf_confined_test_worker(void)
         ASSERT_EQ(receipt.exit_status, 0);
         ASSERT(receipt.work_receipt_sha3[0] == '\0');
         ASSERT(db_build_action_find(&ndb, action_id, &action));
+        ASSERT_STR_EQ(action.state, "VERIFYING");
+        ASSERT(build_fabric_receipt_admit(
+            &ndb, dir, receipt.receipt_id, now + 1).ok);
+        ASSERT(db_build_action_find(&ndb, action_id, &action));
         ASSERT_STR_EQ(action.state, "ACCEPTED");
 
         uint8_t manifest_root[32];
@@ -965,8 +1336,15 @@ static int test_bf_native(void)
         (void)json_push_kv_str(&input, "source_cas_sha3", id_b);
         (void)json_push_kv_str(&input, "toolchain_sha3", id_c);
         (void)json_push_kv_str(&input, "input_root_sha3", id_d);
-        (void)json_push_kv_str(&input, "flags_sha3", id_a);
-        (void)json_push_kv_str(&input, "environment_sha3", id_b);
+        uint8_t native_flags[32], native_environment[32];
+        char native_flags_hex[65], native_environment_hex[65];
+        vcs_build_action_v1_fixed_flags_root(native_flags);
+        vcs_build_action_v1_fixed_environment_root(native_environment);
+        zcl_hex_encode(native_flags, 32, native_flags_hex);
+        zcl_hex_encode(native_environment, 32, native_environment_hex);
+        (void)json_push_kv_str(&input, "flags_sha3", native_flags_hex);
+        (void)json_push_kv_str(&input, "environment_sha3",
+                               native_environment_hex);
         (void)json_push_kv_str(&input, "profile", "dev");
         (void)json_push_kv_str(&input, "datadir", dir);
         struct zcl_command_request request = { .input = &input };
@@ -1173,6 +1551,7 @@ int test_build_fabric(void)
     failures += test_bf_reproduction_plan();
     failures += test_bf_leases();
     failures += test_bf_toolchain_capture_cache();
+    failures += test_bf_execution_observation_codec();
     failures += test_bf_confined_worker();
     failures += test_bf_confined_test_worker();
     failures += test_bf_native();

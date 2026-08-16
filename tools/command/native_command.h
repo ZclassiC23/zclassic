@@ -366,6 +366,8 @@ void zcl_native_handle_presentation_corpus(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_code_change(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
+void zcl_native_handle_presentation_development(
+    const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_reproduction(
     const struct zcl_command_request *request, struct zcl_command_reply *reply);
 void zcl_native_handle_presentation_publication_confirm(
@@ -388,6 +390,9 @@ bool zcl_native_presentation_code_change_model_from_facts(
     const char *after_behavior, const char *before_blob_hex,
     const char *candidate_blob_hex, const char *candidate_root_hex,
     struct zcl_present_model_v1 *model, char *why, size_t why_cap);
+bool zcl_native_presentation_development_model_from_facts(
+    const struct json_value *facts, struct zcl_present_model_v1 *model,
+    char *why, size_t why_cap);
 bool zcl_native_presentation_reproduction_model_from_facts(
     const struct json_value *facts, struct zcl_present_model_v1 *model,
     char *why, size_t why_cap);

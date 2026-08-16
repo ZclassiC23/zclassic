@@ -17,6 +17,7 @@ struct zcl_result build_fabric_worker_canonical_receipt(
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_candidate_v1 *candidate,
     const uint8_t output_root[32], int64_t started, int64_t finished,
+    const uint8_t evidence_root[32],
     uint8_t work_kind, uint8_t status, int exit_status,
     const char *confinement,
     const uint8_t signer_secret[32], const uint8_t signer_pubkey[32],
@@ -48,7 +49,7 @@ struct zcl_result build_fabric_worker_canonical_receipt(
         return ZCL_ERR(-1, "canonical-receipt-roots-invalid");
     memcpy(receipt.output_root, output_root, 32);
     memcpy(receipt.toolchain_capsule_root, task->toolchain_capsule_root, 32);
-    memcpy(receipt.evidence_root, output_root, 32);
+    memcpy(receipt.evidence_root, evidence_root, 32);
     memcpy(receipt.confinement_root, confinement_root, 32);
     if (vcs_zcode_work_receipt_seal(&receipt, signer_secret, signer_pubkey) !=
             VCS_ZCODE_DEV_OK ||
@@ -63,6 +64,22 @@ struct zcl_result build_fabric_worker_canonical_receipt(
         !vcs_object_put_addressed(workspace, root, wire, sizeof(wire)))
         return ZCL_ERR(-1, "canonical-work-receipt-cas-store-failed");
     zcl_hex_encode(root, 32, out_hex);
+    return ZCL_OK;
+}
+
+struct zcl_result build_fabric_worker_store_observation(
+    const char *workspace,
+    const struct vcs_build_execution_observation_v1 *observation,
+    uint8_t observation_root[32])
+{
+    uint8_t wire[VCS_BUILD_EXECUTION_OBSERVATION_WIRE_BYTES];
+    if (!workspace || !observation || !observation_root ||
+        !vcs_build_execution_observation_v1_root(
+            observation, observation_root) ||
+        !vcs_build_execution_observation_v1_serialize(observation, wire) ||
+        !vcs_object_put_addressed(workspace, observation_root, wire,
+                                  sizeof(wire)))
+        return ZCL_ERR(-1, "physical-observation-cas-store-failed");
     return ZCL_OK;
 }
 

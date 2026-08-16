@@ -108,16 +108,21 @@ struct zcl_result build_fabric_receipt_id(
 {
     if (!receipt || !out_hex)
         return ZCL_ERR(-1, "receipt id requires a receipt and output buffer");
-    static const char domain[] = "zcl.build_receipt.v2";
+    static const char domain_v2[] = "zcl.build_receipt.v2";
+    static const char domain_v3[] = "zcl.build_receipt.v3";
+    const char *domain = receipt->observation_sha3[0] ? domain_v3 : domain_v2;
     struct sha3_256_ctx sha;
     sha3_256_init(&sha);
-    sha3_256_write(&sha, (const unsigned char *)domain, sizeof(domain));
+    sha3_256_write(&sha, (const unsigned char *)domain,
+                   strlen(domain) + 1u);
     bf_sha_text(&sha, receipt->action_id);
     bf_sha_text(&sha, receipt->job_id);
     bf_sha_text(&sha, receipt->worker_id);
     bf_sha_text(&sha, receipt->lease_id);
     bf_sha_text(&sha, receipt->action_sha3);
     bf_sha_text(&sha, receipt->output_sha3);
+    if (receipt->observation_sha3[0])
+        bf_sha_text(&sha, receipt->observation_sha3);
     bf_sha_text(&sha, receipt->work_receipt_sha3);
     bf_sha_text(&sha, receipt->confinement);
     bf_sha_i64(&sha, receipt->exit_status);
@@ -205,6 +210,18 @@ struct zcl_result build_fabric_plan(struct node_db *ndb,
         strcmp(action->state, "SNAPSHOTTED") != 0 ||
         strcmp(job->job_id, action->job_id) != 0)
         return ZCL_ERR(-1, "build plan lifecycle or ownership is invalid");
+    uint8_t fixed_flags[32], fixed_environment[32];
+    char fixed_flags_hex[65], fixed_environment_hex[65];
+    if (!vcs_build_action_v1_fixed_flags_root_for_kind(
+            action->kind, fixed_flags) ||
+        !vcs_build_action_v1_fixed_environment_root_for_kind(
+            action->kind, fixed_environment))
+        return ZCL_ERR(-1, "build plan action kind is not executable");
+    zcl_hex_encode(fixed_flags, 32, fixed_flags_hex);
+    zcl_hex_encode(fixed_environment, 32, fixed_environment_hex);
+    if (strcmp(action->flags_sha3, fixed_flags_hex) != 0 ||
+        strcmp(action->environment_sha3, fixed_environment_hex) != 0)
+        return ZCL_ERR(-1, "supervisor fixed flags or environment mismatch");
     char expected_action[BUILD_FABRIC_ID_HEX + 1];
     char expected_job[BUILD_FABRIC_ID_HEX + 1];
     if (!build_fabric_action_id(job, action, expected_action).ok ||

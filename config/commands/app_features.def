@@ -226,6 +226,29 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_presentation_code_change)
 
 ZCL_COMMAND_READY_COMMAND(
+    "app.presentation.development", "app.presentation", "",
+    "Show the latest exact local development consequence in native C23",
+    "Reads the canonical sealed dev-cycle verdict for the selected workspace "
+    "and renders edit, impact, compile, candidate-behavior and clean-proof "
+    "stages plus affected closure, candidate identity, resource counts, any "
+    "named mismatch, remaining independent-proof unknown and one dominant "
+    "agent next action. It can alternatively project one canonical local "
+    "package-build receipt by exact receipt_id. Repeating the same exact epoch "
+    "replaces its resident window. It never runs a build, selects a candidate "
+    "or performs an effect.",
+    0, "presentation,native,development,reflex,candidate,impact,proof,red,agent",
+    "zcl.app_presentation_development.input.v1",
+    "zcl.app_presentation_development.v1", "workspace,receipt_id,output,page", "",
+    "zclassic23 app presentation development",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
+    ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_CONFIRM_NONE, ZCL_COMMAND_LANE_LOCAL,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_DISPLAY_ONLY,
+    zcl_native_handle_presentation_development)
+
+ZCL_COMMAND_READY_COMMAND(
     "app.presentation.reproduction", "app.presentation", "",
     "Show live independent-reproduction progress in one native window",
     "Reads the exact action's latest root-rederived build-proof event from "

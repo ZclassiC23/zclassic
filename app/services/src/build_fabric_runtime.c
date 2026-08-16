@@ -256,9 +256,19 @@ static void *bf_worker_loop(void *arg)
             ndb, execution_workspace, g_worker_datadir, action.action_id,
             lease_id,
             g_local_secret, g_local_pubkey, &receipt);
-        if (run.ok)
-            supervisor_progress(id, (int64_t)++completed);
-        else
+        if (run.ok) {
+            struct zcl_result admitted = build_fabric_receipt_admit(
+                ndb, execution_workspace, receipt.receipt_id,
+                (int64_t)platform_time_wall_unix());
+            if (admitted.ok)
+                supervisor_progress(id, (int64_t)++completed);
+            else {
+                LOG_ERROR("build_fabric",
+                          "supervisor refused quarantined result %s: %s",
+                          receipt.receipt_id, admitted.message);
+                atomic_fetch_add(&g_worker_failures, 1);
+            }
+        } else
             atomic_fetch_add(&g_worker_failures, 1);
         supervisor_tick(id);
     }
