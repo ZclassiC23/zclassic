@@ -87,15 +87,18 @@ sed -n '/^ZCL_NETWORK_DENIED_BUILD_GOALS :=/,/^endif$/p' \
 cat >> "$policy_make" <<'EOF'
 .PHONY: ci-reproducible
 ci-reproducible:
-	@printf '%s\n' "$(ZCL_VENDOR_OFFLINE)"
+	@printf '%s %s\n' "$(ZCL_VENDOR_OFFLINE)" "$(ZCL_USE_CCACHE)"
 EOF
 policy_value="$(/usr/bin/make -s -f "$policy_make" \
-    ZCL_VENDOR_OFFLINE=0 ci-reproducible)"
-[[ "$policy_value" == "1" ]] ||
-    fail "Make parse barrier did not force offline policy: $policy_value"
+    ZCL_VENDOR_OFFLINE=0 ZCL_USE_CCACHE=1 ci-reproducible)"
+[[ "$policy_value" == "1 0" ]] ||
+    fail "Make parse barrier did not force offline/no-cache policy: $policy_value"
 policy_line="$(grep -n '^ZCL_NETWORK_DENIED_BUILD_GOALS :=' \
     "$ROOT/Makefile" | cut -d: -f1)"
+cache_select_line="$(grep -n '^ZCL_USE_CCACHE ?=' "$ROOT/Makefile" | head -1 | cut -d: -f1)"
 barrier_line="$(grep -n '^VENDOR_BOOTSTRAP_MK :=' "$ROOT/Makefile" | cut -d: -f1)"
+(( policy_line < cache_select_line )) ||
+    fail 'Make hermetic policy is defined after compiler-cache selection'
 (( policy_line < barrier_line )) ||
     fail 'Make offline policy is defined after the vendor parse barrier'
 
@@ -129,4 +132,4 @@ if grep -v '^offline=1 ccache=0 locale=C timezone=UTC path=/usr/bin:/bin home=/n
 fi
 
 printf '%s\n' \
-    'repro_network_policy_selftest: PASS builds=4 make_parse_offline=true host_cache=false'
+    'repro_network_policy_selftest: PASS builds=4 make_parse_offline=true make_parse_cache=false host_cache=false'

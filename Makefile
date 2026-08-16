@@ -1,6 +1,21 @@
 # ZClassic C23 Full Node
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 
+# Reproduction is an execution phase, never an acquisition phase.  Force the
+# vendor builder into its checksum-verified offline mode and disable host
+# compiler caches before Make selects CC or evaluates the early vendor-input
+# restart barrier below.  Doing this in the recipe is too late: GNU Make may
+# compile a parse-time helper or remake VENDOR_BOOTSTRAP_MK before the requested
+# target recipe starts.  `override` is deliberate; a permissive caller
+# environment may not silently weaken a hermetic release gate.
+ZCL_NETWORK_DENIED_BUILD_GOALS := ci-reproducible repro-verify
+ifneq ($(strip $(filter $(ZCL_NETWORK_DENIED_BUILD_GOALS),$(MAKECMDGOALS))),)
+override ZCL_VENDOR_OFFLINE := 1
+override ZCL_USE_CCACHE := 0
+export ZCL_VENDOR_OFFLINE
+export ZCL_USE_CCACHE
+endif
+
 CC = cc
 CXX ?= c++
 ZCL_USE_CCACHE ?= 1
@@ -15,18 +30,6 @@ endif
 # a compiler merely to delete artifacts. Mixed goals remain ordinary builds.
 ZCL_STANDALONE_CLEAN := $(if $(filter clean coverage-clean,$(MAKECMDGOALS)),$(if $(word 2,$(MAKECMDGOALS)),,1),)
 ZCL_ZERO_SHA256 = 0000000000000000000000000000000000000000000000000000000000000000
-
-# Reproduction is an execution phase, never an acquisition phase.  Force the
-# vendor builder into its checksum-verified offline mode before Make evaluates
-# the early vendor-input restart barrier below.  Doing this in the recipe is
-# too late: GNU Make may remake VENDOR_BOOTSTRAP_MK while parsing, before the
-# requested target recipe starts.  `override` is deliberate; a permissive
-# caller environment may not silently weaken a hermetic release gate.
-ZCL_NETWORK_DENIED_BUILD_GOALS := ci-reproducible repro-verify
-ifneq ($(strip $(filter $(ZCL_NETWORK_DENIED_BUILD_GOALS),$(MAKECMDGOALS))),)
-override ZCL_VENDOR_OFFLINE := 1
-export ZCL_VENDOR_OFFLINE
-endif
 
 # The observable hot-swap loop (hotswap-try / hotswap-apply) delegates the
 # module rebuild to tools/dev/hotswap-module-fast.sh, which works from cached
