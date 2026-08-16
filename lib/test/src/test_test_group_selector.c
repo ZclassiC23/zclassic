@@ -290,6 +290,11 @@ static int test_process_sensitive_groups_are_catalog_exclusive(void)
             "test_command_registry_latency"));
         ASSERT(zcl_test_group_requires_exclusive_run(
             "test_command_registry_latency"));
+        /* Constant-time comparisons are paired CPU measurements. Saturated
+         * process concurrency created a 1.250 false delta in physical CI;
+         * measure cryptographic weight sensitivity before the worker pool. */
+        ASSERT(zcl_test_group_requires_exclusive_run(
+            "test_sapling_crypto"));
         /* ZVCS hard-gates warm status and manifest latency. Running it in
          * the worker pool made unrelated CPU and filesystem producers turn
          * the 20 ms contract into a scheduler-contention measurement. */

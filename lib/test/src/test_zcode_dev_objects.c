@@ -3501,6 +3501,8 @@ static int test_zd_improve_command(void)
         zd_swarm_result(&remote_result, &remote_request, 94, 95);
         memcpy(remote_result.output_root, compile_output_root, 32);
         memcpy(remote_result.receipt.output_root, compile_output_root, 32);
+        ASSERT(zcl_hex_decode_lower(receipt.observation_sha3,
+                                    remote_result.receipt.evidence_root, 32));
         remote_result.receipt.started_unix = now > 0 ? now - 1 : 0;
         remote_result.receipt.finished_unix = now;
         uint8_t remote_seed[32], remote_secret[32], remote_key[32];
@@ -3509,6 +3511,34 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(vcs_zcode_work_receipt_seal(
             &remote_result.receipt, remote_secret, remote_key),
             VCS_ZCODE_DEV_OK);
+        struct vcs_zcode_work_result_v1 mismatched_remote = remote_result;
+        mismatched_remote.receipt.evidence_root[0] ^= 1u;
+        ASSERT_EQ(vcs_zcode_work_receipt_seal(
+            &mismatched_remote.receipt, remote_secret, remote_key),
+            VCS_ZCODE_DEV_OK);
+        char mismatched_observed_id[65];
+        ASSERT(build_fabric_receipt_observe_remote(
+            &ndb, workspace, &remote_request, &mismatched_remote, now,
+            mismatched_observed_id).ok);
+        struct db_build_receipt mismatched_observed;
+        ASSERT(db_build_receipt_find(
+            &ndb, mismatched_observed_id, &mismatched_observed));
+        struct db_build_worker mismatched_worker;
+        ASSERT(db_build_worker_find(
+            &ndb, mismatched_observed.worker_id, &mismatched_worker));
+        ASSERT(!mismatched_worker.approved);
+        struct build_fabric_shadow_match mismatched_shadow = {0};
+        ASSERT(!build_fabric_clean_shadow_compare(
+            &ndb, workspace, receipt.receipt_id, mismatched_observed_id,
+            &mismatched_shadow).ok);
+        ASSERT_STR_EQ(mismatched_shadow.first_bad_invariant,
+                      "physical-observation-root-mismatch");
+        struct build_fabric_proof_evaluation mismatched_evaluation = {0};
+        ASSERT(build_fabric_proof_evaluate(
+            &ndb, workspace, action_id,
+            (int64_t)platform_time_wall_unix(),
+            &mismatched_evaluation).ok);
+        ASSERT(!mismatched_evaluation.local_reproduced);
         struct vcs_zcode_work_request_v1 wrong_kind_request = remote_request;
         wrong_kind_request.work_kind = VCS_ZCODE_WORK_TEST;
         ASSERT(vcs_zcode_work_request_seal(
@@ -3563,6 +3593,9 @@ static int test_zd_improve_command(void)
         ASSERT(strlen(evaluation.proof_set_root_sha3) == 64);
         ASSERT(db_build_receipt_find(&ndb, observed_id, &observed));
         ASSERT_STR_EQ(observed.trust_state, "LOCAL_REPRODUCED");
+        ASSERT(db_build_receipt_find(
+            &ndb, mismatched_observed_id, &mismatched_observed));
+        ASSERT_STR_EQ(mismatched_observed.trust_state, "REMOTE_OBSERVED");
 
         struct db_build_job job;
         ASSERT(db_build_job_find(&ndb, action.job_id, &job));

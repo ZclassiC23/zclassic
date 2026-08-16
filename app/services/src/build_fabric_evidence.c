@@ -4,7 +4,6 @@
 #include "services/build_fabric_service.h"
 
 #include "base/hex.h"
-#include "base/serialize_le.h"
 #include "config/c23_commons_build_profile.h"
 #include "crypto/sha3.h"
 #include "util/log_macros.h"
@@ -21,60 +20,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-#define BF_TEST_EVIDENCE_BYTES 84u
-#define BF_FUZZ_EVIDENCE_BYTES 96u
-
-struct zcl_result build_fabric_test_evidence_parse(
-    const uint8_t *bytes, size_t len, uint8_t *status, int *exit_status)
-{
-    if (!bytes || len != BF_TEST_EVIDENCE_BYTES ||
-        memcmp(bytes, "ZCTEST\r\n", 8) != 0 || bytes[8] != 1 ||
-        bytes[9] != 0 || (bytes[10] != 1 && bytes[10] != 2) ||
-        (bytes[11] & ~UINT8_C(7)) != 0 || !status || !exit_status)
-        return ZCL_ERR(-1, "test-evidence-wire-invalid");
-    uint32_t code = zcl_read_u32_le(bytes + 12);
-    uint32_t signal = zcl_read_u32_le(bytes + 16);
-    if (bytes[10] == 1 &&
-        (code != 0 || signal != 0 || (bytes[11] & UINT8_C(1)) != 0))
-        return ZCL_ERR(-1, "passing-test-evidence-reports-failure");
-    *status = bytes[10] == 1 ? VCS_ZCODE_WORK_PASS : VCS_ZCODE_WORK_FAIL;
-    *exit_status = *status == VCS_ZCODE_WORK_PASS ? 0
-        : code > 0 && code <= 255 ? (int)code : 255;
-    return ZCL_OK;
-}
-
-struct zcl_result build_fabric_fuzz_evidence_parse(
-    const uint8_t *bytes, size_t len, uint32_t expected_seeds,
-    uint8_t *status, int *exit_status)
-{
-    if (!bytes || len != BF_FUZZ_EVIDENCE_BYTES ||
-        memcmp(bytes, "ZCFUZZ\r\n", 8) != 0 || bytes[8] != 1 ||
-        bytes[9] != 0 || (bytes[10] != 1 && bytes[10] != 2) ||
-        (bytes[11] & ~UINT8_C(7)) != 0 || !status || !exit_status)
-        return ZCL_ERR(-1, "fuzz-evidence-wire-invalid");
-    uint32_t seeds = zcl_read_u32_le(bytes + 12);
-    uint32_t completed = zcl_read_u32_le(bytes + 16);
-    uint32_t failing_seed = zcl_read_u32_le(bytes + 20);
-    uint32_t code = zcl_read_u32_le(bytes + 24);
-    uint32_t signal = zcl_read_u32_le(bytes + 28);
-    if (seeds == 0 || seeds != expected_seeds || completed == 0 ||
-        completed > seeds)
-        return ZCL_ERR(-1, "fuzz-evidence-seed-range-invalid");
-    if (bytes[10] == 1) {
-        if (completed != seeds || failing_seed != UINT32_MAX || code != 0 ||
-            signal != 0 || (bytes[11] & UINT8_C(1)) != 0)
-            return ZCL_ERR(-1, "passing-fuzz-evidence-is-inconsistent");
-        *status = VCS_ZCODE_WORK_PASS;
-        *exit_status = 0;
-    } else {
-        if (failing_seed >= seeds || completed != failing_seed + 1u)
-            return ZCL_ERR(-1, "failing-fuzz-evidence-seed-invalid");
-        *status = VCS_ZCODE_WORK_FAIL;
-        *exit_status = code > 0 && code <= 255 ? (int)code : 255;
-    }
-    return ZCL_OK;
-}
 
 static void bf_worker_id_from_pubkey(const uint8_t pubkey[32],
                                      char out[65])
@@ -173,6 +118,14 @@ struct zcl_result build_fabric_receipt_observe_remote(
     (void)snprintf(observed.action_sha3, sizeof(observed.action_sha3), "%s",
                    action_id);
     zcl_hex_encode(result->output_root, 32, observed.output_sha3);
+    if (strcmp(action.kind, VCS_BUILD_ACTION_KIND_V1) == 0) {
+        if (memcmp(result->receipt.evidence_root,
+                   (const uint8_t[32]){0}, 32) == 0)
+            return ZCL_ERR(-1,
+                           "remote compile receipt lacks an observation root");
+        zcl_hex_encode(result->receipt.evidence_root, 32,
+                       observed.observation_sha3);
+    }
     (void)snprintf(observed.work_receipt_sha3,
                    sizeof(observed.work_receipt_sha3), "%s", receipt_id);
     zcl_hex_encode(result->receipt.signature, 64, observed.signature);
@@ -205,6 +158,8 @@ struct bf_verified_receipt {
     uint8_t work_kind;
     bool approved;
     bool local;
+    bool shadow_checked;
+    bool clean_shadow;
     bool review_approved;
     bool package_test_passed;
 };
@@ -395,6 +350,9 @@ static size_t bf_count_kind(
     uint8_t signers[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
     size_t count = 0;
     for (size_t i = 0; i < valid_count; i++) {
+        if (work_kind == VCS_ZCODE_WORK_BUILD &&
+            valid[i].shadow_checked && !valid[i].clean_shadow)
+            continue;
         bool trusted = bf_receipt_trusted(&valid[i]) ||
                        bf_has_local_match(valid, valid_count, i);
         if (valid[i].work_kind != work_kind ||
@@ -425,6 +383,9 @@ static size_t bf_count_approved_kind(
     uint8_t signers[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
     size_t count = 0;
     for (size_t i = 0; i < valid_count; i++) {
+        if (work_kind == VCS_ZCODE_WORK_BUILD &&
+            valid[i].shadow_checked && !valid[i].clean_shadow)
+            continue;
         if (valid[i].work_kind != work_kind || !valid[i].approved ||
             (required_output && memcmp(valid[i].evidence_output,
                                        required_output, 32) != 0))
@@ -472,6 +433,9 @@ static bool bf_has_local_match(
     const struct bf_verified_receipt *valid, size_t valid_count,
     size_t remote_index)
 {
+    if (valid[remote_index].work_kind == VCS_ZCODE_WORK_BUILD)
+        return valid[remote_index].shadow_checked &&
+               valid[remote_index].clean_shadow;
     for (size_t i = 0; i < valid_count; i++)
         if (valid[i].local &&
             valid[i].work_kind == valid[remote_index].work_kind &&
@@ -651,11 +615,15 @@ struct zcl_result build_fabric_proof_evaluate(
     uint8_t distinct[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
     size_t distinct_count = 0, proof_count = 0;
     bool have_local = false, have_remote = false;
+    size_t local_build = SIZE_MAX;
     for (size_t i = 0; i < valid_count; i++) {
         if (have_selected_output &&
             valid[i].work_kind == VCS_ZCODE_WORK_BUILD &&
             memcmp(valid[i].evidence_output, selected_output, 32) == 0) {
-            if (valid[i].local) have_local = true;
+            if (valid[i].local) {
+                have_local = true;
+                local_build = i;
+            }
             else have_remote = true;
         }
         if (valid[i].approved) {
@@ -669,7 +637,23 @@ struct zcl_result build_fabric_proof_evaluate(
         }
     }
     out->approved_distinct_signers = distinct_count;
-    out->local_reproduced = have_local && have_remote;
+    out->local_reproduced = false;
+    if (have_local && have_remote && local_build != SIZE_MAX) {
+        for (size_t i = 0; i < valid_count; i++) {
+            if (valid[i].local ||
+                valid[i].work_kind != VCS_ZCODE_WORK_BUILD ||
+                memcmp(valid[i].evidence_output, selected_output, 32) != 0)
+                continue;
+            struct build_fabric_shadow_match shadow = {0};
+            valid[i].shadow_checked = true;
+            valid[i].clean_shadow = build_fabric_clean_shadow_compare(
+                ndb, workspace, valid[local_build].row.receipt_id,
+                valid[i].row.receipt_id, &shadow).ok;
+            if (valid[i].clean_shadow) {
+                out->local_reproduced = true;
+            }
+        }
+    }
     bool independent =
         (policy.flags & VCS_ZCODE_POLICY_INDEPENDENT_SIGNERS) != 0;
     out->compile_receipts = have_selected_output
@@ -720,8 +704,10 @@ struct zcl_result build_fabric_proof_evaluate(
             valid[i].work_kind == VCS_ZCODE_WORK_BUILD &&
             memcmp(valid[i].evidence_output,
                    selected_output, 32) == 0)
-            contributes = bf_receipt_trusted(&valid[i]) ||
-                          bf_has_local_match(valid, valid_count, i);
+            contributes = (!valid[i].shadow_checked ||
+                           valid[i].clean_shadow) &&
+                          (bf_receipt_trusted(&valid[i]) ||
+                           bf_has_local_match(valid, valid_count, i));
         else if (valid[i].work_kind == VCS_ZCODE_WORK_TEST ||
                  valid[i].work_kind == VCS_ZCODE_WORK_FUZZ)
             contributes = bf_receipt_trusted(&valid[i]);
@@ -754,6 +740,7 @@ struct zcl_result build_fabric_proof_evaluate(
         bool class_quorum = false;
         if (valid[i].work_kind == VCS_ZCODE_WORK_BUILD)
             class_quorum = have_selected_output && out->quorum_satisfied &&
+                (!valid[i].shadow_checked || valid[i].clean_shadow) &&
                 memcmp(valid[i].evidence_output,
                        selected_output, 32) == 0;
         else if (valid[i].work_kind == VCS_ZCODE_WORK_TEST)

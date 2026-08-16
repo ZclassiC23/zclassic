@@ -93,11 +93,6 @@ config/src/consensus_state_producer_receipt.c 805
 config/src/consensus_state_snapshot_install_activate.c 1169 # ADR-0008 (seed-floor declaration)
 app/services/src/header_sync_service.c 846
 app/controllers/src/event_agent_summary.c 853
-# 2026-08-15: SECURE lane admission adds a canonical physical-observation
-# verifier and same-action clean-shadow comparator. These are intentionally
-# baselined at the first checkpoint; build_fabric_admission.c is the next
-# extraction seam and this ratchet forbids further silent growth meanwhile.
-app/services/src/build_fabric_service.c 972
 # 2026-08-15: worker-side quarantine now records exact input/output hashes and
 # bounded execution observations. Observation assembly will move beside the
 # evidence codec; this reviewed baseline remains a hard no-growth ceiling.

@@ -975,7 +975,7 @@ static int test_bf_confined_worker(void)
             &ndb, dir, primary.receipt_id, red_shadow.receipt_id,
             &match).ok);
         ASSERT_STR_EQ(match.first_bad_invariant,
-                      "observed-write-set-mismatch");
+                      "physical-observation-root-mismatch");
         node_db_close(&ndb);
         test_rm_rf(dir);
         PASS();
