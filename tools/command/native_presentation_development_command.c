@@ -6,6 +6,7 @@
 #include "base/hex.h"
 #include "json/json.h"
 #include "presentation/model.h"
+#include "services/package_lifecycle.h"
 #include "util/log_macros.h"
 
 #include <stdio.h>
@@ -38,6 +39,69 @@ static bool npd_root(const char *root)
 {
     uint8_t decoded[32];
     return root && zcl_hex_decode_lower(root, decoded, sizeof(decoded));
+}
+
+static bool npd_package_facts(const char *receipt_hex,
+                              struct json_value *facts,
+                              char *why, size_t why_cap)
+{
+    uint8_t receipt_id[32];
+    if (!receipt_hex || !zcl_hex_decode_lower(receipt_hex, receipt_id, 32)) {
+        (void)snprintf(why, why_cap,
+                       "receipt_id must be exactly 64 lowercase hexadecimal characters");
+        return false;
+    }
+    struct vcs_package_build_receipt receipt;
+    struct zcl_result read = package_lifecycle_receipt_read(
+        zcl_native_command_datadir(), receipt_id, &receipt);
+    if (!read.ok) {
+        (void)snprintf(why, why_cap,
+                       "canonical package receipt unavailable: %s",
+                       read.message);
+        return false;
+    }
+    char package_root[65];
+    zcl_hex_encode(receipt.package_root, 32, package_root);
+    const char *result = vcs_package_build_result_string(
+        (enum vcs_package_build_result)receipt.result_class);
+    const char *phase = receipt.result_class == VCS_PACKAGE_BUILD_RESULT_BUILD_FAIL
+        ? "COMPILE_RED" : receipt.result_class == VCS_PACKAGE_BUILD_RESULT_TEST_FAIL
+        ? "STORY_RED" : receipt.result_class == VCS_PACKAGE_BUILD_RESULT_TEST_PASS
+        ? "STORY_GREEN" : "COMPILE_GREEN";
+    bool passed = receipt.result_class == VCS_PACKAGE_BUILD_RESULT_BUILD_PASS ||
+        receipt.result_class == VCS_PACKAGE_BUILD_RESULT_TEST_PASS;
+    char toolchain[257];
+    (void)snprintf(toolchain, sizeof(toolchain), "%s %s; %s",
+                   receipt.compiler_id, receipt.compiler_version, result);
+    json_set_object(facts);
+    bool ok = json_push_kv_str(facts, "schema", "zcl.dev_cycle.v1") &&
+        json_push_kv_str(facts, "status", passed ? "passed" : "rejected") &&
+        json_push_kv_str(facts, "phase", phase) &&
+        json_push_kv_str(facts, "edit_epoch", package_root) &&
+        json_push_kv_str(facts, "candidate_object_root", package_root) &&
+        json_push_kv_str(facts, "affected_component", "installed C23 package") &&
+        json_push_kv_str(facts, "feedback_class",
+            receipt.test_ran ? "ISOLATED_PACKAGE_TEST" :
+                               "COMPILE_ONLY_PACKAGE_RECEIPT") &&
+        json_push_kv_str(facts, "receipt_id", receipt_hex) &&
+        json_push_kv_str(facts, "toolchain", toolchain) &&
+        json_push_kv_str(facts, "result_class", result) &&
+        json_push_kv_bool(facts, "candidate_bytes_executed", receipt.test_ran) &&
+        json_push_kv_bool(facts, "proof_complete",
+                          passed && receipt.test_ran) &&
+        json_push_kv_str(facts, "agent_next_action",
+            passed && receipt.test_ran
+                ? "request independent reproduction for this exact candidate"
+                : passed ? "add a sensitive candidate behavior story"
+                         : "inspect the named package build or test mismatch");
+    if (!passed)
+        ok = ok && json_push_kv_str(facts, "failure_capsule", result);
+    if (!ok) {
+        (void)snprintf(why, why_cap,
+                       "canonical package receipt could not be projected");
+        return false;
+    }
+    return true;
 }
 
 static void npd_item(struct zcl_present_model_v1 *model, uint16_t kind,
@@ -121,6 +185,8 @@ bool zcl_native_presentation_development_model_from_facts(
     const char *feedback = npd_str(facts, "feedback_class");
     const char *capsule = npd_str(facts, "failure_capsule");
     const char *next = npd_str(facts, "agent_next_action");
+    const char *receipt = npd_str(facts, "receipt_id");
+    const char *toolchain = npd_str(facts, "toolchain");
     const char *root = npd_root(epoch) ? epoch :
                        npd_root(source) ? source : candidate;
     bool red = false;
@@ -200,6 +266,13 @@ bool zcl_native_presentation_development_model_from_facts(
              elapsed_known && compiler_known && linker_known
                  ? ZCL_PRESENT_STATUS_INFO : ZCL_PRESENT_STATUS_YELLOW,
              "resources", "LOCAL OBSERVATION - Time and processes", value);
+    if (receipt && receipt[0])
+        npd_item(model, ZCL_PRESENT_ITEM_KEY_VALUE, ZCL_PRESENT_STATUS_GREEN,
+                 "receipt", "LOCAL OBSERVATION - Build receipt", receipt);
+    if (toolchain && toolchain[0])
+        npd_item(model, ZCL_PRESENT_ITEM_KEY_VALUE, ZCL_PRESENT_STATUS_INFO,
+                 "toolchain", "LOCAL OBSERVATION - Toolchain and verdict",
+                 toolchain);
     npd_item(model, ZCL_PRESENT_ITEM_KEY_VALUE,
              feedback ? ZCL_PRESENT_STATUS_INFO : ZCL_PRESENT_STATUS_YELLOW,
              "behavior-class", "LOCAL OBSERVATION - Behavior lane",
@@ -230,9 +303,22 @@ static void npd_fail(struct zcl_command_reply *reply, const char *code,
 void zcl_native_handle_presentation_development(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
+    const char *receipt_id = npd_str(request ? request->input : NULL,
+                                     "receipt_id");
     struct zcl_command_reply facts;
     zcl_command_reply_init(&facts, "zcl.dev_cycle.v1");
-    zcl_native_handle_dev_status(request, &facts);
+    char fact_why[192] = {0};
+    bool package_fact = receipt_id && receipt_id[0];
+    if (package_fact) {
+        if (!npd_package_facts(receipt_id, &facts.data,
+                               fact_why, sizeof(fact_why))) {
+            zcl_command_reply_free(&facts);
+            npd_fail(reply, "PACKAGE_RECEIPT_UNAVAILABLE", fact_why);
+            return;
+        }
+    } else {
+        zcl_native_handle_dev_status(request, &facts);
+    }
     if (facts.exit_code != ZCL_COMMAND_EXIT_OK) {
         zcl_command_reply_free(&facts);
         npd_fail(reply, "DEVELOPMENT_FACTS_UNAVAILABLE",
@@ -256,11 +342,16 @@ void zcl_native_handle_presentation_development(
     zcl_native_present_model(&model, NPD_LEAF, request->input, reply);
     if (reply->status == ZCL_COMMAND_STATUS_PASSED) {
         (void)json_push_kv_str(&reply->data, "fact_authority",
-                              "local_dev_cycle_store");
+                              package_fact ? "local_package_build_receipt" :
+                                             "local_dev_cycle_store");
         (void)json_push_kv_str(&reply->data, "event", phase);
         (void)json_push_kv_str(&reply->data, "verdict", status);
+        (void)json_push_kv_str(&reply->data, "candidate_root",
+                              model.exact_root);
         (void)json_push_kv_bool(&reply->data, "candidate_selected", false);
         (void)json_push_kv_bool(&reply->data,
                                "privileged_action_performed", false);
+        if (package_fact)
+            (void)json_push_kv_str(&reply->data, "receipt_id", receipt_id);
     }
 }

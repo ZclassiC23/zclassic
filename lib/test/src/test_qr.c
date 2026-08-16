@@ -1225,6 +1225,30 @@ int test_qr(void)
              pending_is_honest);
     json_free(&development_facts);
 
+    json_init(&development_facts); json_set_object(&development_facts);
+    json_push_kv_str(&development_facts, "schema", "zcl.dev_cycle.v1");
+    json_push_kv_str(&development_facts, "status", "passed");
+    json_push_kv_str(&development_facts, "phase", "COMPILE_GREEN");
+    json_push_kv_str(&development_facts, "edit_epoch", root_a);
+    json_push_kv_str(&development_facts, "candidate_object_root", root_a);
+    json_push_kv_str(&development_facts, "affected_component", "package");
+    json_push_kv_str(&development_facts, "feedback_class",
+                     "COMPILE_ONLY_PACKAGE_RECEIPT");
+    json_push_kv_str(&development_facts, "receipt_id", root_b);
+    json_push_kv_str(&development_facts, "toolchain", "cc 1; build-pass");
+    json_push_kv_bool(&development_facts, "candidate_bytes_executed", false);
+    json_push_kv_bool(&development_facts, "proof_complete", false);
+    development_built =
+        zcl_native_presentation_development_model_from_facts(
+            &development_facts, &development_model, why, sizeof(why));
+    bool compile_only_receipt = development_built &&
+        development_model.items[2].status == ZCL_PRESENT_STATUS_GREEN &&
+        development_model.items[3].numerator == 0 &&
+        development_model.items[4].numerator == 0;
+    QR_CHECK("compile-only package receipt never becomes behavioral proof",
+             compile_only_receipt);
+    json_free(&development_facts);
+
     QR_CHECK("unchanged candidate bytes cannot masquerade as a code change",
              !zcl_native_presentation_code_change_model_from_facts(
                  code_before, sizeof(code_before) - 1u,

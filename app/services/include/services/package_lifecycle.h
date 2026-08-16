@@ -49,6 +49,7 @@
 #define ZCL_SERVICES_PACKAGE_LIFECYCLE_H
 
 #include "base/result.h"
+#include "vcs/package_build.h"
 #include "vcs/package_install.h"
 
 #include <stdbool.h>
@@ -112,6 +113,14 @@ struct zcl_result package_lifecycle_plan(
 struct zcl_result package_lifecycle_commit(
     const char *datadir, const uint8_t plan_id[32], int64_t now_unix,
     struct package_lifecycle_commit_report *out);
+
+/* Read one filed canonical build receipt by its exact id. This is an inert
+ * projection: it parses the bounded receipt wire and re-derives its id, but
+ * performs no build, install, activation, pin or publication. The lifecycle
+ * remains the sole owner of the on-disk receipt layout. */
+struct zcl_result package_lifecycle_receipt_read(
+    const char *datadir, const uint8_t receipt_id[32],
+    struct vcs_package_build_receipt *out);
 
 struct zcl_result package_lifecycle_rollback(
     const char *datadir, const char *name, int64_t now_unix,

@@ -216,6 +216,32 @@ beta_visual_reproduction() {
         >>"$DHT_WORK/native-ui-agent-requests"
 }
 
+beta_visual_development_receipt() {
+    local role="$1" receipt="$2" expected_root="$3" reply
+    [ "$BETA_VISUAL_ENABLED" = true ] || return 0
+    reply="$(beta_native "$role" app presentation development \
+        --input="{\"receipt_id\":\"$receipt\"}")"
+    beta_visual_assert_reply "exact local package development consequence" "$reply"
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("fact_authority","")')" = local_package_build_receipt ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("receipt_id","")')" = "$receipt" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("candidate_root","")')" = "$expected_root" ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("event","")')" = STORY_GREEN ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("candidate_selected",True)')" = False ] &&
+    [ "$(printf '%s' "$reply" | beta_jget \
+        'd["data"].get("privileged_action_performed",True)')" = False ] ||
+        beta_die "local development view outran its exact package receipt: $reply"
+    "$C23_BETA_NATIVE_UI_DRIVER" --title='Exact development consequence' \
+        --key=escape --timeout-ms=5000 >/dev/null ||
+        beta_die "local development consequence was not keyboard reachable"
+    printf '%s\n' development-receipt \
+        >>"$DHT_WORK/native-ui-agent-requests"
+}
+
 BETA_NAMESPACE="zclassic23.package"
 BETA_BASE_ROOT="7f15ba590a82de200152b1c02b5b1dc11b4932a9b690fbe332e7c2fa60d764fe"
 BETA_SHA3_ROOT="ea54d7038792764c059a697792d46ee92fe75e29aa302d3c8db3a208a580876e"
@@ -1088,6 +1114,9 @@ V2_REUSED_BYTES="$BETA_FETCH_REUSED_BYTES"
 beta_build_graph "$BETA_C" "$BETA_V2_ROOT" "$BETA_BASE_ROOT" \
     "$BETA_SHA3_ROOT" "$BETA_V2_ROOT"
 V2_RECEIPT="$BETA_BUILD_RECEIPT"
+if [ "$BETA_VISUAL_ENABLED" = true ]; then
+    beta_visual_development_receipt "$BETA_C" "$V2_RECEIPT" "$BETA_V2_ROOT"
+fi
 [ "$BETA_BUILD_REBUILT" -eq 1 ] && [ "$BETA_BUILD_REUSED" -eq 2 ] &&
 [ "$BETA_BUILD_EVIDENCE_REUSED" -eq 2 ] &&
 [ "$V2_RECEIPT" != "$C_RECEIPT" ] ||
@@ -1271,7 +1300,7 @@ if [ "$BETA_VISUAL_ENABLED" = true ]; then
     BETA_VISUAL_HUMAN_ACTIONS="$(wc -l \
         <"$DHT_WORK/native-ui-human-actions" | tr -d ' ')"
     BETA_VISUAL_PLAN_IDENTITY="$(<"$DHT_WORK/native-ui-plan-identity")"
-    [ "$BETA_VISUAL_AGENT_REQUESTS" -eq 8 ] &&
+    [ "$BETA_VISUAL_AGENT_REQUESTS" -eq 9 ] &&
     [ "$BETA_VISUAL_HUMAN_ACTIONS" -eq 1 ] &&
     [ "${#BETA_VISUAL_BEFORE_SOURCE_ROOT}" -eq 64 ] &&
     [ "${#BETA_VISUAL_CANDIDATE_SOURCE_ROOT}" -eq 64 ] &&
