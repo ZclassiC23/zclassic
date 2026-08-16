@@ -27,4 +27,4 @@ protocol, malformed frame = loud exit, EOF = match over).
 
 ## License
 
-MIT
+Apache-2.0

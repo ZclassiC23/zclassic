@@ -6,7 +6,7 @@
  * lateral bearing error, pitch toward the elevation error, full
  * throttle, fire when roughly aligned and in range.
  *
- * MIT licensed.
+ * Apache-2.0 licensed.
  */
 #ifndef ZDOGACE_H
 #define ZDOGACE_H
