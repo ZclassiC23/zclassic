@@ -5,8 +5,11 @@
 
 #include "base/hex.h"
 #include "crypto/sha3.h"
+#include "vcs/build_action.h"
 #include "vcs/build_release_qualification.h"
+#include "vcs/build_release_regressions.h"
 #include "vcs/vcs_object.h"
+#include "vcs/zcode_dev.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,6 +76,90 @@ static bool bfr_raw_sha3_object(const char *workspace,
     return memcmp(root, observed, 32) == 0;
 }
 
+static bool bfr_proof_set_object(const char *workspace,
+                                 const uint8_t expected_root[32])
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0, proof_count = 0;
+    uint8_t proof_roots[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS][32];
+    uint8_t observed_root[32];
+    bool valid = vcs_object_load_raw_bounded(
+            workspace, expected_root, VCS_ZCODE_PROOF_SET_WIRE_MAX,
+            &wire, &wire_len) == 0 &&
+        vcs_zcode_proof_set_parse(
+            wire, wire_len, proof_roots,
+            VCS_ZCODE_PROOF_SET_MAX_RECEIPTS, &proof_count) ==
+                VCS_ZCODE_DEV_OK &&
+        vcs_zcode_proof_set_root(
+            (const uint8_t (*)[32])proof_roots, proof_count,
+            observed_root) == VCS_ZCODE_DEV_OK &&
+        memcmp(expected_root, observed_root, 32) == 0;
+    free(wire);
+    return valid;
+}
+
+static bool bfr_regression_intent_valid(
+    const char *workspace, const struct db_build_action *action,
+    const struct db_build_job *job)
+{
+    uint8_t task_root[32], policy_root[32], candidate_root[32];
+    uint8_t expected_source[32], expected_toolchain[32], checked_root[32];
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    if (!action || !job || !zcl_hex_decode_lower(
+            action->task_root_sha3, task_root, 32) ||
+        !zcl_hex_decode_lower(
+            action->proof_policy_root_sha3, policy_root, 32) ||
+        !zcl_hex_decode_lower(
+            action->candidate_root_sha3, candidate_root, 32) ||
+        !zcl_hex_decode_lower(job->source_cas_sha3, expected_source, 32) ||
+        !zcl_hex_decode_lower(
+            job->toolchain_sha3, expected_toolchain, 32) ||
+        vcs_object_load_raw_bounded(
+            workspace, task_root, VCS_ZCODE_TASK_WIRE_BYTES,
+            &wire, &wire_len) != 0)
+        return false;
+    struct vcs_zcode_task_v1 task;
+    bool valid = vcs_zcode_task_parse(wire, wire_len, &task) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_task_root(&task, checked_root) == VCS_ZCODE_DEV_OK &&
+        memcmp(task_root, checked_root, 32) == 0 &&
+        memcmp(task.proof_policy_root, policy_root, 32) == 0 &&
+        memcmp(task.toolchain_capsule_root, expected_toolchain, 32) == 0 &&
+        vcs_build_release_regression_manifest_v1_verify_cas(
+            workspace, task.acceptance_tests_root);
+    free(wire);
+    wire = NULL;
+    if (!valid || vcs_object_load_raw_bounded(
+            workspace, policy_root, VCS_ZCODE_PROOF_POLICY_WIRE_BYTES,
+            &wire, &wire_len) != 0)
+        return false;
+    struct vcs_zcode_proof_policy_v1 policy;
+    valid = vcs_zcode_proof_policy_parse(wire, wire_len, &policy) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_proof_policy_root(&policy, checked_root) ==
+            VCS_ZCODE_DEV_OK &&
+        memcmp(policy_root, checked_root, 32) == 0 &&
+        (policy.required_proofs & VCS_ZCODE_PROOF_TEST) != 0 &&
+        policy.minimum_test_receipts > 0;
+    free(wire);
+    wire = NULL;
+    if (!valid || vcs_object_load_raw_bounded(
+            workspace, candidate_root, VCS_ZCODE_CANDIDATE_WIRE_BYTES,
+            &wire, &wire_len) != 0)
+        return false;
+    struct vcs_zcode_candidate_v1 candidate;
+    valid = vcs_zcode_candidate_parse(wire, wire_len, &candidate) ==
+            VCS_ZCODE_DEV_OK &&
+        vcs_zcode_candidate_root(&candidate, checked_root) ==
+            VCS_ZCODE_DEV_OK &&
+        memcmp(candidate_root, checked_root, 32) == 0 &&
+        memcmp(candidate.task_root, task_root, 32) == 0 &&
+        memcmp(candidate.candidate_source_root, expected_source, 32) == 0;
+    free(wire);
+    return valid;
+}
+
 static void bfr_sort_roots(uint8_t roots[3][32])
 {
     for (size_t i = 0; i < 2; i++) {
@@ -117,16 +204,16 @@ struct zcl_result build_fabric_release_qualify(
             VCS_BUILD_RELEASE_CONFIRMATION_WIRE_BYTES,
             &wire, &wire_len) != 0)
         return bfr_refuse(out, "human-confirmation-absent");
-    struct vcs_build_release_confirmation_v1 confirmation;
+    struct vcs_build_release_confirmation_v2 confirmation;
     bool confirmation_valid =
-        vcs_build_release_confirmation_v1_parse(
+        vcs_build_release_confirmation_v2_parse(
             wire, wire_len, &confirmation) ==
                 VCS_BUILD_RELEASE_EVIDENCE_OK &&
-        vcs_build_release_confirmation_v1_root(
+        vcs_build_release_confirmation_v2_root(
             &confirmation, checked_root) ==
                 VCS_BUILD_RELEASE_EVIDENCE_OK &&
         memcmp(confirmation_root, checked_root, 32) == 0 &&
-        vcs_build_release_confirmation_v1_verify(&confirmation) ==
+        vcs_build_release_confirmation_v2_verify(&confirmation) ==
             VCS_BUILD_RELEASE_EVIDENCE_OK;
     free(wire);
     if (!confirmation_valid)
@@ -204,6 +291,54 @@ struct zcl_result build_fabric_release_qualify(
             return bfr_refuse(out, "physical-machine-evidence-invalid");
     out->physical_evidence_present = true;
 
+    /* The regression lane is an ordinary exact test action and the ordinary
+     * canonical proof set. Qualification only inspects the already-admitted
+     * evidence: it cannot create the proof set or promote receipt trust. The
+     * source identities prevent a green test action for unrelated bytes from
+     * qualifying this candidate artifact. */
+    char regression_action_id[65];
+    zcl_hex_encode(confirmation.regression_action_root, 32,
+                   regression_action_id);
+    struct db_build_action regression_action;
+    struct db_build_job candidate_job, regression_job;
+    if (strcmp(regression_action_id, action_id) == 0 ||
+        !db_build_action_find(ndb, regression_action_id,
+                              &regression_action) ||
+        strcmp(regression_action.kind,
+               VCS_BUILD_ACTION_KIND_TEST_V1) != 0 ||
+        strcmp(regression_action.state, "ACCEPTED") != 0 ||
+        !regression_action.task_root_sha3[0] ||
+        !regression_action.candidate_root_sha3[0] ||
+        !regression_action.proof_policy_root_sha3[0] ||
+        !db_build_job_find(ndb, action.job_id, &candidate_job) ||
+        !db_build_job_find(ndb, regression_action.job_id,
+                           &regression_job) ||
+        strcmp(candidate_job.source_sha256,
+               regression_job.source_sha256) != 0 ||
+        strcmp(candidate_job.source_cas_sha3,
+               regression_job.source_cas_sha3) != 0 ||
+        strcmp(candidate_job.toolchain_sha3,
+               regression_job.toolchain_sha3) != 0 ||
+        strcmp(action.target, regression_action.target) != 0)
+        return bfr_refuse(out, "regression-action-not-candidate-bound");
+    if (!bfr_regression_intent_valid(
+            workspace, &regression_action, &regression_job))
+        return bfr_refuse(out, "regression-intent-manifest-invalid");
+    struct build_fabric_proof_evaluation regression_proof = {0};
+    struct zcl_result inspected = build_fabric_proof_evaluate_readonly(
+        ndb, workspace, regression_action_id, now, &regression_proof);
+    uint8_t derived_regression_proof_root[32];
+    if (!inspected.ok || !regression_proof.policy_satisfied ||
+        !regression_proof.test_satisfied ||
+        regression_proof.test_receipts == 0 ||
+        !zcl_hex_decode_lower(regression_proof.proof_set_root_sha3,
+                              derived_regression_proof_root, 32) ||
+        memcmp(derived_regression_proof_root,
+               confirmation.regression_proof_set_root, 32) != 0 ||
+        !bfr_proof_set_object(workspace, derived_regression_proof_root))
+        return bfr_refuse(out, "historical-regression-proof-invalid");
+    out->regression_proof_satisfied = true;
+
     char confirmer_id[65];
     struct db_build_worker confirmer;
     bfr_worker_id(confirmation.confirmer_pubkey, confirmer_id);
@@ -211,7 +346,7 @@ struct zcl_result build_fabric_release_qualify(
         !confirmer.approved || confirmer.revoked ||
         (confirmer.expires_at != 0 && now >= confirmer.expires_at) ||
         !bfr_capability(confirmer.capabilities,
-                        "release-confirmation.v1") ||
+                        "release-confirmation.v2") ||
         confirmer.approved_at > confirmation.confirmed_unix ||
         strcmp(confirmer.signer_pubkey,
                candidate_worker.signer_pubkey) == 0 ||
@@ -221,7 +356,7 @@ struct zcl_result build_fabric_release_qualify(
         return bfr_refuse(out, "release-confirmer-not-approved-independent");
     out->confirmer_approved = true;
 
-    struct vcs_build_release_qualification_v1 qualification = {
+    struct vcs_build_release_qualification_v2 qualification = {
         .schema_version = VCS_BUILD_RELEASE_QUALIFICATION_VERSION,
         .flags = VCS_BUILD_RELEASE_QUAL_REQUIRED_FLAGS,
         .qualified_unix = confirmation.confirmed_unix,
@@ -245,12 +380,16 @@ struct zcl_result build_fabric_release_qualify(
     memcpy(execution_roots[1], confirmation.shadow_receipt_root, 32);
     memcpy(execution_roots[2], confirmation.reproduction_receipt_root, 32);
     bfr_proof_set_root(execution_roots, qualification.proof_set_root);
+    memcpy(qualification.regression_action_root,
+           confirmation.regression_action_root, 32);
+    memcpy(qualification.regression_proof_set_root,
+           confirmation.regression_proof_set_root, 32);
     uint8_t qualification_wire[VCS_BUILD_RELEASE_QUALIFICATION_WIRE_BYTES];
     uint8_t qualification_root[32];
-    if (vcs_build_release_qualification_v1_serialize(
+    if (vcs_build_release_qualification_v2_serialize(
             &qualification, qualification_wire) !=
                 VCS_BUILD_RELEASE_EVIDENCE_OK ||
-        vcs_build_release_qualification_v1_root(
+        vcs_build_release_qualification_v2_root(
             &qualification, qualification_root) !=
                 VCS_BUILD_RELEASE_EVIDENCE_OK ||
         !vcs_object_put_addressed(

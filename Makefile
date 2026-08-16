@@ -187,7 +187,7 @@ else ifneq ($(filter dev-package-verifier,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev
 else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active test-parallel-fast-active-locked t-fast-locked t-fast-exact-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-fast
-else ifneq ($(filter t test test_parallel test-parallel test-parallel-active test-parallel-active-locked test-parallel-locked t-locked test-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter t test test_parallel test-parallel test-parallel-active test-parallel-active-locked test-parallel-locked t-locked test-locked secure-release-regressions secure-release-regressions-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-strict
 else ifneq ($(filter t-asan test-asan asan-ci zcode-package-asan,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-asan
@@ -789,7 +789,8 @@ CHECKOUT_LOCK = $(BUILD_DIR)/.checkout.lock
 CHECKOUT_LOCK_MODE = $(if $(filter 1,$(ZCL_DEV_WATCH_LANE)),watcher,foreground)
 CHECKOUT_LOCKED_TEST_GOALS := test-parallel-active-locked \
 	test-parallel-fast-active-locked test-parallel-locked t-locked \
-	t-fast-locked t-fast-exact-locked test-locked
+	t-fast-locked t-fast-exact-locked test-locked \
+	secure-release-regressions-locked
 ifneq ($(filter $(CHECKOUT_LOCKED_TEST_GOALS),$(MAKECMDGOALS)),)
 ifneq ($(ZCL_CHECKOUT_LOCK_HELD),1)
 $(error internal locked test goal requires the checkout lock; invoke its public target)
@@ -967,7 +968,7 @@ else ifneq ($(filter dev-bin zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev test-fast
 else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active test-parallel-fast-active-locked t-fast-locked t-fast-exact-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-fast
-else ifneq ($(filter t test test_parallel test-parallel test-parallel-active test-parallel-active-locked test-parallel-locked t-locked test-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter t test test_parallel test-parallel test-parallel-active test-parallel-active-locked test-parallel-locked t-locked test-locked secure-release-regressions secure-release-regressions-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-strict
 else ifneq ($(filter t-asan test-asan asan-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-asan
@@ -2314,6 +2315,24 @@ t-fast-exact:
 t-fast-exact-locked: $(TEST_PARALLEL_FAST_CANDIDATE) dev-package-verifier-ensure
 	ulimit -s unlimited && \
 	  $(TEST_PARALLEL_FAST_ACTIVE) --exact=$(EXACT_ONLY_MATCHED)
+
+# Closed historical-failure corpus required by build_release_confirmation.v2.
+# This focused physical gate is uncached and exact; release qualification also
+# requires the candidate-bound all-groups test action and its canonical proof
+# set, so this convenience target is evidence preparation, never qualification.
+SECURE_RELEASE_REGRESSION_GROUPS := test_sqlite,test_boot_stale_locks,test_build_fabric,test_coins,test_accept_to_mempool,test_zcode_dht_service,test_zcode_swarm,test_utxo_mirror_sync,test_addrman_shutdown_race,test_dev_activation,test_wallet_flush_rollback,test_reorg_safety
+
+.PHONY: secure-release-regressions secure-release-regressions-locked
+secure-release-regressions:
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
+	  $(MAKE) --no-print-directory secure-release-regressions-locked
+
+secure-release-regressions-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
+	@tools/dev/secure-release-regressions-selftest.sh \
+	  '$(SECURE_RELEASE_REGRESSION_GROUPS)'
+	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE) \
+	  --exact=$(SECURE_RELEASE_REGRESSION_GROUPS) --no-cache
 
 .PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance
 zcode-development-acceptance:
@@ -4351,7 +4370,9 @@ $(SQLQ_BIN): tools/sqlq.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
 
 # Physical native-agent UI acceptance driver. It links only the workstation's
 # X11 client ABI and sends one bounded event to an exact titled window; it owns
-# no node/package authority and is never shipped.
+# no node/package authority and is never shipped. Link the stable runtime
+# SONAME directly so a physical runner needs the X11 runtime, not a distro's
+# optional development-package linker alias.
 NATIVE_UI_DRIVER_BIN = $(BIN_DIR)/native_ui_driver
 .PHONY: native-ui-driver
 native-ui-driver: $(NATIVE_UI_DRIVER_BIN)
@@ -4359,7 +4380,7 @@ $(NATIVE_UI_DRIVER_BIN): tools/native_ui_driver.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
 	    -D_POSIX_C_SOURCE=200809L -Ivendor/x11/include \
-	    -o $@ $< -lX11
+	    -o $@ $< -Wl,-l:libX11.so.6
 
 # Crash recovery harness: fork zclassic23, SIGKILL at random points,
 # restart, and assert data-integrity invariants. Needs a pre-seeded
@@ -5616,7 +5637,8 @@ FUZZ_CFLAGS = -std=c23 -O1 -g -Wall -Wextra \
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) \
 	$(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) \
 	$(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) \
-	-Ilib/test/include -D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
+	-Ilib/test/include -Ivendor/x11/include \
+	-D_POSIX_C_SOURCE=200809L -D_DEFAULT_SOURCE \
 	-DZCL_FUZZ_QUIET_LOG_MACROS -Ivendor/include \
 	-fsanitize=fuzzer,address,undefined \
 	-fno-sanitize=alignment

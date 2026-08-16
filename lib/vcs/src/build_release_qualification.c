@@ -10,10 +10,10 @@
 #include <string.h>
 
 static const uint8_t k_confirmation_magic[8] = {
-    'Z', 'B', 'R', 'C', 'F', 'M', '1', '\0'
+    'Z', 'B', 'R', 'C', 'F', 'M', '2', '\0'
 };
 static const uint8_t k_qualification_magic[8] = {
-    'Z', 'B', 'R', 'Q', 'U', 'A', '1', '\0'
+    'Z', 'B', 'R', 'Q', 'U', 'A', '2', '\0'
 };
 
 static bool brq_nonzero(const uint8_t root[32])
@@ -31,7 +31,7 @@ static bool brq_distinct3(const uint8_t a[32], const uint8_t b[32],
 }
 
 static enum vcs_build_release_evidence_error brq_confirmation_valid(
-    const struct vcs_build_release_confirmation_v1 *c)
+    const struct vcs_build_release_confirmation_v2 *c)
 {
     if (!c) return VCS_BUILD_RELEASE_EVIDENCE_NULL;
     if (c->schema_version != VCS_BUILD_RELEASE_CONFIRMATION_VERSION)
@@ -47,6 +47,7 @@ static enum vcs_build_release_evidence_error brq_confirmation_valid(
         c->candidate_machine_evidence_root,
         c->shadow_machine_evidence_root,
         c->reproduction_machine_evidence_root,
+        c->regression_action_root, c->regression_proof_set_root,
         c->confirmer_pubkey,
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
@@ -62,8 +63,8 @@ static enum vcs_build_release_evidence_error brq_confirmation_valid(
                                  : VCS_BUILD_RELEASE_EVIDENCE_TIME;
 }
 
-void vcs_build_release_confirmation_v1_init(
-    struct vcs_build_release_confirmation_v1 *confirmation)
+void vcs_build_release_confirmation_v2_init(
+    struct vcs_build_release_confirmation_v2 *confirmation)
 {
     if (!confirmation) return;
     memset(confirmation, 0, sizeof(*confirmation));
@@ -72,7 +73,7 @@ void vcs_build_release_confirmation_v1_init(
 }
 
 static enum vcs_build_release_evidence_error brq_confirmation_encode(
-    const struct vcs_build_release_confirmation_v1 *c,
+    const struct vcs_build_release_confirmation_v2 *c,
     uint8_t out[VCS_BUILD_RELEASE_CONFIRMATION_WIRE_BYTES])
 {
     enum vcs_build_release_evidence_error error = brq_confirmation_valid(c);
@@ -90,6 +91,7 @@ static enum vcs_build_release_evidence_error brq_confirmation_encode(
         c->candidate_machine_evidence_root,
         c->shadow_machine_evidence_root,
         c->reproduction_machine_evidence_root,
+        c->regression_action_root, c->regression_proof_set_root,
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         memcpy(out + at, roots[i], 32);
@@ -100,20 +102,20 @@ static enum vcs_build_release_evidence_error brq_confirmation_encode(
     memcpy(out + at, c->confirmer_pubkey, 32);
     at += 32;
     memcpy(out + at, c->signature, 64);
-    return at + 64 == 376 ? VCS_BUILD_RELEASE_EVIDENCE_OK
+    return at + 64 == 440 ? VCS_BUILD_RELEASE_EVIDENCE_OK
                           : VCS_BUILD_RELEASE_EVIDENCE_WIRE;
 }
 
 enum vcs_build_release_evidence_error
-vcs_build_release_confirmation_v1_serialize(
-    const struct vcs_build_release_confirmation_v1 *confirmation,
+vcs_build_release_confirmation_v2_serialize(
+    const struct vcs_build_release_confirmation_v2 *confirmation,
     uint8_t out[VCS_BUILD_RELEASE_CONFIRMATION_WIRE_BYTES])
 {
     return brq_confirmation_encode(confirmation, out);
 }
 
-enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_root(
-    const struct vcs_build_release_confirmation_v1 *confirmation,
+enum vcs_build_release_evidence_error vcs_build_release_confirmation_v2_root(
+    const struct vcs_build_release_confirmation_v2 *confirmation,
     uint8_t out[32])
 {
     if (out) memset(out, 0, 32);
@@ -122,18 +124,18 @@ enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_root(
     enum vcs_build_release_evidence_error error =
         brq_confirmation_encode(confirmation, wire);
     if (error != VCS_BUILD_RELEASE_EVIDENCE_OK) return error;
-    static const char domain[] = "zcl.build_release_confirmation.v1";
+    static const char domain[] = "zcl.build_release_confirmation.v2";
     struct sha3_256_ctx sha;
     sha3_256_init(&sha);
     sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
     /* Signature and the trailing reserved bytes are not the signed preimage. */
-    sha3_256_write(&sha, wire, 312);
+    sha3_256_write(&sha, wire, 376);
     sha3_256_finalize(&sha, out);
     return VCS_BUILD_RELEASE_EVIDENCE_OK;
 }
 
-enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_seal(
-    struct vcs_build_release_confirmation_v1 *confirmation,
+enum vcs_build_release_evidence_error vcs_build_release_confirmation_v2_seal(
+    struct vcs_build_release_confirmation_v2 *confirmation,
     const uint8_t secret[32], const uint8_t pubkey[32])
 {
     if (!confirmation || !secret || !pubkey)
@@ -141,7 +143,7 @@ enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_seal(
     memcpy(confirmation->confirmer_pubkey, pubkey, 32);
     uint8_t root[32];
     enum vcs_build_release_evidence_error error =
-        vcs_build_release_confirmation_v1_root(confirmation, root);
+        vcs_build_release_confirmation_v2_root(confirmation, root);
     if (error != VCS_BUILD_RELEASE_EVIDENCE_OK) return error;
     ed25519_sign(confirmation->signature, root, sizeof(root), secret, pubkey);
     return ed25519_verify(confirmation->signature, root, sizeof(root), pubkey)
@@ -149,12 +151,12 @@ enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_seal(
         : VCS_BUILD_RELEASE_EVIDENCE_SIGNATURE;
 }
 
-enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_verify(
-    const struct vcs_build_release_confirmation_v1 *confirmation)
+enum vcs_build_release_evidence_error vcs_build_release_confirmation_v2_verify(
+    const struct vcs_build_release_confirmation_v2 *confirmation)
 {
     uint8_t root[32];
     enum vcs_build_release_evidence_error error =
-        vcs_build_release_confirmation_v1_root(confirmation, root);
+        vcs_build_release_confirmation_v2_root(confirmation, root);
     if (error != VCS_BUILD_RELEASE_EVIDENCE_OK) return error;
     return ed25519_verify(confirmation->signature, root, sizeof(root),
                           confirmation->confirmer_pubkey)
@@ -162,9 +164,9 @@ enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_verify(
         : VCS_BUILD_RELEASE_EVIDENCE_SIGNATURE;
 }
 
-enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_parse(
+enum vcs_build_release_evidence_error vcs_build_release_confirmation_v2_parse(
     const uint8_t *wire, size_t wire_len,
-    struct vcs_build_release_confirmation_v1 *out)
+    struct vcs_build_release_confirmation_v2 *out)
 {
     if (!wire || !out) return VCS_BUILD_RELEASE_EVIDENCE_NULL;
     memset(out, 0, sizeof(*out));
@@ -173,7 +175,7 @@ enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_parse(
     if (memcmp(wire, k_confirmation_magic, 8) != 0)
         return VCS_BUILD_RELEASE_EVIDENCE_MAGIC;
     if (memcmp(wire + 13, (const uint8_t[3]){0}, 3) != 0 ||
-        memcmp(wire + 376, (const uint8_t[8]){0}, 8) != 0)
+        memcmp(wire + 440, (const uint8_t[8]){0}, 8) != 0)
         return VCS_BUILD_RELEASE_EVIDENCE_WIRE;
     out->schema_version = zcl_read_u16_le(wire + 8);
     out->flags = zcl_read_u16_le(wire + 10);
@@ -186,6 +188,7 @@ enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_parse(
         out->candidate_machine_evidence_root,
         out->shadow_machine_evidence_root,
         out->reproduction_machine_evidence_root,
+        out->regression_action_root, out->regression_proof_set_root,
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         memcpy(roots[i], wire + at, 32);
@@ -202,7 +205,7 @@ enum vcs_build_release_evidence_error vcs_build_release_confirmation_v1_parse(
 }
 
 static enum vcs_build_release_evidence_error brq_qualification_valid(
-    const struct vcs_build_release_qualification_v1 *q)
+    const struct vcs_build_release_qualification_v2 *q)
 {
     if (!q) return VCS_BUILD_RELEASE_EVIDENCE_NULL;
     if (q->schema_version != VCS_BUILD_RELEASE_QUALIFICATION_VERSION)
@@ -214,6 +217,7 @@ static enum vcs_build_release_evidence_error brq_qualification_valid(
         q->candidate_receipt_root, q->shadow_receipt_root,
         q->reproduction_receipt_root, q->confirmation_root,
         q->proof_set_root,
+        q->regression_action_root, q->regression_proof_set_root,
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++)
         if (!brq_nonzero(roots[i]))
@@ -226,8 +230,8 @@ static enum vcs_build_release_evidence_error brq_qualification_valid(
 }
 
 enum vcs_build_release_evidence_error
-vcs_build_release_qualification_v1_serialize(
-    const struct vcs_build_release_qualification_v1 *q,
+vcs_build_release_qualification_v2_serialize(
+    const struct vcs_build_release_qualification_v2 *q,
     uint8_t out[VCS_BUILD_RELEASE_QUALIFICATION_WIRE_BYTES])
 {
     enum vcs_build_release_evidence_error error = brq_qualification_valid(q);
@@ -243,20 +247,21 @@ vcs_build_release_qualification_v1_serialize(
         q->candidate_receipt_root, q->shadow_receipt_root,
         q->reproduction_receipt_root, q->confirmation_root,
         q->proof_set_root,
+        q->regression_action_root, q->regression_proof_set_root,
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         memcpy(out + at, roots[i], 32);
         at += 32;
     }
     zcl_write_i64_le(out + at, q->qualified_unix);
-    return at + 8 == 280 ? VCS_BUILD_RELEASE_EVIDENCE_OK
+    return at + 8 == 344 ? VCS_BUILD_RELEASE_EVIDENCE_OK
                          : VCS_BUILD_RELEASE_EVIDENCE_WIRE;
 }
 
 enum vcs_build_release_evidence_error
-vcs_build_release_qualification_v1_parse(
+vcs_build_release_qualification_v2_parse(
     const uint8_t *wire, size_t wire_len,
-    struct vcs_build_release_qualification_v1 *out)
+    struct vcs_build_release_qualification_v2 *out)
 {
     if (!wire || !out) return VCS_BUILD_RELEASE_EVIDENCE_NULL;
     memset(out, 0, sizeof(*out));
@@ -265,7 +270,7 @@ vcs_build_release_qualification_v1_parse(
     if (memcmp(wire, k_qualification_magic, 8) != 0)
         return VCS_BUILD_RELEASE_EVIDENCE_MAGIC;
     if (memcmp(wire + 12, (const uint8_t[4]){0}, 4) != 0 ||
-        memcmp(wire + 280, (const uint8_t[24]){0}, 24) != 0)
+        memcmp(wire + 344, (const uint8_t[24]){0}, 24) != 0)
         return VCS_BUILD_RELEASE_EVIDENCE_WIRE;
     out->schema_version = zcl_read_u16_le(wire + 8);
     out->flags = zcl_read_u16_le(wire + 10);
@@ -275,6 +280,7 @@ vcs_build_release_qualification_v1_parse(
         out->candidate_receipt_root, out->shadow_receipt_root,
         out->reproduction_receipt_root, out->confirmation_root,
         out->proof_set_root,
+        out->regression_action_root, out->regression_proof_set_root,
     };
     for (size_t i = 0; i < sizeof(roots) / sizeof(roots[0]); i++) {
         memcpy(roots[i], wire + at, 32);
@@ -286,17 +292,17 @@ vcs_build_release_qualification_v1_parse(
     return error;
 }
 
-enum vcs_build_release_evidence_error vcs_build_release_qualification_v1_root(
-    const struct vcs_build_release_qualification_v1 *qualification,
+enum vcs_build_release_evidence_error vcs_build_release_qualification_v2_root(
+    const struct vcs_build_release_qualification_v2 *qualification,
     uint8_t out[32])
 {
     if (out) memset(out, 0, 32);
     if (!qualification || !out) return VCS_BUILD_RELEASE_EVIDENCE_NULL;
     uint8_t wire[VCS_BUILD_RELEASE_QUALIFICATION_WIRE_BYTES];
     enum vcs_build_release_evidence_error error =
-        vcs_build_release_qualification_v1_serialize(qualification, wire);
+        vcs_build_release_qualification_v2_serialize(qualification, wire);
     if (error != VCS_BUILD_RELEASE_EVIDENCE_OK) return error;
-    static const char domain[] = "zcl.build_release_qualification.v1";
+    static const char domain[] = "zcl.build_release_qualification.v2";
     struct sha3_256_ctx sha;
     sha3_256_init(&sha);
     sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));

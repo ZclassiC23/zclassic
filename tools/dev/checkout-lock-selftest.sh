@@ -139,6 +139,8 @@ assert_build_and_run_locked t t-locked
 assert_build_and_run_locked t-fast t-fast-locked
 assert_build_and_run_locked t-fast-exact t-fast-exact-locked
 assert_build_and_run_locked test test-locked
+assert_build_and_run_locked secure-release-regressions \
+    secure-release-regressions-locked
 
 # A copied inner target must fail during Make parsing, before it can launch
 # any prerequisite writer outside the critical section.

@@ -11,19 +11,43 @@ candidates. It reuses the existing action, receipt, worker-trust and CAS
 models. The supervisor requires three distinct signed receipts for one exact
 action and artifact: the admitted candidate, a clean shadow, and an independent
 reproduction. Both later receipts must match the candidate's canonical
-physical observation. A signed `build_release_confirmation.v1` then binds
-three distinct, content-verified physical-machine evidence roots and an
+physical observation. It also requires one already-admitted exact
+`c23.package.test.v1` action for the same source identity. That action's task
+binds the canonical `build_release_regressions.v1` requested-intent manifest;
+its signed work receipt is the physical observation, and its existing proof
+set must satisfy the task's proof policy. Qualification inspects that proof set
+without writing trust state or admitting evidence.
+
+A signed `build_release_confirmation.v2` binds the regression action and proof
+set, three distinct content-verified physical-machine evidence roots, and an
 explicit human `CONFIRM` decision. The confirmer must be a separate approved
-identity with the exact `release-confirmation.v1` capability.
+identity with the exact `release-confirmation.v2` capability.
 
 Only then may the supervisor write a
-`build_release_qualification.v1` object to the same CAS. That object is a
+`build_release_qualification.v2` object to the same CAS. That object is a
 qualified candidate identity, not publication authority. The API always
 reports `publication_performed=false`; it cannot deploy, restart a service,
 publish a package, admit a worker result, or touch a live datadir. A `CANCEL`
 decision, missing physical evidence, reused executor, unapproved confirmer,
-observation mismatch or changed artifact remains a named red invariant and
-produces no qualification object.
+observation mismatch, changed artifact, absent/poisoned regression proof, or
+wrong regression intent remains a named red invariant and produces no
+qualification object.
+
+The permanent historical corpus is stale WAL ownership, lease takeover,
+mempool/cache generation, provider reconnect, UTXO mirror storm, diagnostic
+teardown, and rollback. Its 12 exact group ids are source-canonical and checked
+against `test_group_catalog.def`; Makefile/manifest drift fails closed. Run its
+focused physical gate with:
+
+```sh
+make secure-release-regressions
+```
+
+That command uses the strict harness, exact-set selection, no result cache, and
+the checkout-wide build/run lock. A green focused run is evidence preparation,
+not qualification: the release boundary still requires the candidate-bound
+all-groups action, canonical proof set, physical reproductions, and human
+confirmation.
 
 Distinct keys, paths, IP addresses and hostnames are not physical proof. The
 human signature attests that the three separately rooted physical evidence
