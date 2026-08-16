@@ -3665,6 +3665,15 @@ static int test_zd_improve_command(void)
         struct build_fabric_proof_evaluation complete;
         ASSERT(build_fabric_proof_evaluate(
             &ndb, workspace, action_id, evaluation_now, &complete).ok);
+        if (complete.compile_receipts != 3 || complete.test_receipts != 3 ||
+            complete.fuzz_receipts != 2 || complete.review_receipts != 1)
+            printf("proof counts: valid=%zu compile=%zu test=%zu fuzz=%zu "
+                   "review=%zu approved_signers=%zu local_reproduced=%d\n",
+                   complete.valid_receipts, complete.compile_receipts,
+                   complete.test_receipts, complete.fuzz_receipts,
+                   complete.review_receipts,
+                   complete.approved_distinct_signers,
+                   complete.local_reproduced ? 1 : 0);
         ASSERT_EQ(complete.compile_receipts, 3);
         ASSERT_EQ(complete.test_receipts, 3);
         ASSERT_EQ(complete.fuzz_receipts, 2);

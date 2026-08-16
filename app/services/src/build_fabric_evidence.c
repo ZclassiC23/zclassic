@@ -491,7 +491,12 @@ struct zcl_result build_fabric_proof_evaluate(
         ndb, action.task_root_sha3, action.candidate_root_sha3,
         action.proof_policy_root_sha3, rows,
         VCS_ZCODE_PROOF_SET_MAX_RECEIPTS);
-    struct bf_verified_receipt valid[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS];
+    /* Selection consults the shadow/review flags after the durable fields are
+     * populated below.  Zero the complete snapshot so a receipt that has not
+     * gone through either classifier cannot inherit indeterminate stack bits
+     * and masquerade as a failed shadow or an approved review. */
+    struct bf_verified_receipt
+        valid[VCS_ZCODE_PROOF_SET_MAX_RECEIPTS] = {0};
     size_t valid_count = 0;
     int64_t validation_now = now < task.expires_unix
         ? now : task.expires_unix - 1;
