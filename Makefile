@@ -1997,7 +1997,7 @@ ifneq ($(EXACT_ONLY_ACTIVE_GOALS),)
   ifneq ($(findstring ',$(ONLY)),)
     $(error make t-fast-exact: ONLY= must not contain a single quote)
   endif
-  EXACT_ONLY_MATCHED := $(shell $(T_LIST_TOOL) --resolve-exact-set '$(ONLY)' 2>/dev/null)
+  override EXACT_ONLY_MATCHED := $(shell $(T_LIST_TOOL) --resolve-exact-set '$(ONLY)' 2>/dev/null)
   ifeq ($(strip $(EXACT_ONLY_MATCHED)),)
     $(error make t-fast-exact: ONLY='$(ONLY)' is not a valid exact registered group set)
   endif
