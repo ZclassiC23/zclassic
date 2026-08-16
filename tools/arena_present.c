@@ -31,6 +31,7 @@
 
 #include "base/hex.h"
 #include "base/safe_alloc.h"
+#include "base/serialize_le.h"
 #include "presentation/model.h"
 #include "sha3/sha3.h"
 #include "zdogfight/zdogfight.h"
@@ -42,20 +43,6 @@ static int ap_fail(const char *what)
 {
     fprintf(stderr, "%s: %s\n", AP_LOG, what);
     return 1;
-}
-
-static uint32_t ap_u32le(const uint8_t *p)
-{
-    return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) |
-           ((uint32_t)p[3] << 24);
-}
-
-static uint64_t ap_u64le(const uint8_t *p)
-{
-    uint64_t v = 0;
-    for (size_t i = 0; i < 8; i++)
-        v |= (uint64_t)p[i] << (8 * i);
-    return v;
 }
 
 int main(int argc, char **argv)
@@ -105,11 +92,11 @@ int main(int argc, char **argv)
         free(buf);
         return ap_fail("MISMATCH replay-magic: not a zdogfight replay");
     }
-    if (ap_u32le(buf + 8) != 1) {
+    if (zcl_read_u32_le(buf + 8) != 1) {
         free(buf);
         return ap_fail("MISMATCH replay-version: unsupported version");
     }
-    uint64_t seed = ap_u64le(buf + 12);
+    uint64_t seed = zcl_read_u64_le(buf + 12);
     unsigned ppt = buf[20];
     if (ppt < 1 || ppt > 4) {
         free(buf);
