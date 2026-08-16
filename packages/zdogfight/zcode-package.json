@@ -1,0 +1,27 @@
+{
+  "schema": 1,
+  "name": "zdogfight/zdogfight",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "name": "zprng/zprng",
+      "root": "91e9406a1016bcc224bb5e229377b1841e21c8ede1e0a00bc0d45d1989c41563",
+      "semver": "0.1.0"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zdogfight/zdogfight.h",
+    "src/zdogfight.c",
+    "src/zdogfix.c",
+    "src/zdogfix.h",
+    "tests/test_zdogfight.c",
+    "zcode-package.json"
+  ]
+}
