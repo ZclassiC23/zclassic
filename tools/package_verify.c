@@ -3541,9 +3541,11 @@ int main(int argc, char **argv)
                 /* Per-TU object cache: only the plain gcc variant of a
                  * recipe source is eligible (the plan's preprocess probes
                  * use exactly that argv; clang and sanitizer objects are
-                 * always rebuilt). */
+                 * always rebuilt). Compare the attestation id, not the
+                 * executable path — the secure lane invokes the compiler
+                 * by its absolute path (VCS_BUILD_COMPILER_V1). */
                 const bool fast_eligible = fast_cache_dir &&
-                    strcmp(cc, "gcc") == 0 && !sanitize &&
+                    strcmp(cc_id, "gcc") == 0 && !sanitize &&
                     si < recipe.sources.count;
                 bool from_cache = false;
                 uint8_t fast_preproc[32] = { 0 };
