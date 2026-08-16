@@ -279,6 +279,23 @@ int syncdiag_cases_agent_interface(void)
             strcmp(json_get_str(json_get(visual_loop, "schema")),
                    "zcl.agent_visual_loop.v1") == 0;
         ok = ok && visual_loop &&
+            strcmp(json_get_str(json_get(visual_loop, "default_channel")),
+                   "ai_conversation") == 0;
+        ok = ok && visual_loop &&
+            !json_get_bool(json_get(visual_loop, "unsolicited_windows"));
+        ok = ok && visual_loop &&
+            strstr(json_get_str(json_get(visual_loop, "query_rule")),
+                   "answer ordinary questions directly") != NULL;
+        ok = ok && visual_loop &&
+            strstr(json_get_str(json_get(visual_loop, "visual_trigger")),
+                   "explicitly asks") != NULL;
+        ok = ok && visual_loop &&
+            strstr(json_get_str(json_get(visual_loop, "media_rule")),
+                   "QR, image, movie, and NFT media") != NULL;
+        ok = ok && visual_loop &&
+            strstr(json_get_str(json_get(visual_loop, "media_rule")),
+                   "never improvise a browser") != NULL;
+        ok = ok && visual_loop &&
             strcmp(json_get_str(json_get(visual_loop,
                                          "input_discovery")),
                    "zclassic23 discover schema <leaf>") == 0;
