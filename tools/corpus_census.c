@@ -2409,6 +2409,26 @@ static const char *exclusion_name(uint32_t bit)
     return "unknown";
 }
 
+/* Fail-closed report hygiene: every JSON object must carry unique sibling
+ * keys. The writer is append-only and the reader first-match, so a
+ * duplicate key is an ambiguous report defect (it once produced 18
+ * duplicate "incomplete" entries in excluded_loc_by_reason). Checked
+ * recursively over the finished document before it is written. */
+static bool report_keys_unique(const struct json_value *v)
+{
+    if (v->type == JSON_OBJ) {
+        for (size_t i = 0; i < v->num_children; i++)
+            for (size_t j = i + 1; j < v->num_children; j++)
+                if (strcmp(v->keys[i], v->keys[j]) == 0)
+                    return false;
+    }
+    if (v->type == JSON_OBJ || v->type == JSON_ARR)
+        for (size_t i = 0; i < v->num_children; i++)
+            if (!report_keys_unique(&v->children[i]))
+                return false;
+    return true;
+}
+
 static const struct {
     uint64_t bit;
     const char *name;
@@ -3595,8 +3615,12 @@ int main(int argc, char **argv)
                           &admitted);
         /* Downstream-used LOC: admitted package scopes whose exact package
          * root is pinned in another scope's dependency closure. Counted
-         * once per depended-upon package. */
+         * once per depended-upon package. A scope with an absent or EMPTY
+         * dependencies list can never contribute use — that trap is now
+         * counted and reported explicitly instead of silently skipped. */
         uint64_t downstream = 0;
+        uint64_t dep_pinned_scopes = 0;
+        uint64_t dep_empty_scopes = 0;
         {
             bool *used = zcl_calloc(scope_count ? scope_count : 1,
                                     sizeof(*used), "corpus.kpi.used");
@@ -3604,7 +3628,12 @@ int main(int argc, char **argv)
                 LOG_ERR(CENSUS_LOG, "downstream-used alloc");
             for (size_t t = 0; t < scope_count; t++) {
                 const struct json_value *deps = runs[t].measure.deps;
-                if (!deps || deps->type != JSON_ARR) continue;
+                if (!deps || deps->type != JSON_ARR ||
+                    deps->num_children == 0) {
+                    dep_empty_scopes++;
+                    continue;
+                }
+                dep_pinned_scopes++;
                 for (size_t d = 0; d < deps->num_children; d++) {
                     const char *droot =
                         json_get_str(json_get(json_at(deps, d), "root"));
@@ -3641,6 +3670,10 @@ int main(int argc, char **argv)
                                (int64_t)assembly.durable_loc);
         (void)json_push_kv_int(&kpis, "downstream_used_loc",
                                (int64_t)downstream);
+        (void)json_push_kv_int(&kpis, "scopes_with_pinned_dependencies",
+                               (int64_t)dep_pinned_scopes);
+        (void)json_push_kv_int(&kpis, "scopes_without_pinned_dependencies",
+                               (int64_t)dep_empty_scopes);
         (void)json_push_kv_int(&kpis, "physical_lines",
                                (int64_t)assembly.physical_lines);
         (void)json_push_kv_int(&kpis, "unique_semantic_units",
@@ -3730,21 +3763,40 @@ int main(int argc, char **argv)
         }
         json_init(&entry);
         json_set_object(&entry);
-        /* entry-level: driver-side would-be LOC per primary reason */
-        for (size_t s = 0; s < scope_count; s++) {
-            uint32_t mask = runs[s].result.scope_exclusion_mask;
-            if (!mask) continue;
-            const char *reason = exclusion_name(
-                vcs_zcode_corpus_census_primary_exclusion(mask));
-            int64_t cur = 0;
-            const struct json_value *existing = json_get(&entry, reason);
-            if (existing) cur = json_get_int(existing);
-            uint64_t would = 0;
-            if (!zcl_u64_add(runs[s].measure.prod_loc,
-                             runs[s].measure.test_loc, &would))
-                LOG_ERR(CENSUS_LOG, "would-be loc overflow");
-            (void)json_push_kv_int(&entry, reason,
-                                   cur + (int64_t)would);
+        /* entry-level: driver-side would-be LOC per primary reason.
+         * Accumulate in a fixed table and emit each reason EXACTLY once:
+         * json_push_kv is append-only and json_get returns the first
+         * match, so the former read-modify-push loop emitted ambiguous
+         * duplicate keys carrying partial sums. Slots 0..11 are the
+         * VCS_ZCODE_C23_EXCLUDE_* bits; slot 12 is "unknown". */
+        {
+            uint64_t sums[13] = {0};
+            for (size_t s = 0; s < scope_count; s++) {
+                uint32_t mask = runs[s].result.scope_exclusion_mask;
+                if (!mask) continue;
+                uint32_t bit =
+                    vcs_zcode_corpus_census_primary_exclusion(mask);
+                size_t slot = 12;
+                if (bit && !(bit & ~VCS_ZCODE_C23_EXCLUSION_MASK)) {
+                    slot = 0;
+                    while ((bit & 1u) == 0) {
+                        bit >>= 1;
+                        slot++;
+                    }
+                }
+                uint64_t would = 0;
+                if (!zcl_u64_add(runs[s].measure.prod_loc,
+                                 runs[s].measure.test_loc, &would) ||
+                    !zcl_u64_add(sums[slot], would, &sums[slot]))
+                    LOG_ERR(CENSUS_LOG, "would-be loc overflow");
+            }
+            for (size_t i = 0; i < 13; i++) {
+                if (!sums[i]) continue;
+                const char *name = i < 12
+                    ? exclusion_name((uint32_t)(UINT64_C(1) << i))
+                    : "unknown";
+                (void)json_push_kv_int(&entry, name, (int64_t)sums[i]);
+            }
         }
         (void)json_push_kv(&excluded, "file_level_semantic_loc", &file);
         (void)json_push_kv(&excluded, "entry_level_would_be_loc", &entry);
@@ -3944,6 +3996,12 @@ int main(int argc, char **argv)
     }
     (void)snprintf(name, sizeof(name), "report-%06llu.json",
                    (unsigned long long)args.sequence);
+    if (!report_keys_unique(&report)) {
+        LOG_ERROR(CENSUS_LOG, "report %s contains duplicate JSON keys",
+                  name);
+        json_free(&report);
+        return 1;
+    }
     if (!write_json_artifact(args.out, name, &report)) {
         json_free(&report);
         return 1;
