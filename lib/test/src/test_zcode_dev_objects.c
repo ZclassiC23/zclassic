@@ -3024,6 +3024,8 @@ static int test_zd_improve_command(void)
         ASSERT(build_fabric_worker_execute(
             &ndb, workspace, workspace, action_id, lease_hex, worker_secret,
             worker_key, &receipt).ok);
+        ASSERT(build_fabric_receipt_admit(
+            &ndb, workspace, receipt.receipt_id, now + 1).ok);
         ASSERT(strlen(receipt.work_receipt_sha3) == 64);
         uint8_t receipt_root[32], *receipt_wire = NULL;
         size_t receipt_wire_len = 0;
@@ -3449,6 +3451,11 @@ static int test_zd_improve_command(void)
             &ndb, workspace, workspace, fuzz_fail_action_id, fail_lease_hex,
             worker_secret, worker_key, &fuzz_fail_receipt).ok);
         ASSERT_EQ(fuzz_fail_receipt.exit_status, 1);
+        ASSERT(db_build_action_find(&ndb, fuzz_fail_action_id,
+                                    &fuzz_fail_action));
+        ASSERT_STR_EQ(fuzz_fail_action.state, "VERIFYING");
+        ASSERT(build_fabric_receipt_admit(
+            &ndb, workspace, fuzz_fail_receipt.receipt_id, now + 1).ok);
         ASSERT(db_build_action_find(&ndb, fuzz_fail_action_id,
                                     &fuzz_fail_action));
         ASSERT_STR_EQ(fuzz_fail_action.state, "FAILED");
