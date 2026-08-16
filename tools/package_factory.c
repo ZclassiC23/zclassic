@@ -405,10 +405,27 @@ static bool pf_cli(const char *bin_dir, const char *extra_flag,
                       input ? strlen(input) : 0, out, PF_CLI_STDOUT_CAP);
     free(words_copy);
     if (rc != 0) {
-        char *nl = strchr(out, '\n');
-        if (nl) *nl = '\0';
-        (void)snprintf(error, error_cap, "%s exit %d%s%s", command_words,
-                       rc, out[0] ? ": " : "", out);
+        /* Prefer the structured error body over the raw (truncated) line. */
+        struct json_value errdoc;
+        json_init(&errdoc);
+        bool parsed = json_read(&errdoc, out, strlen(out));
+        const char *code = parsed
+            ? json_get_str(json_get(json_get(&errdoc, "error"), "code"))
+            : NULL;
+        const char *msg = parsed
+            ? json_get_str(json_get(json_get(&errdoc, "error"), "message"))
+            : NULL;
+        if (code || msg) {
+            (void)snprintf(error, error_cap, "%s exit %d: %s%s%s",
+                           command_words, rc, code ? code : "?",
+                           msg ? ": " : "", msg ? msg : "");
+        } else {
+            char *nl = strchr(out, '\n');
+            if (nl) *nl = '\0';
+            (void)snprintf(error, error_cap, "%s exit %d%s%s", command_words,
+                           rc, out[0] ? ": " : "", out);
+        }
+        json_free(&errdoc);
         LOG_ERROR(PF_LOG, "%s", error);
         free(out);
         return false;
@@ -1047,6 +1064,8 @@ struct run_args {
     const char *store_a;
     const char *store_b;
     const char *report_path;
+    const char *dep_plan_path; /* NULL: no dependency plan emission */
+    const char *fast_cache_dir; /* NULL: no per-TU object cache */
     const char *bin_dir;
     const char *census_def;
     const char *signer_seed_file;
@@ -1070,6 +1089,35 @@ struct store_result {
     char storage_ack_status[64];
 };
 
+/* Accumulated per-TU object cache counters (zcl.fastobj.v1) across the
+ * run's confined verifier invocations. */
+struct pf_fast_stats {
+    uint64_t hits;
+    uint64_t misses;
+    uint64_t reused_bytes;
+};
+
+/* Scan verifier stdout for the zbuild-package-fast-cache=v1 summary line
+ * and add its counters. Absence is fine (cache disabled on that call). */
+static void pf_fast_stats_consume(struct pf_fast_stats *st,
+                                  const char *vout)
+{
+    const char *line = vout;
+    while (line && *line) {
+        const char *nl = strchr(line, '\n');
+        size_t len = nl ? (size_t)(nl - line) : strlen(line);
+        unsigned long long h = 0, m = 0, b = 0;
+        if (len < 1024 && strstr(line, "zbuild-package-fast-cache=v1") == line &&
+            sscanf(line, "zbuild-package-fast-cache=v1 hits=%llu "
+                         "misses=%llu reused_bytes=%llu", &h, &m, &b) == 3) {
+            st->hits += h;
+            st->misses += m;
+            st->reused_bytes += b;
+        }
+        line = nl ? nl + 1 : NULL;
+    }
+}
+
 /* One confined standard-profile rebuild producing the second, distinct
  * receipt for `store`, compared against the quick-profile install receipt
  * and filed into the store's receipts dir. */
@@ -1082,6 +1130,7 @@ static bool factory_second_receipt(const struct run_args *args,
                                    size_t recipe_wire_len,
                                    const char *reference_receipt_hex,
                                    struct store_result *sr,
+                                   struct pf_fast_stats *fast,
                                    char *error, size_t error_cap)
 {
     /* Work dir under the system temp, removed at the end. */
@@ -1161,7 +1210,13 @@ static bool factory_second_receipt(const struct run_args *args,
         if (snprintf(name_arg, sizeof(name_arg), "--zbuild-package-name=%s",
                      pkg_name) >= (int)sizeof(name_arg))
             LOG_FAIL(PF_LOG, "name arg overflow");
-        const char *argv[12u + VCS_PACKAGE_BUILD_MAX_DEPS];
+        char fast_arg[PF_PATH_CAP + 16];
+        bool use_fast = args->fast_cache_dir != NULL;
+        if (use_fast &&
+            snprintf(fast_arg, sizeof(fast_arg), "--fast-cache=%s",
+                     args->fast_cache_dir) >= (int)sizeof(fast_arg))
+            LOG_FAIL(PF_LOG, "fast-cache arg overflow");
+        const char *argv[13u + VCS_PACKAGE_BUILD_MAX_DEPS];
         size_t argc = 0;
         argv[argc++] = bin;
         argv[argc++] = root_hex;
@@ -1186,12 +1241,16 @@ static bool factory_second_receipt(const struct run_args *args,
             argv[argc++] = dep_args + di * dep_stride;
             di++;
         }
+        if (use_fast)
+            argv[argc++] = fast_arg;
         argv[argc++] = "--require-full-isolation";
         argv[argc] = NULL;
         char *vout = zcl_malloc(PF_CLI_STDOUT_CAP, "factory.verify.out");
         if (!vout)
             LOG_FAIL(PF_LOG, "verifier stdout alloc");
         rc = pf_spawn((char *const *)argv, NULL, 0, vout, PF_CLI_STDOUT_CAP);
+        if (fast)
+            pf_fast_stats_consume(fast, vout);
         if (rc != 0) {
             char *nl = strchr(vout, '\n');
             if (nl) *nl = '\0';
@@ -1321,7 +1380,8 @@ static bool factory_store_journey(const struct run_args *args,
                                   const char *root_hex,
                                   struct pf_report *rep,
                                   const char *tag,
-                                  struct store_result *sr)
+                                  struct store_result *sr,
+                                  struct pf_fast_stats *fast)
 {
     /* heap: the manifest wire hex can reach MiBs — never on the stack */
     char *input = zcl_malloc(PF_CLI_STDOUT_CAP, "factory.journey.input");
@@ -1357,9 +1417,20 @@ static bool factory_store_journey(const struct run_args *args,
         const struct json_value *valid =
             json_get(json_get(&doc, "data"), "valid");
         bool v = valid && json_get_bool(valid);
+        if (!v) {
+            const struct json_value *data = json_get(&doc, "data");
+            const char *readiness =
+                json_get_str(json_get(data, "readiness"));
+            const char *next_action =
+                json_get_str(json_get(data, "next_action"));
+            (void)snprintf(error, sizeof(error),
+                           "publish plan not valid (readiness=%s next=%s)",
+                           readiness ? readiness : "?",
+                           next_action ? next_action : "?");
+        }
         json_free(&doc);
         if (!v) {
-            (void)pf_step_fail(rep, s, t0, "publish plan not valid");
+            (void)pf_step_fail(rep, s, t0, error);
             free(input);
             return false;
         }
@@ -1389,7 +1460,8 @@ static bool factory_store_journey(const struct run_args *args,
         }
         const char *result =
             json_get_str(json_get(json_get(&doc, "data"), "result"));
-        bool okr = result && (strcmp(result, "published") == 0 ||
+        bool okr = result && (strcmp(result, "committed") == 0 ||
+                              strcmp(result, "published") == 0 ||
                               strcmp(result, "duplicate") == 0);
         json_free(&doc);
         if (!okr) {
@@ -1498,7 +1570,8 @@ static bool factory_store_journey(const struct run_args *args,
         t0 = now_ms();
         bool ok2 = factory_second_receipt(
             args, store, root_hex, lock_hex, steps, recipe_wire,
-            recipe_wire_len, sr->receipt_quick, sr, error, sizeof(error));
+            recipe_wire_len, sr->receipt_quick, sr, fast, error,
+            sizeof(error));
         json_free(&plan_doc);
         if (!ok2) {
             (void)pf_step_fail(rep, s, t0, error);
@@ -1622,6 +1695,208 @@ static bool factory_store_journey(const struct run_args *args,
     }
     free(input);
     return true;
+}
+
+/* Emit the exact dependency plan (zcl.dep_plan.v1) for the package: one
+ * more confined QUICK-profile build of the same source + recipe through
+ * the verifier's --plan mode, with the locked dependency set resolved
+ * from store A (whose add journey already installed it). The plan is
+ * local evidence filed beside the report — it changes no admission or
+ * promotion semantics. On success plan_sha3_out carries the plan file's
+ * SHA3-256 hex. */
+static bool factory_dep_plan(const struct run_args *args,
+                             const char *root_hex,
+                             const uint8_t *recipe_wire,
+                             size_t recipe_wire_len,
+                             char plan_sha3_out[65],
+                             struct pf_fast_stats *fast,
+                             char *error, size_t error_cap)
+{
+    plan_sha3_out[0] = '\0';
+    char work[512];
+    const char *tmpdir = getenv("TMPDIR");
+    if (!tmpdir) tmpdir = "/tmp";
+    if (snprintf(work, sizeof(work), "%s/package-factory-plan-XXXXXX",
+                 tmpdir) >= (int)sizeof(work))
+        LOG_FAIL(PF_LOG, "plan work path overflow");
+    if (!mkdtemp(work))
+        LOG_FAIL(PF_LOG, "mkdtemp under %s: %s", tmpdir, strerror(errno));
+    char recipe_path[600], emit_dir[600];
+    if (snprintf(recipe_path, sizeof(recipe_path), "%s/recipe.wire",
+                 work) >= (int)sizeof(recipe_path) ||
+        snprintf(emit_dir, sizeof(emit_dir), "%s/emit", work) >=
+            (int)sizeof(emit_dir))
+        LOG_FAIL(PF_LOG, "plan path overflow");
+    bool ok = pf_write_atomic(recipe_path, recipe_wire, recipe_wire_len);
+    char pkg_abs[PF_PATH_CAP];
+    if (ok && !realpath(args->package_dir, pkg_abs)) {
+        (void)snprintf(error, error_cap, "realpath %s: %s",
+                       args->package_dir, strerror(errno));
+        LOG_ERROR(PF_LOG, "%s", error);
+        ok = false;
+    }
+    /* The locked dependency set comes from store A's add plan — the same
+     * resolution the install build used. */
+    char lock_hex[65] = {0};
+    struct json_value plan_doc;
+    json_init(&plan_doc);
+    const struct json_value *steps = NULL;
+    {
+        char *input = zcl_malloc(PF_CLI_STDOUT_CAP, "factory.plan.input");
+        if (!input)
+            LOG_FAIL(PF_LOG, "plan input alloc");
+        if (ok) {
+            int n = snprintf(input, PF_CLI_STDOUT_CAP,
+                             "{\"name_or_root\":\"%s\",\"datadir\":\"%s\"}",
+                             root_hex, args->store_a);
+            if (n <= 0 || (size_t)n >= PF_CLI_STDOUT_CAP) {
+                (void)snprintf(error, error_cap, "add plan input overflow");
+                ok = false;
+            }
+        }
+        if (ok && !pf_cli(args->bin_dir, NULL, "zcode package add plan",
+                          input, &plan_doc, error, error_cap))
+            ok = false;
+        free(input);
+    }
+    if (ok) {
+        const struct json_value *data = json_get(&plan_doc, "data");
+        const char *lk = json_get_str(json_get(data, "lock_root"));
+        const struct json_value *ready = json_get(data, "ready");
+        steps = json_get(data, "steps");
+        if (!lk || strlen(lk) != 64 || !ready || !json_get_bool(ready) ||
+            !steps || steps->type != JSON_ARR || !steps->num_children) {
+            (void)snprintf(error, error_cap, "add plan not ready");
+            ok = false;
+        } else {
+            (void)snprintf(lock_hex, sizeof(lock_hex), "%s", lk);
+        }
+    }
+    int rc = -1;
+    if (ok) {
+        /* argv: verifier <root> --zbuild-package-* profile=quick --emit
+         * --lock-root [--dep=...]... --plan=<path>
+         * --require-full-isolation */
+        char bin[PF_PATH_CAP];
+        if (snprintf(bin, sizeof(bin), "%s/zclassic23-package-verify",
+                     args->bin_dir) >= (int)sizeof(bin))
+            LOG_FAIL(PF_LOG, "verifier path overflow");
+        char source_arg[PF_PATH_CAP + 32], recipe_arg[664],
+             emit_arg[664], lock_arg[96];
+        char name_arg[VCS_PACKAGE_RELEASE_NAME_MAX + 32];
+        size_t step_count = steps->num_children;
+        size_t dep_count = step_count > 1u ? step_count - 1u : 0;
+        if (dep_count > VCS_PACKAGE_BUILD_MAX_DEPS)
+            LOG_FAIL(PF_LOG, "dep count %zu over the worker bound",
+                     dep_count);
+        size_t dep_stride = PF_PATH_CAP + 96u;
+        char *dep_args = NULL;
+        if (dep_count) {
+            dep_args = zcl_malloc(dep_stride * dep_count,
+                                  "factory.plan.depargs");
+            if (!dep_args)
+                LOG_FAIL(PF_LOG, "dep args alloc");
+        }
+        const char *pkg_name = json_get_str(
+            json_get(json_at(steps, step_count - 1u), "name"));
+        if (!pkg_name)
+            LOG_FAIL(PF_LOG, "add plan carried no target package name");
+        if (snprintf(source_arg, sizeof(source_arg),
+                     "--zbuild-package-source=%s", pkg_abs) >=
+                (int)sizeof(source_arg) ||
+            snprintf(recipe_arg, sizeof(recipe_arg),
+                     "--zbuild-package-recipe=%s", recipe_path) >=
+                (int)sizeof(recipe_arg) ||
+            snprintf(emit_arg, sizeof(emit_arg), "--emit=%s", emit_dir) >=
+                (int)sizeof(emit_arg) ||
+            snprintf(lock_arg, sizeof(lock_arg), "--lock-root=%s",
+                     lock_hex) >= (int)sizeof(lock_arg) ||
+            snprintf(name_arg, sizeof(name_arg), "--zbuild-package-name=%s",
+                     pkg_name) >= (int)sizeof(name_arg))
+            LOG_FAIL(PF_LOG, "verifier arg overflow");
+        char plan_arg[PF_PATH_CAP + 16];
+        if (snprintf(plan_arg, sizeof(plan_arg), "--plan=%s",
+                     args->dep_plan_path) >= (int)sizeof(plan_arg))
+            LOG_FAIL(PF_LOG, "plan arg overflow");
+        char fast_arg[PF_PATH_CAP + 16];
+        bool use_fast = args->fast_cache_dir != NULL;
+        if (use_fast &&
+            snprintf(fast_arg, sizeof(fast_arg), "--fast-cache=%s",
+                     args->fast_cache_dir) >= (int)sizeof(fast_arg))
+            LOG_FAIL(PF_LOG, "fast-cache arg overflow");
+        const char *argv[14u + VCS_PACKAGE_BUILD_MAX_DEPS];
+        size_t argc = 0;
+        argv[argc++] = bin;
+        argv[argc++] = root_hex;
+        argv[argc++] = source_arg;
+        argv[argc++] = recipe_arg;
+        argv[argc++] = name_arg;
+        argv[argc++] = "--zbuild-package-profile=quick";
+        argv[argc++] = "--zbuild-package-max-cpu-seconds=120";
+        argv[argc++] = emit_arg;
+        argv[argc++] = lock_arg;
+        size_t di = 0;
+        for (size_t i = 0; i + 1u < step_count; i++) {
+            const struct json_value *step = json_at(steps, i);
+            const char *droot = json_get_str(json_get(step, "root"));
+            if (!droot || strlen(droot) != 64)
+                LOG_FAIL(PF_LOG, "add plan step %zu has no root", i);
+            if (snprintf(dep_args + di * dep_stride, dep_stride,
+                         "--dep=%s,%s/zcode/installed/%s", droot,
+                         args->store_a, droot) >= (int)dep_stride)
+                LOG_FAIL(PF_LOG, "dep arg overflow");
+            argv[argc++] = dep_args + di * dep_stride;
+            di++;
+        }
+        argv[argc++] = plan_arg;
+        if (use_fast)
+            argv[argc++] = fast_arg;
+        argv[argc++] = "--require-full-isolation";
+        argv[argc] = NULL;
+        char *vout = zcl_malloc(PF_CLI_STDOUT_CAP, "factory.plan.out");
+        if (!vout)
+            LOG_FAIL(PF_LOG, "verifier stdout alloc");
+        rc = pf_spawn((char *const *)argv, NULL, 0, vout,
+                      PF_CLI_STDOUT_CAP);
+        if (fast)
+            pf_fast_stats_consume(fast, vout);
+        if (rc != 0) {
+            char *nl = strchr(vout, '\n');
+            if (nl) *nl = '\0';
+            (void)snprintf(error, error_cap,
+                           "quick-profile plan build exit %d%s%s", rc,
+                           vout[0] ? ": " : "", vout);
+            LOG_ERROR(PF_LOG, "%s", error);
+        }
+        free(vout);
+        free(dep_args);
+    }
+    json_free(&plan_doc);
+    if (ok && rc != 0) ok = false;
+    /* Hash the emitted plan into the report. */
+    if (ok) {
+        uint8_t *plan = NULL;
+        size_t plan_len = 0;
+        if (!pf_read_file(args->dep_plan_path, PF_CLI_STDOUT_CAP, &plan,
+                          &plan_len)) {
+            (void)snprintf(error, error_cap, "plan %s unreadable",
+                           args->dep_plan_path);
+            LOG_ERROR(PF_LOG, "%s", error);
+            ok = false;
+        } else {
+            uint8_t digest[32];
+            sha3_256(plan, plan_len, digest);
+            free(plan);
+            zcl_hex_encode(digest, 32, plan_sha3_out);
+        }
+    }
+    /* Best-effort cleanup of the plan work dir. */
+    {
+        char *rm_argv[] = {(char *)"rm", (char *)"-rf", work, NULL};
+        char devnull[16];
+        (void)pf_spawn(rm_argv, NULL, 0, devnull, sizeof(devnull));
+    }
+    return ok;
 }
 
 /* Construct and sign the self-screened source_assignment.v1 +
@@ -1912,6 +2187,8 @@ static int cmd_run(const struct run_args *args)
     struct store_result sa, sb;
     memset(&sa, 0, sizeof(sa));
     memset(&sb, 0, sizeof(sb));
+    struct pf_fast_stats fast_stats;
+    memset(&fast_stats, 0, sizeof(fast_stats));
     bool corpus_registered = false;
     char corpus_note[320] = {0};
     uint64_t t_start = now_ms();
@@ -2059,16 +2336,30 @@ static int cmd_run(const struct run_args *args)
                                           manifest_hex, recipe_hex_s,
                                           prepared.recipe_wire,
                                           prepared.recipe_wire_len,
-                                          root_hex_, &rep, "a", &sa);
+                                          root_hex_, &rep, "a", &sa,
+                                          &fast_stats);
         bool ok_b = ok_a &&
             factory_store_journey(args, args->store_b, release_hex,
                                   manifest_hex, recipe_hex_s,
                                   prepared.recipe_wire,
                                   prepared.recipe_wire_len, root_hex_, &rep,
-                                  "b", &sb);
+                                  "b", &sb, &fast_stats);
         (void)ok_b;
         free(manifest_hex);
         free(recipe_hex_s);
+    }
+
+    /* 7. exact dependency plan (zcl.dep_plan.v1; local evidence only) */
+    char dep_plan_sha3[65] = {0};
+    if (!rep.failed && prepared_ok && args->dep_plan_path) {
+        s = pf_step_begin(&rep, "dep_plan");
+        t0 = now_ms();
+        if (factory_dep_plan(args, root_hex_, prepared.recipe_wire,
+                             prepared.recipe_wire_len, dep_plan_sha3,
+                             &fast_stats, error, sizeof(error)))
+            pf_step_ok(s, t0);
+        else
+            (void)pf_step_fail(&rep, s, t0, error);
     }
 
     /* 8. self-screened admission (census construction) */
@@ -2212,6 +2503,37 @@ admission_done:
         (void)json_push_kv(&report, "admission", &adm);
         json_free(&adm);
     }
+    if (args->dep_plan_path) {
+        struct json_value dp;
+        json_init(&dp);
+        json_set_object(&dp);
+        (void)json_push_kv_str(&dp, "schema", "zcl.dep_plan.v1");
+        (void)json_push_kv_str(&dp, "path", args->dep_plan_path);
+        (void)json_push_kv_str(&dp, "sha3", dep_plan_sha3);
+        (void)json_push_kv(&report, "dep_plan", &dp);
+        json_free(&dp);
+    }
+    if (args->fast_cache_dir) {
+        struct json_value fc;
+        json_init(&fc);
+        json_set_object(&fc);
+        (void)json_push_kv_str(&fc, "schema", "zcl.fastobj.v1");
+        (void)json_push_kv_str(&fc, "dir", args->fast_cache_dir);
+        (void)json_push_kv_int(&fc, "hits", (int64_t)fast_stats.hits);
+        (void)json_push_kv_int(&fc, "misses", (int64_t)fast_stats.misses);
+        (void)json_push_kv_int(&fc, "objects_reused_bytes",
+                               (int64_t)fast_stats.reused_bytes);
+        (void)json_push_kv_str(&fc, "admission", "local_candidate");
+        (void)json_push_kv_str(&fc, "note",
+            "quarantined local candidate cache; cached objects speed up "
+            "only this node's confined rebuilds and are never attestation "
+            "or admission evidence");
+        (void)json_push_kv_str(&fc, "applies_to",
+            "package-verify --zbuild-package-* rebuilds (second receipt "
+            "and dep plan steps)");
+        (void)json_push_kv(&report, "fast_cache", &fc);
+        json_free(&fc);
+    }
     {
         struct json_value steps;
         json_init(&steps);
@@ -2314,6 +2636,65 @@ admission_done:
 
 /* ── selftest ─────────────────────────────────────────────────────── */
 
+/* Keys whose values legitimately differ between two otherwise identical
+ * factory runs: timings (total_ms, ms), the run-local fast-cache counters
+ * (fast_cache), the add-plan id (a fresh plan nonce each run), and step
+ * error TEXT (the storage_ack refusal embeds volatile response fields —
+ * the ok flags still assert the outcome). */
+static bool pf_json_volatile_key(const char *key)
+{
+    return strcmp(key, "total_ms") == 0 || strcmp(key, "ms") == 0 ||
+           strcmp(key, "fast_cache") == 0 || strcmp(key, "plan_id") == 0 ||
+           strcmp(key, "error") == 0;
+}
+
+/* Recursive structural equality with the volatile keys skipped. */
+static bool pf_json_equiv(const struct json_value *a,
+                          const struct json_value *b)
+{
+    if (a->type != b->type)
+        return false;
+    switch (a->type) {
+    case JSON_NULL:
+        return true;
+    case JSON_BOOL:
+        return a->val.b == b->val.b;
+    case JSON_INT:
+        return a->val.i == b->val.i;
+    case JSON_REAL:
+        return a->val.d == b->val.d;
+    case JSON_STR:
+        return strcmp(a->val.s, b->val.s) == 0;
+    case JSON_ARR:
+        if (a->num_children != b->num_children)
+            return false;
+        for (size_t i = 0; i < a->num_children; i++)
+            if (!pf_json_equiv(&a->children[i], &b->children[i]))
+                return false;
+        return true;
+    case JSON_OBJ: {
+        size_t na = 0, nb = 0;
+        for (size_t i = 0; i < a->num_children; i++)
+            if (!pf_json_volatile_key(a->keys[i]))
+                na++;
+        for (size_t i = 0; i < b->num_children; i++)
+            if (!pf_json_volatile_key(b->keys[i]))
+                nb++;
+        if (na != nb)
+            return false;
+        for (size_t i = 0; i < a->num_children; i++) {
+            if (pf_json_volatile_key(a->keys[i]))
+                continue;
+            const struct json_value *bv = json_get(b, a->keys[i]);
+            if (!bv || !pf_json_equiv(&a->children[i], bv))
+                return false;
+        }
+        return true;
+    }
+    }
+    return false;
+}
+
 static int cmd_selftest(const char *repo, const char *scratch,
                         const char *bin_dir)
 {
@@ -2343,7 +2724,8 @@ static int cmd_selftest(const char *repo, const char *scratch,
     if (!pf_mkdir_p(scratch))
         return 1;
     char pkg[PF_PATH_CAP], key[PF_PATH_CAP], store_a[PF_PATH_CAP],
-         store_b[PF_PATH_CAP], report[PF_PATH_CAP];
+         store_b[PF_PATH_CAP], report[PF_PATH_CAP], dplan[PF_PATH_CAP],
+         fastcache[PF_PATH_CAP], report2[PF_PATH_CAP];
     if (snprintf(pkg, sizeof(pkg), "%s/pkg", scratch) >= (int)sizeof(pkg) ||
         snprintf(key, sizeof(key), "%s/key", scratch) >= (int)sizeof(key) ||
         snprintf(store_a, sizeof(store_a), "%s/storeA", scratch) >=
@@ -2351,7 +2733,13 @@ static int cmd_selftest(const char *repo, const char *scratch,
         snprintf(store_b, sizeof(store_b), "%s/storeB", scratch) >=
             (int)sizeof(store_b) ||
         snprintf(report, sizeof(report), "%s/report.json", scratch) >=
-            (int)sizeof(report))
+            (int)sizeof(report) ||
+        snprintf(dplan, sizeof(dplan), "%s/plan.json", scratch) >=
+            (int)sizeof(dplan) ||
+        snprintf(fastcache, sizeof(fastcache), "%s/fastcache", scratch) >=
+            (int)sizeof(fastcache) ||
+        snprintf(report2, sizeof(report2), "%s/report2.json", scratch) >=
+            (int)sizeof(report2))
         LOG_ERR(PF_LOG, "selftest path overflow");
     {
         char *cp_argv[] = {(char *)"cp", (char *)"-r", fixture,
@@ -2361,13 +2749,13 @@ static int cmd_selftest(const char *repo, const char *scratch,
             LOG_ERR(PF_LOG, "fixture copy failed: %s", out);
     }
     /* Throwaway key: the signer's keygen mode. */
+    char pubkey[256];
     {
         char bin[PF_PATH_CAP];
         if (snprintf(bin, sizeof(bin), "%s/zclassic23-package-sign",
                      bin_dir) >= (int)sizeof(bin))
             LOG_ERR(PF_LOG, "signer path overflow");
         char *argv[] = {bin, (char *)"--generate", key, NULL};
-        char pubkey[256];
         if (pf_spawn(argv, NULL, 0, pubkey, sizeof(pubkey)) != 0)
             LOG_ERR(PF_LOG, "keygen failed");
         size_t len = strlen(pubkey);
@@ -2383,6 +2771,8 @@ static int cmd_selftest(const char *repo, const char *scratch,
         args.store_a = store_a;
         args.store_b = store_b;
         args.report_path = report;
+        args.dep_plan_path = dplan;
+        args.fast_cache_dir = fastcache;
         args.bin_dir = bin_dir;
         args.chain_id = "zclassic-main";
         args.kind = "ai";
@@ -2419,6 +2809,125 @@ static int cmd_selftest(const char *repo, const char *scratch,
             LOG_ERR(PF_LOG, "selftest: report assertions failed");
         printf("selftest: gate/publish/reproduce/report ok (report=%s)\n",
                report);
+    }
+
+    /* The exact dependency plan exists, parses as zcl.dep_plan.v1, and the
+     * report's plan hash matches the plan file bytes. */
+    {
+        uint8_t *text = NULL;
+        size_t len = 0;
+        if (!pf_read_file(report, PF_CLI_STDOUT_CAP, &text, &len))
+            LOG_ERR(PF_LOG, "selftest: report re-read for plan failed");
+        struct json_value doc;
+        json_init(&doc);
+        if (!json_read(&doc, (const char *)text, len)) {
+            free(text);
+            LOG_ERR(PF_LOG, "selftest: report unparsable (plan)");
+        }
+        free(text);
+        const struct json_value *dp = json_get(&doc, "dep_plan");
+        const char *path = json_get_str(json_get(dp, "path"));
+        const char *sha = json_get_str(json_get(dp, "sha3"));
+        /* Copy before json_free: the strings point into the parsed doc. */
+        char path_buf[PF_PATH_CAP], sha_buf[65];
+        (void)snprintf(path_buf, sizeof(path_buf), "%s", path);
+        (void)snprintf(sha_buf, sizeof(sha_buf), "%s", sha);
+        bool pass = path_buf[0] && strlen(sha_buf) == 64;
+        uint8_t *plan = NULL;
+        size_t plan_len = 0;
+        if (pass)
+            pass = pf_read_file(path_buf, PF_CLI_STDOUT_CAP, &plan,
+                                &plan_len);
+        if (pass) {
+            uint8_t digest[32];
+            sha3_256(plan, plan_len, digest);
+            char hex[65];
+            zcl_hex_encode(digest, 32, hex);
+            pass = strcmp(hex, sha_buf) == 0;
+        }
+        if (pass) {
+            struct json_value pdoc;
+            json_init(&pdoc);
+            pass = json_read(&pdoc, (const char *)plan, plan_len);
+            if (pass) {
+                const char *schema = json_get_str(json_get(&pdoc, "schema"));
+                const struct json_value *tus =
+                    json_get(&pdoc, "translation_units");
+                pass = strcmp(schema, "zcl.dep_plan.v1") == 0 && tus &&
+                       tus->type == JSON_ARR && tus->num_children > 0;
+            }
+            json_free(&pdoc);
+            free(plan);
+        }
+        json_free(&doc);
+        if (!pass)
+            LOG_ERR(PF_LOG, "selftest: dependency plan missing, not "
+                    "zcl.dep_plan.v1, or report hash mismatch");
+        printf("selftest: dep_plan ok (path=%s sha3=%.16s...)\n", path_buf,
+               sha_buf);
+    }
+
+    /* Second full run against the SAME fast cache with only the stores
+     * wiped: every confined rebuild must now be a cache hit, and the
+     * report must equal run 1's modulo the volatile keys. */
+    {
+        char *rm_argv[] = {(char *)"rm", (char *)"-rf", store_a, store_b,
+                           NULL};
+        char devnull[16];
+        if (pf_spawn(rm_argv, NULL, 0, devnull, sizeof(devnull)) != 0)
+            LOG_ERR(PF_LOG, "selftest: store wipe failed");
+        struct run_args args2;
+        memset(&args2, 0, sizeof(args2));
+        args2.package_dir = pkg;
+        args2.key_file = key;
+        args2.publisher_pubkey = pubkey;
+        args2.store_a = store_a;
+        args2.store_b = store_b;
+        args2.report_path = report2;
+        args2.dep_plan_path = dplan;
+        args2.fast_cache_dir = fastcache;
+        args2.bin_dir = bin_dir;
+        args2.chain_id = "zclassic-main";
+        args2.kind = "ai";
+        args2.publisher_sequence = 1;
+        args2.cutoff_height = 1;
+        args2.cutoff_mtp = 1700000000;
+        int rc = cmd_run(&args2);
+        if (rc != 0)
+            LOG_ERR(PF_LOG, "selftest: factory re-run failed (rc=%d)", rc);
+        uint8_t *t1 = NULL, *t2 = NULL;
+        size_t l1 = 0, l2 = 0;
+        if (!pf_read_file(report, PF_CLI_STDOUT_CAP, &t1, &l1) ||
+            !pf_read_file(report2, PF_CLI_STDOUT_CAP, &t2, &l2))
+            LOG_ERR(PF_LOG, "selftest: cannot re-read both reports");
+        struct json_value d1, d2;
+        json_init(&d1);
+        json_init(&d2);
+        bool pass = json_read(&d1, (const char *)t1, l1) &&
+                    json_read(&d2, (const char *)t2, l2);
+        free(t1);
+        free(t2);
+        if (!pass)
+            LOG_ERR(PF_LOG, "selftest: report pair unparsable");
+        const struct json_value *fc2 = json_get(&d2, "fast_cache");
+        const struct json_value *fc2_hits = json_get(fc2, "hits");
+        const struct json_value *fc2_misses = json_get(fc2, "misses");
+        const struct json_value *fc1 = json_get(&d1, "fast_cache");
+        const struct json_value *fc1_misses = json_get(fc1, "misses");
+        pass = fc2_hits && fc2_misses && fc1_misses &&
+               json_get_int(fc2_hits) >= 3 && json_get_int(fc2_misses) == 0 &&
+               json_get_int(fc1_misses) >= 2;
+        if (!pass)
+            LOG_ERR(PF_LOG, "selftest: fast cache did not turn the re-run "
+                    "into all hits");
+        pass = pf_json_equiv(&d1, &d2);
+        json_free(&d1);
+        json_free(&d2);
+        if (!pass)
+            LOG_ERR(PF_LOG, "selftest: cached re-run report diverges from "
+                    "the clean run (beyond volatile keys)");
+        printf("selftest: fast cache ok (re-run all hits, reports equal "
+               "modulo volatile keys)\n");
     }
 
     /* Census intake: a scratch def with ONLY the package line, pointing at
@@ -2549,6 +3058,12 @@ static void usage(FILE *stream)
         "      [--publisher-sequence N] [--kind human|ai|import]\n"
         "      [--chain-id <id>] [--cutoff-height N] [--cutoff-mtp N]\n"
         "      [--signer-seed-file PATH] [--bin-dir <dir>]\n"
+        "      [--dep-plan <out.json>]  (default: <report> with\n"
+        "      .report.json replaced by .plan.json)\n"
+        "      [--fast-cache <dir>]  (default: $XDG_CACHE_HOME or\n"
+        "      $HOME/.cache, plus /zclassic23/fast-obj; per-TU object\n"
+        "      cache for the confined rebuilds, admission=local_candidate;\n"
+        "      pass an empty --fast-cache= to disable)\n"
         "      [--register-corpus --census-def corpus/scopes.def]\n"
         "  package-factory pin-dep --package <dir> --dep-name <name>\n"
         "      --dep-root <64hex>\n"
@@ -2591,7 +3106,10 @@ int main(int argc, char **argv)
                *bin_dir = "build/bin", *census_def = "corpus/scopes.def",
                *seed_file = NULL, *chain_id = "zclassic-main",
                *kind = "ai", *dep_name = NULL, *dep_root = NULL,
-               *repo = ".", *scratch = "test-tmp/factory-selftest";
+               *repo = ".", *scratch = "test-tmp/factory-selftest",
+               *dep_plan = NULL, *fast_cache = NULL;
+    char dep_plan_default[PF_PATH_CAP];
+    char fast_cache_default[PF_PATH_CAP];
     uint64_t sequence = 1, cutoff_height = 1;
     int64_t cutoff_mtp = 1700000000;
     bool register_corpus = false;
@@ -2629,6 +3147,8 @@ int main(int argc, char **argv)
         else if (strcmp(keyb, "--store-a") == 0) store_a = value;
         else if (strcmp(keyb, "--store-b") == 0) store_b = value;
         else if (strcmp(keyb, "--report") == 0) report = value;
+        else if (strcmp(keyb, "--dep-plan") == 0) dep_plan = value;
+        else if (strcmp(keyb, "--fast-cache") == 0) fast_cache = value;
         else if (strcmp(keyb, "--bin-dir") == 0) bin_dir = value;
         else if (strcmp(keyb, "--census-def") == 0) census_def = value;
         else if (strcmp(keyb, "--signer-seed-file") == 0) seed_file = value;
@@ -2662,6 +3182,47 @@ int main(int argc, char **argv)
             usage(stderr);
             return 2;
         }
+        if (!dep_plan) {
+            /* Default: the report's sibling, <name>.report.json →
+             * <name>.plan.json. */
+            static const char suffix[] = ".report.json";
+            size_t rl = strlen(report);
+            size_t sl = sizeof(suffix) - 1u;
+            if (rl > sl && strcmp(report + rl - sl, suffix) == 0) {
+                if (rl - sl + sizeof(".plan.json") >
+                    sizeof(dep_plan_default))
+                    return 2;
+                memcpy(dep_plan_default, report, rl - sl);
+                memcpy(dep_plan_default + rl - sl, ".plan.json",
+                       sizeof(".plan.json"));
+            } else if (snprintf(dep_plan_default, sizeof(dep_plan_default),
+                                "%s.plan.json", report) >=
+                           (int)sizeof(dep_plan_default)) {
+                return 2;
+            }
+            dep_plan = dep_plan_default;
+        }
+        if (!fast_cache) {
+            /* Default per-TU object cache: $XDG_CACHE_HOME/zclassic23/
+             * fast-obj, else $HOME/.cache/zclassic23/fast-obj. An explicit
+             * empty --fast-cache= disables the cache (no default). */
+            const char *base = getenv("XDG_CACHE_HOME");
+            int n;
+            if (base && base[0])
+                n = snprintf(fast_cache_default, sizeof(fast_cache_default),
+                             "%s/zclassic23/fast-obj", base);
+            else {
+                const char *home = getenv("HOME");
+                n = home ? snprintf(fast_cache_default,
+                                    sizeof(fast_cache_default),
+                                    "%s/.cache/zclassic23/fast-obj", home)
+                         : -1;
+            }
+            if (n > 0 && (size_t)n < sizeof(fast_cache_default))
+                fast_cache = fast_cache_default;
+        }
+        if (fast_cache && !fast_cache[0])
+            fast_cache = NULL;
         struct run_args args = {
             .package_dir = package_dir,
             .key_file = key_file,
@@ -2669,6 +3230,8 @@ int main(int argc, char **argv)
             .store_a = store_a,
             .store_b = store_b,
             .report_path = report,
+            .dep_plan_path = dep_plan,
+            .fast_cache_dir = fast_cache,
             .bin_dir = bin_dir,
             .census_def = census_def,
             .signer_seed_file = seed_file,

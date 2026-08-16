@@ -100,6 +100,7 @@
 #include "config/c23_commons_build_profile.h"
 #include "base/serialize_le.h"
 #include "crypto/sha3.h"
+#include "json/json.h"
 #include "platform/clock.h"
 #include "platform/os_proc.h"
 #include "platform/os_sandbox.h"
@@ -187,7 +188,7 @@ static void pv_usage(FILE *out)
         "           --key=<file> [--work=<dir>] [--require-full-isolation]\n"
         "   or: zclassic23-package-verify <package-root-hex> --store=<dir>\n"
         "           --emit=<dir> --lock-root=<64hex> [--dep=<64hex>,<dir>]...\n"
-        "           [--reproduce-against=<build-report>]\n"
+        "           [--reproduce-against=<build-report>] [--plan=<file>]\n"
         "           [--work=<dir>] [--require-full-isolation]\n"
         "   or: zclassic23-package-verify <candidate-source-root-hex>\n"
         "           --zbuild-package-source=<abs-dir>\n"
@@ -197,6 +198,7 @@ static void pv_usage(FILE *out)
         "           --zbuild-package-max-cpu-seconds=<1..600>\n"
         "           --emit=<abs-dir> --lock-root=<64hex>\n"
         "           [--dep=<64hex>,<installed-dir>]...\n"
+        "           [--plan=<file>] [--fast-cache=<dir>]\n"
         "           --require-full-isolation\n"
         "   or: zclassic23-package-verify --zbuild-input=<abs>/unit.i\n"
         "           --zbuild-output=<abs>/unit.o --require-full-isolation\n"
@@ -236,6 +238,27 @@ static void pv_usage(FILE *out)
         "identical output set (path, SHA3-256, byte count). MATCH prints on\n"
         "stdout; any divergence prints a loud REPRODUCTION MISMATCH naming\n"
         "the first diverging rule on stderr and the exit code is 6.\n"
+        "--plan=<file> (emit modes only) additionally writes the EXACT\n"
+        "dependency plan (zcl.dep_plan.v1): before any real compile, every\n"
+        "recipe source TU is preprocessed under the same confinement with\n"
+        "the exact compile argv plus -E -MD -MF, and the plan records the\n"
+        "depfile closure (path, SHA3-256, bytes, class), the preprocessed\n"
+        "unit digest, the macro-environment digest (gcc -E -dM), the exact\n"
+        "argv, and the toolchain capsule root. Semantic facts gcc14 cannot\n"
+        "prove (macro EXPANSION usage, declarations/types used) are marked\n"
+        "not_claimed, never guessed. A plan failure aborts the run before\n"
+        "any build output; the plan is local evidence, not an admission.\n");
+    fprintf(out,
+        "--fast-cache=<dir> (candidate mode only) enables the per-TU object\n"
+        "cache (zcl.fastobj.v1). Each recipe source TU is preprocessed once\n"
+        "with the exact compile argv; the cache key binds the toolchain\n"
+        "capsule root, target, profile, the @-token-normalized exact argv,\n"
+        "and the preprocessed-unit SHA3-256. A hit is re-verified byte-for-\n"
+        "byte against its sidecar before reuse (hardlink-else-copy into the\n"
+        "work tree); a torn entry, sidecar mismatch, or materialization\n"
+        "mismatch fails the run closed. Cached objects are admission=\n"
+        "local_candidate only — never an attestation or admission input.\n");
+    fprintf(out,
         "\n"
         "Builds and tests one ZCODE package under confinement (seccomp +\n"
         "rlimits + Landlock where the kernel offers it) following ONLY the\n"
@@ -1185,6 +1208,1017 @@ static void pv_header_install_path(const struct vcs_package_recipe *recipe,
     (void)snprintf(out, out_cap, "include/%s", best);
 }
 
+/* ── dependency plan emission (zcl.dep_plan.v1) ───────────────────────
+ *
+ * --plan=<path> (emit modes only). BEFORE any real compile, every recipe
+ * source TU is preprocessed under the SAME confinement with the EXACT argv
+ * the compile would use, plus -E -MD -MF <tmp.d> -o <tmp.i>. The plan
+ * records only what the toolchain itself proves:
+ *   - the depfile closure: every file the preprocessor actually read, with
+ *     SHA3-256 + byte count, classified by the -I root it falls under;
+ *   - the preprocessed unit digest (SHA3-256 + bytes; the .i stays in the
+ *     temp tree and is never shipped);
+ *   - the macro ENVIRONMENT digest (gcc -E -dM). Which macros the TU
+ *     actually EXPANDED is not enumerable by gcc14 — not claimed;
+ *   - the fixed toolchain identity: exact argv, compiler version, target,
+ *     and the v1 toolchain capsule root (vcs/build_action.h, reused).
+ * Which public declarations/types a TU uses is "not_claimed": that needs
+ * semantic analysis gcc14 cannot provide. Volatile absolute roots inside
+ * the recorded argv are rendered as stable tokens (@package, @build,
+ * @dep/<root>) so a plan over identical inputs is byte-identical; there
+ * are NO wall-clock fields. Any failure aborts the run before the real
+ * build (fail closed; the document is written beside the destination and
+ * atomically renamed, so a partial plan never exists). */
+
+#define PV_PLAN_SCHEMA "zcl.dep_plan.v1"
+#define PV_PLAN_MAX_INPUTS 1024u
+#define PV_PLAN_DEPFILE_CAP (1024u * 1024u)
+
+struct pv_plan_input {
+    char display[4300]; /* package-/dep-relative, or absolute (system) */
+    char class[24];
+    uint8_t dep_root[32]; /* dependency_header only */
+    bool has_dep_root;
+    uint8_t sha3[32];
+    uint64_t bytes;
+};
+
+struct pv_plan_ctx {
+    const struct vcs_package_recipe *recipe;
+    const char *src_root;
+    const char *build_root;
+    const struct pv_emit_dep *deps;
+    size_t dep_count;
+    const struct os_sandbox_path_rule *rules;
+    size_t n_rules;
+    bool landlock;
+    const char *const *env;
+    const struct os_sandbox_rlimits *limits;
+    bool warning_fatal;
+    char error[240];
+};
+
+static bool pv_plan_error(struct pv_plan_ctx *ctx, const char *what)
+{
+    (void)snprintf(ctx->error, sizeof(ctx->error), "%s", what);
+    return false;
+}
+
+static bool pv_strlist_has(const struct vcs_package_recipe_strings *list,
+                           const char *s)
+{
+    for (size_t i = 0; i < list->count; i++)
+        if (strcmp(list->items[i], s) == 0)
+            return true;
+    return false;
+}
+
+/* Classify one depfile path by the -I root it falls under, hash it, and
+ * append it (deduped on class + display + dep_root). */
+static bool pv_plan_add_input(struct pv_plan_ctx *ctx,
+                              struct pv_plan_input *inputs, size_t *count,
+                              const char *path)
+{
+    char display[4300];
+    const char *class = "system_header";
+    const uint8_t *dep_root = NULL;
+    size_t rl = strlen(ctx->src_root);
+    if (strncmp(path, ctx->src_root, rl) == 0 && path[rl] == '/') {
+        const char *rel = path + rl + 1;
+        if (pv_strlist_has(&ctx->recipe->sources, rel))
+            class = "package_source";
+        else if (pv_strlist_has(&ctx->recipe->public_headers, rel))
+            class = "package_public_header";
+        else
+            class = "package_internal";
+        if (snprintf(display, sizeof(display), "%s", rel) >=
+                (int)sizeof(display))
+            return pv_plan_error(ctx, "depfile path too long");
+    } else {
+        bool matched = false;
+        for (size_t i = 0; i < ctx->dep_count && !matched; i++) {
+            size_t dl = strlen(ctx->deps[i].include_dir);
+            if (strncmp(path, ctx->deps[i].include_dir, dl) != 0 ||
+                path[dl] != '/')
+                continue;
+            class = "dependency_header";
+            dep_root = ctx->deps[i].root;
+            if (snprintf(display, sizeof(display), "%s", path + dl + 1) >=
+                    (int)sizeof(display))
+                return pv_plan_error(ctx, "depfile path too long");
+            matched = true;
+        }
+        if (!matched &&
+            snprintf(display, sizeof(display), "%s", path) >=
+                (int)sizeof(display))
+            return pv_plan_error(ctx, "depfile path too long");
+    }
+    for (size_t i = 0; i < *count; i++) {
+        if (strcmp(inputs[i].display, display) == 0 &&
+            strcmp(inputs[i].class, class) == 0 &&
+            (!dep_root ||
+             (inputs[i].has_dep_root &&
+              memcmp(inputs[i].dep_root, dep_root, 32) == 0)))
+            return true;
+    }
+    if (*count >= PV_PLAN_MAX_INPUTS)
+        return pv_plan_error(ctx, "dependency closure over the plan bound");
+    struct pv_plan_input *in = &inputs[*count];
+    memset(in, 0, sizeof(*in));
+    (void)snprintf(in->display, sizeof(in->display), "%s", display);
+    (void)snprintf(in->class, sizeof(in->class), "%s", class);
+    if (dep_root) {
+        memcpy(in->dep_root, dep_root, 32);
+        in->has_dep_root = true;
+    }
+    if (!pv_sha3_file(path, in->sha3, &in->bytes)) {
+        (void)snprintf(ctx->error, sizeof(ctx->error),
+                       "cannot hash depfile entry %.160s", path);
+        return false;
+    }
+    (*count)++;
+    return true;
+}
+
+/* Parse a GNU make depfile: the rule target (to the first unescaped ':')
+ * is skipped, backslash-newline is a line continuation, backslash escapes
+ * the following byte, and whitespace separates the path tokens. */
+static bool pv_plan_depfile_inputs(struct pv_plan_ctx *ctx,
+                                   const uint8_t *buf, size_t len,
+                                   struct pv_plan_input *inputs,
+                                   size_t *count)
+{
+    size_t pos = 0;
+    bool colon = false;
+    while (pos < len && !colon) {
+        if (buf[pos] == '\\' && pos + 1 < len) {
+            pos += 2;
+            continue;
+        }
+        colon = buf[pos] == ':';
+        pos++;
+    }
+    if (!colon)
+        return pv_plan_error(ctx, "depfile carries no rule target");
+    while (pos < len) {
+        while (pos < len && (buf[pos] == ' ' || buf[pos] == '\t' ||
+                             buf[pos] == '\n' || buf[pos] == '\r'))
+            pos++;
+        if (pos >= len)
+            break;
+        char tok[4300];
+        size_t tl = 0;
+        while (pos < len && buf[pos] != ' ' && buf[pos] != '\t' &&
+               buf[pos] != '\n' && buf[pos] != '\r') {
+            if (buf[pos] == '\\') {
+                if (pos + 1 < len && buf[pos + 1] == '\n') {
+                    pos += 2;
+                    break; /* a continuation ends this token */
+                }
+                if (pos + 1 >= len)
+                    break;
+                if (tl + 1 >= sizeof(tok))
+                    return pv_plan_error(ctx, "depfile token too long");
+                tok[tl++] = (char)buf[pos + 1];
+                pos += 2;
+                continue;
+            }
+            if (tl + 1 >= sizeof(tok))
+                return pv_plan_error(ctx, "depfile token too long");
+            tok[tl++] = (char)buf[pos++];
+        }
+        tok[tl] = '\0';
+        if (tl && !pv_plan_add_input(ctx, inputs, count, tok))
+            return false;
+    }
+    return true;
+}
+
+static int pv_plan_input_cmp(const void *a, const void *b)
+{
+    const struct pv_plan_input *ia = a;
+    const struct pv_plan_input *ib = b;
+    int c = strcmp(ia->display, ib->display);
+    if (c != 0)
+        return c;
+    c = strcmp(ia->class, ib->class);
+    if (c != 0)
+        return c;
+    return memcmp(ia->dep_root, ib->dep_root, 32);
+}
+
+/* The preprocess probe argv: the exact compile flag vector with the
+ * "-c src -o obj" tail replaced by "-E [-dM | -MD -MF <d>] src -o out". */
+static bool pv_plan_probe_argv(const char *out[], size_t cap,
+                               const struct pv_compile_args *base,
+                               bool macros, const char *mf_path,
+                               const char *src_file, const char *out_file)
+{
+    size_t n = 0, i = 0;
+    while (base->argv[i] && strcmp(base->argv[i], "-c") != 0) {
+        if (n + 8u >= cap)
+            return false;
+        out[n++] = base->argv[i++];
+    }
+    if (!base->argv[i])
+        return false; /* the compile vector always carries -c */
+    out[n++] = "-E";
+    if (macros) {
+        out[n++] = "-dM";
+    } else {
+        out[n++] = "-MD";
+        out[n++] = "-MF";
+        out[n++] = mf_path;
+    }
+    out[n++] = src_file;
+    out[n++] = "-o";
+    out[n++] = out_file;
+    out[n] = NULL;
+    return true;
+}
+
+/* Render one argv element for the plan: the volatile absolute roots are
+ * replaced by stable tokens (@package, @build, @dep/<root hex>). With the
+ * plan-level bindings this is a lossless encoding of the exact argv. */
+static bool pv_plan_render_arg(const struct pv_plan_ctx *ctx,
+                               const char *arg, char *out, size_t cap)
+{
+    struct {
+        const char *root;
+        char token[88];
+    } maps[2u + PV_EMIT_MAX_DEPS];
+    size_t nmaps = 0;
+    maps[nmaps].root = ctx->src_root;
+    (void)snprintf(maps[nmaps].token, sizeof(maps[nmaps].token),
+                   "@package");
+    nmaps++;
+    maps[nmaps].root = ctx->build_root;
+    (void)snprintf(maps[nmaps].token, sizeof(maps[nmaps].token), "@build");
+    nmaps++;
+    for (size_t i = 0; i < ctx->dep_count; i++) {
+        char hex[65];
+        zcl_hex_encode(ctx->deps[i].root, 32, hex);
+        maps[nmaps].root = ctx->deps[i].install_dir;
+        (void)snprintf(maps[nmaps].token, sizeof(maps[nmaps].token),
+                       "@dep/%s", hex);
+        nmaps++;
+    }
+    const char *hit = NULL;
+    size_t mi = 0;
+    for (size_t i = 0; i < nmaps; i++) {
+        const char *p = strstr(arg, maps[i].root);
+        if (p && (!hit || p < hit)) {
+            hit = p;
+            mi = i;
+        }
+    }
+    if (!hit)
+        return snprintf(out, cap, "%s", arg) < (int)cap;
+    int n = snprintf(out, cap, "%.*s%s%s", (int)(hit - arg), arg,
+                     maps[mi].token, hit + strlen(maps[mi].root));
+    return n > 0 && (size_t)n < cap;
+}
+
+/* Run the preprocess probes for every recipe source TU and write the plan
+ * document to plan_path. When preproc_out is non-NULL it receives each
+ * TU's preprocessed-unit SHA3-256 so a --fast-cache in the same run does
+ * not preprocess twice. False with ctx->error set on any failure — the
+ * caller then fails the whole run closed before any real compile. */
+static bool pv_emit_dep_plan(const char *plan_path, const char *package_name,
+                             const uint8_t package_root[32],
+                             const uint8_t recipe_root[32],
+                             const uint8_t lock_root[32],
+                             const char *profile, const char *cc,
+                             const char *cc_version,
+                             struct pv_plan_ctx *ctx,
+                             uint8_t preproc_out[][32])
+{
+    struct vcs_toolchain_capsule_v1 capsule;
+    uint8_t capsule_root[32];
+    if (!vcs_toolchain_capsule_v1_capture_gcc(&capsule) ||
+        !vcs_toolchain_capsule_v1_root(&capsule, capsule_root))
+        return pv_plan_error(ctx, "toolchain capsule capture failed");
+
+    struct pv_plan_input *inputs =
+        zcl_malloc(sizeof(struct pv_plan_input) * PV_PLAN_MAX_INPUTS,
+                   "pv_plan.inputs");
+    if (!inputs)
+        return pv_plan_error(ctx, "plan input table alloc failed");
+
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    char hex[65];
+    bool ok = json_push_kv_str(&root, "schema", PV_PLAN_SCHEMA) &&
+              json_push_kv_str(&root, "package_name", package_name);
+    zcl_hex_encode(package_root, 32, hex);
+    ok = ok && json_push_kv_str(&root, "package_root", hex);
+    zcl_hex_encode(recipe_root, 32, hex);
+    ok = ok && json_push_kv_str(&root, "recipe_root", hex);
+    zcl_hex_encode(lock_root, 32, hex);
+    ok = ok && json_push_kv_str(&root, "lock_root", hex) &&
+         json_push_kv_str(&root, "profile", profile) &&
+         json_push_kv_str(&root, "argv_path_encoding",
+                          "@package=package source root (see package_root); "
+                          "@build=ephemeral work dir; @dep/<root>=dependency "
+                          "install dir; substitute to reconstruct the exact "
+                          "byte argv");
+    {
+        struct json_value jdeps;
+        json_init(&jdeps);
+        json_set_array(&jdeps);
+        for (size_t i = 0; ok && i < ctx->dep_count; i++) {
+            struct json_value d;
+            json_init(&d);
+            json_set_object(&d);
+            zcl_hex_encode(ctx->deps[i].root, 32, hex);
+            ok = json_push_kv_str(&d, "root", hex) &&
+                 json_push_back(&jdeps, &d);
+            json_free(&d);
+        }
+        ok = ok && json_push_kv(&root, "deps", &jdeps);
+        json_free(&jdeps);
+    }
+    {
+        struct json_value tc;
+        json_init(&tc);
+        json_set_object(&tc);
+        zcl_hex_encode(capsule_root, 32, hex);
+        /* march/mtune mirror the fixed flags pv_compile_argv emits; the
+         * argv array below carries them verbatim. */
+        ok = ok && json_push_kv_str(&tc, "compiler_id", cc) &&
+             json_push_kv_str(&tc, "compiler_version", cc_version) &&
+             json_push_kv_str(&tc, "march", "x86-64") &&
+             json_push_kv_str(&tc, "mtune", "generic") &&
+             json_push_kv_str(&tc, "target", capsule.target) &&
+             json_push_kv_str(&tc, "capsule_root", hex) &&
+             json_push_kv(&root, "toolchain", &tc);
+        json_free(&tc);
+    }
+    struct json_value tus;
+    json_init(&tus);
+    json_set_array(&tus);
+    for (size_t si = 0; ok && si < ctx->recipe->sources.count; si++) {
+        const char *rel = ctx->recipe->sources.items[si];
+        char src_file[4300], obj_file[4400], dpath[4400], ipath[4400],
+             mpath[4400];
+        if (snprintf(src_file, sizeof(src_file), "%s/%s", ctx->src_root,
+                     rel) >= (int)sizeof(src_file) ||
+            snprintf(obj_file, sizeof(obj_file), "%s/plan_%zu.o",
+                     ctx->build_root, si) >= (int)sizeof(obj_file) ||
+            snprintf(dpath, sizeof(dpath), "%s/plan_%zu.d",
+                     ctx->build_root, si) >= (int)sizeof(dpath) ||
+            snprintf(ipath, sizeof(ipath), "%s/plan_%zu.i",
+                     ctx->build_root, si) >= (int)sizeof(ipath) ||
+            snprintf(mpath, sizeof(mpath), "%s/plan_%zu.macros",
+                     ctx->build_root, si) >= (int)sizeof(mpath)) {
+            (void)pv_plan_error(ctx, "plan path overflow");
+            ok = false;
+            break;
+        }
+        struct pv_compile_args store;
+        memset(&store, 0, sizeof(store));
+        pv_compile_argv(&store, cc, false, ctx->warning_fatal, ctx->recipe,
+                        ctx->src_root, ctx->deps, ctx->dep_count, src_file,
+                        obj_file);
+        const char *pargv[224];
+        if (!pv_plan_probe_argv(pargv, sizeof(pargv) / sizeof(pargv[0]),
+                                &store, false, dpath, src_file, ipath)) {
+            (void)pv_plan_error(ctx, "preprocess argv construction failed");
+            ok = false;
+            break;
+        }
+        struct pv_run pr = pv_run_child(pargv, ctx->build_root, ctx->limits,
+                                        ctx->landlock, ctx->rules,
+                                        ctx->n_rules, ctx->env,
+                                        PV_COMPILE_TIMEOUT_MS);
+        if (!pr.launched || pr.sandbox_fail) {
+            (void)snprintf(ctx->error, sizeof(ctx->error),
+                           "preprocess child failed to launch or arm its "
+                           "sandbox (%.80s)", pr.stderr_buf);
+            ok = false;
+            break;
+        }
+        if (pr.timed_out || !pr.exited || pr.exit_code != 0) {
+            char detail[200];
+            pv_detail_from_stderr("preprocess", pr.stderr_buf, detail,
+                                  sizeof(detail));
+            (void)snprintf(ctx->error, sizeof(ctx->error), "%s: %.150s",
+                           pr.timed_out ? "preprocess timed out"
+                                        : "preprocess failed",
+                           detail);
+            ok = false;
+            break;
+        }
+        size_t dlen = 0;
+        uint8_t *dbuf = pv_read_file(dpath, PV_PLAN_DEPFILE_CAP, &dlen);
+        if (!dbuf) {
+            (void)pv_plan_error(ctx, "cannot read the emitted depfile");
+            ok = false;
+            break;
+        }
+        size_t count = 0;
+        bool parsed = pv_plan_depfile_inputs(ctx, dbuf, dlen, inputs,
+                                             &count);
+        free(dbuf);
+        if (!parsed) {
+            ok = false;
+            break;
+        }
+        qsort(inputs, count, sizeof(inputs[0]), pv_plan_input_cmp);
+        uint8_t ihash[32];
+        uint64_t ibytes = 0;
+        if (!pv_sha3_file(ipath, ihash, &ibytes)) {
+            (void)pv_plan_error(ctx, "cannot hash the preprocessed unit");
+            ok = false;
+            break;
+        }
+        if (preproc_out)
+            memcpy(preproc_out[si], ihash, 32);
+        /* The macro ENVIRONMENT (gcc -E -dM on the same argv). A dump
+         * failure degrades this one section to not_claimed with the
+         * reason; it never guesses. */
+        uint8_t mhash[32];
+        uint64_t mbytes = 0;
+        bool macro_hashed = false;
+        char macro_note[200];
+        macro_note[0] = '\0';
+        const char *margv[224];
+        if (pv_plan_probe_argv(margv, sizeof(margv) / sizeof(margv[0]),
+                               &store, true, NULL, src_file, mpath)) {
+            struct pv_run mr = pv_run_child(
+                margv, ctx->build_root, ctx->limits, ctx->landlock,
+                ctx->rules, ctx->n_rules, ctx->env, PV_COMPILE_TIMEOUT_MS);
+            if (mr.launched && !mr.sandbox_fail && !mr.timed_out &&
+                mr.exited && mr.exit_code == 0 &&
+                pv_sha3_file(mpath, mhash, &mbytes)) {
+                macro_hashed = true;
+            } else {
+                pv_detail_from_stderr("macro dump", mr.stderr_buf,
+                                      macro_note, sizeof(macro_note));
+            }
+        } else {
+            (void)snprintf(macro_note, sizeof(macro_note),
+                           "macro probe argv construction failed");
+        }
+
+        struct json_value tu;
+        json_init(&tu);
+        json_set_object(&tu);
+        ok = json_push_kv_str(&tu, "source", rel);
+        {
+            struct json_value jargv;
+            json_init(&jargv);
+            json_set_array(&jargv);
+            for (size_t a = 0; ok && store.argv[a]; a++) {
+                char rendered[4400];
+                if (!pv_plan_render_arg(ctx, store.argv[a], rendered,
+                                        sizeof(rendered))) {
+                    (void)pv_plan_error(ctx, "argv render overflow");
+                    ok = false;
+                    break;
+                }
+                struct json_value el;
+                json_init(&el);
+                json_set_str(&el, rendered);
+                ok = json_push_back(&jargv, &el);
+                json_free(&el);
+            }
+            ok = ok && json_push_kv(&tu, "argv", &jargv);
+            json_free(&jargv);
+        }
+        {
+            struct json_value jin;
+            json_init(&jin);
+            json_set_array(&jin);
+            for (size_t k = 0; ok && k < count; k++) {
+                struct json_value f;
+                json_init(&f);
+                json_set_object(&f);
+                ok = json_push_kv_str(&f, "path", inputs[k].display) &&
+                     json_push_kv_str(&f, "class", inputs[k].class);
+                if (ok && inputs[k].has_dep_root) {
+                    zcl_hex_encode(inputs[k].dep_root, 32, hex);
+                    ok = json_push_kv_str(&f, "dep_root", hex);
+                }
+                char fhex[65];
+                zcl_hex_encode(inputs[k].sha3, 32, fhex);
+                ok = ok && json_push_kv_str(&f, "sha3", fhex) &&
+                     json_push_kv_int(&f, "bytes",
+                                      (int64_t)inputs[k].bytes) &&
+                     json_push_back(&jin, &f);
+                json_free(&f);
+            }
+            ok = ok && json_push_kv(&tu, "inputs", &jin);
+            json_free(&jin);
+        }
+        {
+            struct json_value pp;
+            json_init(&pp);
+            json_set_object(&pp);
+            char phex[65];
+            zcl_hex_encode(ihash, 32, phex);
+            ok = ok && json_push_kv_str(&pp, "sha3", phex) &&
+                 json_push_kv_int(&pp, "bytes", (int64_t)ibytes) &&
+                 json_push_kv(&tu, "preprocessed", &pp);
+            json_free(&pp);
+        }
+        {
+            struct json_value mac;
+            json_init(&mac);
+            json_set_object(&mac);
+            if (macro_hashed) {
+                char mhex[65];
+                zcl_hex_encode(mhash, 32, mhex);
+                ok = json_push_kv_str(&mac, "status", "environment_only") &&
+                     json_push_kv_str(&mac, "defined_macro_sha3", mhex) &&
+                     json_push_kv_str(&mac, "note",
+                                      "expansion usage not enumerable by "
+                                      "gcc14; not claimed");
+            } else {
+                ok = json_push_kv_str(&mac, "status", "not_claimed") &&
+                     json_push_kv_str(&mac, "note",
+                                      macro_note[0] ? macro_note
+                                                    : "macro dump unavailable");
+            }
+            ok = ok && json_push_kv(&tu, "macros", &mac);
+            json_free(&mac);
+        }
+        {
+            struct json_value decl;
+            json_init(&decl);
+            json_set_object(&decl);
+            ok = ok && json_push_kv_str(&decl, "status", "not_claimed") &&
+                 json_push_kv_str(&decl, "note",
+                                  "requires semantic analysis; gcc14 "
+                                  "cannot prove") &&
+                 json_push_kv(&tu, "declarations", &decl);
+            json_free(&decl);
+        }
+        ok = ok && json_push_back(&tus, &tu);
+        json_free(&tu);
+    }
+    ok = ok && json_push_kv(&root, "translation_units", &tus);
+    json_free(&tus);
+
+    if (!ok) {
+        if (!ctx->error[0])
+            (void)pv_plan_error(ctx, "plan JSON assembly failed");
+        json_free(&root);
+        free(inputs);
+        return false;
+    }
+    size_t need = json_write(&root, NULL, 0);
+    char *text = zcl_malloc(need + 2u, "pv_plan.out");
+    if (!text) {
+        json_free(&root);
+        free(inputs);
+        return pv_plan_error(ctx, "plan output alloc failed");
+    }
+    size_t written = json_write(&root, text, need + 1u);
+    json_free(&root);
+    free(inputs);
+    if (written > need) {
+        free(text);
+        return pv_plan_error(ctx, "plan output overflow");
+    }
+    text[written] = '\n';
+    bool wrote = pv_atomic_write(plan_path, (const uint8_t *)text,
+                                 written + 1u);
+    free(text);
+    if (!wrote) {
+        (void)snprintf(ctx->error, sizeof(ctx->error),
+                       "cannot write the plan file %.160s", plan_path);
+        return false;
+    }
+    return true;
+}
+
+/* ── fast object cache (zcl.fastobj.v1) ───────────────────────────────
+ *
+ * --fast-cache=<dir> (candidate emit mode only). A LOCAL, QUARANTINED
+ * per-translation-unit object cache: before the gcc plain compile of each
+ * recipe TU (sources and test sources), the cache key is derived from facts
+ * the toolchain proves — SHA3-256 over the domain "zcl.fastobj.v1" (with
+ * its NUL), the v1 toolchain capsule root, the target and profile strings,
+ * the EXACT compile argv (volatile roots normalized with the plan's
+ * @package/@build/@dep/<root> encoding), and the SHA3-256 of the
+ * preprocessed unit (the -E probe is shared with --plan when both run —
+ * no TU is preprocessed twice).
+ *
+ *   <dir>/objects/<2 hex>/<62 hex>.o      the cached object (0444)
+ *   <dir>/objects/<2 hex>/<62 hex>.json   zcl.fastobj.sidecar.v1
+ *
+ * HIT: the sidecar's object_sha3 is verified against the cached bytes, the
+ * object is materialized at the compile's obj path (hardlink, else copy —
+ * the publish_exact discipline), the materialized bytes are re-verified,
+ * and the gcc spawn is SKIPPED. The build receipt still re-hashes every
+ * output from the real bytes, so a hit cannot change what is committed.
+ * MISS: the compile runs normally, then the object + sidecar are stored
+ * atomically (temp + fsync + rename). An existing entry under the same key
+ * is byte-verified, never overwritten; a mismatch, a torn entry (object
+ * without sidecar or vice versa), or a sidecar/object hash mismatch is
+ * CACHE CORRUPTION and fails the whole run closed with a clear error.
+ *
+ * The cache directory is written ONLY by this parent process from bytes the
+ * confined compiler produced; the confined children never see it (no
+ * Landlock grant), so package code cannot poison it. Cached objects are
+ * local candidate evidence (admission=local_candidate): only the secure
+ * admission path may promote anything. The signed/canonical receipt wire
+ * format is untouched; the counters go to the run's stdout summary. */
+
+#define PV_FASTOBJ_SIDECAR_CAP (256u * 1024u)
+
+static uint64_t g_pv_fast_hits;
+static uint64_t g_pv_fast_misses;
+static uint64_t g_pv_fast_reused_bytes;
+
+/* The build_action.c hashing convention: u64 LE length, then the bytes. */
+static void pv_hash_text(struct sha3_256_ctx *sha, const char *value)
+{
+    uint64_t length = value ? strlen(value) : 0;
+    uint8_t le[8];
+    for (unsigned i = 0; i < sizeof(le); i++)
+        le[i] = (uint8_t)(length >> (8U * i) & 0xffU);
+    sha3_256_write(sha, le, sizeof(le));
+    if (length)
+        sha3_256_write(sha, (const uint8_t *)value, (size_t)length);
+}
+
+/* Run the preprocess probe (-E -MD) for one TU with the exact compile flag
+ * vector in `store` and hash the preprocessed unit. False with err set. */
+static bool pv_fast_preproc_sha3(struct pv_plan_ctx *ctx,
+                                 const struct pv_compile_args *store,
+                                 size_t si, const char *src_file,
+                                 uint8_t out[32], char *err, size_t err_cap)
+{
+    char dpath[4400], ipath[4400];
+    if (snprintf(dpath, sizeof(dpath), "%s/fast_%zu.d", ctx->build_root,
+                 si) >= (int)sizeof(dpath) ||
+        snprintf(ipath, sizeof(ipath), "%s/fast_%zu.i", ctx->build_root,
+                 si) >= (int)sizeof(ipath)) {
+        (void)snprintf(err, err_cap, "fast-cache probe path overflow");
+        return false;
+    }
+    const char *pargv[224];
+    if (!pv_plan_probe_argv(pargv, sizeof(pargv) / sizeof(pargv[0]) - 1u,
+                            store, false, dpath, src_file, ipath)) {
+        (void)snprintf(err, err_cap, "fast-cache probe argv failed");
+        return false;
+    }
+    /* Digest the unit WITHOUT line markers (-P): gcc does not rewrite the
+     * marker paths for -ffile-prefix-map, so with markers the digest would
+     * depend on the absolute source path, and on pure line shifts from
+     * comment edits — neither of which the object (built without -g) can
+     * record. __FILE__/__LINE__ EXPANSIONS remain in the -P output, so a
+     * semantic change still misses. */
+    size_t pn = 0, pe = 0;
+    while (pargv[pn])
+        pn++;
+    while (pe < pn && strcmp(pargv[pe], "-E") != 0)
+        pe++;
+    if (pe == pn) {
+        (void)snprintf(err, err_cap, "fast-cache probe argv has no -E");
+        return false;
+    }
+    for (size_t k = pn; k > pe; k--)
+        pargv[k + 1] = pargv[k];
+    pargv[pe + 1] = "-P";
+    struct pv_run pr = pv_run_child(pargv, ctx->build_root, ctx->limits,
+                                    ctx->landlock, ctx->rules, ctx->n_rules,
+                                    ctx->env, PV_COMPILE_TIMEOUT_MS);
+    if (!pr.launched || pr.sandbox_fail || pr.timed_out || !pr.exited ||
+        pr.exit_code != 0) {
+        char detail[200];
+        pv_detail_from_stderr("fast-cache probe", pr.stderr_buf, detail,
+                              sizeof(detail));
+        (void)snprintf(err, err_cap, "%.150s", detail);
+        return false;
+    }
+    uint64_t ibytes = 0;
+    if (!pv_sha3_file(ipath, out, &ibytes)) {
+        (void)snprintf(err, err_cap, "cannot hash the preprocessed unit");
+        return false;
+    }
+    return true;
+}
+
+/* The cache key: domain || capsule_root || target || profile || the exact
+ * (root-normalized) compile argv || preprocessed-unit SHA3-256. */
+static bool pv_fastobj_key(struct pv_plan_ctx *ctx, const char *profile,
+                           const char *target, const uint8_t capsule_root[32],
+                           const struct pv_compile_args *store,
+                           const uint8_t preproc_sha3[32], uint8_t out[32])
+{
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    static const char domain[] = "zcl.fastobj.v1";
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&sha, capsule_root, 32);
+    pv_hash_text(&sha, target);
+    pv_hash_text(&sha, profile);
+    for (size_t i = 0; store->argv[i]; i++) {
+        char rendered[4400];
+        if (!pv_plan_render_arg(ctx, store->argv[i], rendered,
+                                sizeof(rendered)))
+            return false;
+        pv_hash_text(&sha, rendered);
+    }
+    sha3_256_write(&sha, preproc_sha3, 32);
+    sha3_256_finalize(&sha, out);
+    return true;
+}
+
+static bool pv_fastobj_paths(const char *cache_dir, const uint8_t key[32],
+                             char obj_path[], size_t obj_cap,
+                             char side_path[], size_t side_cap)
+{
+    char hex[65];
+    zcl_hex_encode(key, 32, hex);
+    int on = snprintf(obj_path, obj_cap, "%s/objects/%.2s/%s.o", cache_dir,
+                      hex, hex + 2);
+    int sn = snprintf(side_path, side_cap, "%s/objects/%.2s/%s.json",
+                      cache_dir, hex, hex + 2);
+    return on > 0 && (size_t)on < obj_cap && sn > 0 &&
+           (size_t)sn < side_cap;
+}
+
+/* The sidecar document (zcl.fastobj.sidecar.v1). Heap; caller frees. */
+static char *pv_fastobj_sidecar(struct pv_plan_ctx *ctx, const char *profile,
+                                const char *target,
+                                const uint8_t capsule_root[32],
+                                const struct pv_compile_args *args,
+                                const uint8_t preproc[32], const char *rel,
+                                const uint8_t package_root[32],
+                                const uint8_t recipe_root[32],
+                                const uint8_t lock_root[32],
+                                const uint8_t object_sha3[32],
+                                uint64_t object_bytes, size_t *out_len)
+{
+    struct json_value root;
+    json_init(&root);
+    json_set_object(&root);
+    char hex[65];
+    bool ok = json_push_kv_str(&root, "schema", "zcl.fastobj.sidecar.v1");
+    {
+        struct json_value kc;
+        json_init(&kc);
+        json_set_object(&kc);
+        zcl_hex_encode(capsule_root, 32, hex);
+        ok = ok && json_push_kv_str(&kc, "capsule_root", hex) &&
+             json_push_kv_str(&kc, "target", target) &&
+             json_push_kv_str(&kc, "profile", profile);
+        {
+            struct json_value jargv;
+            json_init(&jargv);
+            json_set_array(&jargv);
+            for (size_t a = 0; ok && args->argv[a]; a++) {
+                char rendered[4400];
+                if (!pv_plan_render_arg(ctx, args->argv[a], rendered,
+                                        sizeof(rendered))) {
+                    ok = false;
+                    break;
+                }
+                struct json_value el;
+                json_init(&el);
+                json_set_str(&el, rendered);
+                ok = json_push_back(&jargv, &el);
+                json_free(&el);
+            }
+            ok = ok && json_push_kv(&kc, "argv", &jargv);
+            json_free(&jargv);
+        }
+        zcl_hex_encode(preproc, 32, hex);
+        ok = ok && json_push_kv_str(&kc, "preprocessed_sha3", hex);
+        {
+            struct json_value jdeps;
+            json_init(&jdeps);
+            json_set_array(&jdeps);
+            for (size_t i = 0; ok && i < ctx->dep_count; i++) {
+                struct json_value el;
+                json_init(&el);
+                zcl_hex_encode(ctx->deps[i].root, 32, hex);
+                json_set_str(&el, hex);
+                ok = json_push_back(&jdeps, &el);
+                json_free(&el);
+            }
+            ok = ok && json_push_kv(&kc, "dep_roots", &jdeps);
+            json_free(&jdeps);
+        }
+        ok = ok && json_push_kv(&root, "key_components", &kc);
+        json_free(&kc);
+    }
+    zcl_hex_encode(package_root, 32, hex);
+    ok = ok && json_push_kv_str(&root, "package_root", hex);
+    zcl_hex_encode(recipe_root, 32, hex);
+    ok = ok && json_push_kv_str(&root, "recipe_root", hex);
+    zcl_hex_encode(lock_root, 32, hex);
+    ok = ok && json_push_kv_str(&root, "lock_root", hex) &&
+         json_push_kv_str(&root, "source", rel);
+    zcl_hex_encode(object_sha3, 32, hex);
+    ok = ok && json_push_kv_str(&root, "object_sha3", hex) &&
+         json_push_kv_int(&root, "object_bytes", (int64_t)object_bytes) &&
+         json_push_kv_str(&root, "admission", "local_candidate") &&
+         json_push_kv_str(&root, "note",
+                          "quarantined local candidate; not promoted "
+                          "evidence");
+    if (!ok) {
+        json_free(&root);
+        return NULL;
+    }
+    size_t need = json_write(&root, NULL, 0);
+    char *text = zcl_malloc(need + 2u, "pv_fastobj.sidecar");
+    if (!text) {
+        json_free(&root);
+        return NULL;
+    }
+    size_t written = json_write(&root, text, need + 1u);
+    json_free(&root);
+    if (written > need) {
+        free(text);
+        return NULL;
+    }
+    text[written] = '\n';
+    *out_len = written + 1u;
+    return text;
+}
+
+/* Look one key up. Returns 1 = hit (object materialized at obj_file and
+ * verified), 0 = miss, -1 = fatal (torn/corrupt entry or I/O; err set —
+ * the caller fails the run closed). */
+static int pv_fast_cache_lookup(const char *cache_dir, const uint8_t key[32],
+                                const char *obj_file, char *err,
+                                size_t err_cap)
+{
+    char obj_path[4400], side_path[4400];
+    if (!pv_fastobj_paths(cache_dir, key, obj_path, sizeof(obj_path),
+                          side_path, sizeof(side_path))) {
+        (void)snprintf(err, err_cap, "fast-cache path overflow");
+        return -1;
+    }
+    struct stat st;
+    bool has_obj = stat(obj_path, &st) == 0;
+    bool has_side = stat(side_path, &st) == 0;
+    if (!has_obj && !has_side) {
+        g_pv_fast_misses++;
+        return 0;
+    }
+    if (has_obj != has_side) {
+        (void)snprintf(err, err_cap,
+                       "fast cache torn entry (%s): %.200s",
+                       has_obj ? "object without sidecar"
+                               : "sidecar without object",
+                       has_obj ? obj_path : side_path);
+        return -1;
+    }
+    size_t slen = 0;
+    uint8_t *sbuf = pv_read_file(side_path, PV_FASTOBJ_SIDECAR_CAP, &slen);
+    if (!sbuf) {
+        (void)snprintf(err, err_cap, "fast cache sidecar unreadable: %.200s",
+                       side_path);
+        return -1;
+    }
+    struct json_value doc;
+    json_init(&doc);
+    bool parsed = json_read(&doc, (const char *)sbuf, slen);
+    free(sbuf);
+    const char *osha =
+        parsed ? json_get_str(json_get(&doc, "object_sha3")) : NULL;
+    uint8_t expect[32];
+    bool expect_ok = osha && strlen(osha) == 64 &&
+                     zcl_hex_decode(osha, expect, 32);
+    json_free(&doc);
+    if (!expect_ok) {
+        (void)snprintf(err, err_cap, "fast cache sidecar invalid: %.200s",
+                       side_path);
+        return -1;
+    }
+    uint8_t actual[32];
+    uint64_t bytes = 0;
+    if (!pv_sha3_file(obj_path, actual, &bytes) ||
+        memcmp(actual, expect, 32) != 0) {
+        (void)snprintf(err, err_cap,
+                       "fast cache CORRUPTION: cached object %.200s does "
+                       "not match its sidecar", obj_path);
+        return -1;
+    }
+    /* publish_exact discipline: hardlink, else copy; then re-verify the
+     * materialized bytes against the sidecar commitment. */
+    if (link(obj_path, obj_file) != 0 &&
+        !pv_copy_file(obj_path, obj_file, 0644)) {
+        (void)snprintf(err, err_cap,
+                       "cannot materialize cached object %.200s", obj_path);
+        return -1;
+    }
+    uint8_t mv[32];
+    uint64_t mbytes = 0;
+    if (!pv_sha3_file(obj_file, mv, &mbytes) ||
+        memcmp(mv, expect, 32) != 0) {
+        (void)snprintf(err, err_cap,
+                       "fast cache materialization failed verification: "
+                       "%.200s", obj_file);
+        return -1;
+    }
+    g_pv_fast_hits++;
+    g_pv_fast_reused_bytes += bytes;
+    return 1;
+}
+
+/* Store a freshly compiled object + sidecar under its key. An existing
+ * entry is byte-verified (idempotent), never overwritten; a mismatch is
+ * corruption. False with err set (the caller fails the run closed). */
+static bool pv_fast_cache_store(struct pv_plan_ctx *ctx,
+                                const char *cache_dir, const uint8_t key[32],
+                                const char *profile, const char *target,
+                                const uint8_t capsule_root[32],
+                                const struct pv_compile_args *args,
+                                const uint8_t preproc[32], const char *rel,
+                                const uint8_t package_root[32],
+                                const uint8_t recipe_root[32],
+                                const uint8_t lock_root[32],
+                                const char *obj_file, char *err,
+                                size_t err_cap)
+{
+    char obj_path[4400], side_path[4400];
+    if (!pv_fastobj_paths(cache_dir, key, obj_path, sizeof(obj_path),
+                          side_path, sizeof(side_path))) {
+        (void)snprintf(err, err_cap, "fast-cache path overflow");
+        return false;
+    }
+    uint8_t newsha[32];
+    uint64_t nbytes = 0;
+    if (!pv_sha3_file(obj_file, newsha, &nbytes)) {
+        (void)snprintf(err, err_cap,
+                       "cannot hash the compiled object %.200s", obj_file);
+        return false;
+    }
+    size_t side_len = 0;
+    char *side = pv_fastobj_sidecar(ctx, profile, target, capsule_root, args,
+                                    preproc, rel, package_root, recipe_root,
+                                    lock_root, newsha, nbytes, &side_len);
+    if (!side) {
+        (void)snprintf(err, err_cap, "fast-cache sidecar assembly failed");
+        return false;
+    }
+    struct stat st;
+    if (stat(obj_path, &st) == 0 || stat(side_path, &st) == 0) {
+        /* Entry materialized between the lookup and now: byte-verify,
+         * never overwrite. */
+        uint8_t ex[32];
+        uint64_t ebytes = 0;
+        size_t eslen = 0;
+        uint8_t *es = pv_read_file(side_path, PV_FASTOBJ_SIDECAR_CAP,
+                                   &eslen);
+        bool same = pv_sha3_file(obj_path, ex, &ebytes) &&
+                    memcmp(ex, newsha, 32) == 0 && ebytes == nbytes && es &&
+                    eslen == side_len && memcmp(es, side, eslen) == 0;
+        free(es);
+        free(side);
+        if (!same) {
+            (void)snprintf(err, err_cap,
+                           "fast cache CORRUPTION: existing entry %.200s "
+                           "differs from the freshly compiled object",
+                           obj_path);
+            return false;
+        }
+        return true;
+    }
+    /* Shard dir, then temp + fsync + rename for both members. */
+    char shard[4400];
+    (void)snprintf(shard, sizeof(shard), "%s", obj_path);
+    char *slash = strrchr(shard, '/');
+    if (!slash) {
+        free(side);
+        (void)snprintf(err, err_cap, "cannot derive the cache shard dir");
+        return false;
+    }
+    *slash = '\0';
+    if (!pv_mkdir_p(shard, 0700)) {
+        free(side);
+        (void)snprintf(err, err_cap, "cannot create the cache shard dir");
+        return false;
+    }
+    char tmp[4400];
+    int tn = snprintf(tmp, sizeof(tmp), "%s.zvtmp.%ld", obj_path,
+                      (long)getpid());
+    if (tn <= 0 || (size_t)tn >= sizeof(tmp) ||
+        !pv_copy_file(obj_file, tmp, 0444) || rename(tmp, obj_path) != 0) {
+        (void)unlink(tmp);
+        free(side);
+        (void)snprintf(err, err_cap, "cannot store cached object %.200s",
+                       obj_path);
+        return false;
+    }
+    if (!pv_atomic_write(side_path, (const uint8_t *)side, side_len)) {
+        free(side);
+        (void)snprintf(err, err_cap, "cannot store sidecar %.200s",
+                       side_path);
+        return false;
+    }
+    free(side);
+    return true;
+}
+
 /* The ZBuild V1 action is deliberately narrower than package verification:
  * one already-preprocessed public C23 translation unit enters, one ELF
  * relocatable object leaves. No recipe, shell, response file, plugin,
@@ -1643,6 +2677,8 @@ int main(int argc, char **argv)
     const char *emit_dir = NULL;
     const char *lock_root_hex = NULL;
     const char *reproduce_path = NULL;
+    const char *plan_path = NULL;
+    const char *fast_cache_dir = NULL;
     const char *candidate_source_arg = NULL;
     const char *candidate_recipe_arg = NULL;
     const char *candidate_name = NULL;
@@ -1665,6 +2701,10 @@ int main(int argc, char **argv)
             lock_root_hex = argv[i] + 12;
         else if (strncmp(argv[i], "--reproduce-against=", 20) == 0)
             reproduce_path = argv[i] + 20;
+        else if (strncmp(argv[i], "--plan=", 7) == 0)
+            plan_path = argv[i] + 7;
+        else if (strncmp(argv[i], "--fast-cache=", 13) == 0)
+            fast_cache_dir = argv[i] + 13;
         else if (strncmp(argv[i], "--zbuild-package-source=", 24) == 0)
             candidate_source_arg = argv[i] + 24;
         else if (strncmp(argv[i], "--zbuild-package-recipe=", 24) == 0)
@@ -1762,12 +2802,14 @@ int main(int argc, char **argv)
         (key_path || emit_dir) && !(key_path && emit_dir) &&
         (!emit_dir || lock_root_hex) &&
         (emit_dir || (!lock_root_hex && emit_dep_count == 0 &&
-                      !reproduce_path));
+                      !reproduce_path)) &&
+        (!plan_path || emit_dir) && !fast_cache_dir;
     bool candidate_shape = candidate_mode && root_hex && !store_dir &&
         !key_path && emit_dir && lock_root_hex && candidate_source_arg &&
         candidate_recipe_arg && candidate_name && candidate_name[0] &&
         known_candidate_profile && candidate_cpu_valid &&
-        !reproduce_path && require_full_isolation;
+        !reproduce_path && require_full_isolation &&
+        (!plan_path || emit_dir);
     if (!normal_shape && !candidate_shape) {
         pv_usage(stderr);
         return 2;
@@ -2282,6 +3324,87 @@ int main(int argc, char **argv)
         .core_bytes = 0,
     };
 
+    /* Dependency plan (zcl.dep_plan.v1) and the per-TU fast object cache
+     * share one preprocess pass and one toolchain capsule: the probes run
+     * BEFORE any real compile, under the same confinement; a plan or cache
+     * failure fails the whole run closed, before any build output exists. */
+    struct pv_plan_ctx pctx;
+    memset(&pctx, 0, sizeof(pctx));
+    struct vcs_toolchain_capsule_v1 fast_capsule;
+    memset(&fast_capsule, 0, sizeof(fast_capsule));
+    uint8_t fast_capsule_root[32] = { 0 };
+    uint8_t plan_preproc[VCS_PACKAGE_RECIPE_MAX_PATHS_PER_LIST][32];
+    memset(plan_preproc, 0, sizeof(plan_preproc));
+    bool plan_preproc_valid = false;
+    if (plan_path || fast_cache_dir) {
+        if (!compilers[1].available) {
+            fprintf(stderr, "%s: --plan/--fast-cache require gcc, which is "
+                            "unavailable\n", PV_LOG);
+            pv_rm_rf(work);
+            vcs_package_recipe_free(&recipe);
+            vcs_package_manifest_free(&manifest);
+            return 5;
+        }
+        pctx.recipe = &recipe;
+        pctx.src_root = src_root;
+        pctx.build_root = build_root;
+        pctx.deps = emit_deps;
+        pctx.dep_count = emit_dep_count;
+        pctx.rules = rules;
+        pctx.n_rules = n_rules;
+        pctx.landlock = landlock;
+        pctx.env = compile_env;
+        pctx.limits = &compile_limits;
+        pctx.warning_fatal = standard_profile;
+        if (fast_cache_dir) {
+            /* The parent is the cache's only writer (confined children get
+             * no grant); canonicalize after creating so the path recorded
+             * in diagnostics is absolute. */
+            if (!pv_mkdir_p(fast_cache_dir, 0700)) {
+                fprintf(stderr, "%s: cannot create --fast-cache dir %s\n",
+                        PV_LOG, fast_cache_dir);
+                pv_rm_rf(work);
+                vcs_package_recipe_free(&recipe);
+                vcs_package_manifest_free(&manifest);
+                return 5;
+            }
+            static char fast_cache_resolved[4096];
+            if (!realpath(fast_cache_dir, fast_cache_resolved)) {
+                fprintf(stderr, "%s: cannot resolve --fast-cache dir %s\n",
+                        PV_LOG, fast_cache_dir);
+                pv_rm_rf(work);
+                vcs_package_recipe_free(&recipe);
+                vcs_package_manifest_free(&manifest);
+                return 5;
+            }
+            fast_cache_dir = fast_cache_resolved;
+            if (!vcs_toolchain_capsule_v1_capture_gcc(&fast_capsule) ||
+                !vcs_toolchain_capsule_v1_root(&fast_capsule,
+                                               fast_capsule_root)) {
+                fprintf(stderr, "%s: --fast-cache: toolchain capsule "
+                                "capture failed\n", PV_LOG);
+                pv_rm_rf(work);
+                vcs_package_recipe_free(&recipe);
+                vcs_package_manifest_free(&manifest);
+                return 5;
+            }
+        }
+        if (plan_path &&
+            !pv_emit_dep_plan(plan_path, release.name, package_root,
+                              recipe_root, emit_lock_root,
+                              standard_profile ? "standard" : "quick",
+                              compilers[1].id, compilers[1].version,
+                              &pctx, plan_preproc)) {
+            fprintf(stderr, "%s: dependency plan failed: %s\n", PV_LOG,
+                    pctx.error);
+            pv_rm_rf(work);
+            vcs_package_recipe_free(&recipe);
+            vcs_package_manifest_free(&manifest);
+            return 5;
+        }
+        plan_preproc_valid = plan_path != NULL;
+    }
+
     for (size_t ci = 0; ci < 2 && build_ok; ci++) {
         if (!compilers[ci].available)
             continue;
@@ -2315,9 +3438,69 @@ int main(int argc, char **argv)
                                 &recipe, src_root,
                                 emit_deps, emit_dep_count, src_file,
                                 obj_file);
-                struct pv_run pr = pv_run_child(
-                    args.argv, build_root, &compile_limits, landlock, rules,
-                    n_rules, compile_env, PV_COMPILE_TIMEOUT_MS);
+                struct pv_run pr;
+                memset(&pr, 0, sizeof(pr));
+                /* Per-TU object cache: only the plain gcc variant of a
+                 * recipe source is eligible (the plan's preprocess probes
+                 * use exactly that argv; clang and sanitizer objects are
+                 * always rebuilt). */
+                const bool fast_eligible = fast_cache_dir &&
+                    strcmp(cc, "gcc") == 0 && !sanitize &&
+                    si < recipe.sources.count;
+                bool from_cache = false;
+                uint8_t fast_preproc[32] = { 0 };
+                uint8_t fast_key[32] = { 0 };
+                if (fast_eligible) {
+                    char ferr[240];
+                    if (plan_preproc_valid)
+                        memcpy(fast_preproc, plan_preproc[si], 32);
+                    else if (!pv_fast_preproc_sha3(&pctx, &args, si,
+                                                   src_file, fast_preproc,
+                                                   ferr, sizeof(ferr))) {
+                        fprintf(stderr, "%s: fast cache preprocess probe "
+                                        "failed: %s\n", PV_LOG, ferr);
+                        pv_rm_rf(work);
+                        vcs_package_recipe_free(&recipe);
+                        vcs_package_manifest_free(&manifest);
+                        return 5;
+                    }
+                    if (!pv_fastobj_key(&pctx,
+                                        standard_profile ? "standard"
+                                                         : "quick",
+                                        fast_capsule.target,
+                                        fast_capsule_root, &args,
+                                        fast_preproc, fast_key)) {
+                        fprintf(stderr, "%s: fast cache key derivation "
+                                        "failed\n", PV_LOG);
+                        pv_rm_rf(work);
+                        vcs_package_recipe_free(&recipe);
+                        vcs_package_manifest_free(&manifest);
+                        return 5;
+                    }
+                    int hit = pv_fast_cache_lookup(fast_cache_dir,
+                                                   fast_key, obj_file, ferr,
+                                                   sizeof(ferr));
+                    if (hit < 0) {
+                        fprintf(stderr, "%s: %s\n", PV_LOG, ferr);
+                        pv_rm_rf(work);
+                        vcs_package_recipe_free(&recipe);
+                        vcs_package_manifest_free(&manifest);
+                        return 5;
+                    }
+                    from_cache = hit == 1;
+                }
+                if (from_cache) {
+                    /* A verified hit IS a completed successful compile:
+                     * the object bytes are already materialized at
+                     * obj_file and re-verified against the sidecar. */
+                    pr.launched = true;
+                    pr.exited = true;
+                    pr.exit_code = 0;
+                } else {
+                    pr = pv_run_child(
+                        args.argv, build_root, &compile_limits, landlock,
+                        rules, n_rules, compile_env, PV_COMPILE_TIMEOUT_MS);
+                }
                 if (!pr.launched || pr.sandbox_fail) {
                     fprintf(stderr,
                             "%s: internal: compile child failed to launch "
@@ -2341,6 +3524,20 @@ int main(int argc, char **argv)
                     pv_detail_from_stderr(fail_prefix, pr.stderr_buf,
                                           build_fail_detail,
                                           sizeof(build_fail_detail));
+                } else if (fast_eligible && !from_cache) {
+                    char ferr[240];
+                    if (!pv_fast_cache_store(
+                            &pctx, fast_cache_dir, fast_key,
+                            standard_profile ? "standard" : "quick",
+                            fast_capsule.target, fast_capsule_root, &args,
+                            fast_preproc, rel, package_root, recipe_root,
+                            emit_lock_root, obj_file, ferr, sizeof(ferr))) {
+                        fprintf(stderr, "%s: %s\n", PV_LOG, ferr);
+                        pv_rm_rf(work);
+                        vcs_package_recipe_free(&recipe);
+                        vcs_package_manifest_free(&manifest);
+                        return 5;
+                    }
                 }
             }
             /* Link the test binary (plain and sanitizer variants). Object
@@ -2874,6 +4071,13 @@ int main(int argc, char **argv)
                    (unsigned long long)output_bytes);
             printf("zbuild-package-ok=1 source=cas recipe=canonical "
                    "network=0\n");
+            if (fast_cache_dir)
+                printf("zbuild-package-fast-cache=v1 hits=%llu "
+                       "misses=%llu reused_bytes=%llu "
+                       "admission=local_candidate\n",
+                       (unsigned long long)g_pv_fast_hits,
+                       (unsigned long long)g_pv_fast_misses,
+                       (unsigned long long)g_pv_fast_reused_bytes);
         }
         vcs_package_recipe_free(&recipe);
         vcs_package_manifest_free(&manifest);
