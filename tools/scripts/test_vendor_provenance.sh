@@ -160,6 +160,18 @@ fi
 # extension development packages, nor retain their runtime loader sonames.
 # RGFW supports these features, but zclassic23 deliberately compiles them out.
 repo_root="$(cd "$SCRIPT_DIR/../.." && pwd)"
+vendor_builder="$repo_root/tools/scripts/build_vendor.sh"
+
+# Optional host packages must not choose a different LevelDB recipe.  That
+# once let hosts with CMake and hosts without it produce distinct, individually
+# valid archives—and therefore different node action identities—from the same
+# source commit.  The vendor graph now has one fixed direct-C++ route.
+grep -q "leveldb) printf '%s' 'route=direct-cxx11;" "$vendor_builder" ||
+    die "LevelDB provenance does not declare the fixed direct-C++ route"
+if grep -q 'command -v cmake' "$vendor_builder"; then
+    die "LevelDB vendor route still depends on optional host CMake presence"
+fi
+
 presentation_src="$repo_root/lib/presentation/src/presentation.c"
 presentation_include="$repo_root/lib/presentation/include"
 presentation_x11_include="$repo_root/vendor/x11/include"

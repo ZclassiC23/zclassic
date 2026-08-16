@@ -102,7 +102,7 @@ RECIPE_SQLITE="sqlite-r2"
 RECIPE_ZLIB="zlib-r2"
 RECIPE_OPENSSL="openssl-r4"
 RECIPE_LIBEVENT="libevent-r5"
-RECIPE_LEVELDB="leveldb-r5"
+RECIPE_LEVELDB="leveldb-r6"
 RECIPE_RUSTZCASH="rustzcash-r3"
 
 # --- logging (to stderr; stdout is reserved for fetch() to echo a path) -----
@@ -218,15 +218,14 @@ recipe_source_fields() {
 }
 
 recipe_flags() {
-    local group="$1" leveldb_route="direct-cxx11"
-    command -v cmake >/dev/null 2>&1 && leveldb_route="cmake-release"
+    local group="$1"
     case "$group" in
         tor_stub) printf '%s' '-std=c23 -O2 -fPIC; ar=Dcr' ;;
         sqlite) printf '%s' '-O2 -fPIC -DSQLITE_THREADSAFE=1 -DSQLITE_ENABLE_FTS5 -DSQLITE_ENABLE_RTREE -DSQLITE_ENABLE_JSON1 -DSQLITE_ENABLE_COLUMN_METADATA -DSQLITE_OMIT_DEPRECATED -DSQLITE_DEFAULT_FOREIGN_KEYS=1; ar=Dcr' ;;
         zlib) printf '%s' 'CFLAGS=-O2 -fPIC; ./configure --static; make libz.a' ;;
         openssl) printf '%s' './Configure no-shared no-tests --prefix=/usr/local --openssldir=/etc/ssl --libdir=lib; make build_libs' ;;
         libevent) printf '%s' 'apply pinned secure-rng ABI patch; CFLAGS=-O2 -fPIC -Ivendor/include; LDFLAGS=-Lvendor/lib; CPPFLAGS=-Ivendor/include; ./configure --disable-shared --enable-static --disable-samples --disable-libevent-regress; require=evutil_secure_rng_add_bytes' ;;
-        leveldb) printf '%s' "route=$leveldb_route; Release PIC static; tests=off; benchmarks=off; direct=-std=c++11 -O2 -DNDEBUG -fPIC -fno-exceptions -fno-rtti"
+        leveldb) printf '%s' 'route=direct-cxx11; -std=c++11 -O2 -DNDEBUG -fPIC -fno-exceptions -fno-rtti; LEVELDB_PLATFORM_POSIX=1; crc32c=off; snappy=off'
             ;;
         rustzcash) printf '%s' 'cargo build --locked --release --package librustzcash; CARGO_INCREMENTAL=0; RUSTFLAGS=remap-source-and-cargo-home:/usr/src/zclassic23,-C debuginfo=0; reject-build-host-paths' ;;
         *) return 1 ;;
@@ -250,12 +249,7 @@ make=$(vp_tool_identity_sha make)"
         leveldb)
             cxx="$(leveldb_cxx_compiler)"
             identities="cxx=$(vp_compiler_identity_sha "$cxx")
-ar=$(vp_tool_identity_sha "$VENDOR_AR")
-make=$(vp_tool_identity_sha make)"
-            if command -v cmake >/dev/null 2>&1; then
-                identities="$identities
-cmake=$(vp_tool_identity_sha cmake)"
-            fi
+ar=$(vp_tool_identity_sha "$VENDOR_AR")"
             ;;
         rustzcash)
             identities="rustc=$(vp_tool_identity_sha rustc)
@@ -554,7 +548,7 @@ build_leveldb_direct() {
     )
 
     cxx="$(leveldb_cxx_compiler)"
-    say "build   libleveldb.a  (direct C++11 fallback, no cmake)"
+    say "build   libleveldb.a  (fixed direct C++11 route)"
     gen="$WORK/leveldb-direct/include/port"
     objdir="$WORK/leveldb-direct/obj"
     rm -rf "$WORK/leveldb-direct"
@@ -582,10 +576,14 @@ EOF
 
     for src in "${sources[@]}"; do
         obj="$objdir/${src//\//_}.o"
-        "$cxx" -std=c++11 -O2 -DNDEBUG -fPIC -fno-exceptions -fno-rtti \
+        # Compile the source by its stable relative name.  Besides simplifying
+        # the tool graph, this prevents __FILE__ from embedding the random
+        # vendor scratch path in an otherwise deterministic archive.
+        ( cd "$d" && "$cxx" -std=c++11 -O2 -DNDEBUG -fPIC \
+            -fno-exceptions -fno-rtti \
             -DLEVELDB_PLATFORM_POSIX=1 -DLEVELDB_COMPILE_LIBRARY \
-            -I"$WORK/leveldb-direct/include" -I"$d" -I"$d/include" \
-            -c "$d/$src" -o "$obj"
+            -I"$WORK/leveldb-direct/include" -I. -Iinclude \
+            -c "$src" -o "$obj" )
         objs+=("$obj")
     done
     rm -f "$WORK/libleveldb.a"
@@ -600,34 +598,11 @@ build_leveldb() {      # FETCHED: LevelDB -> libleveldb.a
     local tb; tb="$(fetch "$LEVELDB_URL" "$LEVELDB_SHA" "leveldb-${LEVELDB_VER}.tar.gz")"
     local d="$WORK/leveldb-${LEVELDB_VER}"
     rm -rf "$d"; tar -C "$WORK" -xzf "$tb"
-    if command -v cmake >/dev/null 2>&1; then
-        local cxx ar_executable cmake_log
-        cxx="$(leveldb_cxx_compiler)"
-        ar_executable="$(command -v "$VENDOR_AR" 2>/dev/null || true)"
-        [[ -n "$ar_executable" ]] ||
-            die "LevelDB: could not resolve archiver '$VENDOR_AR'"
-        cmake_log="$WORK/leveldb-cmake.log"
-        if ! ( cd "$d" && cmake -S . -B build_static \
-                -DCMAKE_BUILD_TYPE=Release \
-                -DCMAKE_CXX_COMPILER="$cxx" \
-                -DCMAKE_AR="$ar_executable" \
-                -DBUILD_SHARED_LIBS=OFF \
-                -DLEVELDB_BUILD_TESTS=OFF \
-                -DLEVELDB_BUILD_BENCHMARKS=OFF \
-                -DHAVE_CRC32C=0 \
-                -DHAVE_SNAPPY=0 \
-                -DHAVE_TCMALLOC=0 \
-                -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-                && cmake --build build_static -j"$JOBS" --target leveldb \
-            ) >"$cmake_log" 2>&1; then
-            tail -200 "$cmake_log" >&2 || true
-            die "LevelDB CMake build failed (log: $cmake_log)"
-        fi
-        install_archive "$d/build_static/libleveldb.a" libleveldb.a
-    else
-        build_leveldb_direct "$d"
-        install_archive "$WORK/libleveldb.a" libleveldb.a
-    fi
+    # One route is part of the release contract.  Selecting CMake merely
+    # because it happens to be installed made identical hosts produce
+    # different archive bytes and therefore different node action identities.
+    build_leveldb_direct "$d"
+    install_archive "$WORK/libleveldb.a" libleveldb.a
     # Tracked vendor/include/leveldb/*.h (1.18) expose the same stable C API
     # (leveldb/c.h) the repo uses; we intentionally do NOT overwrite them.
     stamp_archives libleveldb.a

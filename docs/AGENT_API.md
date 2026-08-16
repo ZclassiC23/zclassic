@@ -1413,7 +1413,9 @@ a separate `make vendor` phase; an absent pinned archive is a named failure,
 not permission for the proof run to contact the network. The shared release
 profile asks Make to expand its complete compiler/linker plan at execution
 time; receipts never substitute the recursive `CFLAGS` definition for the
-physical compiler flags.
+physical compiler flags. LevelDB likewise has one deterministic direct-C++11
+vendor recipe; optional host CMake installation cannot select different input
+archive bytes for the same node action.
 
 ## Rule
 
