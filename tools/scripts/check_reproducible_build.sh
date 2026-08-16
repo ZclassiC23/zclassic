@@ -37,6 +37,17 @@
 
 set -euo pipefail
 
+# This command proves execution, not source acquisition.  The early Makefile
+# policy covers `make ci-reproducible`; this assignment also protects callers
+# that invoke the script directly.  It is intentionally not caller-overridable.
+export ZCL_VENDOR_OFFLINE=1
+export ZCL_USE_CCACHE=0
+export LC_ALL=C
+export TZ=UTC
+export PATH=/usr/bin:/bin
+export HOME=/nonexistent
+umask 022
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 cd "$REPO_ROOT"
@@ -84,6 +95,7 @@ fi
 
 info "Binary target : $BINARY"
 info "Hash algorithm: $hash_algo"
+info "Network policy: vendor-offline (forced)"
 info "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH (pinned across both builds)"
 info "CFLAGS         : $REL_CFLAGS"
 info "LDFLAGS        : $REL_LDFLAGS"

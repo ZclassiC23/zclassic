@@ -1405,6 +1405,12 @@ The reproducible profile pins `SOURCE_DATE_EPOCH` to the HEAD commit time
 unless overridden, forces portable `-march=x86-64-v3`, and disables the linker
 build id with `-Wl,--build-id=none`.
 
+Both reproducibility front doors force vendor-offline mode before Make's early
+input bootstrap, disable host compiler caches, and pin `LC_ALL=C`, `TZ=UTC`,
+`HOME=/nonexistent`, `PATH=/usr/bin:/bin`, and umask 022. Vendor acquisition is
+a separate `make vendor` phase; an absent pinned archive is a named failure,
+not permission for the proof run to contact the network.
+
 ## Rule
 
 Keep operator logic in typed native `zclassic23` commands. Add native JSON

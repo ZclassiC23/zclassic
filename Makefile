@@ -16,6 +16,18 @@ endif
 ZCL_STANDALONE_CLEAN := $(if $(filter clean coverage-clean,$(MAKECMDGOALS)),$(if $(word 2,$(MAKECMDGOALS)),,1),)
 ZCL_ZERO_SHA256 = 0000000000000000000000000000000000000000000000000000000000000000
 
+# Reproduction is an execution phase, never an acquisition phase.  Force the
+# vendor builder into its checksum-verified offline mode before Make evaluates
+# the early vendor-input restart barrier below.  Doing this in the recipe is
+# too late: GNU Make may remake VENDOR_BOOTSTRAP_MK while parsing, before the
+# requested target recipe starts.  `override` is deliberate; a permissive
+# caller environment may not silently weaken a hermetic release gate.
+ZCL_NETWORK_DENIED_BUILD_GOALS := ci-reproducible repro-verify
+ifneq ($(strip $(filter $(ZCL_NETWORK_DENIED_BUILD_GOALS),$(MAKECMDGOALS))),)
+override ZCL_VENDOR_OFFLINE := 1
+export ZCL_VENDOR_OFFLINE
+endif
+
 # The observable hot-swap loop (hotswap-try / hotswap-apply) delegates the
 # module rebuild to tools/dev/hotswap-module-fast.sh, which works from cached
 # compile metadata and falls back to a nested authoritative `make
@@ -1046,6 +1058,7 @@ $(VENDOR_BOOTSTRAP_MK): vendor-ready
 check-vendor-provenance:
 	@tools/scripts/test_vendor_provenance.sh
 	@tools/scripts/build_vendor_offline_selftest.sh
+	@tools/scripts/repro_network_policy_selftest.sh
 	@sha256sum --check vendor/rgfw/SHA256SUMS
 	@sha256sum --check vendor/qrcodegen/SHA256SUMS
 	@sha256sum --check vendor/typography/SHA256SUMS

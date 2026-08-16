@@ -116,6 +116,16 @@ same pin checks and source-build recipes. See
 [`P2P_SOURCE_HOSTING.md`](./P2P_SOURCE_HOSTING.md#git-free-consumer-build) for
 the complete trust inputs and commands.
 
+Release reproduction is intentionally stricter than the ordinary first-build
+convenience path. `make ci-reproducible` and `make repro-verify` always force
+`ZCL_VENDOR_OFFLINE=1`, including during Make's early vendor-input parse
+barrier, and direct invocation of either backing script enforces the same
+policy. The scripts also pin C locale, UTC, `/nonexistent` HOME,
+`/usr/bin:/bin` search path and umask 022, and disable host compiler caches.
+Run `make vendor` as a separate checksum-pinned acquisition phase first. A
+missing or corrupt cached source then leaves reproduction RED; the release
+gate never downloads, retries, or falls back to a clean online build.
+
 The exact source identity also recursively covers generated headers under
 `vendor/include/`, including ignored SQLite, OpenSSL, and zlib headers used by
 the global include path. Unsupported file types and symlinks there fail closed.
