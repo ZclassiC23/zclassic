@@ -36,17 +36,20 @@ void zdogace_step(const zdog_obs *obs, zdog_ctl *out)
         rxq = (int32_t)((rx * 32767) / (int64_t)obs->dist);
         rzq = (int32_t)((rz * 32767) / (int64_t)obs->dist);
     }
-    /* cross > 0: enemy to the right -> bank right (positive roll). */
+    /* cross = sin(yaw - bearing): cross < 0 means the enemy is to the
+     * RIGHT (bearing > yaw), and the sim turns right (yaw increases)
+     * when roll is POSITIVE — so steer roll opposite to cross. */
     int32_t cross = (int32_t)((fx * (int64_t)rzq - fz * (int64_t)rxq) >> 15);
     int32_t dot = (int32_t)((fx * (int64_t)rxq + fz * (int64_t)rzq) >> 15);
-    out->roll = clamp15(2 * cross);
+    out->roll = clamp15(-2 * cross);
 
-    /* Elevation error: normalized rel_y minus own pitch sine. */
+    /* Elevation: the sim's forward vertical component is -sin(pitch),
+     * so steer pitch toward -(normalized rel_y + sin(own pitch)). */
     int32_t ryq = 0;
     if (obs->dist > 0)
         ryq = (int32_t)(((int64_t)obs->rel_y * 32767) / (int64_t)obs->dist);
-    int32_t ep = ryq - zdog_sin16(obs->pitch);
-    out->pitch = clamp15(2 * ep);
+    int32_t ep = ryq + zdog_sin16(obs->pitch);
+    out->pitch = clamp15(-2 * ep);
 
     /* Fire when roughly aligned (within ~20 deg) and inside 300 m. */
     if (dot > 31129 && cross > -3000 && cross < 3000 &&

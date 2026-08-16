@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "name": "zdogace/zdogace",
-  "semver": "0.1.0",
+  "semver": "0.1.1",
   "language": "c23",
   "license": "MIT",
   "include_dir": "include",

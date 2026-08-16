@@ -66,27 +66,27 @@ int main(void)
     CHECK(a.fire == 1);
     CHECK(a.throttle == 32767);
 
-    /* Lateral error steers: enemy off to one side gives a non-zero
-     * roll, and the mirror-image bearing gives the exact opposite roll.
-     * (The absolute sign is pinned against the sim's roll->yaw
-     * convention by the arena integration match, not here.) */
+    /* Lateral steering, sign pinned against the sim convention
+     * (positive roll increases yaw, rotating forward from +z toward
+     * +x): enemy at +x while facing +z is to the RIGHT -> roll > 0;
+     * the mirror bearing gives the mirror control. */
     o.rel_x = 100000;
     o.rel_z = 0;
     o.dist = 100000;
     zdogace_step(&o, &a);
-    CHECK(a.roll != 0);
+    CHECK(a.roll > 0);
     o.rel_x = -100000;
     zdogace_step(&o, &b);
-    CHECK(b.roll == (int16_t)-a.roll || b.roll == (int16_t)(-a.roll + 1) ||
-          b.roll == (int16_t)(-a.roll - 1));
+    CHECK(b.roll < 0);
 
-    /* Enemy above: pitch up. */
+    /* Elevation, sign pinned against the sim (forward vertical
+     * component is -sin(pitch)): enemy above -> pitch < 0 (climb). */
     o.rel_x = 0;
     o.rel_y = 100000;
     o.rel_z = 0;
     o.dist = 100000;
     zdogace_step(&o, &a);
-    CHECK(a.pitch > 0);
+    CHECK(a.pitch < 0);
 
     /* Aligned but beyond 300 m: hold fire. */
     o.rel_y = 0;
