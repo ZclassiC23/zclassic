@@ -29,22 +29,13 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "base/hex.h"
 #include "presentation/model.h"
 #include "sha3/sha3.h"
 #include "zdogfight/zdogfight.h"
 
 #define AP_LOG "arena_present"
 #define AP_MAX_TICKS (ZDOG_TICK_LIMIT + 1u)
-
-static void ap_hex32(const uint8_t in[32], char out[65])
-{
-    static const char hexd[] = "0123456789abcdef";
-    for (size_t i = 0; i < 32; i++) {
-        out[2 * i] = hexd[in[i] >> 4];
-        out[2 * i + 1] = hexd[in[i] & 15];
-    }
-    out[64] = '\0';
-}
 
 static int ap_fail(const char *what)
 {
@@ -212,7 +203,7 @@ int main(int argc, char **argv)
     uint8_t root_bin[32];
     zcl_sha3_256(state, sizeof(state), root_bin);
     char root_hex[65];
-    ap_hex32(root_bin, root_hex);
+    zcl_hex_encode(root_bin, 32, root_hex);
 
     if (kills_total > kills_recorded) {
         struct zcl_present_model_item_v1 *it = &model.items[model.item_count++];
