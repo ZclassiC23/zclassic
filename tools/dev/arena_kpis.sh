@@ -5,7 +5,7 @@
 #
 # Measures, on scratch files only:
 #   - runner wall time and ticks/second for one full match
-#   - runner peak RSS (via /usr/bin/time -v when available)
+#   - runner peak RSS and CPU% (via /usr/bin/time -v when available)
 #   - replay file bytes (raw and the implied bytes/tick)
 #   - pilot binary sizes
 #   - determinism: two runs must be byte-identical (born-red guard)
@@ -48,13 +48,17 @@ cmp "$WORK/a.bin" "$WORK/b.bin" || { echo "arena-kpis: FAIL replays diverge" >&2
 TICKS="$(sed -n 's/.*ticks=\([0-9]*\).*/\1/p' "$WORK/a.out")"
 BYTES="$(stat -c %s "$WORK/a.bin")"
 RSS_KB="n/a"
-[ -n "$TIME_BIN" ] && RSS_KB="$(grep -o 'Maximum resident set size (kbytes): [0-9]*' "$WORK/a.time" | grep -o '[0-9]*$')"
+CPU_PCT="n/a"
+if [ -n "$TIME_BIN" ]; then
+    RSS_KB="$(grep -o 'Maximum resident set size (kbytes): [0-9]*' "$WORK/a.time" | grep -o '[0-9]*$')"
+    CPU_PCT="$(grep -o 'Percent of CPU this job got: [0-9]*%' "$WORK/a.time" | grep -o '[0-9]*%$')"
+fi
 
 echo "arena-kpis: seed=$SEED planes=$PPT ticks=$TICKS"
 echo "arena-kpis: wall_ms_run1=$MS_A wall_ms_run2=$MS_B"
 echo "arena-kpis: ticks_per_sec=$(( TICKS * 1000 / (MS_A > 0 ? MS_A : 1) ))"
 echo "arena-kpis: replay_bytes=$BYTES bytes_per_tick=$(( BYTES / (TICKS > 0 ? TICKS : 1) ))"
-echo "arena-kpis: runner_peak_rss_kb=$RSS_KB"
+echo "arena-kpis: runner_peak_rss_kb=$RSS_KB runner_cpu_pct=$CPU_PCT"
 echo "arena-kpis: pilot_red_bytes=$(stat -c %s "$RED") pilot_blue_bytes=$(stat -c %s "$BLUE")"
 echo "arena-kpis: determinism=byte-identical"
 grep -E 'winner|_root=|_avg_response_us=' "$WORK/a.out"
