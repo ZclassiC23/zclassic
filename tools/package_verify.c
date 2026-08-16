@@ -1123,6 +1123,81 @@ static bool pv_collect_dep_archives(const struct pv_emit_dep *deps,
     return true;
 }
 
+/* A static archive never carries its own providers: zotp.a references zsha1
+ * symbols without containing them, so the link line needs the archives of
+ * the FULL transitive closure, while the build receipt still commits only
+ * the declared direct set (the --dep arguments). Each transitive root's own
+ * direct set is read from its installed build-report — a file that reached
+ * <installed>/<root>/ only after the installer independently re-hashed every
+ * byte against that very receipt. Expansion fails closed on any unreadable
+ * or unparseable report: a guessed link is worse than a refused one. The
+ * result is dependents-first breadth-first; the link wraps the archive set
+ * in --start-group, so residual intra-level order cannot matter. The DAG
+ * lock bound (VCS_PACKAGE_LOCK_MAX_NODES == PV_EMIT_MAX_DEPS) caps the
+ * closure, so `out` needs no larger bound than the direct set's. */
+static bool pv_expand_link_closure(const struct pv_emit_dep *deps,
+                                   size_t dep_count,
+                                   struct pv_emit_dep *out,
+                                   size_t *out_count)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < dep_count && i < PV_EMIT_MAX_DEPS; i++)
+        out[n++] = deps[i];
+    for (size_t head = 0; head < n; head++) {
+        char report[4300];
+        int rn = snprintf(report, sizeof(report), "%s/build-report",
+                          out[head].install_dir);
+        if (rn <= 0 || (size_t)rn >= sizeof(report))
+            return false;
+        size_t wire_len = 0;
+        uint8_t *wire =
+            pv_read_file(report, VCS_PACKAGE_BUILD_MAX_WIRE_BYTES, &wire_len);
+        if (!wire)
+            return false;
+        struct vcs_package_build_receipt receipt;
+        enum vcs_package_build_error perr =
+            vcs_package_build_parse(wire, wire_len, &receipt);
+        free(wire);
+        if (perr != VCS_PACKAGE_BUILD_OK)
+            return false;
+        /* The sibling install dirs share this root's parent directory. */
+        char parent[2100];
+        (void)snprintf(parent, sizeof(parent), "%s", out[head].install_dir);
+        char *slash = strrchr(parent, '/');
+        if (!slash)
+            return false;
+        *slash = '\0';
+        for (size_t j = 0; j < receipt.dep_count; j++) {
+            bool seen = false;
+            for (size_t k = 0; k < n; k++)
+                if (memcmp(out[k].root, receipt.dep_roots[j], 32) == 0) {
+                    seen = true;
+                    break;
+                }
+            if (seen)
+                continue;
+            if (n >= PV_EMIT_MAX_DEPS)
+                return false;
+            char hex[65];
+            zcl_hex_encode(receipt.dep_roots[j], 32, hex);
+            struct pv_emit_dep *d = &out[n];
+            memset(d, 0, sizeof(*d));
+            memcpy(d->root, receipt.dep_roots[j], 32);
+            int dn = snprintf(d->install_dir, sizeof(d->install_dir),
+                              "%s/%s", parent, hex);
+            if (dn <= 0 || (size_t)dn >= sizeof(d->install_dir))
+                return false;
+            int in = snprintf(d->include_dir, sizeof(d->include_dir),
+                              "%s/include", d->install_dir);
+            if (in <= 0 || (size_t)in >= sizeof(d->include_dir))
+                return false;
+            n++;
+        }
+    }
+    *out_count = n;
+    return true;
+}
+
 /* SHA3-256 + byte count of one file, streamed in bounded chunks. */
 static bool pv_sha3_file(const char *path, uint8_t out[32], uint64_t *bytes)
 {
@@ -3304,9 +3379,26 @@ int main(int argc, char **argv)
         return 5;
     }
 
+    /* The compile children see the declared (direct) deps' headers; the
+     * link child additionally needs the transitive closure's archives and
+     * the Landlock read grants that reach them. One closure serves both. */
+    struct pv_emit_dep link_deps[PV_EMIT_MAX_DEPS];
+    size_t link_dep_count = 0;
+    memset(link_deps, 0, sizeof(link_deps));
+    if (!pv_expand_link_closure(emit_deps, emit_dep_count, link_deps,
+                                &link_dep_count)) {
+        fprintf(stderr, "%s: cannot expand the dependency link closure "
+                "(unreadable or unparseable installed build-report)\n",
+                PV_LOG);
+        pv_rm_rf(work);
+        vcs_package_recipe_free(&recipe);
+        vcs_package_manifest_free(&manifest);
+        return 5;
+    }
+
     struct os_sandbox_path_rule rules[10u + PV_EMIT_MAX_DEPS];
-    size_t n_rules = pv_child_grants(src_root, build_root, emit_deps,
-                                     emit_dep_count, rules,
+    size_t n_rules = pv_child_grants(src_root, build_root, link_deps,
+                                     link_dep_count, rules,
                                      sizeof(rules) / sizeof(rules[0]));
 
     /* Compiler probes (version strings are recorded in the attestation). */
@@ -3352,7 +3444,7 @@ int main(int argc, char **argv)
 
     struct pv_dep_archives dep_archives;
     memset(&dep_archives, 0, sizeof(dep_archives));
-    if (!pv_collect_dep_archives(emit_deps, emit_dep_count, &dep_archives)) {
+    if (!pv_collect_dep_archives(link_deps, link_dep_count, &dep_archives)) {
         fprintf(stderr, "%s: dependency archive set is invalid\n", PV_LOG);
         pv_rm_rf(work);
         vcs_package_recipe_free(&recipe);
@@ -3665,11 +3757,20 @@ int main(int argc, char **argv)
                 largv[ln++] = "-o";
                 largv[ln++] = bin_file;
                 /* Locked dependency archives come after the objects that
-                 * reference them (static-link order). */
+                 * reference them. The transitive closure is wrapped in a
+                 * linker group: within a group the linker rescans until no
+                 * new symbol resolves, so provider-before-dependent order
+                 * inside the closure cannot break the link. */
+                if (dep_archives.count &&
+                    ln + 4u < sizeof(largv) / sizeof(largv[0]))
+                    largv[ln++] = "-Wl,--start-group";
                 for (size_t da = 0; da < dep_archives.count &&
                                     ln + 8u < sizeof(largv) / sizeof(largv[0]);
                      da++)
                     largv[ln++] = dep_archives.path[da];
+                if (dep_archives.count &&
+                    ln + 4u < sizeof(largv) / sizeof(largv[0]))
+                    largv[ln++] = "-Wl,--end-group";
                 for (size_t li = 0; li < recipe.library_count; li++) {
                     if (recipe.libraries[li] == VCS_PACKAGE_RECIPE_LIB_LIBM)
                         largv[ln++] = "-lm";
@@ -3761,9 +3862,37 @@ int main(int argc, char **argv)
                     test_ok = false;
                     test_fail_code =
                         VCS_PACKAGE_ATTEST_DETAIL_TEST_EXIT_MISMATCH;
+                    /* Carry the failing run's own last line: "exit 1" alone
+                     * is undiagnosable from the operator's side of the
+                     * sandbox. Test failures conventionally go to stderr;
+                     * fall back to stdout. One line, printable ASCII. */
+                    const char *s = pr.stderr_buf;
+                    size_t sl = pr.stderr_len;
+                    if (!sl) {
+                        s = pr.stdout_buf;
+                        sl = pr.stdout_len;
+                    }
+                    char tail[121];
+                    size_t begin = sl;
+                    while (begin > 0 && s[begin - 1] != '\n' &&
+                           sl - begin < sizeof(tail) - 1)
+                        begin--;
+                    if (begin > 0 && begin == sl)
+                        begin--; /* no newline: keep the tail, not the head */
+                    size_t ti = 0;
+                    for (size_t k = begin; k < sl && ti < sizeof(tail) - 1;
+                         k++) {
+                        unsigned char c = (unsigned char)s[k];
+                        tail[ti++] = (c >= 0x20 && c <= 0x7e) ? (char)c
+                                                              : '?';
+                    }
+                    while (ti && tail[ti - 1] == '\n')
+                        ti--;
+                    tail[ti] = '\0';
                     snprintf(test_fail_detail, sizeof(test_fail_detail),
-                             "%s: exit %d, expected %u", cc, pr.exit_code,
-                             recipe.expected_test_exit_code);
+                             "%s: exit %d, expected %u%s%s", cc, pr.exit_code,
+                             recipe.expected_test_exit_code,
+                             ti ? ": " : "", tail);
                 }
             } else {
                 test_ok = false;
@@ -4150,6 +4279,9 @@ int main(int argc, char **argv)
         if (!build_ok)
             printf("build-failure-detail=%s\n",
                    build_fail_detail[0] ? build_fail_detail : "unclassified");
+        if (build_ok && !test_ok)
+            printf("test-failure-detail=%s\n",
+                   test_fail_detail[0] ? test_fail_detail : "unclassified");
         if (candidate_mode) {
             uint64_t source_bytes = 0, output_bytes = 0;
             for (size_t i = 0; i < manifest.count; i++)

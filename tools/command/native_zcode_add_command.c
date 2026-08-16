@@ -23,6 +23,7 @@
 #include "vcs/package_store.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 static const char *za_input_str(const struct json_value *input,
@@ -152,6 +153,77 @@ void zcl_native_handle_zcode_package_checkout(
         "checkout is inert and build/test/run remain explicit local steps");
 }
 
+/* ── bounded step-list windowing ────────────────────────────────────── */
+
+/* Attach a plan/commit step list to the reply, honoring the framework's
+ * normalized paging controls (request->cursor / request->max_items, lifted
+ * from --input or the --cursor/--max-items flags by the dispatcher).
+ * Without paging controls the COMPLETE list is attached unchanged and an
+ * oversized reply still fails closed at serialization. With paging, only
+ * rows [cursor, cursor+max_items) are attached, plus a `_page` descriptor
+ * (total_items, included, omitted, truncated, next_cursor) so a shortened
+ * answer always says so and names where to resume. A malformed or
+ * out-of-range cursor is a named rejection, never a silent clamp.
+ * Returns false only after failing the reply (caller frees `steps`). */
+static bool za_push_steps_window(const struct zcl_command_request *request,
+                                 struct json_value *steps,
+                                 struct zcl_command_reply *reply,
+                                 const char *command)
+{
+    size_t count = json_size(steps);
+    size_t start = 0;
+    bool paged = request->max_items > 0;
+    if (request->cursor && request->cursor[0]) {
+        paged = true;
+        char *end = NULL;
+        unsigned long long parsed =
+            request->cursor[0] >= '0' && request->cursor[0] <= '9'
+                ? strtoull(request->cursor, &end, 10)
+                : 0;
+        if (!end || *end != '\0' || parsed > count) {
+            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                                   ZCL_COMMAND_EXIT_INVALID, "INVALID_CURSOR",
+                                   "normalize", false, false,
+                                   "cursor must be a numeric step offset no "
+                                   "larger than the step count", command);
+            return false;
+        }
+        start = (size_t)parsed;
+    }
+    if (!paged) {
+        (void)json_push_kv(&reply->data, "steps", steps);
+        return true;
+    }
+    size_t limit = request->max_items > 0 ? request->max_items : count;
+    size_t end = start + limit;
+    if (end < start || end > count)
+        end = count;
+    struct json_value window;
+    json_init(&window);
+    json_set_array(&window);
+    for (size_t i = start; i < end; i++) {
+        struct json_value row;
+        json_init(&row);
+        json_copy(&row, json_at(steps, i));
+        (void)json_push_back(&window, &row);
+        json_free(&row);
+    }
+    (void)json_push_kv(&reply->data, "steps", &window);
+    json_free(&window);
+    struct json_value page;
+    json_init(&page);
+    json_set_object(&page);
+    (void)json_push_kv_int(&page, "total_items", (int64_t)count);
+    (void)json_push_kv_int(&page, "included", (int64_t)(end - start));
+    (void)json_push_kv_int(&page, "omitted", (int64_t)(count - end));
+    (void)json_push_kv_bool(&page, "truncated", end < count);
+    if (end < count)
+        (void)json_push_kv_int(&page, "next_cursor", (int64_t)end);
+    (void)json_push_kv(&reply->data, "_page", &page);
+    json_free(&page);
+    return true;
+}
+
 /* ── zcode package add plan ─────────────────────────────────────────── */
 
 void zcl_native_handle_zcode_package_add_plan(
@@ -221,8 +293,10 @@ void zcl_native_handle_zcode_package_add_plan(
         (void)json_push_back(&steps, &row);
         json_free(&row);
     }
-    (void)json_push_kv(&reply->data, "steps", &steps);
+    bool windowed = za_push_steps_window(request, &steps, reply, command);
     json_free(&steps);
+    if (!windowed)
+        return;
 
     (void)json_push_kv_str(
         &reply->data, "note",
@@ -308,8 +382,10 @@ void zcl_native_handle_zcode_package_add_commit(
         za_push_hex(&reply->data, "previous_root", report.previous_root);
     (void)json_push_kv_int(&reply->data, "step_count",
                            (int64_t)report.step_count);
-    (void)json_push_kv(&reply->data, "steps", &steps);
+    bool windowed = za_push_steps_window(request, &steps, reply, command);
     json_free(&steps);
+    if (!windowed)
+        return;
     (void)json_push_kv_str(
         &reply->data, "note",
         "each package is a static archive plus headers under "

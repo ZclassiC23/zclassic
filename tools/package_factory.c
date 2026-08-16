@@ -454,7 +454,139 @@ static bool pf_cli(const char *bin_dir, const char *extra_flag,
     return true;
 }
 
-/* Spawn the offline digest signer with the key file on an inherited fd. */
+/* Strict structural equality for the small scalar values repeated on every
+ * page of a paged reply (hex ids, ints, bools, short strings). */
+static bool pf_json_same_value(const struct json_value *a,
+                               const struct json_value *b)
+{
+    if (!a || !b || a->type != b->type)
+        return false;
+    char ba[2048], bb[2048];
+    size_t na = json_write(a, ba, sizeof(ba));
+    size_t nb = json_write(b, bb, sizeof(bb));
+    return na > 0 && na < sizeof(ba) && na == nb && memcmp(ba, bb, na) == 0;
+}
+
+/* Rows per requested page: one plan/commit step row is a few hundred
+ * bytes, so 8 stays far below the 8192-byte reply envelope. */
+#define PF_STEP_PAGE_ITEMS 8
+
+/* Fetch one zcode CLI reply whose `steps` array may exceed the bounded
+ * reply envelope: request small pages and follow _page.next_cursor until
+ * the array is reassembled. The merged document keeps the FIRST page's
+ * scalar fields and the concatenated steps; its stale first-page `_page`
+ * is harmless (no consumer reads it). Fails closed unless every page
+ * carries data.steps + data._page, every first-page scalar repeats
+ * identically on every later page, pages are contiguous (the requested
+ * cursor equals the rows collected so far) and strictly advancing, and the
+ * final count equals both _page.total_items and data.step_count when the
+ * reply declares one. */
+static bool pf_cli_paged_steps(const char *bin_dir,
+                               const char *command_words,
+                               const char *id_key, const char *id_val,
+                               const char *datadir,
+                               struct json_value *doc_out, char *error,
+                               size_t error_cap)
+{
+    /* The paged request is a handful of small fields; it must NOT inherit
+     * the 8 MiB stdout-cap buffer pf_cli carries for replies — the caller
+     * (factory_store_journey) already holds one such frame, and stacking
+     * two more overflows the default 8 MiB thread stack. */
+    char input[2048];
+    size_t cursor = 0, collected = 0;
+    bool merged = false;
+    for (;;) {
+        int n = snprintf(input, sizeof(input),
+                         "{\"%s\":\"%s\",\"datadir\":\"%s\",\"max_items\":%u,"
+                         "\"cursor\":%zu}",
+                         id_key, id_val, datadir,
+                         (unsigned)PF_STEP_PAGE_ITEMS, cursor);
+        if (n <= 0 || (size_t)n >= sizeof(input)) {
+            (void)snprintf(error, error_cap, "%s: paged input overflow",
+                           command_words);
+            LOG_ERROR(PF_LOG, "%s", error);
+            break;
+        }
+        struct json_value page_doc;
+        if (!pf_cli(bin_dir, NULL, command_words, input, &page_doc, error,
+                    error_cap))
+            break; /* pf_cli already logged */
+        const char *why = NULL;
+        const struct json_value *pdata = json_get(&page_doc, "data");
+        const struct json_value *psteps = json_get(pdata, "steps");
+        const struct json_value *ppage = json_get(pdata, "_page");
+        if (!pdata || !psteps || psteps->type != JSON_ARR || !ppage ||
+            ppage->type != JSON_OBJ) {
+            why = "paged reply lacks data.steps or data._page";
+        } else if (cursor != collected) {
+            why = "paged reply is discontiguous";
+        }
+        /* Page metadata must be read before page_doc is folded or freed. */
+        bool truncated = json_get_bool(json_get(ppage, "truncated"));
+        int64_t total = json_get_int(json_get(ppage, "total_items"));
+        int64_t next = -1;
+        if (!why && truncated) {
+            const struct json_value *ncv = json_get(ppage, "next_cursor");
+            next = ncv ? json_get_int(ncv) : -1;
+        }
+        size_t page_rows = psteps ? psteps->num_children : 0;
+        if (!why && truncated && (page_rows == 0 || next < 0 ||
+                                  (size_t)next <= cursor))
+            why = "_page.next_cursor does not advance";
+        if (!why && merged) {
+            /* Every scalar from the first page must repeat identically. */
+            const struct json_value *mdata = json_get(doc_out, "data");
+            for (size_t k = 0; k < mdata->num_children && !why; k++) {
+                const char *key = mdata->keys[k];
+                if (strcmp(key, "steps") == 0 || strcmp(key, "_page") == 0)
+                    continue;
+                if (!pf_json_same_value(&mdata->children[k],
+                                        json_get(pdata, key)))
+                    why = "a scalar field changed between pages";
+            }
+        }
+        bool moved = false;
+        if (!why && !merged) {
+            *doc_out = page_doc; /* ownership moves to the caller's doc */
+            merged = true;
+            moved = true;
+        } else if (!why) {
+            struct json_value *msteps = (struct json_value *)json_get(
+                json_get(doc_out, "data"), "steps");
+            for (size_t i = 0; i < page_rows; i++) {
+                struct json_value row;
+                json_init(&row);
+                json_copy(&row, &psteps->children[i]);
+                (void)json_push_back(msteps, &row);
+                json_free(&row);
+            }
+        }
+        collected += page_rows;
+        if (!why && !truncated) {
+            if (total < 0 || (size_t)total != collected)
+                why = "final _page.total_items disagrees with the rows";
+            const struct json_value *scv =
+                json_get(json_get(doc_out, "data"), "step_count");
+            if (!why && scv && json_get_int(scv) != (int64_t)collected)
+                why = "step_count disagrees with the paged rows";
+        }
+        if (!moved)
+            json_free(&page_doc);
+        if (why) {
+            (void)snprintf(error, error_cap, "%s: %s", command_words, why);
+            LOG_ERROR(PF_LOG, "%s", error);
+            break;
+        }
+        if (!truncated)
+            return true;
+        cursor = (size_t)next;
+    }
+    if (merged) {
+        json_free(doc_out);
+        json_init(doc_out); /* safe for the caller to json_free again */
+    }
+    return false;
+}
 static bool pf_signer(const char *bin_dir, const char *mode,
                       const char *digest_hex, const char *key_path,
                       char *out, size_t out_cap, char *error,
@@ -1423,10 +1555,23 @@ static bool factory_store_journey(const struct run_args *args,
                 json_get_str(json_get(data, "readiness"));
             const char *next_action =
                 json_get_str(json_get(data, "next_action"));
+            /* The reply carries the exact failed rules; "blocked" alone is
+             * undiagnosable from the report, so lead with the first. */
+            const struct json_value *failures =
+                json_get(data, "failures");
+            const char *frule = NULL, *fdetail = NULL;
+            if (failures && failures->type == JSON_ARR &&
+                failures->num_children) {
+                const struct json_value *f0 = &failures->children[0];
+                frule = json_get_str(json_get(f0, "rule"));
+                fdetail = json_get_str(json_get(f0, "detail"));
+            }
             (void)snprintf(error, sizeof(error),
-                           "publish plan not valid (readiness=%s next=%s)",
+                           "publish plan not valid (readiness=%s next=%s%s%s%s%s)",
                            readiness ? readiness : "?",
-                           next_action ? next_action : "?");
+                           next_action ? next_action : "?",
+                           frule ? " first=" : "", frule ? frule : "",
+                           fdetail ? ": " : "", fdetail ? fdetail : "");
         }
         json_free(&doc);
         if (!v) {
@@ -1482,16 +1627,11 @@ static bool factory_store_journey(const struct run_args *args,
         (void)snprintf(name, sizeof(name), "add_plan_%s", tag);
         s = pf_step_begin(rep, name);
         t0 = now_ms();
-        int n = snprintf(input, PF_CLI_STDOUT_CAP,
-                         "{\"name_or_root\":\"%s\",\"datadir\":\"%s\"}",
-                         root_hex, store);
-        if (n <= 0 || (size_t)n >= PF_CLI_STDOUT_CAP) {
-            (void)pf_step_fail(rep, s, t0, "add plan input overflow");
-            free(input);
-            return false;
-        }
-        if (!pf_cli(args->bin_dir, NULL, "zcode package add plan", input,
-                    &plan_doc, error, sizeof(error))) {
+        /* A dependency-rich plan overflows the bounded reply envelope, so
+         * the fetch pages through the steps array and reassembles it. */
+        if (!pf_cli_paged_steps(args->bin_dir, "zcode package add plan",
+                                "name_or_root", root_hex, store, &plan_doc,
+                                error, sizeof(error))) {
             json_free(&plan_doc);
             (void)pf_step_fail(rep, s, t0, error);
             free(input);
@@ -1520,17 +1660,12 @@ static bool factory_store_journey(const struct run_args *args,
         (void)snprintf(name, sizeof(name), "add_commit_%s", tag);
         s = pf_step_begin(rep, name);
         t0 = now_ms();
-        int n = snprintf(input, PF_CLI_STDOUT_CAP,
-                         "{\"plan_id\":\"%s\",\"datadir\":\"%s\"}",
-                         sr->plan_id, store);
-        if (n <= 0 || (size_t)n >= PF_CLI_STDOUT_CAP) {
-            json_free(&plan_doc);
-            (void)pf_step_fail(rep, s, t0, "add commit input overflow");
-            free(input);
-            return false;
-        }
-        if (!pf_cli(args->bin_dir, NULL, "zcode package add commit", input,
-                    &doc, error, sizeof(error))) {
+        /* The commit step list mirrors the plan's, so it can overflow the
+         * bounded reply envelope for a dependency-rich plan; page it the
+         * same way. */
+        if (!pf_cli_paged_steps(args->bin_dir, "zcode package add commit",
+                                "plan_id", sr->plan_id, store, &doc, error,
+                                sizeof(error))) {
             json_free(&plan_doc);
             (void)pf_step_fail(rep, s, t0, error);
             free(input);

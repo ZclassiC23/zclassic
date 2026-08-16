@@ -1385,8 +1385,8 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode package add plan` | ready | mutate / app-write / operator · foreground/moderate | **`name_or_root`**, `now_unix`, `datadir` | `zcl.zcode_add_plan.v1` | `zclassic23 zcode package add plan --input='{"name_or_root":"ringbuffer"}'` | Resolve, dependency-lock, and report what installing would do |
-| `zcode package add commit` | ready | mutate / app-write / operator · background/high | **`plan_id`**, `now_unix`, `datadir` | `zcl.zcode_add_commit.v1` | `zclassic23 zcode package add commit --input='{"plan_id":"<64hex>"}'` | Execute a plan: verify, build+test confined, install, activate, pin |
+| `zcode package add plan` | ready | mutate / app-write / operator · foreground/moderate | **`name_or_root`**, `now_unix`, `datadir`, `cursor`, `max_items` | `zcl.zcode_add_plan.v1` | `zclassic23 zcode package add plan --input='{"name_or_root":"ringbuffer"}'` | Resolve, dependency-lock, and report what installing would do |
+| `zcode package add commit` | ready | mutate / app-write / operator · background/high | **`plan_id`**, `now_unix`, `datadir`, `cursor`, `max_items` | `zcl.zcode_add_commit.v1` | `zclassic23 zcode package add commit --input='{"plan_id":"<64hex>"}'` | Execute a plan: verify, build+test confined, install, activate, pin |
 
 #### `zcode.science` — Scientific evidence
 

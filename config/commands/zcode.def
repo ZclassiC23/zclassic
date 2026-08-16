@@ -3858,11 +3858,14 @@ ZCL_COMMAND_READY_COMMAND(
     "the plan and returns `plan_id`; the id is a SHA3 commitment to every "
     "field including the expiry, so an edited plan file is simply not "
     "found. Plans expire in 15 minutes — a proposal, not a standing "
-    "authorization.",
+    "authorization. A dependency-rich step list is pageable with the "
+    "shared `cursor`/`max_items` controls: a shortened reply carries a "
+    "`_page` descriptor naming where to resume, and the complete list is "
+    "the concatenation of every page in order.",
     0,
     "zcode,package,add,install,plan,dependency,lock,resolve",
     "zcl.zcode_add_plan.input.v1", "zcl.zcode_add_plan.v1",
-    "name_or_root,now_unix,datadir", "name_or_root",
+    "name_or_root,now_unix,datadir,cursor,max_items", "name_or_root",
     "zclassic23 zcode package add plan --input='{\"name_or_root\":\"ringbuffer\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
@@ -3898,7 +3901,7 @@ ZCL_COMMAND_READY_COMMAND(
     0,
     "zcode,package,add,commit,install,build,verify,receipt,pin",
     "zcl.zcode_add_commit.input.v1", "zcl.zcode_add_commit.v1",
-    "plan_id,now_unix,datadir", "plan_id",
+    "plan_id,now_unix,datadir,cursor,max_items", "plan_id",
     "zclassic23 zcode package add commit --input='{\"plan_id\":\"<64hex>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
