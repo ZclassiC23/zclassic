@@ -25,8 +25,17 @@ contact_log="$SANDBOX/build-policy.log"
 make()
 {
     local arg build_dir=build binary=zclassic23
-    if [[ " $* " == *' -pn '* ]]; then
-        printf '%s\n' 'CFLAGS = -std=c23 -O2 -march=native' 'LDFLAGS = -pthread'
+    if [[ " $* " == *' __zcl_repro_capture '* ]]; then
+        case "${ZCL_REPRO_CAPTURE_NAME:-}" in
+            CFLAGS)
+                printf '%s\n' '-std=c23 -O2 -march=native -Iexpanded/include' \
+                    >"$ZCL_REPRO_CAPTURE_PATH"
+                ;;
+            LDFLAGS)
+                printf '%s\n' '-pthread -Wl,-z,now' >"$ZCL_REPRO_CAPTURE_PATH"
+                ;;
+            *) return 2 ;;
+        esac
         return 0
     fi
     printf 'offline=%s ccache=%s locale=%s timezone=%s path=%s home=%s\n' \
@@ -92,11 +101,15 @@ barrier_line="$(grep -n '^VENDOR_BOOTSTRAP_MK :=' "$ROOT/Makefile" | cut -d: -f1
 
 # The same-directory release profile also consults make while deriving flags.
 # Preserve the real tools needed for hashing/comparison after the fake prefix.
-if ! (cd "$ROOT" && \
+if ! check_output="$(cd "$ROOT" && \
         ZCL_VENDOR_OFFLINE=0 PATH=/usr/bin:/bin JOBS=1 BINARY=zclassic23 \
-        bash tools/scripts/check_reproducible_build.sh) >/dev/null 2>&1; then
+        bash tools/scripts/check_reproducible_build.sh 2>&1)"; then
     fail 'check_reproducible_build fixture failed'
 fi
+[[ "$check_output" == *'-march=x86-64-v3 -Iexpanded/include'* ]] ||
+    fail 'release profile did not report the compiler-expanded CFLAGS'
+[[ "$check_output" != *'$('* ]] ||
+    fail 'release profile retained an unresolved Make expression'
 
 # The different-path gate snapshots a tiny synthetic source and lets the same
 # fake make produce its two equal artifacts.

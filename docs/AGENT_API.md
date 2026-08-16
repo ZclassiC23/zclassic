@@ -1409,7 +1409,10 @@ Both reproducibility front doors force vendor-offline mode before Make's early
 input bootstrap, disable host compiler caches, and pin `LC_ALL=C`, `TZ=UTC`,
 `HOME=/nonexistent`, `PATH=/usr/bin:/bin`, and umask 022. Vendor acquisition is
 a separate `make vendor` phase; an absent pinned archive is a named failure,
-not permission for the proof run to contact the network.
+not permission for the proof run to contact the network. The shared release
+profile asks Make to expand its complete compiler/linker plan at execution
+time; receipts never substitute the recursive `CFLAGS` definition for the
+physical compiler flags.
 
 ## Rule
 
