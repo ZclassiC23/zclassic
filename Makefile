@@ -3905,6 +3905,7 @@ $(BIN_DIR)/arena_present: tools/arena_present.c \
 		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
 		packages/zprng/src/zprng.c \
 		lib/presentation/src/model.c \
+		lib/base/src/safe_alloc.c \
 		lib/sha3/src/sha3.c
 	@mkdir -p $(dir $@)
 	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \

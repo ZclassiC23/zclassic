@@ -30,6 +30,7 @@
 #include <string.h>
 
 #include "base/hex.h"
+#include "base/safe_alloc.h"
 #include "presentation/model.h"
 #include "sha3/sha3.h"
 #include "zdogfight/zdogfight.h"
@@ -81,7 +82,7 @@ int main(int argc, char **argv)
     FILE *f = fopen(replay_path, "rb");
     if (!f)
         return ap_fail("cannot open replay file");
-    uint8_t *buf = malloc(cap);
+    uint8_t *buf = zcl_malloc(cap, "arena_present.replay");
     if (!buf) {
         fclose(f);
         return ap_fail("cannot allocate the bounded replay buffer");
@@ -132,7 +133,8 @@ int main(int argc, char **argv)
      * transitions. */
     zdog_match m;
     zdog_match_init(&m, seed, ppt);
-    zdog_ctl *ctls = malloc(sizeof(*ctls) * ZDOG_MAX_PLANES);
+    zdog_ctl *ctls = zcl_malloc(sizeof(*ctls) * ZDOG_MAX_PLANES,
+                                "arena_present.ctls");
     if (!ctls) {
         free(buf);
         return ap_fail("cannot allocate the control frame");
@@ -236,7 +238,8 @@ int main(int argc, char **argv)
         fprintf(stderr, "%s: model invalid: %s\n", AP_LOG, merr);
         return 1;
     }
-    uint8_t *wire = malloc(ZCL_PRESENT_MODEL_WIRE_MAX);
+    uint8_t *wire = zcl_malloc(ZCL_PRESENT_MODEL_WIRE_MAX,
+                               "arena_present.wire");
     if (!wire) {
         free(buf);
         return ap_fail("cannot allocate the model wire buffer");
