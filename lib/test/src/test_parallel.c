@@ -981,7 +981,11 @@ int main(int argc, char **argv)
         reaped++;
     }
 
-    int quiet_jobs = jobs < 8 ? jobs : 8;
+    /* A shard invokes its own compiler/lint subprocesses, so eight shards per
+     * checkout oversubscribe a 16-core host as soon as a second worktree runs
+     * the same gate. Keep two normal developer streams inside the fixed
+     * per-group timeout without serializing either checkout. */
+    int quiet_jobs = jobs < 4 ? jobs : 4;
     bool phases_ok = run_parallel_phase(
         POOL_PHASE_QUIET_LINT, slots, quiet_jobs, parent_pid, results,
         timeout_secs, verbose, &reaped);

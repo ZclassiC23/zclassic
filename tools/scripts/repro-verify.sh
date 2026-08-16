@@ -31,6 +31,18 @@
 # ZCL_SOVEREIGN_VERIFY_BIN. Its snapshots contain neither .git nor .zvcs.
 set -euo pipefail
 
+# Reproduction consumes already-acquired, checksum-pinned inputs.  It must not
+# turn a cache miss into network activity.  Force this here as well as in the
+# Makefile so direct script invocation has the identical deny-by-default
+# contract.  Compiler caches are host state and are excluded from this lane.
+export ZCL_VENDOR_OFFLINE=1
+export ZCL_USE_CCACHE=0
+export LC_ALL=C
+export TZ=UTC
+export PATH=/usr/bin:/bin
+export HOME=/nonexistent
+umask 022
+
 JOBS="${ZCL_REPRO_JOBS:-$(nproc 2>/dev/null || echo 4)}"
 if [ -n "${ZCL_SOVEREIGN_SOURCE_ROOT:-}" ]; then
     SRC="$(pwd -P)"
@@ -105,6 +117,7 @@ echo "repro-verify: source mode     = $SOURCE_MODE"
 echo "repro-verify: build root A     = $A"
 echo "repro-verify: build root B     = $B"
 echo "repro-verify: jobs             = $JOBS"
+echo "repro-verify: vendor network   = denied"
 echo "repro-verify: snapshotting ..."
 snapshot "$A"
 snapshot "$B"

@@ -258,6 +258,14 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_init(&visual_loop);
     json_set_object(&visual_loop);
     json_push_kv_str(&visual_loop, "schema", "zcl.agent_visual_loop.v1");
+    json_push_kv_str(&visual_loop, "default_channel", "ai_conversation");
+    json_push_kv_bool(&visual_loop, "unsolicited_windows", false);
+    json_push_kv_str(&visual_loop, "query_rule",
+                     "answer ordinary questions directly in the AI conversation from typed node facts; do not open a native window");
+    json_push_kv_str(&visual_loop, "visual_trigger",
+                     "open a native instrument only when the user explicitly asks to see, scan, manipulate, compare, select, or confirm something");
+    json_push_kv_str(&visual_loop, "media_rule",
+                     "QR, image, movie, and NFT media are valid explicit visual requests; use only an admitted display-only native instrument and never improvise a browser or software authority");
     json_push_kv_str(&visual_loop, "request",
                      "user intent plus the smallest exact subject identity");
     json_push_kv_str(&visual_loop, "agent_action",

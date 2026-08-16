@@ -121,6 +121,7 @@ struct build_fabric_release_qualification_report {
     bool physical_evidence_present;
     bool human_confirmed;
     bool confirmer_approved;
+    bool regression_proof_satisfied;
     bool publication_performed;
     char artifact_root_sha3[BUILD_FABRIC_ID_HEX + 1];
     char confirmation_root_sha3[BUILD_FABRIC_ID_HEX + 1];
@@ -128,10 +129,11 @@ struct build_fabric_release_qualification_report {
     char first_bad_invariant[BUILD_FABRIC_ERROR_MAX + 1];
 };
 
-/* Qualify an inert release candidate from three exact executions and one
- * signed human decision. Physical-machine roots are reviewed evidence, not a
- * hostname inference. The function writes only the existing CAS; it cannot
- * publish, deploy, restart, or admit a worker result. */
+/* Qualify an inert release candidate from three exact executions, one
+ * already-admitted exact regression action/proof set, and one signed human
+ * decision. Physical-machine roots are reviewed evidence, not a hostname
+ * inference. The function writes only the existing CAS; it cannot publish,
+ * deploy, restart, or admit a worker result. */
 struct zcl_result build_fabric_release_qualify(
     struct node_db *ndb, const char *workspace,
     const char *confirmation_root_sha3, int64_t now,
@@ -188,7 +190,9 @@ struct zcl_result build_fabric_proof_evaluate(
 
 /* Same canonical verification and policy calculation, without writing the
  * proof-set object or promoting receipt trust. Presentation/status readers
- * use this to show current facts without acquiring evidence authority. */
+ * and release qualification use this to verify current facts without
+ * acquiring evidence authority. A release caller must separately require the
+ * derived proof-set root to exist as an exact content-addressed CAS object. */
 struct zcl_result build_fabric_proof_evaluate_readonly(
     struct node_db *ndb, const char *workspace, const char *action_id,
     int64_t now, struct build_fabric_proof_evaluation *out);

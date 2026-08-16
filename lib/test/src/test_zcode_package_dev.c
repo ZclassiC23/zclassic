@@ -827,7 +827,25 @@ static int zpd_test_work_start(void)
                       "Fix x") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "AWAITING_CANDIDATE") == 0);
-        ASSERT(json_get(&reply.data, "next_safe_command") != NULL);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "build_result")),
+                      "not_started") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "sanitizer_result")),
+                      "not_required") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "reproduction_grade")),
+                      "none") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "next_safe_command")),
+                      "zcode work run") == 0);
+        ASSERT(!json_get_bool(json_get(&reply.data, "confirmation_ready")));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "confirmation_identity")), "") == 0);
+        const struct json_value *status_proof =
+            json_get(&reply.data, "proof");
+        ASSERT(status_proof && status_proof->type == JSON_OBJ);
+        ASSERT(!json_get_bool(json_get(status_proof, "facts_available")));
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -939,6 +957,12 @@ static int zpd_test_work_start(void)
                       "REPAIR_NEEDED") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
                       "failed") == 0);
+        status_proof = json_get(&reply.data, "proof");
+        ASSERT(status_proof &&
+               json_get_bool(json_get(status_proof, "facts_available")));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "remaining_risks")),
+                      "latest candidate failed confined package build or tests") == 0);
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -995,6 +1019,24 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(&reply.data,
                                             "public_api_changes")),
                       "none") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "sanitizer_result")),
+                      "not_required") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "next_safe_command")),
+                      "ask user to confirm exact candidate") == 0);
+        ASSERT(json_get_bool(json_get(&reply.data, "confirmation_ready")));
+        ASSERT(strlen(json_get_str(json_get(
+                   &reply.data, "confirmation_identity"))) == 64);
+        status_proof = json_get(&reply.data, "proof");
+        ASSERT(status_proof &&
+               json_get_bool(json_get(status_proof, "facts_available")));
+        ASSERT(json_get_bool(json_get(status_proof, "compile_satisfied")));
+        ASSERT(json_get_bool(json_get(status_proof, "test_satisfied")));
+        ASSERT(json_get_bool(json_get(status_proof, "policy_satisfied")));
+        ASSERT(json_get_int(json_get(status_proof, "compile_receipts")) > 0);
+        ASSERT(json_get_int(json_get(status_proof, "test_receipts")) > 0);
+        ASSERT(json_write(&reply.data, NULL, 0) < 4096u);
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -1052,6 +1094,21 @@ static int zpd_test_work_start(void)
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "review_verdict")),
                       "approve") == 0);
+        status_proof = json_get(&reply.data, "proof");
+        ASSERT(status_proof &&
+               json_get_bool(json_get(status_proof, "facts_available")));
+        ASSERT(json_get_int(json_get(status_proof, "review_receipts")) == 1);
+        ASSERT(json_get_bool(json_get(status_proof, "review_satisfied")));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "next_safe_command")),
+                      "ask user to confirm exact candidate") == 0);
+        const char *status_confirmation = json_get_str(json_get(
+            &reply.data, "confirmation_identity"));
+        ASSERT(status_confirmation && strlen(status_confirmation) == 64);
+        char status_confirmation_identity[65];
+        (void)snprintf(status_confirmation_identity,
+                       sizeof(status_confirmation_identity), "%s",
+                       status_confirmation);
         const struct json_value *status_expert =
             json_get(&reply.data, "expert");
         ASSERT(strlen(json_get_str(json_get(
@@ -1115,6 +1172,8 @@ static int zpd_test_work_start(void)
                    confirmation_root) == VCS_ZCODE_DEV_OK);
         char confirmation_identity[65];
         zcl_hex_encode(confirmation_root, 32, confirmation_identity);
+        ASSERT(strcmp(confirmation_identity,
+                      status_confirmation_identity) == 0);
         struct json_value release_confirm_input;
         json_init(&release_confirm_input);
         json_set_object(&release_confirm_input);
@@ -1454,6 +1513,24 @@ static int zpd_test_standard_profile(void)
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", work_id));
         request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_standard_status_test.v1");
+        zcl_native_handle_zcode_work_status(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "sanitizer_result")),
+                      "passed_asan_ubsan") == 0);
+        const struct json_value *standard_proof =
+            json_get(&reply.data, "proof");
+        ASSERT(standard_proof && json_get_bool(json_get(
+            standard_proof, "sanitizer_satisfied")));
+        ASSERT(json_get_int(json_get(
+            standard_proof, "sanitizer_receipts")) == 2);
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_standard_accept_test.v1");
         zcl_native_handle_zcode_work_accept(&request, &reply);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
@@ -1481,7 +1558,7 @@ static int zpd_test_standard_profile(void)
                       "PROVEN") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data,
                                             "sanitizer_result")),
-                      "passed_asan_ubsan") == 0);
+                      "unknown") == 0);
         zcl_command_reply_free(&reply); json_free(&input);
 
         ASSERT(zcl_tree_remove(session_root).ok);

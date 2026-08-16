@@ -21,7 +21,9 @@
  * -D_FORTIFY_SOURCE=2 pulls in at -O3 — so any -O0, -U_FORTIFY_SOURCE, or
  * non-glibc build fails with "implicit declaration of realpath", which is a
  * hard error in C23. Matches lib/net/src/connman.c and 26 other TUs. */
+#ifndef _DEFAULT_SOURCE
 #define _DEFAULT_SOURCE
+#endif
 
 #include "util/hw_profile.h"
 
@@ -40,6 +42,10 @@
 #include <sys/stat.h>
 #include <sys/sysmacros.h>
 #include <unistd.h>
+
+#if defined(__x86_64__) || defined(__i386__)
+#include <cpuid.h>
+#endif
 
 #define HW_PROFILE_BLOCK_ROOT_DEFAULT "/sys/dev/block"
 #define HW_PROFILE_ROOT_MAX           256
@@ -83,9 +89,15 @@ static void probe_isa(struct hw_profile_isa *out)
     out->avx512bw   = __builtin_cpu_supports("avx512bw");
     out->avx512dq   = __builtin_cpu_supports("avx512dq");
     out->vpclmulqdq = __builtin_cpu_supports("vpclmulqdq");
-    out->vaes       = __builtin_cpu_supports("vaes");
     out->gfni       = __builtin_cpu_supports("gfni");
-    out->sha_ni     = __builtin_cpu_supports("sha");
+    /* GCC accepts the VAES/SHA names here, while Clang 18 rejects both
+     * strings at compile time. Read their architectural leaf bits directly
+     * so the same source and exact meaning work with either toolchain. */
+    unsigned int eax, ebx, ecx, edx;
+    if (__get_cpuid_count(7, 0, &eax, &ebx, &ecx, &edx)) {
+        out->vaes = ((ecx >> 9) & 1u) != 0;   /* CPUID.7.0:ECX[9] */
+        out->sha_ni = ((ebx >> 29) & 1u) != 0; /* CPUID.7.0:EBX[29] */
+    }
 #endif
 }
 

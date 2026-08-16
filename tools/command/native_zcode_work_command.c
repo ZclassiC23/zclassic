@@ -53,6 +53,11 @@ struct zwork_patch_summary {
     size_t public_api_changes;
     bool line_counts_exact;
 };
+
+struct zwork_proof_snapshot {
+    bool available;
+    struct build_fabric_proof_evaluation facts;
+};
 #endif
 
 static const char *zwork_str(const struct json_value *input, const char *key)
@@ -614,6 +619,64 @@ static bool zwork_policy_load(
     return ok;
 }
 
+/* Human status is a projection only. Re-evaluate the exact action and receipt
+ * bytes without storing a proof set or promoting receipt trust. */
+static void zwork_proof_snapshot_read(
+    const char *workspace, const char *task_root, const char *action_id,
+    int64_t now, struct zwork_proof_snapshot *out)
+{
+    memset(out, 0, sizeof(*out));
+    if (!workspace || !task_root || strlen(task_root) != 64u ||
+        !action_id || strlen(action_id) != 64u)
+        return;
+    char db_path[ZWORK_PATH_MAX];
+    int n = snprintf(db_path, sizeof(db_path),
+                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild/node.db",
+                     (unsigned long)getuid(), task_root);
+    if (n <= 0 || (size_t)n >= sizeof(db_path) ||
+        access(db_path, F_OK) != 0)
+        return;
+    struct node_db ndb = {0};
+    if (!node_db_open_existing_runtime(
+            &ndb, db_path, "zcode.work.status.proof"))
+        return;
+    struct zcl_result result = build_fabric_proof_evaluate_readonly(
+        &ndb, workspace, action_id, now, &out->facts);
+    node_db_close(&ndb);
+    out->available = result.ok;
+}
+
+static bool zwork_proof_required(
+    const struct vcs_zcode_proof_policy_v1 *policy, uint32_t kind,
+    uint16_t minimum)
+{
+    return (policy->required_proofs & kind) != 0 || minimum > 0;
+}
+
+static bool zwork_confirmation_identity(
+    const struct vcs_zcode_task_index_entry *entry,
+    const struct zwork_proof_snapshot *proof, char identity[65])
+{
+    identity[0] = '\0';
+    if (!entry || !proof || !proof->available ||
+        !proof->facts.policy_satisfied ||
+        !proof->facts.proof_set_root_sha3[0])
+        return false;
+    uint8_t task[32], candidate[32], policy[32], proof_set[32], plan[32];
+    if (!zcl_hex_decode_lower(entry->task_root_hex, task, sizeof(task)) ||
+        !zcl_hex_decode_lower(entry->latest_candidate_root_hex, candidate,
+                              sizeof(candidate)) ||
+        !zcl_hex_decode_lower(entry->proof_policy_root_hex, policy,
+                              sizeof(policy)) ||
+        !zcl_hex_decode_lower(proof->facts.proof_set_root_sha3, proof_set,
+                              sizeof(proof_set)) ||
+        vcs_zcode_acceptance_plan_root(task, candidate, policy, proof_set,
+                                       plan) != VCS_ZCODE_DEV_OK)
+        return false;
+    zcl_hex_encode(plan, sizeof(plan), identity);
+    return true;
+}
+
 void zcl_native_handle_zcode_work_status(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -621,8 +684,9 @@ void zcl_native_handle_zcode_work_status(
     const char *workspace = zwork_str(request->input, "workspace");
     const char *work = zwork_str(request->input, "work");
     if (!workspace || !workspace[0]) workspace = ".";
+    int64_t now = platform_time_wall_unix();
     struct vcs_zcode_task_index *index = vcs_zcode_task_index_build(
-        workspace, platform_time_wall_unix());
+        workspace, now);
     if (!index) {
         zwork_fail(reply, "WORK_INDEX_FAILED", "rebuild",
                    "canonical task projection could not be rebuilt", true,
@@ -645,18 +709,8 @@ void zcl_native_handle_zcode_work_status(
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
     const char *state = entry->expired ? "BLOCKED" : entry->state;
-    bool evidence_ready = strcmp(state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0;
     bool repair_needed = strcmp(state, VCS_ZCODE_TASK_STATE_REPAIR_NEEDED) == 0;
-    bool candidate_ready = strcmp(
-        state, VCS_ZCODE_TASK_STATE_CANDIDATE_PROOFS_READY) == 0;
     bool accepted = strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0;
-    bool build_passed = evidence_ready || candidate_ready || accepted;
-    const char *next_safe_command = entry->expired ? "zcode work start" :
-        strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
-            ? "apply or reject the accepted patch in source control" :
-        (evidence_ready || candidate_ready) ? "zcode work accept" :
-        repair_needed && entry->candidate_count >= 3u
-            ? "zcode work start" : "zcode work run";
     struct zwork_patch_summary summary;
     struct vcs_zcode_proof_policy_v1 policy;
     if (!zwork_patch_summary_load(workspace, entry, &summary) ||
@@ -668,9 +722,120 @@ void zcl_native_handle_zcode_work_status(
         vcs_zcode_patch_free(&summary.patch);
         free(goal); vcs_zcode_task_index_free(index); return;
     }
-    struct json_value expert, changed_paths;
+    struct zwork_proof_snapshot proof;
+    zwork_proof_snapshot_read(workspace, entry->task_root_hex,
+                              entry->latest_action_root_hex, now, &proof);
+    char confirmation_identity[65];
+    bool confirmation_ready = zwork_confirmation_identity(
+        entry, &proof, confirmation_identity);
+    bool compile_required = zwork_proof_required(
+        &policy, VCS_ZCODE_PROOF_COMPILE,
+        policy.minimum_compile_receipts > policy.minimum_matching_receipts
+            ? policy.minimum_compile_receipts
+            : policy.minimum_matching_receipts);
+    bool test_required = zwork_proof_required(
+        &policy, VCS_ZCODE_PROOF_TEST, policy.minimum_test_receipts);
+    bool fuzz_required = zwork_proof_required(
+        &policy, VCS_ZCODE_PROOF_FUZZ, policy.minimum_fuzz_receipts);
+    bool review_required = zwork_proof_required(
+        &policy, VCS_ZCODE_PROOF_REVIEW, policy.minimum_reviews);
+    bool clean_shadow_required =
+        (policy.required_proofs & VCS_ZCODE_PROOF_LOCAL_REPRODUCTION) != 0;
+    bool standard_evidence = policy.minimum_compile_receipts >= 2u ||
+                             policy.minimum_test_receipts >= 2u;
+    size_t sanitizer_receipts = standard_evidence && proof.available
+        ? proof.facts.compile_receipts : 0;
+    bool sanitizer_satisfied = standard_evidence && proof.available &&
+        proof.facts.compile_satisfied;
+    const char *build_summary = repair_needed ? "failed" :
+        !entry->latest_action_root_hex[0] ? "not_started" :
+        !proof.available ? "unknown" : proof.facts.compile_satisfied
+            ? "passed" : proof.facts.compile_receipts > 0
+                ? "pending_policy" : "not_started";
+    const char *test_summary = repair_needed ? "failed_or_not_reached" :
+        !test_required ? "not_required" : !proof.available ? "unknown" :
+        proof.facts.test_satisfied ? "passed_declared_tests" :
+        proof.facts.test_receipts > 0 ? "pending_policy" : "not_started";
+    const char *fuzz_summary = !fuzz_required ? "not_required" :
+        !proof.available ? "unknown" : proof.facts.fuzz_satisfied
+            ? "passed_declared_fuzz" : proof.facts.fuzz_receipts > 0
+                ? "pending_policy" : "not_started";
+    const char *sanitizer_summary = !standard_evidence ? "not_required" :
+        repair_needed ? "failed_or_unavailable" :
+        !entry->latest_action_root_hex[0] ? "not_started" :
+        !proof.available ? "unknown" : sanitizer_satisfied
+            ? "passed_asan_ubsan" : sanitizer_receipts > 0
+                ? "pending_policy" : "not_started";
+    const char *reproduction_grade = !entry->latest_action_root_hex[0]
+        ? "none" : !proof.available ? "unknown" :
+        proof.facts.local_reproduced ? "clean_shadow_matched" :
+        proof.facts.quorum_satisfied ? "approved_signer_threshold" :
+        proof.facts.valid_receipts > 0 ? "pending" : "none";
+    const char *next_safe_command = entry->expired ? "zcode work start" :
+        accepted ? "apply or reject the accepted patch in source control" :
+        repair_needed && entry->candidate_count >= 3u ? "zcode work start" :
+        repair_needed || !entry->latest_action_root_hex[0]
+            ? "zcode work run" :
+        confirmation_ready ? "ask user to confirm exact candidate" :
+        proof.available && review_required &&
+            proof.facts.compile_satisfied && proof.facts.test_satisfied &&
+            proof.facts.fuzz_satisfied && !proof.facts.review_satisfied
+            ? "zcode work review" : "zcode work status";
+    const char *next_action = entry->expired ? "Start a fresh bounded task." :
+        accepted ? "Decide whether to apply or reject the accepted patch." :
+        repair_needed ? "Repair the named candidate failure." :
+        !entry->latest_action_root_hex[0] ? "Produce one bounded candidate." :
+        confirmation_ready
+            ? "Ask the user to confirm or cancel this exact candidate." :
+        proof.available && review_required &&
+            proof.facts.compile_satisfied && proof.facts.test_satisfied &&
+            proof.facts.fuzz_satisfied && !proof.facts.review_satisfied
+            ? "Review the exact candidate evidence." :
+              "Keep thinking while the missing proof arrives.";
+    char remaining_risks[256];
+    if (entry->expired)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "task expired");
+    else if (repair_needed)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "latest candidate failed confined package build or tests");
+    else if (accepted)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "accepted candidate is not applied, release-qualified, or published");
+    else if (!entry->latest_action_root_hex[0])
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "candidate not admitted");
+    else if (!proof.available)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "canonical proof ledger is unavailable; no proof result inferred");
+    else if (compile_required && !proof.facts.compile_satisfied)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "required compile or matching-build evidence is pending");
+    else if (test_required && !proof.facts.test_satisfied)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "required candidate behavior evidence is pending");
+    else if (fuzz_required && !proof.facts.fuzz_satisfied)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "required deterministic fuzz evidence is pending");
+    else if (review_required && !proof.facts.review_satisfied)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "required independent review is pending");
+    else if (clean_shadow_required && !proof.facts.local_reproduced)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "required clean-shadow observation is pending");
+    else if (!proof.facts.release_identity_satisfied)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "release byte-identity evidence is not satisfied");
+    else if (proof.facts.policy_satisfied)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "human acceptance, secure release qualification, and publication remain separate");
+    else
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "proof policy remains unsatisfied by canonical evidence");
+    struct json_value expert, changed_paths, proof_json;
     json_init(&expert); json_set_object(&expert);
     json_init(&changed_paths); json_set_array(&changed_paths);
+    json_init(&proof_json); json_set_object(&proof_json);
     bool paths_ok = true;
     for (size_t i = 0; paths_ok && i < summary.patch.count; i++) {
         struct json_value path;
@@ -691,15 +856,45 @@ void zcl_native_handle_zcode_work_status(
             ? "request_changes" :
         entry->latest_review_verdict == VCS_ZCODE_REVIEW_REJECT
             ? "reject" : "not_started";
-    bool standard_evidence = policy.minimum_compile_receipts >= 2u ||
-                             policy.minimum_test_receipts >= 2u;
-    const char *sanitizer_summary = !standard_evidence ? "not_required" :
-        strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
-            ? "passed_asan_ubsan" :
-        repair_needed ? "failed_or_unavailable" :
-        evidence_ready || candidate_ready ? "awaiting_human_acceptance" :
-                                    "not_started";
-    bool ok = paths_ok &&
+    bool proof_ok =
+        json_push_kv_bool(&proof_json, "facts_available", proof.available) &&
+        json_push_kv_int(&proof_json, "valid_receipts",
+                         (int64_t)proof.facts.valid_receipts) &&
+        json_push_kv_int(&proof_json, "compile_receipts",
+                         (int64_t)proof.facts.compile_receipts) &&
+        json_push_kv_int(&proof_json, "test_receipts",
+                         (int64_t)proof.facts.test_receipts) &&
+        json_push_kv_int(&proof_json, "sanitizer_receipts",
+                         (int64_t)sanitizer_receipts) &&
+        json_push_kv_int(&proof_json, "fuzz_receipts",
+                         (int64_t)proof.facts.fuzz_receipts) &&
+        json_push_kv_int(&proof_json, "review_receipts",
+                         (int64_t)proof.facts.review_receipts) &&
+        json_push_kv_int(&proof_json, "approved_distinct_signers",
+                         (int64_t)proof.facts.approved_distinct_signers) &&
+        json_push_kv_bool(&proof_json, "clean_shadow_observed",
+                          proof.facts.local_reproduced) &&
+        json_push_kv_bool(&proof_json, "signer_threshold_satisfied",
+                          proof.facts.quorum_satisfied) &&
+        json_push_kv_bool(&proof_json, "compile_satisfied",
+                          proof.facts.compile_satisfied) &&
+        json_push_kv_bool(&proof_json, "test_satisfied",
+                          proof.facts.test_satisfied) &&
+        json_push_kv_bool(&proof_json, "sanitizer_satisfied",
+                          sanitizer_satisfied) &&
+        json_push_kv_bool(&proof_json, "fuzz_satisfied",
+                          proof.facts.fuzz_satisfied) &&
+        json_push_kv_bool(&proof_json, "review_satisfied",
+                          proof.facts.review_satisfied) &&
+        json_push_kv_bool(&proof_json, "policy_satisfied",
+                          proof.facts.policy_satisfied) &&
+        json_push_kv_str(&proof_json, "authority",
+                         "canonical_readonly_receipt_evaluation");
+    const char *proof_set_root = proof.available &&
+        proof.facts.proof_set_root_sha3[0]
+            ? proof.facts.proof_set_root_sha3
+            : entry->latest_proof_set_root_hex;
+    bool ok = paths_ok && proof_ok &&
         json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
         json_push_kv_str(&expert, "source_root", entry->source_root_hex) &&
         json_push_kv_str(&expert, "goal_root", entry->goal_root_hex) &&
@@ -718,7 +913,7 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&expert, "lane_receipt_root",
                          entry->latest_lane_receipt_hex) &&
         json_push_kv_str(&expert, "proof_set_root",
-                         entry->latest_proof_set_root_hex) &&
+                         proof_set_root) &&
         json_push_kv_str(&expert, "review_root",
                          entry->latest_review_root_hex) &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
@@ -735,31 +930,32 @@ void zcl_native_handle_zcode_work_status(
                           summary.line_counts_exact) &&
         json_push_kv_str(&reply->data, "public_api_changes", api_summary) &&
         json_push_kv_str(&reply->data, "build_result",
-                         build_passed ? "passed" : repair_needed
-                           ? "failed" : "not_started") &&
+                         build_summary) &&
         json_push_kv_str(&reply->data, "test_result",
-                         build_passed ? "passed_declared_tests" :
-                         repair_needed ? "failed_or_not_reached" :
-                                         "not_started") &&
+                         test_summary) &&
         json_push_kv_str(&reply->data, "sanitizer_result",
                          sanitizer_summary) &&
-        json_push_kv_str(&reply->data, "fuzz_result", "not_started") &&
-        json_push_kv_str(&reply->data, "reproduction_grade", "none") &&
+        json_push_kv_str(&reply->data, "fuzz_result", fuzz_summary) &&
+        json_push_kv_str(&reply->data, "reproduction_grade",
+                         reproduction_grade) &&
         json_push_kv_str(&reply->data, "review_verdict", review_summary) &&
         json_push_kv_str(&reply->data, "remaining_risks",
-                         entry->expired ? "task expired" :
-                         strcmp(state, VCS_ZCODE_TASK_STATE_PROVEN) == 0
-                            ? "accepted candidate is not automatically applied or published"
-                         : (evidence_ready || candidate_ready)
-                            ? "proof profile and independent review not yet evaluated"
-                         : repair_needed
-                            ? "latest candidate failed confined package build or tests"
-                            : "candidate not admitted") &&
+                         remaining_risks) &&
+        json_push_kv_bool(&reply->data, "confirmation_ready",
+                          confirmation_ready) &&
+        json_push_kv_str(&reply->data, "confirmation_identity",
+                         confirmation_identity) &&
+        json_push_kv_str(&reply->data, "confirmation_effect",
+                         confirmation_ready
+                           ? "advance exact candidate to PROVEN; do not apply, sign, or publish"
+                           : "none") &&
         json_push_kv_int(&reply->data, "scope_violations", 0) &&
+        json_push_kv_str(&reply->data, "next_action", next_action) &&
         json_push_kv_str(&reply->data, "next_safe_command",
                          next_safe_command) &&
+        json_push_kv(&reply->data, "proof", &proof_json) &&
         json_push_kv(&reply->data, "expert", &expert);
-    json_free(&changed_paths); json_free(&expert);
+    json_free(&changed_paths); json_free(&proof_json); json_free(&expert);
     vcs_zcode_patch_free(&summary.patch);
     free(goal); vcs_zcode_task_index_free(index);
     if (!ok || !paths_ok)

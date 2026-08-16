@@ -29,12 +29,25 @@
 # CONTRACT: the caller has already cd'd into REPO_ROOT and `make`/`git` are on
 # PATH. The helper defines no logging — callers print their own "info" lines.
 
-# Resolve one make variable to its fully-expanded value. A command-line make
-# assignment overrides the Makefile `CFLAGS =` / `LDFLAGS =` definition
-# wholesale, so we hand back the RESOLVED value (which already contains every
-# -I include path) and rewrite only the reproducibility-hostile tokens.
+# Resolve one Make variable to its fully-expanded value.  `make -pn` prints a
+# recursively-expanded variable's definition, not its resolved value; parsing
+# that database used to leave literal `$(REPRO_CFLAGS)` / `$(HARDEN_CFLAGS)`
+# expressions in the release evidence.  Ask Make itself to expand the value at
+# recipe-execution time and write it through GNU Make's `file` function.  The
+# shell never evals or re-quotes compiler flags.
 _repro_make_var() {
-    make -pn 2>/dev/null | grep -E "^$1 = " | head -1 | cut -d= -f2- | sed 's/^ //'
+    local name="$1" capture
+    capture="$(mktemp "${TMPDIR:-/tmp}/zcl-repro-make-var.XXXXXX")"
+    if ! ZCL_REPRO_CAPTURE_NAME="$name" ZCL_REPRO_CAPTURE_PATH="$capture" \
+            make -s --no-print-directory \
+            --eval '.PHONY: __zcl_repro_capture' \
+            --eval '__zcl_repro_capture: ; @$(file >$(ZCL_REPRO_CAPTURE_PATH),$($(ZCL_REPRO_CAPTURE_NAME)))true' \
+            __zcl_repro_capture >/dev/null; then
+        rm -f "$capture"
+        return 1
+    fi
+    cat "$capture"
+    rm -f "$capture"
 }
 
 # SOURCE_DATE_EPOCH: pin from the HEAD commit time. Allow a caller to override

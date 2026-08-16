@@ -2,6 +2,7 @@
  * purpose: Prove the build-fabric v42 schema, leases, and relationships. */
 
 #include "test/test_core.h"
+#include "test/build_release_regression_fixture.h"
 
 #include "models/build_fabric.h"
 #include "models/build_proof_event.h"
@@ -23,6 +24,7 @@
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/build_execution_observation.h"
 #include "vcs/build_release_qualification.h"
+#include "vcs/build_release_regressions.h"
 #include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
@@ -1017,6 +1019,12 @@ static int test_bf_confined_worker(void)
                 dir, machine_roots[i], machine_evidence[i],
                 sizeof(machine_evidence[i])));
         }
+        uint8_t regression_action_root[32], regression_proof_root[32];
+        char regression_receipt_id[65];
+        ASSERT(test_build_release_regression_fixture(
+            &ndb, dir, &job, input_root, now + 4,
+            regression_action_root, regression_proof_root,
+            regression_receipt_id));
         uint8_t confirmer_seed[32], confirmer_pubkey[32];
         uint8_t confirmer_secret[32];
         memset(confirmer_seed, 43, sizeof(confirmer_seed));
@@ -1027,10 +1035,10 @@ static int test_bf_confined_worker(void)
         zcl_hex_encode(confirmer_pubkey, 32, confirmer.signer_pubkey);
         (void)snprintf(confirmer.capabilities,
                        sizeof(confirmer.capabilities),
-                       "release-confirmation.v1");
+                       "release-confirmation.v2");
         ASSERT(build_fabric_worker_approve(&ndb, &confirmer, now + 4).ok);
-        struct vcs_build_release_confirmation_v1 confirmation;
-        vcs_build_release_confirmation_v1_init(&confirmation);
+        struct vcs_build_release_confirmation_v2 confirmation;
+        vcs_build_release_confirmation_v2_init(&confirmation);
         confirmation.decision = VCS_BUILD_RELEASE_DECISION_CONFIRM;
         ASSERT(zcl_hex_decode_lower(action_id, confirmation.action_root, 32));
         ASSERT(zcl_hex_decode_lower(primary.output_sha3,
@@ -1048,17 +1056,21 @@ static int test_bf_confined_worker(void)
                machine_roots[1], 32);
         memcpy(confirmation.reproduction_machine_evidence_root,
                machine_roots[2], 32);
+        memcpy(confirmation.regression_action_root,
+               regression_action_root, 32);
+        memcpy(confirmation.regression_proof_set_root,
+               regression_proof_root, 32);
         confirmation.confirmed_unix = now + 4;
-        ASSERT_EQ(vcs_build_release_confirmation_v1_seal(
+        ASSERT_EQ(vcs_build_release_confirmation_v2_seal(
             &confirmation, confirmer_secret, confirmer_pubkey),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
         uint8_t confirmation_wire[
             VCS_BUILD_RELEASE_CONFIRMATION_WIRE_BYTES];
         uint8_t confirmation_root[32];
-        ASSERT_EQ(vcs_build_release_confirmation_v1_serialize(
+        ASSERT_EQ(vcs_build_release_confirmation_v2_serialize(
             &confirmation, confirmation_wire),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
-        ASSERT_EQ(vcs_build_release_confirmation_v1_root(
+        ASSERT_EQ(vcs_build_release_confirmation_v2_root(
             &confirmation, confirmation_root),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
         ASSERT(vcs_object_put_addressed(
@@ -1074,9 +1086,15 @@ static int test_bf_confined_worker(void)
                qualified.independent_reproduction_match &&
                qualified.distinct_executor_signers &&
                qualified.physical_evidence_present &&
+               qualified.regression_proof_satisfied &&
                qualified.human_confirmed && qualified.confirmer_approved &&
                !qualified.publication_performed);
         ASSERT(strlen(qualified.qualification_root_sha3) == 64);
+        struct db_build_receipt regression_receipt_after;
+        ASSERT(db_build_receipt_find(
+            &ndb, regression_receipt_id, &regression_receipt_after));
+        ASSERT_STR_EQ(regression_receipt_after.trust_state,
+                      "REMOTE_OBSERVED");
         uint8_t qualification_root[32], *qualification_wire = NULL;
         size_t qualification_len = 0;
         ASSERT(zcl_hex_decode_lower(qualified.qualification_root_sha3,
@@ -1084,12 +1102,16 @@ static int test_bf_confined_worker(void)
         ASSERT_EQ(vcs_object_load_raw(
             dir, qualification_root, &qualification_wire,
             &qualification_len), 0);
-        struct vcs_build_release_qualification_v1 parsed_qualification;
-        ASSERT_EQ(vcs_build_release_qualification_v1_parse(
+        struct vcs_build_release_qualification_v2 parsed_qualification;
+        ASSERT_EQ(vcs_build_release_qualification_v2_parse(
             qualification_wire, qualification_len, &parsed_qualification),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
         ASSERT(memcmp(parsed_qualification.artifact_root,
                       confirmation.artifact_root, 32) == 0);
+        ASSERT(memcmp(parsed_qualification.regression_action_root,
+                      regression_action_root, 32) == 0);
+        ASSERT(memcmp(parsed_qualification.regression_proof_set_root,
+                      regression_proof_root, 32) == 0);
         qualification_wire[20] ^= 1u;
         bool repaired_poison = false;
         ASSERT(vcs_object_put_addressed_repair(
@@ -1102,16 +1124,68 @@ static int test_bf_confined_worker(void)
         ASSERT_STR_EQ(qualified.first_bad_invariant,
                       "qualified-release-cas-poisoned");
 
-        struct vcs_build_release_confirmation_v1 missing_physical =
+        struct vcs_build_release_confirmation_v2 missing_regression =
+            confirmation;
+        missing_regression.regression_proof_set_root[0] ^= 1u;
+        ASSERT_EQ(vcs_build_release_confirmation_v2_seal(
+            &missing_regression, confirmer_secret, confirmer_pubkey),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v2_serialize(
+            &missing_regression, confirmation_wire),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v2_root(
+            &missing_regression, confirmation_root),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT(vcs_object_put_addressed(
+            dir, confirmation_root, confirmation_wire,
+            sizeof(confirmation_wire)));
+        zcl_hex_encode(confirmation_root, 32, confirmation_hex);
+        ASSERT(!build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT_STR_EQ(qualified.first_bad_invariant,
+                      "historical-regression-proof-invalid");
+
+        const uint8_t *regression_manifest = NULL;
+        size_t regression_manifest_len = 0;
+        uint8_t regression_manifest_root[32];
+        vcs_build_release_regression_manifest_v1_bytes(
+            &regression_manifest, &regression_manifest_len);
+        vcs_build_release_regression_manifest_v1_root(
+            regression_manifest_root);
+        ASSERT(regression_manifest && regression_manifest_len < 1024);
+        uint8_t corrupted_manifest[1024];
+        memcpy(corrupted_manifest, regression_manifest,
+               regression_manifest_len);
+        corrupted_manifest[0] ^= 1u;
+        bool repaired_manifest = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, regression_manifest_root, corrupted_manifest,
+            regression_manifest_len, &repaired_manifest));
+        ASSERT(repaired_manifest);
+        ASSERT(!vcs_build_release_regression_manifest_v1_verify_cas(
+            dir, regression_manifest_root));
+        ASSERT(!build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT_STR_EQ(qualified.first_bad_invariant,
+                      "regression-intent-manifest-invalid");
+        repaired_manifest = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, regression_manifest_root, regression_manifest,
+            regression_manifest_len, &repaired_manifest));
+        ASSERT(repaired_manifest);
+        ASSERT(vcs_build_release_regression_manifest_v1_verify_cas(
+            dir, regression_manifest_root));
+
+        struct vcs_build_release_confirmation_v2 missing_physical =
             confirmation;
         missing_physical.reproduction_machine_evidence_root[0] ^= 1u;
-        ASSERT_EQ(vcs_build_release_confirmation_v1_seal(
+        ASSERT_EQ(vcs_build_release_confirmation_v2_seal(
             &missing_physical, confirmer_secret, confirmer_pubkey),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
-        ASSERT_EQ(vcs_build_release_confirmation_v1_serialize(
+        ASSERT_EQ(vcs_build_release_confirmation_v2_serialize(
             &missing_physical, confirmation_wire),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
-        ASSERT_EQ(vcs_build_release_confirmation_v1_root(
+        ASSERT_EQ(vcs_build_release_confirmation_v2_root(
             &missing_physical, confirmation_root),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
         ASSERT(vcs_object_put_addressed(
@@ -1123,15 +1197,15 @@ static int test_bf_confined_worker(void)
         ASSERT_STR_EQ(qualified.first_bad_invariant,
                       "physical-machine-evidence-invalid");
 
-        struct vcs_build_release_confirmation_v1 cancelled = confirmation;
+        struct vcs_build_release_confirmation_v2 cancelled = confirmation;
         cancelled.decision = VCS_BUILD_RELEASE_DECISION_CANCEL;
-        ASSERT_EQ(vcs_build_release_confirmation_v1_seal(
+        ASSERT_EQ(vcs_build_release_confirmation_v2_seal(
             &cancelled, confirmer_secret, confirmer_pubkey),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
-        ASSERT_EQ(vcs_build_release_confirmation_v1_serialize(
+        ASSERT_EQ(vcs_build_release_confirmation_v2_serialize(
             &cancelled, confirmation_wire),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
-        ASSERT_EQ(vcs_build_release_confirmation_v1_root(
+        ASSERT_EQ(vcs_build_release_confirmation_v2_root(
             &cancelled, confirmation_root),
             VCS_BUILD_RELEASE_EVIDENCE_OK);
         ASSERT(vcs_object_put_addressed(
