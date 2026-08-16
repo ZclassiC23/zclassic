@@ -113,6 +113,30 @@ struct zcl_result build_fabric_clean_shadow_compare(
     const char *primary_receipt_id, const char *shadow_receipt_id,
     struct build_fabric_shadow_match *out);
 
+struct build_fabric_release_qualification_report {
+    bool candidate_admitted;
+    bool clean_shadow_match;
+    bool independent_reproduction_match;
+    bool distinct_executor_signers;
+    bool physical_evidence_present;
+    bool human_confirmed;
+    bool confirmer_approved;
+    bool publication_performed;
+    char artifact_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char confirmation_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char qualification_root_sha3[BUILD_FABRIC_ID_HEX + 1];
+    char first_bad_invariant[BUILD_FABRIC_ERROR_MAX + 1];
+};
+
+/* Qualify an inert release candidate from three exact executions and one
+ * signed human decision. Physical-machine roots are reviewed evidence, not a
+ * hostname inference. The function writes only the existing CAS; it cannot
+ * publish, deploy, restart, or admit a worker result. */
+struct zcl_result build_fabric_release_qualify(
+    struct node_db *ndb, const char *workspace,
+    const char *confirmation_root_sha3, int64_t now,
+    struct build_fabric_release_qualification_report *out);
+
 /* Low-level supervisor transition retained for exact ledger tests and older
  * callers. New worker paths must call quarantine, never this function. */
 struct zcl_result build_fabric_receipt_accept(

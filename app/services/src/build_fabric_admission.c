@@ -193,7 +193,12 @@ struct zcl_result build_fabric_clean_shadow_compare(
         !bfa_preserved_receipt_signature_valid(ndb, workspace, &shadow))
         return ZCL_ERR(-1, "clean shadow receipt signature is invalid");
     out->same_action = strcmp(primary.action_id, shadow.action_id) == 0;
-    out->distinct_signers = strcmp(primary.worker_id, shadow.worker_id) != 0;
+    struct db_build_worker primary_worker, shadow_worker;
+    out->distinct_signers =
+        db_build_worker_find(ndb, primary.worker_id, &primary_worker) &&
+        db_build_worker_find(ndb, shadow.worker_id, &shadow_worker) &&
+        strcmp(primary_worker.signer_pubkey,
+               shadow_worker.signer_pubkey) != 0;
     if (!out->same_action) {
         (void)snprintf(out->first_bad_invariant,
                        sizeof(out->first_bad_invariant),

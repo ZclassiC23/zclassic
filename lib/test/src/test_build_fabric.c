@@ -22,6 +22,7 @@
 #include "vcs/build_action.h"
 #include "vcs/build_artifact_manifest.h"
 #include "vcs/build_execution_observation.h"
+#include "vcs/build_release_qualification.h"
 #include "vcs/package_store.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
@@ -103,6 +104,18 @@ static void bf_worker(struct db_build_worker *row)
     row->approved = 1;
     row->approved_at = 102;
     row->last_seen_at = 102;
+}
+
+static void bf_worker_id_from_pubkey(const uint8_t pubkey[32], char out[65])
+{
+    static const char domain[] = "zcl.build_worker.v1";
+    struct sha3_256_ctx sha;
+    uint8_t digest[32];
+    sha3_256_init(&sha);
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    sha3_256_write(&sha, pubkey, 32);
+    sha3_256_finalize(&sha, digest);
+    zcl_hex_encode(digest, 32, out);
 }
 
 static void bf_receipt(struct db_build_receipt *row)
@@ -946,6 +959,189 @@ static int test_bf_confined_worker(void)
         ASSERT(match.same_action && match.distinct_signers &&
                match.artifact_match && match.observed_reads_match &&
                match.observed_writes_match);
+
+        struct db_build_worker alias_worker;
+        bf_worker(&alias_worker);
+        (void)snprintf(alias_worker.worker_id,
+                       sizeof(alias_worker.worker_id), "%s", id_d);
+        zcl_hex_encode(pubkey, 32, alias_worker.signer_pubkey);
+        ASSERT(!build_fabric_worker_approve(
+            &ndb, &alias_worker, now + 2).ok);
+
+        /* Release qualification is a third exact execution plus an explicit
+         * signed human decision. It emits an inert CAS artifact and cannot
+         * publish or deploy. */
+        uint8_t reproduction_seed[32], reproduction_pubkey[32];
+        uint8_t reproduction_secret[32];
+        memset(reproduction_seed, 42, sizeof(reproduction_seed));
+        ed25519_keypair(reproduction_pubkey, reproduction_secret,
+                        reproduction_seed);
+        struct db_build_worker reproduction_worker;
+        bf_worker(&reproduction_worker);
+        (void)snprintf(reproduction_worker.worker_id,
+                       sizeof(reproduction_worker.worker_id), "%s", id_b);
+        zcl_hex_encode(reproduction_pubkey, 32,
+                       reproduction_worker.signer_pubkey);
+        ASSERT(build_fabric_worker_approve(
+            &ndb, &reproduction_worker, now + 3).ok);
+        struct db_build_receipt reproduction = primary;
+        (void)snprintf(reproduction.worker_id,
+                       sizeof(reproduction.worker_id), "%s",
+                       reproduction_worker.worker_id);
+        (void)snprintf(reproduction.lease_id,
+                       sizeof(reproduction.lease_id), "%s", id_c);
+        (void)snprintf(reproduction.trust_state,
+                       sizeof(reproduction.trust_state), "REMOTE_OBSERVED");
+        reproduction.created_at = now + 3;
+        ASSERT(build_fabric_receipt_id(
+            &reproduction, reproduction.receipt_id).ok);
+        uint8_t reproduction_id[32], reproduction_signature[64];
+        ASSERT(zcl_hex_decode_lower(
+            reproduction.receipt_id, reproduction_id, 32));
+        ed25519_sign(reproduction_signature, reproduction_id, 32,
+                     reproduction_secret, reproduction_pubkey);
+        zcl_hex_encode(reproduction_signature, 64,
+                       reproduction.signature);
+        ASSERT(db_build_receipt_save(&ndb, &reproduction));
+
+        static const uint8_t machine_evidence[3][32] = {
+            "machine-a-physical-run-1",
+            "machine-b-clean-shadow-2",
+            "machine-c-reproduction-3",
+        };
+        uint8_t machine_roots[3][32];
+        for (size_t i = 0; i < 3; i++) {
+            sha3_256(machine_evidence[i], sizeof(machine_evidence[i]),
+                     machine_roots[i]);
+            ASSERT(vcs_object_put_addressed(
+                dir, machine_roots[i], machine_evidence[i],
+                sizeof(machine_evidence[i])));
+        }
+        uint8_t confirmer_seed[32], confirmer_pubkey[32];
+        uint8_t confirmer_secret[32];
+        memset(confirmer_seed, 43, sizeof(confirmer_seed));
+        ed25519_keypair(confirmer_pubkey, confirmer_secret, confirmer_seed);
+        struct db_build_worker confirmer;
+        bf_worker(&confirmer);
+        bf_worker_id_from_pubkey(confirmer_pubkey, confirmer.worker_id);
+        zcl_hex_encode(confirmer_pubkey, 32, confirmer.signer_pubkey);
+        (void)snprintf(confirmer.capabilities,
+                       sizeof(confirmer.capabilities),
+                       "release-confirmation.v1");
+        ASSERT(build_fabric_worker_approve(&ndb, &confirmer, now + 4).ok);
+        struct vcs_build_release_confirmation_v1 confirmation;
+        vcs_build_release_confirmation_v1_init(&confirmation);
+        confirmation.decision = VCS_BUILD_RELEASE_DECISION_CONFIRM;
+        ASSERT(zcl_hex_decode_lower(action_id, confirmation.action_root, 32));
+        ASSERT(zcl_hex_decode_lower(primary.output_sha3,
+                                    confirmation.artifact_root, 32));
+        ASSERT(zcl_hex_decode_lower(primary.receipt_id,
+                                    confirmation.candidate_receipt_root, 32));
+        ASSERT(zcl_hex_decode_lower(shadow.receipt_id,
+                                    confirmation.shadow_receipt_root, 32));
+        ASSERT(zcl_hex_decode_lower(
+            reproduction.receipt_id,
+            confirmation.reproduction_receipt_root, 32));
+        memcpy(confirmation.candidate_machine_evidence_root,
+               machine_roots[0], 32);
+        memcpy(confirmation.shadow_machine_evidence_root,
+               machine_roots[1], 32);
+        memcpy(confirmation.reproduction_machine_evidence_root,
+               machine_roots[2], 32);
+        confirmation.confirmed_unix = now + 4;
+        ASSERT_EQ(vcs_build_release_confirmation_v1_seal(
+            &confirmation, confirmer_secret, confirmer_pubkey),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        uint8_t confirmation_wire[
+            VCS_BUILD_RELEASE_CONFIRMATION_WIRE_BYTES];
+        uint8_t confirmation_root[32];
+        ASSERT_EQ(vcs_build_release_confirmation_v1_serialize(
+            &confirmation, confirmation_wire),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_root(
+            &confirmation, confirmation_root),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT(vcs_object_put_addressed(
+            dir, confirmation_root, confirmation_wire,
+            sizeof(confirmation_wire)));
+        char confirmation_hex[65];
+        zcl_hex_encode(confirmation_root, 32, confirmation_hex);
+        struct build_fabric_release_qualification_report qualified;
+        ASSERT(build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT(qualified.candidate_admitted &&
+               qualified.clean_shadow_match &&
+               qualified.independent_reproduction_match &&
+               qualified.distinct_executor_signers &&
+               qualified.physical_evidence_present &&
+               qualified.human_confirmed && qualified.confirmer_approved &&
+               !qualified.publication_performed);
+        ASSERT(strlen(qualified.qualification_root_sha3) == 64);
+        uint8_t qualification_root[32], *qualification_wire = NULL;
+        size_t qualification_len = 0;
+        ASSERT(zcl_hex_decode_lower(qualified.qualification_root_sha3,
+                                    qualification_root, 32));
+        ASSERT_EQ(vcs_object_load_raw(
+            dir, qualification_root, &qualification_wire,
+            &qualification_len), 0);
+        struct vcs_build_release_qualification_v1 parsed_qualification;
+        ASSERT_EQ(vcs_build_release_qualification_v1_parse(
+            qualification_wire, qualification_len, &parsed_qualification),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT(memcmp(parsed_qualification.artifact_root,
+                      confirmation.artifact_root, 32) == 0);
+        qualification_wire[20] ^= 1u;
+        bool repaired_poison = false;
+        ASSERT(vcs_object_put_addressed_repair(
+            dir, qualification_root, qualification_wire,
+            qualification_len, &repaired_poison));
+        ASSERT(repaired_poison);
+        free(qualification_wire);
+        ASSERT(!build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT_STR_EQ(qualified.first_bad_invariant,
+                      "qualified-release-cas-poisoned");
+
+        struct vcs_build_release_confirmation_v1 missing_physical =
+            confirmation;
+        missing_physical.reproduction_machine_evidence_root[0] ^= 1u;
+        ASSERT_EQ(vcs_build_release_confirmation_v1_seal(
+            &missing_physical, confirmer_secret, confirmer_pubkey),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_serialize(
+            &missing_physical, confirmation_wire),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_root(
+            &missing_physical, confirmation_root),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT(vcs_object_put_addressed(
+            dir, confirmation_root, confirmation_wire,
+            sizeof(confirmation_wire)));
+        zcl_hex_encode(confirmation_root, 32, confirmation_hex);
+        ASSERT(!build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT_STR_EQ(qualified.first_bad_invariant,
+                      "physical-machine-evidence-invalid");
+
+        struct vcs_build_release_confirmation_v1 cancelled = confirmation;
+        cancelled.decision = VCS_BUILD_RELEASE_DECISION_CANCEL;
+        ASSERT_EQ(vcs_build_release_confirmation_v1_seal(
+            &cancelled, confirmer_secret, confirmer_pubkey),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_serialize(
+            &cancelled, confirmation_wire),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT_EQ(vcs_build_release_confirmation_v1_root(
+            &cancelled, confirmation_root),
+            VCS_BUILD_RELEASE_EVIDENCE_OK);
+        ASSERT(vcs_object_put_addressed(
+            dir, confirmation_root, confirmation_wire,
+            sizeof(confirmation_wire)));
+        zcl_hex_encode(confirmation_root, 32, confirmation_hex);
+        ASSERT(!build_fabric_release_qualify(
+            &ndb, dir, confirmation_hex, now + 5, &qualified).ok);
+        ASSERT_STR_EQ(qualified.first_bad_invariant,
+                      "human-cancelled-release");
 
         uint8_t observation_root[32], *observation_wire = NULL;
         size_t observation_len = 0;

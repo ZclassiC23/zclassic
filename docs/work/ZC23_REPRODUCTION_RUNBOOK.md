@@ -4,6 +4,33 @@ Status: simulation and protocol acceptance only. This procedure does not
 authorize or perform ZC23 genesis, minting, payout, custody, wallet access,
 deployment, service changes, or live-datadir access.
 
+## Secure build release qualification
+
+The build fabric has a separate, inert qualification boundary for release
+candidates. It reuses the existing action, receipt, worker-trust and CAS
+models. The supervisor requires three distinct signed receipts for one exact
+action and artifact: the admitted candidate, a clean shadow, and an independent
+reproduction. Both later receipts must match the candidate's canonical
+physical observation. A signed `build_release_confirmation.v1` then binds
+three distinct, content-verified physical-machine evidence roots and an
+explicit human `CONFIRM` decision. The confirmer must be a separate approved
+identity with the exact `release-confirmation.v1` capability.
+
+Only then may the supervisor write a
+`build_release_qualification.v1` object to the same CAS. That object is a
+qualified candidate identity, not publication authority. The API always
+reports `publication_performed=false`; it cannot deploy, restart a service,
+publish a package, admit a worker result, or touch a live datadir. A `CANCEL`
+decision, missing physical evidence, reused executor, unapproved confirmer,
+observation mismatch or changed artifact remains a named red invariant and
+produces no qualification object.
+
+Distinct keys, paths, IP addresses and hostnames are not physical proof. The
+human signature attests that the three separately rooted physical evidence
+objects were actually reviewed. A real acceptance record must therefore keep
+the off-host command transcript or hardware-backed evidence bytes at those
+roots; a one-host fixture proves only protocol behavior.
+
 ## What this proves
 
 The Living Commons reproduction path has three roles:
