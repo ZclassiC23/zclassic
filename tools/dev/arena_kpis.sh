@@ -57,4 +57,4 @@ echo "arena-kpis: replay_bytes=$BYTES bytes_per_tick=$(( BYTES / (TICKS > 0 ? TI
 echo "arena-kpis: runner_peak_rss_kb=$RSS_KB"
 echo "arena-kpis: pilot_red_bytes=$(stat -c %s "$RED") pilot_blue_bytes=$(stat -c %s "$BLUE")"
 echo "arena-kpis: determinism=byte-identical"
-grep -E 'winner|_root=' "$WORK/a.out"
+grep -E 'winner|_root=|_avg_response_us=' "$WORK/a.out"

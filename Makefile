@@ -3880,7 +3880,7 @@ tools/arena-runner: $(BIN_DIR)/arena_runner
 $(BIN_DIR)/arena_runner: tools/arena_runner.c \
 		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
 		packages/zprng/src/zprng.c \
-		lib/platform/src/os_sandbox_linux.c \
+		lib/platform/src/os_sandbox_linux.c lib/platform/src/clock.c \
 		lib/base/src/result.c lib/base/src/log_level.c \
 		lib/base/src/safe_alloc.c \
 		lib/sha3/src/sha3.c

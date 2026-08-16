@@ -77,6 +77,7 @@
 #include "base/result.h"
 #include "base/safe_alloc.h"
 #include "base/serialize_le.h"
+#include "platform/clock.h"
 #include "platform/os_sandbox.h"
 #include "sha3/sha3.h"
 #include "zdogfight/zdogfight.h"
@@ -124,6 +125,11 @@ struct ar_pilot {
     int fd_out; /* runner reads ctl frames here (child's stdout) */
     bool dead;
     uint64_t dead_tick; /* m.tick at the moment death was detected */
+    /* KPI (M7): cumulative wall ns inside the obs->ctl exchange loop and
+     * the number of per-plane exchanges attempted. Runner-side wall clock
+     * only; never enters match state. */
+    uint64_t wait_ns;
+    uint64_t exchanges;
 };
 
 static void ar_log_err(const char *what, const char *detail)
@@ -383,8 +389,7 @@ static void ar_gather_team_ctls(zdog_match *m, struct ar_pilot *p,
     }
 }
 
-/* sha3-256 one-shot into a 32-byte digest. */
-static void ar_sha3(const uint8_t *data, size_t len,
+/* sha3-256 one-shot into a 32-byte digest. */static void ar_sha3(const uint8_t *data, size_t len,
                     uint8_t out[SHA3_256_OUTPUT_SIZE])
 {
     struct sha3_256_ctx ctx;
@@ -520,8 +525,16 @@ static int ar_run_match(uint64_t seed, unsigned planes_per_team,
         zdog_ctl ctls[ZDOG_MAX_PLANES];
         for (unsigned i = 0; i < num_planes; i++)
             ctls[i] = AR_NEUTRAL_CTL;
+        /* Runner-side KPI timing via the platform clock (never enters
+         * match state). */
+        uint64_t t0 = (uint64_t)clock_now_monotonic_ns();
         ar_gather_team_ctls(&m, &red, 0, planes_per_team, ctls);
+        red.wait_ns += (uint64_t)clock_now_monotonic_ns() - t0;
+        red.exchanges++;
+        t0 = (uint64_t)clock_now_monotonic_ns();
         ar_gather_team_ctls(&m, &blue, 1, planes_per_team, ctls);
+        blue.wait_ns += (uint64_t)clock_now_monotonic_ns() - t0;
+        blue.exchanges++;
         zdog_tick(&m, ctls);
 
         /* Append every plane's ctl frame (index order; dead planes' neutral
@@ -605,6 +618,13 @@ static int ar_run_match(uint64_t seed, unsigned planes_per_team,
     putchar(' ');
     ar_print_pilot_status("pilot_blue_status", &blue);
     putchar('\n');
+    printf("pilot_red_avg_response_us=%llu pilot_blue_avg_response_us=%llu\n",
+           (unsigned long long)(red.exchanges ? red.wait_ns / 1000ull /
+                                                red.exchanges
+                                              : 0ull),
+           (unsigned long long)(blue.exchanges ? blue.wait_ns / 1000ull /
+                                                  blue.exchanges
+                                               : 0ull));
 
     free(replay);
     return 0;
