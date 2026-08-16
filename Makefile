@@ -3869,6 +3869,53 @@ $(BIN_DIR)/package-factory: tools/package_factory.c \
 	    -Ilib/core/include -Ivendor/include \
 	    -o $@ $^ -Lvendor/lib -l:libsecp256k1.a -lpthread -lm
 
+# arena_runner: deterministic 2-team zdogfight match driver (dev tool; NOT a
+# native command — config/commands/*.def untouched). Spawns one confined
+# pilot process per team (os_sandbox session child profile, zero fs grants),
+# drives the fixed obs/ctl pipe protocol, and emits replay/final-state roots
+# for cross-node byte-identical replay verification. Standalone target like
+# the factory's; not wired into any default build path.
+.PHONY: tools/arena-runner
+tools/arena-runner: $(BIN_DIR)/arena_runner
+$(BIN_DIR)/arena_runner: tools/arena_runner.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c \
+		lib/platform/src/os_sandbox_linux.c \
+		lib/base/src/result.c lib/base/src/log_level.c \
+		lib/base/src/safe_alloc.c \
+		lib/sha3/src/sha3.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+	    -Ipackages/zdogfight/include -Ipackages/zprng/include \
+	    -Ilib/platform/include -Ilib/base/include -Ilib/util/include \
+	    -Ilib/sha3/include -Ilib/support/include -Ivendor/include \
+	    -o $@ $^ -lm
+
+# arena_present: bridge one zdogfight replay stream into the bounded
+# renderer-neutral presentation model ABI (M6). Re-simulates the replay and
+# REFUSES anything whose trailing state does not re-derive exactly; the kill
+# narrative comes from deterministic alive->dead transitions, never a side
+# log. Standalone dev tool; not wired into any default build path.
+.PHONY: tools/arena-present
+tools/arena-present: $(BIN_DIR)/arena_present
+$(BIN_DIR)/arena_present: tools/arena_present.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c \
+		lib/presentation/src/model.c \
+		lib/sha3/src/sha3.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+	    -Ipackages/zdogfight/include -Ipackages/zprng/include \
+	    -Ilib/presentation/include -Ilib/base/include -Ilib/util/include \
+	    -Ilib/sha3/include -Ilib/support/include -Ivendor/include \
+	    -o $@ $^ -lm
+
 # End-to-end proof of the factory plus the census package-scope intake on
 # the tiny-lines fixture, entirely under test-tmp/.
 .PHONY: package-factory-selftest
