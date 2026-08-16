@@ -8,6 +8,8 @@
 #   - runner peak RSS and CPU% (via /usr/bin/time -v when available)
 #   - replay file bytes (raw and the implied bytes/tick)
 #   - pilot binary sizes
+#   - pure-sim ceiling: dead pilots (immediate EOF -> neutral controls)
+#     isolate sim+IPC throughput at the full tick limit
 #   - determinism: two runs must be byte-identical (born-red guard)
 #
 # Never touches live nodes or canonical datadirs; everything lands in a
@@ -62,3 +64,19 @@ echo "arena-kpis: runner_peak_rss_kb=$RSS_KB runner_cpu_pct=$CPU_PCT"
 echo "arena-kpis: pilot_red_bytes=$(stat -c %s "$RED") pilot_blue_bytes=$(stat -c %s "$BLUE")"
 echo "arena-kpis: determinism=byte-identical"
 grep -E 'winner|_root=|_avg_response_us=' "$WORK/a.out"
+
+# Pure-sim ceiling: throwaway static dead pilot (immediate EOF -> neutral
+# controls -> full-length draw), so the number isolates sim + pipe floor.
+if command -v cc >/dev/null 2>&1; then
+    printf 'int main(void){return 0;}\n' > "$WORK/dead.c"
+    if cc -std=c23 -O1 -static -o "$WORK/dead_pilot" "$WORK/dead.c" 2>/dev/null; then
+        t0=$(date +%s%N)
+        "$RUNNER" --seed "$SEED" --planes-per-team "$PPT" \
+            --pilot-red "$WORK/dead_pilot" --pilot-blue "$WORK/dead_pilot" \
+            --replay-out "$WORK/dead.bin" >"$WORK/dead.out" 2>&1
+        t1=$(date +%s%N)
+        DEAD_MS=$(( (t1 - t0) / 1000000 ))
+        DEAD_TICKS="$(sed -n 's/.*ticks=\([0-9]*\).*/\1/p' "$WORK/dead.out")"
+        echo "arena-kpis: pure_sim_ticks_per_sec=$(( DEAD_TICKS * 1000 / (DEAD_MS > 0 ? DEAD_MS : 1) )) dead_pilot_ticks=$DEAD_TICKS dead_pilot_ms=$DEAD_MS"
+    fi
+fi
