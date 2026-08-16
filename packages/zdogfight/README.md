@@ -32,4 +32,22 @@ ascending plane index order.
 `zdogfight selftest` runs a fixed-seed match between two built-in
 trivial pilots and prints the final state root (FNV-1a/64) as hex.
 
+## Provenance
+
+Gameplay concepts (aircraft movement, guns, collisions, health,
+teams, scoring, match completion) derive from
+`RhettCreighton/full-node-firewall-fly-over` at commit
+`221b5410dd63a5467735bc4232e7292fb55ce62b`. That repository's README
+declares Apache-2.0, but no LICENSE file exists at that commit; its
+dependencies are raylib (rendering) plus a large specification/proof
+apparatus. No code was imported: this package is a clean strict-C23
+reimplementation of the headless simulation only, with no raylib
+dependency.
+
+The upstream "no-crash guarantee", signal-recovery, abort-override,
+GDB-proof and philosophical-proof machinery are treated as historical
+claims, not evidence. This package's determinism rests solely on its
+own born-red selftests and the cross-node acceptance proof in
+`tools/dev/arena_acceptance.sh`.
+
 Depends only on zprng. MIT licensed.
