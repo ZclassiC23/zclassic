@@ -472,9 +472,10 @@ ZCL_COMMAND_READY_COMMAND(
 
 ZCL_COMMAND_READY_READ(
     "zcode.work.status", "zcode.work", "", "Show one human-first work status",
-    "Rebuilds state from verified canonical task and candidate objects. A work "
-    "ID or latest is only a local alias; roots remain grouped under expert, and "
-    "every blocked state names the next safe command.", ZCL_COMMAND_RESULT_BUDGET,
+    "Rebuilds task and candidate state, then read-only re-verifies the exact "
+    "receipt ledger. It reports unknown when evidence is unavailable and gives "
+    "the AI an exact confirmation identity only when policy is satisfied; no "
+    "window, acceptance, source edit or publication occurs.", ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,status,human,evidence,latest",
     "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
     "workspace,work", "",
@@ -488,8 +489,9 @@ ZCL_COMMAND_READY_READ(
 
 ZCL_COMMAND_READY_READ(
     "zcode.work.show", "zcode.work", "", "Show one human-first work result",
-    "A discoverable alias for work status. It rebuilds the same verified task, "
-    "candidate, evidence and lane summary; no display alias becomes authority.",
+    "A discoverable alias for work status. It returns the same read-only proof "
+    "facts and conversational confirmation identity; no display alias becomes "
+    "authority and no window is launched.",
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,show,human,evidence,result,latest",
     "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
