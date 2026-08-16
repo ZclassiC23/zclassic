@@ -72,10 +72,10 @@ git -C "$ROOT" grep -q 'dev-bin zclassic23-dev:.*\$(ZCLASSIC23_DEV_BIN)' -- Make
     fail 'dev-bin target is missing'
 git -C "$ROOT" grep -q '\$(HOTSWAP_ACTION_PLAN) dev-package-verifier' -- Makefile ||
     fail 'dev-bin does not bootstrap the fixed development package verifier'
-git -C "$ROOT" grep -q '^test-parallel-fast-active:.*dev-package-verifier-ensure' -- \
+git -C "$ROOT" grep -q '^test-parallel-fast-active-locked:.*dev-package-verifier-ensure' -- \
     Makefile ||
-    fail 'focused test profile does not use the non-LTO package verifier'
-git -C "$ROOT" grep -q '^test-parallel:.*dev-package-verifier-ensure' -- Makefile ||
+    fail 'locked focused test profile does not use the non-LTO package verifier'
+git -C "$ROOT" grep -q '^test-parallel-locked:.*dev-package-verifier-ensure' -- Makefile ||
     fail 'integration test profile does not use the non-LTO package verifier'
 git -C "$ROOT" grep -q '^dev-package-verifier-ensure:' -- Makefile ||
     fail 'test profile package-verifier bootstrap is missing'
