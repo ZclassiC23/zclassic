@@ -101,7 +101,8 @@ selftest_run() {
     local repo="$1"; shift
     local rc=0
     env GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null \
-        ZCL_HOOKS_SELFTEST_CHILD=1 "$@" \
+        ZCL_HOOKS_SELFTEST_CHILD=1 ZCL_HOOKS_NO_AUTOARM= \
+        ZCL_GIT_HOOKS_PATH_FOR_TEST= ZCL_GIT_HOOK_FILE_FOR_TEST= "$@" \
         "$repo/tools/scripts/check_git_hooks_installed.sh" \
         >/dev/null 2>&1 || rc=$?
     echo "$rc"
@@ -118,7 +119,7 @@ selftest_fail() {
 }
 
 run_self_test() {
-    local tmp rc armed
+    local tmp rc armed hook_out local_sha remote_sha
     selftest_failures=0
 
     tmp="$(mktemp -d 2>/dev/null || true)"
@@ -202,11 +203,81 @@ run_self_test() {
         echo "check_git_hooks_installed: SELF-TEST NOTE — skipped the linked-worktree cases (fixture build failed)" >&2
     fi
 
+    # (10) A push advertisement may name a remote main commit absent from the
+    # local object database. The hook must fetch that exact branch, name the
+    # integration invariant, and stop before CI; a descendant proposal then
+    # reaches the injected green gate. This is the physical regression for
+    # the old opaque `fatal: bad object <remote-sha>` failure.
+    if selftest_repo "$tmp/push_seed" &&
+       selftest_git init -q --bare "$tmp/push_remote.git" &&
+       printf 'base\n' >"$tmp/push_seed/base" &&
+       selftest_git -C "$tmp/push_seed" add -A &&
+       selftest_git -C "$tmp/push_seed" commit -qm base &&
+       selftest_git -C "$tmp/push_seed" branch -M main &&
+       selftest_git -C "$tmp/push_seed" remote add origin \
+           "$tmp/push_remote.git" &&
+       selftest_git -C "$tmp/push_seed" push -q -u origin main &&
+       selftest_git --git-dir="$tmp/push_remote.git" symbolic-ref HEAD \
+           refs/heads/main &&
+       selftest_git clone -q "$tmp/push_remote.git" "$tmp/push_local" &&
+       selftest_git clone -q "$tmp/push_remote.git" "$tmp/push_other"; then
+        printf 'remote\n' >"$tmp/push_other/remote"
+        selftest_git -C "$tmp/push_other" add remote
+        selftest_git -C "$tmp/push_other" commit -qm remote
+        selftest_git -C "$tmp/push_other" push -q origin main
+        printf 'local\n' >"$tmp/push_local/local"
+        selftest_git -C "$tmp/push_local" add local
+        selftest_git -C "$tmp/push_local" commit -qm local
+        local_sha="$(selftest_git -C "$tmp/push_local" rev-parse HEAD)"
+        remote_sha="$(selftest_git --git-dir="$tmp/push_remote.git" \
+            rev-parse refs/heads/main)"
+        if selftest_git -C "$tmp/push_local" cat-file -e \
+                "${remote_sha}^{commit}" 2>/dev/null; then
+            selftest_fail 'remote-advance fixture unexpectedly already has the remote tip'
+        fi
+        set +e
+        hook_out="$(cd "$tmp/push_local" &&
+            printf 'refs/heads/main %s refs/heads/main %s\n' \
+                "$local_sha" "$remote_sha" |
+            ZCL_PREPUSH_CMD=true tools/githooks/pre-push origin \
+                "$tmp/push_remote.git" 2>&1)"
+        rc=$?
+        set -e
+        [[ "$rc" != "0" ]] ||
+            selftest_fail 'non-descendant remote advancement must block before CI'
+        case "$hook_out" in
+            *remote-main-not-integrated*) ;;
+            *) selftest_fail "remote advancement was not named: $hook_out" ;;
+        esac
+        selftest_git -C "$tmp/push_local" cat-file -e \
+            "${remote_sha}^{commit}" 2>/dev/null ||
+            selftest_fail 'hook did not fetch the advertised remote tip'
+
+        selftest_git -C "$tmp/push_local" checkout -q -b integrated \
+            "$remote_sha"
+        printf 'integrated\n' >"$tmp/push_local/integrated"
+        selftest_git -C "$tmp/push_local" add integrated
+        selftest_git -C "$tmp/push_local" commit -qm integrated
+        local_sha="$(selftest_git -C "$tmp/push_local" rev-parse HEAD)"
+        set +e
+        hook_out="$(cd "$tmp/push_local" &&
+            printf 'refs/heads/main %s refs/heads/main %s\n' \
+                "$local_sha" "$remote_sha" |
+            ZCL_PREPUSH_CMD=true tools/githooks/pre-push origin \
+                "$tmp/push_remote.git" 2>&1)"
+        rc=$?
+        set -e
+        [[ "$rc" == "0" ]] ||
+            selftest_fail "integrated advertised tip should reach green CI: $hook_out"
+    else
+        selftest_fail 'could not build the remote-advance pre-push fixture'
+    fi
+
     if [[ "$selftest_failures" -ne 0 ]]; then
         echo "check_git_hooks_installed: SELF-TEST FAIL — $selftest_failures assertion(s)" >&2
         return 1
     fi
-    echo "check_git_hooks_installed: self-test clean — unset arms, wrong path fails, unexecutable hook fails, opt-out writes nothing and rescues nothing, linked worktree accepts only this repository's primary hooks and requires them executable"
+    echo "check_git_hooks_installed: self-test clean — unset arms, wrong path fails, unexecutable hook fails, opt-out writes nothing and rescues nothing, linked worktree accepts only this repository's primary hooks, remote advancement is fetched and named"
     return 0
 }
 
@@ -313,6 +384,10 @@ if ! awk '
     /^[[:space:]]*#/ { next }
     /^[[:space:]]*CMD="\$\{ZCL_PREPUSH_CMD:-make pre-push-ci\}"[[:space:]]*$/ { default_cmd=1 }
     /refs\/heads\/main/ { main_only=1 }
+    /git cat-file -e "\$\{rsha\}\^\{commit\}"/ { remote_tip_loaded=1 }
+    /git fetch --no-tags --quiet "\$remote_name" "\$rref"/ { fetches_advertised_ref=1 }
+    /git merge-base --is-ancestor "\$rsha" "\$lsha"/ { proves_remote_ancestor=1 }
+    /remote-main-not-integrated/ { names_remote_divergence=1 }
     /git diff --name-only "\$rsha" "\$lsha"/ { range_diff=1 }
     /ZCL_FAST_CHANGED_FILES_FILE="\$changed_files"/ { changed_env=1 }
     /ZCL_FAST_CHANGED_FILES_ONLY=1/ { changed_only_env=1 }
@@ -323,7 +398,10 @@ if ! awk '
     /^[[:space:]]*ZCL_FAST_CHANGED_FILES_FILE="\$changed_files"[[:space:]]+ZCL_FAST_CHANGED_FILES_ONLY=1[[:space:]]+\$CMD([[:space:]]*>[^|]*)?[[:space:]]*\|\|[[:space:]]*rc=\$\?[[:space:]]*$/ { invokes_cmd=1 }
     /^[[:space:]]*if[[:space:]]+![[:space:]]+ZCL_FAST_CHANGED_FILES_FILE="\$changed_files"[[:space:]]+ZCL_FAST_CHANGED_FILES_ONLY=1[[:space:]]+\$CMD;[[:space:]]*then[[:space:]]*$/ { invokes_cmd=1 }
     /rc"?[[:space:]]*-ne[[:space:]]*0/ { checks_rc=1 }
-    END { exit !(default_cmd && main_only && range_diff && changed_env && changed_only_env && invokes_cmd && checks_rc) }
+    END { exit !(default_cmd && main_only && remote_tip_loaded &&
+                 fetches_advertised_ref && proves_remote_ancestor &&
+                 names_remote_divergence && range_diff && changed_env &&
+                 changed_only_env && invokes_cmd && checks_rc) }
 ' "$hook"; then
     echo "check_git_hooks_installed: FAIL — $hook does not run the local range-aware make pre-push-ci gate" >&2
     echo "  Restore the tracked pre-push hook or run: git checkout -- $hook" >&2

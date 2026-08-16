@@ -41,6 +41,8 @@ if [ "${ZCL_SKIP_PREPUSH:-0}" = "1" ]; then
     exit 0
 fi
 
+remote_name="${1:-origin}"
+
 # git feeds '<local ref> <local sha> <remote ref> <remote sha>' lines on stdin.
 # If every ref is a deletion (local sha all-zero) there is nothing new to
 # verify — allow the push without running CI.
@@ -57,7 +59,7 @@ while read -r _lref lsha rref rsha; do
         exit 1
     fi
     have_update=1
-    printf '%s %s\n' "$lsha" "${rsha:-$z}" >> "$updates"
+    printf '%s %s %s\n' "$lsha" "${rsha:-$z}" "$rref" >> "$updates"
 done
 if [ "$have_update" = "0" ]; then
     exit 0
@@ -66,11 +68,28 @@ fi
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 cd "$REPO_ROOT"
 
-while read -r lsha rsha; do
+while read -r lsha rsha rref; do
     [ -n "${lsha:-}" ] || continue
     if [ "$rsha" = "$z" ]; then
         git diff-tree --no-commit-id --name-only -r "$lsha" >> "$changed_files"
     else
+        # The remote SHA comes from this push's advertisement and may be newer
+        # than the last local fetch. A raw diff against a missing object emits
+        # only "bad object" and obscures the actual invariant. Fetch the
+        # advertised branch, prove the exact tip is now present, and refuse
+        # before expensive CI if the proposed update has not integrated it.
+        if ! git cat-file -e "${rsha}^{commit}" 2>/dev/null; then
+            echo "pre-push: advertised remote tip $rsha is absent locally; fetching $remote_name $rref." >&2 || true
+            if ! git fetch --no-tags --quiet "$remote_name" "$rref" ||
+               ! git cat-file -e "${rsha}^{commit}" 2>/dev/null; then
+                echo "pre-push: remote-tip-unavailable — cannot prove the pushed range; push blocked." >&2 || true
+                exit 1
+            fi
+        fi
+        if ! git merge-base --is-ancestor "$rsha" "$lsha"; then
+            echo "pre-push: remote-main-not-integrated — $rref advanced to $rsha; fetch/rebase main before running CI." >&2 || true
+            exit 1
+        fi
         git diff --name-only "$rsha" "$lsha" -- >> "$changed_files"
     fi
 done < "$updates"
