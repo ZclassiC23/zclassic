@@ -1155,6 +1155,76 @@ int test_qr(void)
              caught_remove && caught_add);
     QR_CHECK("candidate dependency row comes from exact include bytes",
              caught_include);
+
+    struct json_value development_facts;
+    json_init(&development_facts); json_set_object(&development_facts);
+    json_push_kv_str(&development_facts, "schema", "zcl.dev_cycle.v1");
+    json_push_kv_str(&development_facts, "status", "story_red");
+    json_push_kv_str(&development_facts, "phase", "STORY_RED");
+    json_push_kv_str(&development_facts, "edit_epoch", root_a);
+    json_push_kv_str(&development_facts, "candidate_object_root", root_b);
+    json_push_kv_str(&development_facts, "affected_component",
+                     "presentation.code_change");
+    json_push_kv_str(&development_facts, "feedback_class",
+                     "HOT_SHADOW_CORE");
+    json_push_kv_str(&development_facts, "failure_capsule",
+                     "expected refusal was not observed");
+    json_push_kv_str(&development_facts, "agent_next_action",
+                     "inspect the candidate decision core");
+    json_push_kv_int(&development_facts, "changed_path_count", 1);
+    json_push_kv_int(&development_facts, "elapsed_us", 87000);
+    json_push_kv_int(&development_facts, "compiler_processes", 1);
+    json_push_kv_int(&development_facts, "linker_processes", 1);
+    struct zcl_present_model_v1 development_model;
+    bool development_built =
+        zcl_native_presentation_development_model_from_facts(
+            &development_facts, &development_model, why, sizeof(why));
+    bool development_red = false, development_unknown = false;
+    bool development_next = false;
+    for (uint32_t i = 0; development_built &&
+                         i < development_model.item_count; i++) {
+        const struct zcl_present_model_item_v1 *item =
+            &development_model.items[i];
+        development_red |= strcmp(item->id, "diagnostic") == 0 &&
+            item->status == ZCL_PRESENT_STATUS_RED &&
+            strstr(item->value, "expected refusal") != NULL;
+        development_unknown |= strcmp(item->id, "unknown") == 0 &&
+            strstr(item->value, "Separate signed proof") != NULL;
+        development_next |= strcmp(item->id, "next") == 0 &&
+            strstr(item->value, "inspect the candidate") != NULL;
+    }
+    QR_CHECK("canonical reflex RED becomes one exact native consequence",
+             development_built &&
+             development_model.kind == ZCL_PRESENT_MODEL_PROGRESS &&
+             strcmp(development_model.exact_root, root_a) == 0 &&
+             development_model.items[3].status == ZCL_PRESENT_STATUS_RED &&
+             development_red && development_unknown && development_next);
+
+    json_free(&development_facts);
+    json_init(&development_facts); json_set_object(&development_facts);
+    json_push_kv_str(&development_facts, "schema", "zcl.dev_cycle.v1");
+    json_push_kv_str(&development_facts, "status", "proof_pending");
+    json_push_kv_str(&development_facts, "phase", "PROOF_PENDING");
+    json_push_kv_str(&development_facts, "edit_epoch", root_a);
+    json_push_kv_int(&development_facts, "file_count", 1);
+    json_push_kv_str(&development_facts, "agent_next_action",
+                     "wait for clean proof");
+    development_built =
+        zcl_native_presentation_development_model_from_facts(
+            &development_facts, &development_model, why, sizeof(why));
+    bool pending_is_honest = development_built &&
+        development_model.items[1].numerator == 0 &&
+        development_model.items[2].numerator == 0 &&
+        development_model.items[3].numerator == 0 &&
+        development_model.items[4].numerator == 0 &&
+        development_model.items[4].status == ZCL_PRESENT_STATUS_INFO &&
+        strstr(development_model.items[7].value, "unknown us") != NULL &&
+        strstr(development_model.items[7].value,
+               "compiler unknown; linker unknown") != NULL;
+    QR_CHECK("proof-pending event never invents prior or resource evidence",
+             pending_is_honest);
+    json_free(&development_facts);
+
     QR_CHECK("unchanged candidate bytes cannot masquerade as a code change",
              !zcl_native_presentation_code_change_model_from_facts(
                  code_before, sizeof(code_before) - 1u,
