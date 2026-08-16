@@ -3917,6 +3917,52 @@ $(BIN_DIR)/arena_present: tools/arena_present.c \
 	    -Ilib/sha3/include -Ilib/support/include -Ivendor/include \
 	    -o $@ $^ -lm
 
+# arena-selftest: build and run the born-red package test suites for the
+# zdogfight arena core and both starter pilots (cross-instance determinism,
+# match rules, wire round-trips — the M7-preserved born-red determinism
+# tests). The packages ship these tests in their zcode-package.json
+# manifests; this is the local runner. Standalone target like the other
+# arena tools; not wired into any default build path.
+.PHONY: tools/arena-selftest
+tools/arena-selftest: $(BIN_DIR)/test_zdogfight $(BIN_DIR)/test_zdogace \
+		$(BIN_DIR)/test_zdogdrone
+	$(BIN_DIR)/test_zdogfight
+	$(BIN_DIR)/test_zdogace
+	$(BIN_DIR)/test_zdogdrone
+
+$(BIN_DIR)/test_zdogfight: packages/zdogfight/tests/test_zdogfight.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -Ipackages/zdogfight/include -Ipackages/zprng/include \
+	    -o $@ $^ -lm
+
+$(BIN_DIR)/test_zdogace: packages/zdogace/tests/test_zdogace.c \
+		packages/zdogace/src/zdogace.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -Ipackages/zdogace/include -Ipackages/zdogfight/include \
+	    -Ipackages/zprng/include \
+	    -o $@ $^ -lm
+
+$(BIN_DIR)/test_zdogdrone: packages/zdogdrone/tests/test_zdogdrone.c \
+		packages/zdogdrone/src/zdogdrone.c \
+		packages/zprng/src/zprng.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -Ipackages/zdogdrone/include -Ipackages/zdogfight/include \
+	    -Ipackages/zprng/include \
+	    -o $@ $^ -lm
+
 # End-to-end proof of the factory plus the census package-scope intake on
 # the tiny-lines fixture, entirely under test-tmp/.
 .PHONY: package-factory-selftest
