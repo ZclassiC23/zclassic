@@ -401,13 +401,11 @@ static bool run_dependency_context_json(
     struct json_value *locked_out, struct json_value *selected_out,
     const char *workspace, const char *datadir,
     const struct vcs_zcode_task_v1 *task, const char *goal,
-    size_t *selected_bytes_out, size_t *selected_headers_out,
     char detail[256])
 {
     json_init(locked_out); json_set_array(locked_out);
     json_init(selected_out); json_set_array(selected_out);
-    *selected_bytes_out = 0;
-    *selected_headers_out = 0;
+    size_t selected_bytes = 0;
     struct vcs_package_lock lock;
     vcs_package_lock_init(&lock);
     if (!run_load_lock(workspace, task, &lock) || lock.count == 0) {
@@ -512,28 +510,22 @@ static bool run_dependency_context_json(
                 ok = false;
                 break;
             }
-            if (len > ZWORK_DEPENDENCY_CONTEXT_MAX - *selected_bytes_out) {
+            if (len > ZWORK_DEPENDENCY_CONTEXT_MAX - selected_bytes) {
                 free(bytes);
                 (void)snprintf(detail, 256,
                                "selected dependency headers exceed the context budget");
                 ok = false;
                 break;
             }
-            char content_root[65];
-            zcl_hex_encode(output->sha3, 32, content_root);
             struct json_value header;
             json_init(&header); json_set_object(&header);
             ok = json_push_kv_str(&header, "path", output->path) &&
-                 json_push_kv_str(&header, "content_root", content_root) &&
                  json_push_kv_int(&header, "bytes", (int64_t)len) &&
                  json_push_kv_str(&header, "content", (const char *)bytes) &&
                  json_push_back(&headers, &header);
             json_free(&header);
             free(bytes);
-            if (ok) {
-                *selected_bytes_out += len;
-                (*selected_headers_out)++;
-            }
+            if (ok) selected_bytes += len;
         }
         ok = ok && json_push_kv_str(&row, "name", candidate->package.name) &&
              json_push_kv_str(&row, "semver", candidate->package.semver) &&
@@ -606,8 +598,7 @@ static bool run_candidate_workspace(const char *store,
 }
 
 static bool run_packet(struct json_value *packet, const char *goal,
-                       const char *workspace, const char *candidate_workspace,
-                       const char *datadir,
+                       const char *workspace, const char *datadir,
                        const struct vcs_zcode_task_v1 *task,
                        const struct vcs_zcode_agent_context_v1 *context,
                        const struct vcs_zcode_write_scope_v1 *scope,
@@ -620,10 +611,8 @@ static bool run_packet(struct json_value *packet, const char *goal,
                        "the exact workspace source excerpts could not be rendered");
         return false;
     }
-    size_t dependency_bytes = 0, dependency_headers = 0;
     if (!run_dependency_context_json(
-            &locked, &dependencies, workspace, datadir, task, goal,
-            &dependency_bytes, &dependency_headers, detail)) {
+            &locked, &dependencies, workspace, datadir, task, goal, detail)) {
         LOG_ERROR(ZWORK_RUN_LOG, "dependency context refused: %s",
                   detail[0] ? detail : "unknown error");
         json_free(&dependencies);
@@ -638,14 +627,7 @@ static bool run_packet(struct json_value *packet, const char *goal,
     bool ok = json_push_kv_int(&limits, "max_changed_files",
                                task->max_changed_files) &&
         json_push_kv_int(&limits, "max_patch_bytes",
-                         (int64_t)task->max_patch_bytes) &&
-        json_push_kv_int(&limits, "max_context_bytes",
-                         (int64_t)task->max_context_bytes) &&
-        json_push_kv_int(&limits, "max_cpu_seconds", task->max_cpu_seconds) &&
-        json_push_kv_int(&limits, "max_memory_bytes",
-                         (int64_t)task->max_memory_bytes) &&
-        json_push_kv_int(&limits, "max_output_bytes",
-                         (int64_t)task->max_output_bytes);
+                         (int64_t)task->max_patch_bytes);
     for (size_t i = 0; ok && i < scope->count; i++) {
         struct json_value path;
         json_init(&path); json_set_str(&path, scope->paths[i]);
@@ -654,15 +636,10 @@ static bool run_packet(struct json_value *packet, const char *goal,
     }
     json_init(packet); json_set_object(packet);
     ok = ok && json_push_kv_str(packet, "goal", goal) &&
-        json_push_kv_str(packet, "candidate_workspace", candidate_workspace) &&
         json_push_kv_str(packet, "context_query", context->query) &&
         json_push_kv(packet, "selected_excerpts", &excerpts) &&
         json_push_kv(packet, "locked_dependencies", &locked) &&
         json_push_kv(packet, "selected_dependency_context", &dependencies) &&
-        json_push_kv_int(packet, "dependency_context_bytes",
-                         (int64_t)dependency_bytes) &&
-        json_push_kv_int(packet, "dependency_context_headers",
-                         (int64_t)dependency_headers) &&
         json_push_kv(packet, "allowed_write_scopes", &scopes) &&
         json_push_kv_str(packet, "dependency_lock_root", lock_hex) &&
         json_push_kv(packet, "limits", &limits) &&
@@ -1187,7 +1164,7 @@ static bool run_admit(
     char repair_detail[256];
     bool repair_packet_ok = !retry_ready || !details ||
         (candidate && patch && run_packet(
-             &repair_packet, goal, workspace, next_workspace, datadir, task,
+             &repair_packet, goal, workspace, datadir, task,
              context, scope, repair_detail) &&
          json_push_kv_str(&repair_packet, "parent_candidate_root",
                           json_get_str(candidate)) &&
@@ -1437,8 +1414,8 @@ void zcl_native_handle_zcode_work_run(
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
     bool packet_ok = run_packet(
-        &packet, goal, workspace, candidate_workspace, proof_datadir, &task,
-        &context, &scope, packet_detail);
+        &packet, goal, workspace, proof_datadir, &task, &context, &scope,
+        packet_detail);
     if (!packet_ok) {
         run_fail(reply, "MODEL_CONTEXT_REFUSED", "context",
                  packet_detail[0] ? packet_detail

@@ -1014,6 +1014,16 @@ static int zpd_test_work_start(void)
         ASSERT(strstr(packet_text, "\"selected_excerpts\"") != NULL);
         ASSERT(strstr(packet_text, "\"allowed_write_scopes\"") != NULL);
         ASSERT(strstr(packet_text, "\"dependency_lock_root\"") != NULL);
+        ASSERT(strstr(packet_text, "\"max_changed_files\"") != NULL);
+        ASSERT(strstr(packet_text, "\"max_patch_bytes\"") != NULL);
+        ASSERT(strstr(packet_text, "\"candidate_workspace\"") == NULL);
+        ASSERT(strstr(packet_text, "\"dependency_context_bytes\"") == NULL);
+        ASSERT(strstr(packet_text,
+                      "\"dependency_context_headers\"") == NULL);
+        ASSERT(strstr(packet_text, "\"max_context_bytes\"") == NULL);
+        ASSERT(strstr(packet_text, "\"max_cpu_seconds\"") == NULL);
+        ASSERT(strstr(packet_text, "\"max_memory_bytes\"") == NULL);
+        ASSERT(strstr(packet_text, "\"max_output_bytes\"") == NULL);
         ASSERT(strstr(packet_text, "\"task_root\"") == NULL);
         ASSERT(strstr(packet_text, "\"source_root\"") == NULL);
         ASSERT(strstr(packet_text, "\"context_root\"") == NULL);

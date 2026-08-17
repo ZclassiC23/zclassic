@@ -887,8 +887,9 @@ static int t_e2e(void)
                         root_hex) == 0 &&
                  ring_content && strstr(json_get_str(ring_content),
                                         "ring_push") != NULL &&
-                 json_get_int(json_get(&packet_json,
-                                       "dependency_context_bytes")) > 0);
+                 json_get_int(json_get(ring_header, "bytes")) > 0 &&
+                 json_get(ring_header, "content_root") == NULL &&
+                 json_get(&packet_json, "dependency_context_bytes") == NULL);
     if (packet_read) json_free(&packet_json);
     zcl_command_reply_free(&work_reply);
     json_free(&work_input);
