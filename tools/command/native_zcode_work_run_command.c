@@ -1425,6 +1425,7 @@ void zcl_native_handle_zcode_work_run(
         vcs_zcode_agent_context_free(&context);
         vcs_zcode_task_index_free(index); return;
     }
+    size_t model_context_bytes = json_write(&packet, NULL, 0);
     if (packet_ok && codex_adapter) {
         char packet_path[ZWORK_RUN_PATH_MAX] = {0};
         char *adapter_output = zcl_malloc(ZWORK_ADAPTER_OUTPUT_MAX,
@@ -1478,6 +1479,9 @@ void zcl_native_handle_zcode_work_run(
             &task, &context, &scope, candidate_sequence, "codex", details,
             reply);
         if (handled) run_feedback_timing(reply, feedback_started_us);
+        if (handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
+            (void)json_push_kv_int(&reply->data, "model_context_bytes",
+                                   (int64_t)model_context_bytes);
         if (details && handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
             (void)json_push_kv_str(&reply->data, "adapter_output",
                                    adapter_output);
@@ -1490,8 +1494,7 @@ void zcl_native_handle_zcode_work_run(
         vcs_zcode_task_index_free(index); return;
     }
     char manual_packet_path[ZWORK_RUN_PATH_MAX] = {0};
-    size_t manual_packet_bytes = packet_ok ? json_write(&packet, NULL, 0) : 0;
-    bool manual_staged = packet_ok && manual_packet_bytes > 0 &&
+    bool manual_staged = packet_ok && model_context_bytes > 0 &&
         run_write_packet(candidate_workspace, &packet, manual_packet_path);
     bool ok = manual_staged &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
@@ -1505,7 +1508,9 @@ void zcl_native_handle_zcode_work_run(
         json_push_kv_str(&reply->data, "adapter_packet_path",
                          manual_packet_path) &&
         json_push_kv_int(&reply->data, "adapter_packet_bytes",
-                         (int64_t)manual_packet_bytes) &&
+                         (int64_t)model_context_bytes) &&
+        json_push_kv_int(&reply->data, "model_context_bytes",
+                         (int64_t)model_context_bytes) &&
         json_push_kv_str(&reply->data, "authority", "NONE_MANUAL_HANDOFF") &&
         json_push_kv_bool(&reply->data, "details_available", true) &&
         json_push_kv_str(&reply->data, "next_safe_command", repairing

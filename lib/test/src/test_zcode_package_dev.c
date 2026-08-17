@@ -193,6 +193,7 @@ static int zpd_test_twelve_task_benchmark(void)
             ASSERT(vcs_tree_capture_path(roots[p], source_roots[p]) == VCS_OK);
         size_t compiling = 0, profile = 0, refused = 0, accepted = 0;
         uint64_t selected_bytes = 0, total_bytes = 0, context_us = 0;
+        uint64_t model_context_bytes = 0;
         for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
             struct json_value input;
             json_init(&input); json_set_object(&input);
@@ -234,6 +235,8 @@ static int zpd_test_twelve_task_benchmark(void)
                 printf("benchmark case %zu handoff: %s %s\n", i,
                        reply.error.code, reply.error.message);
             ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+            model_context_bytes += (uint64_t)json_get_int(
+                json_get(&reply.data, "model_context_bytes"));
             char candidate[4500];
             (void)snprintf(candidate, sizeof(candidate), "%s",
                 json_get_str(json_get(&reply.data, "candidate_workspace")));
@@ -316,16 +319,18 @@ static int zpd_test_twelve_task_benchmark(void)
         ASSERT(accepted == 10);
         ASSERT(refused == 2);
         ASSERT(selected_bytes > 0 && selected_bytes < total_bytes);
+        ASSERT(model_context_bytes > selected_bytes);
         ASSERT(context_us > 0);
         int64_t benchmark_elapsed =
             platform_time_monotonic_us() - benchmark_started;
         ASSERT(benchmark_elapsed > 0);
         printf("benchmark: tasks=12 projects=3 compiling=%zu profile=%zu "
                "accepted=%zu refused=%zu context=%llu/%llu bytes "
-               "context_us=%llu elapsed_us=%llu\n",
+               "model_context_bytes=%llu context_us=%llu elapsed_us=%llu\n",
                compiling, profile, accepted, refused,
                (unsigned long long)selected_bytes,
                (unsigned long long)total_bytes,
+               (unsigned long long)model_context_bytes,
                (unsigned long long)context_us,
                (unsigned long long)benchmark_elapsed);
         for (int p = 0; p < 3; p++) {
@@ -1005,6 +1010,9 @@ static int zpd_test_work_start(void)
         ASSERT(access(json_get_str(packet_path), F_OK) == 0);
         ASSERT(json_get_int(json_get(&reply.data,
                                      "adapter_packet_bytes")) > 0);
+        ASSERT(json_get_int(json_get(&reply.data, "model_context_bytes")) ==
+               json_get_int(json_get(&reply.data,
+                                     "adapter_packet_bytes")));
         char *packet_text = zpd_read_bounded(json_get_str(packet_path),
                                              2u * 1024u * 1024u);
         ASSERT(packet_text != NULL);
