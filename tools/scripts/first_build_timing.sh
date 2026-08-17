@@ -186,7 +186,6 @@ measure() {
         printf ',"commit":"%s"' "$(json_escape "$commit")"
         printf ',"clone_source":"%s","compiler_cache":"disabled"' "$CLONE_SOURCE"
         printf ',"cc":"%s"' "$(json_escape "$(cc --version 2>/dev/null | head -1)")"
-        printf ',"rustc":"%s"' "$(json_escape "$(rustc --version 2>/dev/null | head -1)")"
         printf ',"loadavg_start":"%s","loadavg_end":"%s"' \
             "$(json_escape "$load_start")" "$(json_escape "$load_end")"
         printf ',"total_seconds":%s,"peak_disk_bytes":%s' "$total" "$peak"

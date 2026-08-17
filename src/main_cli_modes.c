@@ -702,9 +702,8 @@ static int bench_crypto_verify(void)
                 fprintf(stderr, "[bench-crypto-verify] no groth16 row: the "
                         "verify benchmark needs a freshly proved "
                         "output description and this build has no "
-                        "Sapling proving backend or it is not "
-                        "ready (backend=%s status=%s). Rebuild "
-                        "with `make ZCL_WITH_RUST=1`.\n",
+                        "native Sapling proving backend or it is not "
+                        "ready (backend=%s status=%s).\n",
                         zclassic_sapling_prover_backend(),
                         zclassic_sapling_prover_status());
             } else {
@@ -1208,9 +1207,8 @@ static int bench_crypto_vs_rust(void)
                 fprintf(stderr, "[bench-crypto-vs-rust] no groth16 row: the "
                         "verify benchmark needs a freshly proved "
                         "output description and this build has no "
-                        "Sapling proving backend or it is not "
-                        "ready (backend=%s status=%s). Rebuild "
-                        "with `make ZCL_WITH_RUST=1`.\n",
+                        "native Sapling proving backend or it is not "
+                        "ready (backend=%s status=%s).\n",
                         zclassic_sapling_prover_backend(),
                         zclassic_sapling_prover_status());
             } else {

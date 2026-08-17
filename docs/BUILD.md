@@ -27,7 +27,7 @@ come from that artifact, so refreshing them is a command, not an edit.
 | Full test suite | `make -j32 test-parallel` | 252 s | 1581 MiB |
 | **Clone to passing suite** | | **590 s** | **1581 MiB peak** |
 
-Host: 32 cores, gcc 14.2.0, rustc 1.95.0, compiler cache disabled, 1-minute
+Host: 32 cores, gcc 14.2.0, compiler cache disabled, 1-minute
 load average 29.3 at the start and 48.6 at the end — the machine was running
 other builds throughout, so a quiet host of the same size finishes sooner. The
 suite stage ends with the runner's own pass line; 224 s of its 252 s is the
@@ -39,11 +39,9 @@ How to read this:
   auto-detected by the build and disabled for the run). A host that has built
   this project before finishes far faster, and that faster number is not a
   first build.
-- **The 92 s vendor stage above was measured while `librustzcash.a` was still
-  part of the default archive set.** It no longer is (see *Prerequisites* —
-  Rust is opt-in), so a default `make vendor` now does strictly less work than
-  that row records; `make ZCL_WITH_RUST=1 vendor` is the configuration the row
-  describes. The row is left as measured rather than guessed at — re-run
+- **The 92 s vendor stage is historical.** It was measured before the Rust
+  archive path was removed, so current `make vendor` does strictly less work.
+  The row is left as measured rather than guessed at—re-run
   `make first-build-timing` to replace it with a fresh measurement.
 - **The clone stage is a local clone**, which git satisfies by hard-linking —
   effectively free. A real `git clone` from GitHub transfers the pack, and the
@@ -408,24 +406,11 @@ without the doctor learning about it. Prose here can only describe it.
   make**, **git**.
 - **`make vendor`:** `ar`, `nm`, `sha256sum`, `tar`, `unzip`, `patch`, `perl`
   (OpenSSL's `Configure` is a perl program), and `curl` **or** `wget`.
-- **Rust — `cargo` + `rustc` — NOT REQUIRED.** A normal `make vendor` and
-  `make` build the complete Sapling send and receive path in native C23,
+- **No Rust toolchain or library.** Sapling send and receive are native C23,
   including Spend and Output proof creation, binding signatures, consensus
-  verification, note encryption, and outgoing recovery.
-
-  `ZCL_WITH_RUST=1` exists only for maintainers who deliberately build the
-  pinned historical prover as a differential test oracle. It never replaces
-  the wallet's native C23 production prover:
-
-  ```bash
-  make ZCL_WITH_RUST=1                  # optional reference-oracle build
-  make ZCL_WITH_RUST=1 test-parallel    # differential test coverage
-  ```
-
-  The flag rides into both the compile flags and the link inputs, which the
-  build-epoch key hashes, so the configurations get separate object roots and
-  cannot mix stale objects. `make doctor` files `cargo`/`rustc` as optional;
-  their absence costs no node or wallet capability.
+  verification, note encryption, and outgoing recovery. Fixed vectors derived
+  from historical implementations remain inert test data; there is no in-tree
+  path that fetches, builds, or links Rust.
 - **A C++ compiler is needed only for test/dev differential oracles.** The
   shipped `zclassic23` node is compiled as C23, reads legacy LevelDB through the
   in-tree C23 reader, and does not link `libleveldb` or `libstdc++`. A focused
@@ -434,9 +419,8 @@ without the doctor learning about it. Prose here can only describe it.
   checked byte-for-byte against the upstream implementation.
 - **Not needed:** `autoconf`. The zlib and libevent tarballs ship a generated
   `./configure`; `make vendor` runs it and never regenerates it.
-- The first `make vendor` needs **network access** for the pinned tarballs (and
-  for the prover's crates when `ZCL_WITH_RUST=1`). Every later build is
-  offline.
+- The first `make vendor` needs **network access** for the pinned tarballs.
+  Every later build is offline.
 - For the embedded Tor onion service (optional): run `make tor-full`. It
   initializes the pinned `vendor/tor` submodule, configures a self-contained
   embedding profile without optional host-library integrations, and
@@ -462,13 +446,9 @@ against its minimum-safe version.
 | `libleveldb.a` | LevelDB | 1.23 | fetched + built | https://github.com/google/leveldb |
 | `libsqlite3.a` | SQLite (amalgamation) | 3.49.0 | fetched + built | https://www.sqlite.org/ |
 | `libz.a` | zlib | 1.3.1 | fetched + built | https://github.com/madler/zlib |
-| `librustzcash.a` *(optional test oracle)* | Historical Zcash Sapling prover | `06da3b9ac8f2` | fetched + built, only under `ZCL_WITH_RUST=1` | https://github.com/zcash/librustzcash |
 
-That is 10 archives in a default `make vendor` (9 builds + the committed
-`libsecp256k1.a`), and 11 under `ZCL_WITH_RUST=1`, which adds
-`librustzcash.a`. `make audit` reports the optional archive as `SKIP` when the
-build did not ask for it, and keeps every provenance and proving-ABI check
-HARD when it did.
+That is 10 archives: nine source builds plus the committed
+`libsecp256k1.a`.
 
 Notes:
 - **OpenSSL pinned to 3.0.16** — the project's minimum-safe floor (the older
@@ -490,12 +470,10 @@ Notes:
 - **SQLite 3.49.0** amalgamation; `make vendor` also refreshes
   `vendor/include/sqlite3.h` and `vendor/sqlite3.c` so the rest of the build
   (e.g. `tools/sqlq.c`) stays in sync.
-- **librustzcash is an optional differential test oracle.** It is the exact,
-  SHA256-pinned revision used by the canonical ZClassic daemon and is fetched
-  only when `ZCL_WITH_RUST=1` asks for it. Wallet proving and consensus
-  verification stay in independent C23 code in every build. `Cargo.lock` pins
-  registry checksums and the git dependency revision; build paths are remapped
-  before the optional archive is linked.
+- **Historical external reference vectors are inert data.** They retain their
+  source attribution for auditability, but no historical prover is fetched,
+  built, or linked by ZClassic23. Wallet proving and consensus verification
+  stay in C23.
 - Downloads are cached under `vendor/.cache/` (gitignored); build trees live in
   `vendor/.build/` (removed on a clean full run). To bump a version, edit the
   pinned version + SHA256 in `tools/scripts/build_vendor.sh`.

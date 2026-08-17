@@ -75,18 +75,6 @@ ZCL_PORTABLE_FRONTDOOR_GOALS := portable c23-portable-toolchain \
 ZCL_PORTABLE_FRONTDOOR_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip \
 	$(filter-out $(ZCL_PORTABLE_FRONTDOOR_GOALS),$(MAKECMDGOALS))),,1),)
 
-# ── Optional reference-only Rust proving backend ──────────────────────────
-# The production/default wallet prover is native C23. ZCL_WITH_RUST remains a
-# developer differential-oracle configuration for the pinned historical
-# backend; no release or shielded-send capability depends on it.
-#
-# This must be decided BEFORE VENDOR_ARCHIVES below: a Rust-free clone would
-# otherwise enter the vendor parse-restart trying to build an archive it does
-# not want and die on `need cargo`. The flag also rides into $(LIBS) and
-# $(CFLAGS), both of which are hashed into the compile epoch, so the two
-# configurations get distinct object roots and can never mix stale objects.
-ZCL_WITH_RUST ?=
-
 # Linked vendor archives are part of the exact source identity. On a fresh
 # clone they do not exist until the vendor builder runs, so Make must cross a
 # parse/restart boundary before BUILD_SOURCE_RECORD is captured. Otherwise the
@@ -95,11 +83,11 @@ ZCL_WITH_RUST ?=
 # whose `vendor-ready` prerequisite may repair stale archives.
 NODE_VENDOR_ARCHIVES = libsecp256k1.a libcrypto.a libssl.a libevent.a \
 	libevent_openssl.a libevent_pthreads.a libsqlite3.a libz.a libtor_stub.a
-# A focused `make zclassic23` needs no C++ or Rust toolchain. Test/dev builds
-# retain LevelDB and optional rustzcash strictly as differential oracles.
+# A focused `make zclassic23` needs no C++ toolchain. Test/dev builds retain
+# LevelDB strictly as a differential oracle.
 ZCL_NODE_ONLY_BUILD := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out zclassic23,$(MAKECMDGOALS))),,1),)
 VENDOR_ARCHIVES = $(NODE_VENDOR_ARCHIVES) \
-	$(if $(ZCL_NODE_ONLY_BUILD),,libleveldb.a $(if $(ZCL_WITH_RUST),librustzcash.a))
+	$(if $(ZCL_NODE_ONLY_BUILD),,libleveldb.a)
 VENDOR_LIBS = $(addprefix vendor/lib/,$(VENDOR_ARCHIVES))
 NODE_VENDOR_LIBS = $(addprefix vendor/lib/,$(NODE_VENDOR_ARCHIVES))
 VENDOR_BOOTSTRAP_MK := build/identity/vendor-inputs-ready.mk
@@ -291,10 +279,7 @@ $(BUILD_MUTATION_STAMP): tools/dev/source-identity.sh
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
 
-# The wallet prover is always native C23. ZCL_WITH_RUST only links a developer
-# differential-oracle archive, so key it separately without misreporting the
-# production backend.
-BUILD_PROVER_BACKEND := native-c23$(if $(ZCL_WITH_RUST),-reference-oracle,)
+BUILD_PROVER_BACKEND := native-c23
 BUILD_IDENTITY_STAMP := $(BUILD_DIR)/identity/$(BUILD_SOURCE_ID).$(BUILD_CLEAN).$(BUILD_MUTATION).prover-$(BUILD_PROVER_BACKEND).stamp
 $(BUILD_IDENTITY_STAMP): $(BUILD_MUTATION_STAMP) tools/dev/source-identity.sh
 	@set -eu; \
@@ -376,15 +361,8 @@ build nothing rather than fail. Check the file exists and its LIB_MODULE rows \
 are intact)
 endif
 LIB_INCLUDES = $(foreach m,$(LIB_MODULES),-Ilib/$(m)/include)
-# Wallet-side Sapling proving backend: native C23 by default. The unavailable
-# facade is retained only as historical fail-closed documentation and is never
-# selected. Consensus verification lives independently in sapling.c.
-SAPLING_PROVER_BACKEND_UNUSED = \
-	lib/sapling/src/sapling_prover_unavailable.c \
-	lib/sapling/src/sapling_prover_librustzcash.c
 LIB_SRCS = $(call zcl_filter_ephemeral_sources,\
-	$(filter-out $(SAPLING_PROVER_BACKEND_UNUSED),\
-	$(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c))))
+	$(foreach m,$(LIB_MODULES),$(wildcard lib/$(m)/src/*.c)))
 
 # Ports layer (Clean Architecture / Hexagonal interface headers).
 # Headers only — adapters that implement these interfaces live elsewhere.
@@ -679,7 +657,7 @@ CFLAGS = -std=c23 -g -O3 $(if $(ZCL_NATIVE),-march=native,-march=x86-64-v3) -flt
 	$(APP_INCLUDES) $(CONFIG_INCLUDES) $(LIB_INCLUDES) $(CORE_INCLUDES) $(PORTS_INCLUDES) $(DOMAIN_INCLUDES) $(APPLICATION_INCLUDES) $(ADAPTERS_INCLUDES) $(TOOLS_INCLUDES) $(DEVLOOP_INCLUDES) \
 	-Ilib/test/include \
 	-D_POSIX_C_SOURCE=200809L -DZCL_AR_ENFORCE $(BUILD_IDENTITY_CPPFLAGS) -Ivendor/include -Ivendor/x11/include $(GTK_DEF) $(GTK_CFLAGS) \
-	$(WEBKIT_DEF) $(WEBKIT_CFLAGS) $(if $(ZCL_WITH_RUST),-DZCL_WITH_RUST=1)
+	$(WEBKIT_DEF) $(WEBKIT_CFLAGS)
 LDFLAGS = -pthread -flto=auto -rdynamic $(HARDEN_LDFLAGS)
 CACHED_CFLAGS = $(filter-out -DZCL_BUILD_SOURCE_ID=% -DZCL_BUILD_CLEAN=%,$(CFLAGS))
 BUILD_ONLY_CFLAGS = $(CACHED_CFLAGS) -Wno-deprecated-declarations
@@ -760,10 +738,8 @@ TOR_FULL = $(wildcard vendor/tor/libtor.a \
 TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),-Lvendor/lib -ltor_stub)
 # All dependencies bundled in vendor/lib as static archives.
 # Zero system library requirements beyond libc.
-# OpenSSL 3.0 (Apache 2.0), libevent and zlib — all vendored and statically
-# linked. Under ZCL_WITH_RUST=1, librustzcash (MIT/Apache 2.0) is linked only
-# into developer differential-oracle builds. Wallet proving and consensus
-# verification remain C23 in every configuration.
+# OpenSSL 3.0 (Apache 2.0), libevent and zlib are vendored and statically
+# linked. Wallet proving and consensus verification remain C23 in every build.
 # LevelDB is a C++ archive behind a C API. Link with cc for release LTO
 # consistency, but add the C++ driver's stdlib search directory so hosts whose
 # cc/c++ packages are split still find libstdc++.
@@ -777,11 +753,11 @@ CXX_STDLIB_LDFLAGS := $(if $(CXX_STDLIB_DIR),-L$(CXX_STDLIB_DIR),)
 LIBS = -Lvendor/lib -lsecp256k1 -lleveldb \
 	$(CXX_STDLIB_LDFLAGS) -lstdc++ -lsqlite3 \
 	-levent -levent_openssl -levent_pthreads \
-	-lssl -lcrypto -lz $(if $(ZCL_WITH_RUST),-lrustzcash) -ldl -lpthread -lm
+	-lssl -lcrypto -lz -ldl -lpthread -lm
 
 # The shipped node is a C23 artifact. It never links the optional GTK/WebKit
-# presentation stack, the C++ LevelDB oracle, libstdc++, or the Rust
-# differential oracle. Legacy LevelDB bootstrap reads use the in-tree C23
+# presentation stack, the C++ LevelDB oracle, or libstdc++. Legacy LevelDB
+# bootstrap reads use the in-tree C23
 # reader; every other third-party input is an exact pinned static archive.
 NODE_C23_CFLAGS = $(CFLAGS) -DZCL_C23_NODE -UHAVE_GTK -UHAVE_WEBKIT
 NODE_C23_TOR_LIBS = $(if $(TOR_FULL),$(TOR_FULL),vendor/lib/libtor_stub.a)
@@ -1045,21 +1021,17 @@ endif
 .PHONY: vendor vendor-force vendor-provenance vendor-ready tor-full check-vendor-provenance
 # Build every missing OR provenance-stale vendor/lib/*.a from its pinned,
 # SHA256-verified source. `make vendor-force` rebuilds all of them.
-# ZCL_WITH_RUST rides into every vendor entry point so the optional
-# librustzcash archive is built/audited exactly when the build wants to link
-# it, and is otherwise never attempted (a Rust-free host must not die on
-# `need cargo`). See the flag's declaration at the top of this file.
 vendor:
-	ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh
+	tools/scripts/build_vendor.sh
 vendor-force:
-	VENDOR_FORCE=1 ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh
+	VENDOR_FORCE=1 tools/scripts/build_vendor.sh
 vendor-provenance:
-	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh --check-provenance
+	@tools/scripts/build_vendor.sh --check-provenance
 # Link/release/deploy front door: repair stale archives, then independently
 # audit installed bytes before any binary can consume them.
 vendor-ready:
-	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh
-	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/dep_audit.sh
+	@tools/scripts/build_vendor.sh
+	@tools/dep_audit.sh
 
 # Explicit opt-in for the real embedded onion service. This initializes the
 # pinned submodule, disables optional host-library integrations that the
@@ -1395,7 +1367,7 @@ worktree-prime:
 # clone without re-running the whole script when the libs are already there.
 # libsecp256k1.a is tracked, so it has no recipe (git provides it).
 $(filter-out vendor/lib/libsecp256k1.a,$(VENDOR_LIBS)):
-	ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/scripts/build_vendor.sh $(notdir $@)
+	tools/scripts/build_vendor.sh $(notdir $@)
 
 .PHONY: all test test-e2e test-shielded-payment test-store-e2e clean deploy deploy-dev remote-node-plan remote-node-plan-json remote-node-update remote-node-update-json lane-health lane-recover check-agent-cli check-restart-follow \
         background-fuzz background-coverage background-tests install-quality-linger quality-linger-status pre-push-ci \
@@ -2475,29 +2447,6 @@ public-node-coin-generation-matrix: zclassic23 zcl-rpc
 # failover, corrupt-chunk recovery and successor ancestry all pass.
 sovereign-source-roundtrip:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_swarm_net
-
-# Regenerate the pinned Sapling SPEND reference ground-truth vector (H2 lane).
-# Runs the groth16_selfverify group's oracle in emit mode against
-# vendor/lib/librustzcash.a and prints a ready-to-paste C block for
-# lib/test/include/test/groth16_spend_oracle_kat.h. Deterministic, params-free.
-#
-# Regeneration is by definition a librustzcash operation — the whole point is
-# to re-derive the vector FROM the reference archive — so it requires
-# ZCL_WITH_RUST=1. Refuse up front rather than emitting the baked bytes back at
-# the operator, which would be circular and would look like a successful
-# regeneration. (The oracle itself refuses too; this is the earlier, cheaper
-# door.)
-.PHONY: spend-oracle-kat
-spend-oracle-kat: $(TEST_PARALLEL_FAST_CANDIDATE)
-ifeq ($(strip $(ZCL_WITH_RUST)),)
-	@echo "spend-oracle-kat: refusing — the reference vector can only be" >&2
-	@echo "  re-derived from vendor/lib/librustzcash.a. Re-run as:" >&2
-	@echo "      make ZCL_WITH_RUST=1 spend-oracle-kat" >&2
-	@exit 2
-endif
-	@mkdir -p "$(BUILD_DIR)"
-	@$(CHECKOUT_LOCK_TOOL) foreground "$(CHECKOUT_LOCK)" -- \
-	  sh -c 'ulimit -s unlimited && ZCL_EMIT_SPEND_ORACLE_KAT=1 exec $(TEST_PARALLEL_FAST_ACTIVE) --only=groth16_selfverify'
 
 # ASan/UBSan variant of `t-fast`: one group per invocation under the
 # instrumented harness (build/bin/test-asan, own build/test-asan-obj tree).
@@ -8065,6 +8014,15 @@ check-no-trust-state-ordering:
 	@echo "══ LINT: no ordinal sync_trust_state comparison ══"
 	@./tools/scripts/check_no_trust_state_ordering.sh
 
+# The shipped node, development binary, tests and vendor builder have one
+# compiled-language path: C23. Historical external vectors may retain source
+# attribution, but no Rust source, manifest, toolchain, archive, linker flag or
+# FFI route may re-enter the executable tree.
+check-c23-only:
+	@echo "══ LINT: C23-only build and runtime ══"
+	@./tools/lint/check_c23_only.sh --selftest
+	@./tools/lint/check_c23_only.sh
+
 # The GNU comma-swallowing extension `, ##__VA_ARGS__` is not standard C, and
 # it is the single idiom that made this tree unbuildable by a second compiler:
 # one use in a header included by ~1100 translation units produced over seven
@@ -8914,6 +8872,7 @@ LINT_GATES := \
     check-no-gnu-va-args \
     check-clang-portability \
     check-result-discard \
+    check-c23-only \
     check-no-trust-state-ordering \
     check-no-warning-suppression \
     check-fuzz-artifact-ledger \
@@ -9120,7 +9079,7 @@ ci: vendor-ready lint bench-regress zclassic23 $(TEST_PARALLEL_REL_CANDIDATE)
 	@echo "══ CI: ALL STAGES PASSED ══"
 
 audit:
-	@ZCL_WITH_RUST='$(ZCL_WITH_RUST)' tools/dep_audit.sh
+	@tools/dep_audit.sh
 
 check-restart-follow:
 	$(ZCL_NODECTL_BIN) verify-follow --restart

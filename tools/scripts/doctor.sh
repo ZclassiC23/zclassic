@@ -237,11 +237,6 @@ if [ "$missing_n" -eq 0 ]; then
         echo
         echo "Everything required is present. $missing_opt_n OPTIONAL tool(s) are absent —"
         echo "the build works without them; each line above says what you give up."
-        echo "In particular, without cargo/rustc the node builds and runs fully:"
-        echo "it validates the chain, serves the explorer and RECEIVES shielded"
-        echo "funds. Only SENDING shielded value is unavailable, and it refuses"
-        echo "with a message naming the rebuild flag. To turn it on:"
-        echo "  make ZCL_WITH_RUST=1"
         if have apt-get || have apt; then
             printf '  sudo apt-get install -y %s\n' \
                 "$(printf '%s\n' "${missing_opt_apt[@]}" | sort -u | tr '\n' ' ' | sed 's/ $//')"

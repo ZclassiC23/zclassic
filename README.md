@@ -135,10 +135,9 @@ build/bin/zclassic-cli z_getnewaddress        # shielded
 build/bin/zclassic-cli z_getbalance <addr>
 ```
 
-Receiving shielded funds, and verifying and relaying everyone else's shielded
-transactions, works in the default build. *Sending* shielded value needs the
-Sapling prover: rebuild with `make ZCL_WITH_RUST=1`. Without it `z_sendmany`
-refuses with a typed error naming that flag — it never fails silently.
+Receiving and sending shielded funds, plus verifying and relaying shielded
+transactions, use the in-tree native C23 Sapling implementation. No Rust
+toolchain, library, or runtime is part of ZClassic23.
 
 ### Serve a site with no domain name and no certificate
 
@@ -281,8 +280,7 @@ the truth-about-status page: [`docs/METAVERSE.md`](docs/METAVERSE.md).
 
 `make doctor` probes your machine and prints the exact install line for
 anything missing. What you need: **gcc 14+** (or clang with working
-`-std=c23`), GNU make, git, and a C++ compiler for LevelDB. Rust is optional
-and only for sending shielded value.
+`-std=c23`), GNU make, git, and a C++ compiler for the LevelDB test oracle.
 
 ```bash
 make -j"$(nproc)"   # node + CLI + RPC tool -> build/bin/

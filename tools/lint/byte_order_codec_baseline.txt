@@ -89,7 +89,6 @@ lib/sapling/src/note.c
 lib/sapling/src/pedersen_hash.c
 lib/sapling/src/sapling.c
 lib/sapling/src/sapling_circuit.c
-lib/sapling/src/sapling_prover_librustzcash.c
 lib/sapling/src/sprout.c
 lib/sapling/src/zip32.c
 lib/script/include/script/script.h

@@ -122,6 +122,7 @@ check-wire-harness-security-gate check-vcs-no-git check-vcs-no-sha1
 check-vendor-provenance check-command-contract check-command-availability-truthful
 check-command-input-keys
 check-telemetry-ontology check-privileged-transition-receipt
+check-c23-only
 check-no-trust-state-ordering check-no-gnu-va-args check-no-warning-suppression
 check-result-discard
 "

@@ -16,7 +16,6 @@
 #                libevent.a, libevent_openssl.a,
 #                libevent_pthreads.a                   (libevent)
 #                libleveldb.a                          (LevelDB)
-#                librustzcash.a                       (Sapling prover)
 #                libz.a                                (zlib)
 #
 # Idempotent by PROVENANCE, not existence: an archive is skipped only when its
@@ -78,13 +77,6 @@ ZLIB_VER="1.3.1"                              # 1.3 line, clean of CVE-2022-3743
 ZLIB_URL="https://github.com/madler/zlib/releases/download/v${ZLIB_VER}/zlib-${ZLIB_VER}.tar.gz"
 ZLIB_SHA="9a93b2b7dfdac77ceba5a558a580e74667dd6fede4585b91eefb60f03b72df23"
 
-# Exact Sapling circuit/prover revision linked by the canonical ZClassic
-# daemon.  Its C ABI stays behind lib/sapling/sapling_prover.h; zclassic23
-# continues to use the independent C23 verifier for consensus.
-RUSTZCASH_COMMIT="06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5"
-RUSTZCASH_URL="https://github.com/zcash/librustzcash/archive/${RUSTZCASH_COMMIT}.tar.gz"
-RUSTZCASH_SHA="9909ec59fa7a411c2071d6237b3363a0bc6e5e42358505cf64b7da0f58a7ff5a"
-
 # Reproducibility: pin the build epoch + strip nondeterministic ar metadata.
 export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-1700000000}"
 export TZ=UTC LC_ALL=C
@@ -103,7 +95,6 @@ RECIPE_ZLIB="zlib-r2"
 RECIPE_OPENSSL="openssl-r4"
 RECIPE_LIBEVENT="libevent-r5"
 RECIPE_LEVELDB="leveldb-r6"
-RECIPE_RUSTZCASH="rustzcash-r3"
 
 # --- logging (to stderr; stdout is reserved for fetch() to echo a path) -----
 say()  { printf '\033[36m[vendor]\033[0m %s\n' "$*" >&2; }
@@ -163,7 +154,6 @@ archive_group() {
         libcrypto.a|libssl.a) printf 'openssl' ;;
         libevent.a|libevent_openssl.a|libevent_pthreads.a) printf 'libevent' ;;
         libleveldb.a) printf 'leveldb' ;;
-        librustzcash.a) printf 'rustzcash' ;;
         *) return 1 ;;
     esac
 }
@@ -176,7 +166,6 @@ recipe_revision() {
         openssl) printf '%s' "$RECIPE_OPENSSL" ;;
         libevent) printf '%s' "$RECIPE_LIBEVENT" ;;
         leveldb) printf '%s' "$RECIPE_LEVELDB" ;;
-        rustzcash) printf '%s' "$RECIPE_RUSTZCASH" ;;
         *) return 1 ;;
     esac
 }
@@ -209,10 +198,6 @@ recipe_source_fields() {
             printf 'version=%s\nsource_url=%s\nsource_sha256=%s\n' \
                 "$LEVELDB_VER" "$LEVELDB_URL" "$LEVELDB_SHA"
             ;;
-        rustzcash)
-            printf 'version=%s\nsource_url=%s\nsource_sha256=%s\n' \
-                "$RUSTZCASH_COMMIT" "$RUSTZCASH_URL" "$RUSTZCASH_SHA"
-            ;;
         *) return 1 ;;
     esac
 }
@@ -227,7 +212,6 @@ recipe_flags() {
         libevent) printf '%s' 'apply pinned secure-rng ABI patch; CFLAGS=-O2 -fPIC -Ivendor/include; LDFLAGS=-Lvendor/lib; CPPFLAGS=-Ivendor/include; ./configure --disable-shared --enable-static --disable-samples --disable-libevent-regress; require=evutil_secure_rng_add_bytes' ;;
         leveldb) printf '%s' 'route=direct-cxx11; -std=c++11 -O2 -DNDEBUG -fPIC -fno-exceptions -fno-rtti; LEVELDB_PLATFORM_POSIX=1; crc32c=off; snappy=off'
             ;;
-        rustzcash) printf '%s' 'cargo build --locked --release --package librustzcash; CARGO_INCREMENTAL=0; RUSTFLAGS=remap-source-and-cargo-home:/usr/src/zclassic23,-C debuginfo=0; reject-build-host-paths' ;;
         *) return 1 ;;
     esac
 }
@@ -250,10 +234,6 @@ make=$(vp_tool_identity_sha make)"
             cxx="$(leveldb_cxx_compiler)"
             identities="cxx=$(vp_compiler_identity_sha "$cxx")
 ar=$(vp_tool_identity_sha "$VENDOR_AR")"
-            ;;
-        rustzcash)
-            identities="rustc=$(vp_tool_identity_sha rustc)
-cargo=$(vp_tool_identity_sha cargo)"
             ;;
         tor_stub|sqlite) ;;
         *) return 1 ;;
@@ -609,78 +589,14 @@ build_leveldb() {      # FETCHED: LevelDB -> libleveldb.a
     ok "built   libleveldb.a"
 }
 
-build_rustzcash() {    # FETCHED: canonical Zcash Sapling prover -> librustzcash.a
-    need cargo; need rustc; need nm
-    have librustzcash.a && { say "skip    librustzcash.a (provenance current)"; return; }
-    say "build   librustzcash.a  (Zcash ${RUSTZCASH_COMMIT:0:12})"
-    invalidate_stamps librustzcash.a
-
-    local tb; tb="$(fetch "$RUSTZCASH_URL" "$RUSTZCASH_SHA" \
-        "librustzcash-${RUSTZCASH_COMMIT}.tar.gz")"
-    local d="$WORK/librustzcash-${RUSTZCASH_COMMIT}"
-    rm -rf "$d"
-    mkdir -p "$d"
-    tar -C "$d" -xzf "$tb" --strip-components=1
-
-    # Cargo.lock pins registry checksums and the sole git dependency to an
-    # exact revision.  Disable incremental state, use the upstream release
-    # profile's single codegen unit + LTO, and remap the throwaway extraction
-    # directory so neither the archive nor the final one-binary artifact
-    # embeds $HOME or vendor/.build paths. SOURCE_DATE_EPOCH is shared with
-    # the C archives above for the build-twice reproducibility contract.
-    (
-        cd "$d"
-        CARGO_HOME="$CACHE/cargo-home" \
-        CARGO_TARGET_DIR="$d/target" \
-        CARGO_INCREMENTAL=0 \
-        RUSTFLAGS="--remap-path-prefix=$d=/usr/src/zclassic23/librustzcash --remap-path-prefix=$CACHE/cargo-home=/usr/src/zclassic23/cargo-home -C debuginfo=0" \
-            cargo build --locked --release --package librustzcash
-    )
-
-    local built="$d/target/release/librustzcash.a"
-    local symbols="$d/target/release/librustzcash.symbols"
-    [[ -f "$built" ]] || die "cargo succeeded but librustzcash.a is missing"
-    nm -g --defined-only "$built" >"$symbols" 2>/dev/null ||
-        die "could not inspect librustzcash.a symbols"
-    if ! grep -q 'librustzcash_sapling_spend_proof' "$symbols"; then
-        die "librustzcash.a lacks the Sapling proving C ABI"
-    fi
-    # A static archive can be functionally correct while still leaking the
-    # build user's home through Rust panic/debug file names.  Reject it here,
-    # before installation or final linking, so test_no_hardcoded_home is a
-    # backstop rather than the first place the leak is discovered.
-    local forbidden
-    for forbidden in "$REPO_ROOT" "$WORK" "$CACHE" "${HOME:-}"; do
-        [[ -n "$forbidden" ]] || continue
-        if LC_ALL=C grep -aF "$forbidden" "$built" >/dev/null; then
-            die "librustzcash.a embeds build-host path: $forbidden"
-        fi
-    done
-    install_archive "$built" librustzcash.a
-    stamp_archives librustzcash.a
-    ok "built   librustzcash.a"
-}
-
 # --- orchestration ----------------------------------------------------------
 need "$VENDOR_CC"; need "$VENDOR_AR"; need sha256sum; need tar; need make
 mkdir -p "$LIB" "$INC" "$WORK"
 acquire_vendor_lock
 
-# librustzcash is the ONE vendored archive that needs a Rust toolchain, and it
-# buys exactly ONE capability: creating Sapling proofs, i.e. SENDING shielded
-# value. Consensus verification, shielded receive, the explorer and everything
-# else are native C23. So it is OPTIONAL and OFF by default, matching the
-# Makefile flag of the same name: a host with no cargo/rustc runs `make vendor`
-# and `make` to completion. Turn it on with ZCL_WITH_RUST=1 (or by naming the
-# archive: `tools/scripts/build_vendor.sh librustzcash.a`).
-ZCL_WITH_RUST="${ZCL_WITH_RUST:-}"
-
 REQUIRED=(libsecp256k1.a libcrypto.a libssl.a libevent.a libevent_openssl.a
           libevent_pthreads.a libleveldb.a libsqlite3.a libz.a
           libtor_stub.a)
-if [[ -n "$ZCL_WITH_RUST" ]]; then
-    REQUIRED+=(librustzcash.a)
-fi
 
 check_one_provenance() {
     local archive="$1" descriptor
@@ -721,12 +637,7 @@ if [[ "${1:-}" == "--check-provenance" ]]; then
 fi
 
 # Build order: openssl before libevent (libevent_openssl needs its headers).
-# build_rustzcash is appended only under ZCL_WITH_RUST (see REQUIRED above);
-# without it this list needs no Rust toolchain at all.
 ALL=(build_tor_stub build_zlib build_sqlite build_openssl build_libevent build_leveldb)
-if [[ -n "$ZCL_WITH_RUST" ]]; then
-    ALL+=(build_rustzcash)
-fi
 
 # Map .a names -> builder for the subset form.
 declare -A BUILDER=(
@@ -736,7 +647,6 @@ declare -A BUILDER=(
     [libcrypto.a]=build_openssl [libssl.a]=build_openssl
     [libevent.a]=build_libevent [libevent_openssl.a]=build_libevent [libevent_pthreads.a]=build_libevent
     [libleveldb.a]=build_leveldb
-    [librustzcash.a]=build_rustzcash
 )
 
 if [[ $# -gt 0 ]]; then

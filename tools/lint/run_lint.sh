@@ -208,6 +208,7 @@ gate_command() {
         check-read-leaf-no-boot-ceremony)  echo './tools/lint/check_read_leaf_no_boot_ceremony.sh' ;;
         check-telemetry-ontology)          echo './tools/lint/check_telemetry_ontology.sh' ;;
         check-privileged-transition-receipt) echo './tools/lint/check_privileged_transition_receipt.sh' ;;
+        check-c23-only)                     echo './tools/lint/check_c23_only.sh --selftest && ./tools/lint/check_c23_only.sh' ;;
         check-no-trust-state-ordering)     echo './tools/scripts/check_no_trust_state_ordering.sh' ;;
         check-no-gnu-va-args)              echo './tools/lint/check_no_gnu_va_args.sh' ;;
         check-no-warning-suppression)      echo './tools/lint/check_no_warning_suppression.sh .' ;;

@@ -434,10 +434,8 @@ int test_store_buyer(void)
                                         TSB_CUSTOMER, &pay);
         bool ok;
         if (!zclassic_sapling_prover_is_ready()) {
-            /* The default build (no ZCL_WITH_RUST) cannot build a shielded
-             * output at all, and must say exactly that rather than failing
-             * later inside coin selection — or, worse, quietly doing
-             * nothing. */
+            /* An unavailable native prover must refuse here rather than fail
+             * later inside coin selection—or, worse, quietly do nothing. */
             ok = (r.code == STORE_BUYER_ERR_PROVER_UNAVAILABLE);
             ok = ok && pay.memo_hex[0] == '\0';
         } else {

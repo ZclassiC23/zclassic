@@ -189,7 +189,7 @@ section_first_build() {
     if [ ! -f "$FIRST_BUILD_JSON" ]; then
         not_measured "first build" "$FIRST_BUILD_JSON" "make first-build-timing"; return
     fi
-    local state stamp cores total peak src cc_id rustc_id failed=0 line
+    local state stamp cores total peak src cc_id failed=0 line
     state="$(artifact_state "$FIRST_BUILD_JSON")"
     stamp="$(jstr "$FIRST_BUILD_JSON" generated_at_utc)"
     cores="$(jnum "$FIRST_BUILD_JSON" cores)"
@@ -197,7 +197,6 @@ section_first_build() {
     peak="$(jnum "$FIRST_BUILD_JSON" peak_disk_bytes)"
     src="$(jstr "$FIRST_BUILD_JSON" clone_source)"
     cc_id="$(jstr "$FIRST_BUILD_JSON" cc)"
-    rustc_id="$(jstr "$FIRST_BUILD_JSON" rustc)"
 
     # Any nonzero stage rc makes the whole run a failed build, not a cost.
     grep -q '"rc":[1-9]' "$FIRST_BUILD_JSON" && failed=1
@@ -239,7 +238,7 @@ section_first_build() {
             "${l0:-?}" "${l1:-?}" "${cores:-?}"
     [ "$(jstr "$FIRST_BUILD_JSON" compiler_cache)" = disabled ] &&
         printf '         compiler cache disabled — this is a never-built-here cost\n'
-    printf '         toolchain: %s / %s\n' "${cc_id:-unknown cc}" "${rustc_id:-no rustc}"
+    printf '         toolchain: %s\n' "${cc_id:-unknown cc}"
     printf '         detail: %s\n' "$(rel "$FIRST_BUILD_JSON")"
 }
 
@@ -294,7 +293,7 @@ run_selftest() {
     #     the total. A first-build number is only meaningful if the build
     #     actually produced a working tree.
     mkdir -p "$tmp/fb/first-build-timing"
-    printf '{"schema":"zcl.first_build_timing.v1","generated_at_utc":"2099-01-01T00:00:00Z","host":"h","cores":8,"commit":"abc","clone_source":"local","cc":"cc","rustc":"rustc","total_seconds":999,"peak_disk_bytes":1048576,"stages":[{"name":"clone","command":"git clone x","seconds":3,"rc":0,"disk_bytes":1},{"name":"vendor","command":"make vendor","seconds":42,"rc":1,"disk_bytes":2}]}\n' \
+    printf '{"schema":"zcl.first_build_timing.v1","generated_at_utc":"2099-01-01T00:00:00Z","host":"h","cores":8,"commit":"abc","clone_source":"local","cc":"cc","total_seconds":999,"peak_disk_bytes":1048576,"stages":[{"name":"clone","command":"git clone x","seconds":3,"rc":0,"disk_bytes":1},{"name":"vendor","command":"make vendor","seconds":42,"rc":1,"disk_bytes":2}]}\n' \
         > "$tmp/fb/first-build-timing/last-run.json"
     touch "$tmp/fb/first-build-timing/last-run.json"
     out="$(ZCL_TIMINGS_CACHE="$tmp/fb" bash "$self" 2>&1)"

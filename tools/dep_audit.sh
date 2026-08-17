@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # tools/dep_audit.sh — Dependency vulnerability audit for vendored libraries.
-# Checks vendored OpenSSL, SQLite, libevent, leveldb, zlib, libsecp256k1,
-# and the pinned Zcash Sapling prover. Exit 0 = all clear, exit 1 = findings.
+# Checks vendored OpenSSL, SQLite, libevent, leveldb, zlib, and libsecp256k1.
+# Exit 0 = all clear, exit 1 = findings.
 #
 # Usage:  ./tools/dep_audit.sh [--json]
 # Or:     make audit
@@ -112,36 +112,7 @@ ZLIB_VER=$(extract_version "$VENDOR_LIB/libz.a" 'deflate \K[0-9]+\.[0-9]+(\.[0-9
 SECP_STATUS="HASH_LOCKED"
 provenance_ok libsecp256k1.a || SECP_STATUS="MANIFEST_MISMATCH"
 
-# librustzcash: the canonical ZClassic revision is source-pinned rather than
-# semver-versioned. Audit both provenance and the exact proving ABI the C
-# adapter consumes; an arbitrary or verifier-only archive must not pass.
-#
-# The archive is OPTIONAL (see ZCL_WITH_RUST in the Makefile): the default
-# build links no Rust and loses only shielded SEND. So an absent archive on a
-# build that did not ask for it is NOT_IN_BUILD — reported, not a failure. If
-# the archive IS present, or the caller asked for it with ZCL_WITH_RUST, every
-# check below stays HARD: a wrong or verifier-only archive must never pass.
-RUSTZCASH_COMMIT="06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5"
-ZCL_WITH_RUST="${ZCL_WITH_RUST:-}"
-RUSTZCASH_STATUS="present"
-if [[ ! -f "$VENDOR_LIB/librustzcash.a" ]]; then
-    if [[ -n "$ZCL_WITH_RUST" ]]; then
-        RUSTZCASH_STATUS="MISSING"
-    else
-        RUSTZCASH_STATUS="NOT_IN_BUILD"
-    fi
-elif ! provenance_ok librustzcash.a; then
-    RUSTZCASH_STATUS="INVALID_PROVENANCE"
-elif ! nm -g --defined-only "$VENDOR_LIB/librustzcash.a" 2>/dev/null |
-       awk '/librustzcash_sapling_spend_proof/ { spend=1 }
-            /librustzcash_sapling_output_proof/ { output=1 }
-            END { exit (spend && output) ? 0 : 1 }'; then
-    RUSTZCASH_STATUS="INVALID_ABI"
-fi
-
 [[ "$SECP_STATUS" == "HASH_LOCKED" ]] || ((FAIL++)) || true
-[[ "$RUSTZCASH_STATUS" == "present" || "$RUSTZCASH_STATUS" == "NOT_IN_BUILD" ]] ||
-    ((FAIL++)) || true
 
 # --- minimum safe versions -------------------------------------------------
 # These are the oldest versions without known HIGH/CRITICAL CVEs
@@ -215,30 +186,6 @@ else
     else
         printf "  %-20s %-14s %-10s \033[31m%-6s\033[0m %s\n" \
             "libsecp256k1" "legacy" "hash-lock" "FAIL" "$SECP_STATUS"
-    fi
-fi
-
-# librustzcash: exact source revision + required proving ABI.
-if [[ $JSON -eq 1 ]]; then
-    case "$RUSTZCASH_STATUS" in
-        present)      RZ_VERDICT=PASS ;;
-        NOT_IN_BUILD) RZ_VERDICT=SKIP ;;
-        *)            RZ_VERDICT=FAIL ;;
-    esac
-    RESULTS+=("{\"name\":\"librustzcash\",\"version\":\"${RUSTZCASH_COMMIT:0:12}\",\"minimum\":\"canonical-pin\",\"status\":\"$RZ_VERDICT\",\"detail\":\"$RUSTZCASH_STATUS — source SHA256 and Cargo.lock enforced by build_vendor.sh; proving-only ABI, optional (ZCL_WITH_RUST)\"}")
-else
-    if [[ "$RUSTZCASH_STATUS" == "present" ]]; then
-        printf "  %-20s %-14s %-10s \033[32m%-6s\033[0m %s\n" \
-            "librustzcash" "${RUSTZCASH_COMMIT:0:12}" "pinned" "PASS" \
-            "source pin + Spend/Output proving ABI present"
-    elif [[ "$RUSTZCASH_STATUS" == "NOT_IN_BUILD" ]]; then
-        printf "  %-20s %-14s %-10s \033[33m%-6s\033[0m %s\n" \
-            "librustzcash" "${RUSTZCASH_COMMIT:0:12}" "optional" "SKIP" \
-            "not linked; native C23 Sapling proving remains available; ZCL_WITH_RUST=1 adds only the differential oracle"
-    else
-        printf "  %-20s %-14s %-10s \033[31m%-6s\033[0m %s\n" \
-            "librustzcash" "${RUSTZCASH_COMMIT:0:12}" "pinned" "FAIL" \
-            "$RUSTZCASH_STATUS"
     fi
 fi
 

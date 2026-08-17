@@ -308,7 +308,7 @@ AGENT_IMPACT_RULE("app/controllers/src/wallet_diagnostic_*.c|app/controllers/src
 AGENT_IMPACT_RULE("app/controllers/src/wallet_controller.c|app/controllers/src/wallet_controller_multisig.c|app/controllers/include/controllers/wallet_controller_internal.h", "wallet wallet_persistence_cycle make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/wallet_label_controller.c|app/models/src/wallet_label.c|app/models/include/models/wallet_label.h", "wallet models command_registry_catalog make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/include/controllers/wallet_view_internal.h|app/controllers/src/wallet_view_*.c|app/views/src/wallet_gui.c", "wallet_view wallet make_lint_gates")
-AGENT_IMPACT_RULE("lib/test/src/test_simnet_shielded_wallet_e2e.c|lib/sapling/src/sapling_prover_c23.c|lib/sapling/src/sapling_prover_librustzcash.c|lib/sapling/src/sapling_prover_unavailable.c|lib/sapling/src/sapling_prover_internal.h|lib/sapling/src/sapling.c|lib/validation/src/contextual_check_tx.c|lib/sim/src/simnet_sapling.c", "simnet_shielded_wallet_e2e shielded_payment_gate sapling make_lint_gates")
+AGENT_IMPACT_RULE("lib/test/src/test_simnet_shielded_wallet_e2e.c|lib/sapling/src/sapling_prover_c23.c|lib/sapling/src/sapling_prover_internal.h|lib/sapling/src/sapling.c|lib/validation/src/contextual_check_tx.c|lib/sim/src/simnet_sapling.c", "simnet_shielded_wallet_e2e shielded_payment_gate sapling make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/include/controllers/repair_controller_internal.h|app/controllers/src/repair_controller_*.c", "rpc_safety syncdiag_rpc make_lint_gates")
 AGENT_IMPACT_RULE("app/controllers/src/name_controller.c|app/controllers/src/name_service_directory_controller.c|app/controllers/src/name_service_directory_filter_controller.c|app/controllers/src/name_site_controller.c|app/controllers/include/controllers/name_controller.h|app/views/src/name_view.c|app/views/include/views/name_view.h|app/models/src/znam.c|app/models/include/models/znam.h|lib/znam/*|lib/test/src/test_znam.c|lib/test/src/test_znam_site.c", "znam protocols api make_lint_gates")
 /* Overlay SDK: shared OP_RETURN codec + rebuildable-projection scaffold behind
@@ -424,8 +424,7 @@ AGENT_IMPACT_RULE("examples/*|docs/cookbook/*", "simnet simnet_txkit make_lint_g
  * params-gated; the activation profile + base simnet are the fast proxies. */
 AGENT_IMPACT_RULE("lib/sim/src/simnet_sapling.c|lib/sim/include/sim/simnet_sapling.h|lib/test/src/test_simnet_sapling_shielded_send.c", "simnet_sapling_activation simnet make_lint_gates")
 
-/* Wallet shielded controllers + helpers (Sapling proving path; the backend
- * is librustzcash under ZCL_WITH_RUST=1 and absent by default).
+/* Wallet shielded controllers + helpers (native C23 Sapling proving path).
  * z_sendmany is also the wallet-spend sovereignty guard entry (§5.3 of
  * docs/work/fast-sync-to-tip-plan-2026-07-16.md) — include sovereignty_guard. */
 AGENT_IMPACT_RULE("app/controllers/src/wallet_shielded_controller.c|app/controllers/src/wallet_shielded_send.c|app/controllers/src/wallet_shielded_send_shielded.c", "wallet shielded_payment_gate sovereignty_guard make_lint_gates")

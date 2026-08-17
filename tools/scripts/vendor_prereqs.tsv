@@ -28,14 +28,12 @@ cc	required	gcc	gcc	compiles every translation unit; gcc 14+ or a clang with wor
 make	required	make	make	drives every build, test and lint target
 git	required	git	git	tracked-file enumeration used by the build and most lint gates
 ar	vendor	binutils	binutils	archives each vendored static library
-nm	vendor	binutils	binutils	libevent symbol audit, and the librustzcash proving-ABI check under ZCL_WITH_RUST=1
+nm	vendor	binutils	binutils	inspects required symbols in vendored static archives
 sha256sum	vendor	coreutils	coreutils	verifies every pinned source tarball against its hash
 tar	vendor	tar	tar	unpacks the openssl, libevent, zlib and leveldb tarballs
 perl	vendor	perl	perl	OpenSSL's Configure is a perl program
 patch	vendor	patch	patch	applies vendor/patches/libevent-2.1.12-secure-rng-abi.patch
 unzip	vendor	unzip	unzip	the SQLite amalgamation ships as a zip, not a tarball
-cargo	vendor-optional	cargo	cargo	builds librustzcash; only needed for ZCL_WITH_RUST=1, which adds SENDING shielded value
-rustc	vendor-optional	rustc	rust	same; cargo without a matching rustc cannot build the prover
 curl	vendor-either	curl	curl	downloads pinned sources; build_vendor falls back to wget
 wget	vendor-either	wget	wget	downloads pinned sources when curl is absent
 c++	vendor	g++	gcc-c++	LevelDB is C++11 and `make vendor` has no path to libleveldb.a without it

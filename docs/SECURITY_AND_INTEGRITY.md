@@ -182,7 +182,7 @@ item, not a claimed property.
   required offline signature quorum are all enforced.
 - **Dependency provenance:** the shipped binary is not libc-only — it
   statically links vendored, source-built, SHA256-pinned third-party static
-  libraries (OpenSSL, libevent, LevelDB, secp256k1, librustzcash; see
+  libraries (OpenSSL, libevent, LevelDB, and secp256k1; see
   `tools/scripts/build_vendor.sh` and [`BUILD.md`](./BUILD.md)'s dependency
   table). The precise claim is **no unvendored, unpinned, or dynamically
   fetched-at-runtime dependencies** — every third-party source tarball is

@@ -2,9 +2,9 @@
  *
  * Portions interoperate with librustzcash / bellman / sapling-crypto
  * (The Zcash developers / Electric Coin Company), pinned commit
- * 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5, MIT / Apache-2.0. Only the
- * extern-"C" FFI surface of the pinned static archive is used here, and ONLY
- * from the test binary — no reference code is linked into the production node.
+ * 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5, MIT / Apache-2.0. Fixed
+ * externally-derived reference bytes are checked in; no Rust code is fetched,
+ * built or linked.
  *
  * WHAT THIS IS
  * ------------
@@ -33,13 +33,11 @@
  *       section shape (constraints/vars/inputs per section) to witness 0. This
  *       is a class of divergence the single-witness H2/H3 gates cannot see.
  *
- *   (C) PER-WIRE VALUE PARITY vs the reference archive. For every witness, the
+ *   (C) PER-WIRE VALUE PARITY vs the fixed external KAT where available. The
  *       in-circuit nk wire ([nsk] ProofGenerationKeyGenerator, section 7) is
- *       compared byte-for-byte against librustzcash_nsk_to_nk — the differential
- *       against ground truth, per witness, not just the KAT. The in-circuit ak
- *       (section 1) and rk (section 4) wires are cross-checked against the native
- *       scalar derivations for self-consistency (the reference archive exports no
- *       ak/rk FFI — ak is a private circuit input, rk = ak + [ar]G is internal).
+ *       checked against ground truth for the pinned witness. The in-circuit ak
+ *       (section 1) and rk (section 4) wires are cross-checked against native
+ *       scalar derivations for self-consistency.
  *
  *   (D) DETERMINISM. Re-synthesizing an identical witness yields a byte-identical
  *       witness vector.
@@ -76,28 +74,13 @@
 #include <stdio.h>
 #include <string.h>
 
-/* Test-only bridge to the pinned reference archive (vendor/lib/librustzcash.a).
- * Declared locally so the third-party FFI surface never leaks into the repo's
- * C API. The archive is linked only under ZCL_WITH_RUST=1; see below for what
- * the default Rust-free build asserts instead. */
-#ifdef ZCL_WITH_RUST
-extern void librustzcash_nsk_to_nk(const uint8_t *nsk, uint8_t *result);
-#endif
-
 /* Reference nk for one corpus witness.
  *
- * With the archive linked, every witness has a reference value. Without it,
- * the checked-in KAT still supplies the reference nk for the ONE witness whose
- * nsk is the KAT nsk, so the differential keeps a real anchor; the remaining
- * corpus entries report no reference and their two reference-differential
- * checks are skipped by name rather than silently compared against the native
- * value they are supposed to be checking (which would be circular). */
+ * The checked-in KAT supplies the reference nk for the one witness whose nsk
+ * is pinned. Remaining corpus entries report no external reference rather than
+ * comparing native code against itself, which would be circular. */
 static bool parity_reference_nk(const uint8_t *nsk, uint8_t out[32])
 {
-#ifdef ZCL_WITH_RUST
-    librustzcash_nsk_to_nk(nsk, out);
-    return true;
-#else
 #if SPEND_ORACLE_KAT_BAKED
     if (memcmp(nsk, SPEND_ORACLE_KAT_NSK, 32) == 0) {
         memcpy(out, SPEND_ORACLE_KAT_NK, 32);
@@ -106,7 +89,6 @@ static bool parity_reference_nk(const uint8_t *nsk, uint8_t out[32])
 #endif
     (void)nsk; (void)out;
     return false;
-#endif
 }
 
 /* ── Pinned reference section-boundary table ────────────────────────────────
