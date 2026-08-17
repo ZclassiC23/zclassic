@@ -57,6 +57,12 @@ static const char *run_str(const struct json_value *input, const char *key)
     return value && value->type == JSON_STR ? json_get_str(value) : NULL;
 }
 
+static bool run_bool(const struct json_value *input, const char *key)
+{
+    const struct json_value *value = input ? json_get(input, key) : NULL;
+    return value && value->type == JSON_BOOL && json_get_bool(value);
+}
+
 static bool run_open_existing_ledger(
     struct node_db *ndb, const char *path, const char *reason)
 {
@@ -879,7 +885,8 @@ static bool run_worker_feedback_json(
 static bool run_render_async_admission(
     struct zcl_command_reply *reply,
     const struct vcs_zcode_task_index_entry *entry,
-    const struct zcl_command_reply *inner, const char *adapter_name)
+    const struct zcl_command_reply *inner, const char *adapter_name,
+    bool details)
 {
     const struct json_value *changed = json_get(&inner->data, "changed_files");
     const struct json_value *candidate = json_get(&inner->data, "candidate_root");
@@ -903,25 +910,22 @@ static bool run_render_async_admission(
                    entry->task_root_hex);
     struct json_value expert;
     json_init(&expert); json_set_object(&expert);
-    bool ok = json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
-        json_push_kv_str(&expert, "candidate_root", json_get_str(candidate)) &&
-        json_push_kv_str(&expert, "candidate_source_root",
-                         json_get_str(candidate_source)) &&
-        json_push_kv_str(&expert, "patch_root", json_get_str(patch)) &&
-        json_push_kv_str(&expert, "action_id", json_get_str(action)) &&
+    bool ok = (!details ||
+        (json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
+         json_push_kv_str(&expert, "candidate_root",
+                          json_get_str(candidate)) &&
+         json_push_kv_str(&expert, "candidate_source_root",
+                          json_get_str(candidate_source)) &&
+         json_push_kv_str(&expert, "patch_root", json_get_str(patch)) &&
+         json_push_kv_str(&expert, "action_id", json_get_str(action)))) &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "state", "CANDIDATE_ADMITTED") &&
+        json_push_kv_str(&reply->data, "stage",
+                         "Waiting for independent reproduction") &&
         json_push_kv_int(&reply->data, "changed_files",
                          json_get_int(changed)) &&
-        json_push_kv_str(&reply->data, "candidate_root",
-                         json_get_str(candidate)) &&
-        json_push_kv_str(&reply->data, "patch_root", json_get_str(patch)) &&
         json_push_kv_str(&reply->data, "async_proof_state",
                          json_get_str(proof_state)) &&
-        json_push_kv_str(&reply->data, "async_proof_event_root",
-                         json_get_str(proof_event)) &&
-        json_push_kv_int(&reply->data, "remote_request_id",
-                         json_get_int(proof_request)) &&
         json_push_kv_int(&reply->data, "local_submit_us",
                          json_get_int(submit_us)) &&
         json_push_kv_str(&reply->data, "build_result",
@@ -934,7 +938,17 @@ static bool run_render_async_admission(
         json_push_kv_str(&reply->data, "adapter", adapter_name) &&
         json_push_kv_str(&reply->data, "next_safe_command",
                          "zcode work status") &&
-        json_push_kv(&reply->data, "expert", &expert);
+        json_push_kv_bool(&reply->data, "details_available", true) &&
+        (!details ||
+         (json_push_kv_str(&reply->data, "candidate_root",
+                           json_get_str(candidate)) &&
+          json_push_kv_str(&reply->data, "patch_root",
+                           json_get_str(patch)) &&
+          json_push_kv_str(&reply->data, "async_proof_event_root",
+                           json_get_str(proof_event)) &&
+          json_push_kv_int(&reply->data, "remote_request_id",
+                           json_get_int(proof_request)) &&
+          json_push_kv(&reply->data, "expert", &expert)));
     static const char *const metric_keys[] = {
         "foreground_request_creation_us",
         "durable_action_lookup_dedup_us",
@@ -957,7 +971,7 @@ static bool run_render_async_admission(
         "reproduction_job_id",
         "reproduction_async_proof_event_root",
     };
-    for (size_t i = 0; ok && i < sizeof(reproduction_string_keys) /
+    for (size_t i = 0; details && ok && i < sizeof(reproduction_string_keys) /
                                       sizeof(reproduction_string_keys[0]);
          i++) {
         const struct json_value *value = json_get(
@@ -968,7 +982,8 @@ static bool run_render_async_admission(
     }
     const struct json_value *reproduction_request = json_get(
         &inner->data, "reproduction_remote_request_id");
-    if (ok && reproduction_request && reproduction_request->type == JSON_INT)
+    if (details && ok && reproduction_request &&
+        reproduction_request->type == JSON_INT)
         ok = json_push_kv_int(
             &reply->data, "reproduction_remote_request_id",
             json_get_int(reproduction_request));
@@ -984,7 +999,7 @@ static bool run_admit(
     const struct vcs_zcode_task_v1 *task,
     const struct vcs_zcode_agent_context_v1 *context,
     const struct vcs_zcode_write_scope_v1 *scope,
-    uint64_t candidate_sequence, const char *adapter_name,
+    uint64_t candidate_sequence, const char *adapter_name, bool details,
     struct zcl_command_reply *reply)
 {
     char datadir[ZWORK_RUN_PATH_MAX];
@@ -1088,7 +1103,7 @@ static bool run_admit(
     if (proof_datadir && proof_datadir[0]) {
         memory_cleanse(secret, sizeof(secret));
         bool rendered = run_render_async_admission(
-            reply, entry, &inner, adapter_name);
+            reply, entry, &inner, adapter_name, details);
         zcl_command_reply_free(&inner);
         if (!rendered)
             run_fail(reply, "ADMISSION_OUTPUT_FAILED", "render",
@@ -1128,23 +1143,24 @@ static bool run_admit(
     }
     struct json_value expert;
     json_init(&expert); json_set_object(&expert);
-    bool expert_ok = action && candidate && candidate_source && patch &&
-        json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
-        json_push_kv_str(&expert, "candidate_root",
-                         json_get_str(candidate)) &&
-        json_push_kv_str(&expert, "candidate_source_root",
-                         json_get_str(candidate_source)) &&
-        json_push_kv_str(&expert, "patch_root", json_get_str(patch)) &&
-        json_push_kv_str(&expert, "action_id", json_get_str(action)) &&
-        json_push_kv_str(&expert, "receipt_id", receipt.receipt_id) &&
-        json_push_kv_str(&expert, "output_root", receipt.output_sha3) &&
-        json_push_kv_str(&expert, "work_receipt_root",
-                         receipt.work_receipt_sha3) &&
-        (!standard ||
-         (json_push_kv_str(&expert, "standard_peer_action_id",
-                           peer_action_id) &&
-          json_push_kv_str(&expert, "standard_peer_work_receipt_root",
-                           peer_receipt.work_receipt_sha3)));
+    bool expert_ok = !details ||
+        (action && candidate && candidate_source && patch &&
+         json_push_kv_str(&expert, "task_root", entry->task_root_hex) &&
+         json_push_kv_str(&expert, "candidate_root",
+                          json_get_str(candidate)) &&
+         json_push_kv_str(&expert, "candidate_source_root",
+                          json_get_str(candidate_source)) &&
+         json_push_kv_str(&expert, "patch_root", json_get_str(patch)) &&
+         json_push_kv_str(&expert, "action_id", json_get_str(action)) &&
+         json_push_kv_str(&expert, "receipt_id", receipt.receipt_id) &&
+         json_push_kv_str(&expert, "output_root", receipt.output_sha3) &&
+         json_push_kv_str(&expert, "work_receipt_root",
+                          receipt.work_receipt_sha3) &&
+         (!standard ||
+          (json_push_kv_str(&expert, "standard_peer_action_id",
+                            peer_action_id) &&
+           json_push_kv_str(&expert, "standard_peer_work_receipt_root",
+                            peer_receipt.work_receipt_sha3))));
     char work_id[32];
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
@@ -1172,16 +1188,18 @@ static bool run_admit(
         json_push_kv_int(&diagnostic, "attempt",
                          (int64_t)candidate_sequence) &&
         json_push_kv_int(&diagnostic, "exit_status", receipt.exit_status) &&
-        json_push_kv_str(&diagnostic, "evidence_root", receipt.output_sha3) &&
-        json_push_kv_str(&diagnostic, "work_receipt_root",
-                         receipt.work_receipt_sha3) &&
         json_push_kv_bool(&diagnostic, "retry_safe", retry_ready) &&
         feedback_ok &&
-        json_push_kv(&diagnostic, "compiler_feedback", &compiler_feedback);
+        json_push_kv(&diagnostic, "compiler_feedback", &compiler_feedback) &&
+        (!details ||
+         (json_push_kv_str(&diagnostic, "evidence_root",
+                           receipt.output_sha3) &&
+          json_push_kv_str(&diagnostic, "work_receipt_root",
+                           receipt.work_receipt_sha3)));
     struct json_value repair_packet;
     json_init(&repair_packet); json_set_object(&repair_packet);
     char repair_detail[256];
-    bool repair_packet_ok = !retry_ready ||
+    bool repair_packet_ok = !retry_ready || !details ||
         (candidate && patch && run_packet(
              &repair_packet, goal, workspace, next_workspace, datadir, entry,
              context_entry, task, context, scope, repair_detail) &&
@@ -1202,17 +1220,8 @@ static bool run_admit(
                                        "Needs attention") &&
         json_push_kv_int(&reply->data, "changed_files",
                          json_get_int(changed)) &&
-        json_push_kv_str(&reply->data, "candidate_root",
-                         json_get_str(candidate)) &&
-        json_push_kv_str(&reply->data, "patch_root", json_get_str(patch)) &&
-        json_push_kv_str(&reply->data, "work_receipt_root",
-                         receipt.work_receipt_sha3) &&
         json_push_kv_str(&reply->data, "async_proof_state",
                          json_get_str(proof_state)) &&
-        json_push_kv_str(&reply->data, "async_proof_event_root",
-                         json_get_str(proof_event)) &&
-        json_push_kv_int(&reply->data, "remote_request_id",
-                         json_get_int(proof_request)) &&
         json_push_kv_int(&reply->data, "local_submit_us",
                          json_get_int(submit_us)) &&
         json_push_kv_str(&reply->data, "build_result",
@@ -1231,14 +1240,26 @@ static bool run_admit(
         (!retry_ready ||
          json_push_kv_str(&reply->data, "candidate_workspace",
                           next_workspace)) &&
-        (!retry_ready ||
+        (!retry_ready || !details ||
          json_push_kv(&reply->data, "repair_packet", &repair_packet)) &&
         json_push_kv_str(&reply->data, "adapter", adapter_name) &&
         json_push_kv_str(&reply->data, "next_safe_command",
                          passed ? "zcode work status" :
                          retry_ready ? "edit candidate_workspace, then rerun zcode work run" :
                                        "zcode work status") &&
-        json_push_kv(&reply->data, "expert", &expert);
+        json_push_kv_bool(&reply->data, "details_available", true) &&
+        (!details ||
+         (json_push_kv_str(&reply->data, "candidate_root",
+                           json_get_str(candidate)) &&
+          json_push_kv_str(&reply->data, "patch_root",
+                           json_get_str(patch)) &&
+          json_push_kv_str(&reply->data, "work_receipt_root",
+                           receipt.work_receipt_sha3) &&
+          json_push_kv_str(&reply->data, "async_proof_event_root",
+                           json_get_str(proof_event)) &&
+          json_push_kv_int(&reply->data, "remote_request_id",
+                           json_get_int(proof_request)) &&
+          json_push_kv(&reply->data, "expert", &expert)));
     json_free(&compiler_feedback);
     json_free(&repair_packet); json_free(&diagnostic); json_free(&expert);
     zcl_command_reply_free(&inner);
@@ -1267,6 +1288,7 @@ void zcl_native_handle_zcode_work_run(
     const char *work = run_str(request->input, "work");
     const char *adapter = run_str(request->input, "adapter");
     const char *proof_datadir_arg = run_str(request->input, "datadir");
+    bool details = run_bool(request->input, "details");
     if (!proof_datadir_arg || !proof_datadir_arg[0])
         proof_datadir_arg = zcl_native_command_datadir();
     if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
@@ -1344,9 +1366,11 @@ void zcl_native_handle_zcode_work_run(
                        entry->task_root_hex);
         bool ok = json_push_kv_str(&reply->data, "work_id", work_id) &&
             json_push_kv_str(&reply->data, "state", "EVIDENCE_READY") &&
+            json_push_kv_str(&reply->data, "stage", "Showing result") &&
             json_push_kv_str(&reply->data, "build_result", "passed") &&
             json_push_kv_str(&reply->data, "next_safe_command",
-                             "zcode work status");
+                             "zcode work status") &&
+            json_push_kv_bool(&reply->data, "details_available", true);
         if (!ok)
             run_fail(reply, "HANDOFF_OUTPUT_FAILED", "render",
                      "evidence-ready summary could not be rendered",
@@ -1409,7 +1433,8 @@ void zcl_native_handle_zcode_work_run(
             bool handled = run_admit(
                 workspace, candidate_workspace, proof_datadir, goal,
                 entry, context_entry,
-                &task, &context, &scope, candidate_sequence, "manual", reply);
+                &task, &context, &scope, candidate_sequence, "manual",
+                details, reply);
             if (handled) run_feedback_timing(reply, feedback_started_us);
             if (!handled)
                 run_fail(reply, "CANDIDATE_ADMISSION_FAILED", "admit",
@@ -1487,9 +1512,10 @@ void zcl_native_handle_zcode_work_run(
         bool handled = run_admit(
             workspace, candidate_workspace, proof_datadir, goal,
             entry, context_entry,
-            &task, &context, &scope, candidate_sequence, "codex", reply);
+            &task, &context, &scope, candidate_sequence, "codex", details,
+            reply);
         if (handled) run_feedback_timing(reply, feedback_started_us);
-        if (handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
+        if (details && handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
             (void)json_push_kv_str(&reply->data, "adapter_output",
                                    adapter_output);
         if (!handled)
@@ -1509,6 +1535,7 @@ void zcl_native_handle_zcode_work_run(
         json_push_kv_str(&reply->data, "adapter", "manual") &&
         json_push_kv_str(&reply->data, "state", repairing
                          ? "REPAIR_NEEDED" : "AWAITING_CANDIDATE") &&
+        json_push_kv_str(&reply->data, "stage", "Creating missing code") &&
         json_push_kv_str(&reply->data, "candidate_workspace",
                          candidate_workspace) &&
         json_push_kv_bool(&reply->data, "workspace_created", created) &&
@@ -1517,6 +1544,7 @@ void zcl_native_handle_zcode_work_run(
         json_push_kv_int(&reply->data, "adapter_packet_bytes",
                          (int64_t)manual_packet_bytes) &&
         json_push_kv_str(&reply->data, "authority", "NONE_MANUAL_HANDOFF") &&
+        json_push_kv_bool(&reply->data, "details_available", true) &&
         json_push_kv_str(&reply->data, "next_safe_command", repairing
                          ? "edit candidate_workspace, then rerun zcode work run"
                          : "edit only candidate_workspace, then inspect status");

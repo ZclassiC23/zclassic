@@ -513,11 +513,12 @@ ZCL_COMMAND_READY_COMMAND(
     "Reloads the verified task and canonical agent context, materializes an "
     "isolated candidate workspace, and either emits a bounded manual packet or "
     "runs the fixed opt-in Codex adapter behind Landlock, a scrubbed environment "
-    "and strict limits. No adapter receives acceptance or publication authority.",
+    "and strict limits. The default result is root-free; details=true exposes "
+    "exact proof identities. No adapter receives acceptance or publication authority.",
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,run,adapter,manual,codex,contained,candidate",
     "zcl.zcode_work_run.input.v1", "zcl.zcode_work_run.v1",
-    "workspace,work,adapter,datadir", "",
+    "workspace,work,adapter,datadir,details", "",
     "zclassic23-dev zcode work run --input='{\"work\":\"latest\",\"adapter\":\"manual\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,

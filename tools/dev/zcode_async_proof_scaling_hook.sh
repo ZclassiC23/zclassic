@@ -270,7 +270,7 @@ zaps_admit() {
     cpu_before="$(zaps_proc_cpu_ticks "$node")"
     start_ns="$(date +%s%N)"
     result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work run \
-        --input="{\"workspace\":\"$project\",\"work\":\"$work\",\"adapter\":\"manual\",\"datadir\":\"${DDS[$node]}\"}" || true)"
+        --input="{\"workspace\":\"$project\",\"work\":\"$work\",\"adapter\":\"manual\",\"datadir\":\"${DDS[$node]}\",\"details\":true}" || true)"
     end_ns="$(date +%s%N)"
     ok="$(printf '%s' "$result" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
     [ "$ok" = True ] || dht_die "scale $slot foreground admission failed: $result"

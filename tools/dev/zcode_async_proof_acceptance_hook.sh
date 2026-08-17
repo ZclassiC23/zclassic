@@ -69,7 +69,7 @@ zap_submit() {
     zap_write_source "$candidate/src/x.c" "$value" "$functions" "$pressure"
     started_ms="$(date +%s%3N)"
     result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work run \
-        --input="{\"workspace\":\"$ZAP_PROJECT\",\"work\":\"$work\",\"adapter\":\"manual\",\"datadir\":\"${DDS[$node]}\"}" || true)"
+        --input="{\"workspace\":\"$ZAP_PROJECT\",\"work\":\"$work\",\"adapter\":\"manual\",\"datadir\":\"${DDS[$node]}\",\"details\":true}" || true)"
     printf '%s\n' "$start" >"$DHT_WORK/async-submit-${node}-${work}-start.json"
     printf '%s\n' "$handoff" >"$DHT_WORK/async-submit-${node}-${work}-handoff.json"
     printf '%s\n' "$result" >"$DHT_WORK/async-submit-${node}-${work}-result.json"

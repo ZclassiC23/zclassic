@@ -245,6 +245,10 @@ static int zpd_test_twelve_task_benchmark(void)
                 ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
                 ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                               "EVIDENCE_READY") == 0);
+                ASSERT(json_get(&reply.data, "candidate_root") == NULL);
+                ASSERT(json_get(&reply.data, "expert") == NULL);
+                ASSERT(json_get_bool(json_get(
+                    &reply.data, "details_available")));
                 compiling++;
             }
             zcl_command_reply_free(&reply); json_free(&input);
@@ -982,6 +986,9 @@ static int zpd_test_work_start(void)
                                      "adapter_packet_bytes")) > 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "authority")),
                       "NONE_MANUAL_HANDOFF") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Creating missing code") == 0);
+        ASSERT(json_get_bool(json_get(&reply.data, "details_available")));
         ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
         ASSERT(memcmp(source_before, source_after, sizeof(source_before)) == 0);
         struct stat candidate_stat;
@@ -998,6 +1005,7 @@ static int zpd_test_work_start(void)
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
         ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        ASSERT(json_push_kv_bool(&input, "details", true));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
         zcl_native_handle_zcode_work_run(&request, &reply);
@@ -1016,6 +1024,7 @@ static int zpd_test_work_start(void)
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
         ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        ASSERT(json_push_kv_bool(&input, "details", true));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
         zcl_native_handle_zcode_work_run(&request, &reply);
@@ -1093,6 +1102,7 @@ static int zpd_test_work_start(void)
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
         ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        ASSERT(json_push_kv_bool(&input, "details", true));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
         zcl_native_handle_zcode_work_run(&request, &reply);

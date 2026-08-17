@@ -351,7 +351,7 @@ apj_note "BASELINE $(tr '\n' ' ' <"$DHT_WORK/before.out")"
 apj_note "CANDIDATE $(tr '\n' ' ' <"$DHT_WORK/candidate.out")"
 
 APJ_RUN="$(apj_native "$APJ_A" zcode work run \
-    --input="{\"workspace\":\"$APJ_AUTHOR\",\"work\":\"$APJ_WORK\",\"adapter\":\"manual\",\"datadir\":\"${DDS[$APJ_A]}\"}" || true)"
+    --input="{\"workspace\":\"$APJ_AUTHOR\",\"work\":\"$APJ_WORK\",\"adapter\":\"manual\",\"datadir\":\"${DDS[$APJ_A]}\",\"details\":true}" || true)"
 apj_ok "candidate async admission" "$APJ_RUN"
 APJ_ACTION="$(printf '%s' "$APJ_RUN" | apj_jget data.expert.action_id)"
 APJ_REPRO_ACTION="$(printf '%s' "$APJ_RUN" | apj_jget data.reproduction_action_id)"
