@@ -377,7 +377,7 @@ APJ_D_OUTPUT="$(zap_evidence_output "$APJ_D" "$APJ_D_ACTION")"
     apj_die "matching evidence did not retain two distinct signer identities"
 
 APJ_STATUS="$(apj_native "$APJ_A" zcode work status \
-    --input="{\"workspace\":\"$APJ_AUTHOR\",\"work\":\"$APJ_WORK\",\"datadir\":\"${DDS[$APJ_A]}\"}" || true)"
+    --input="{\"workspace\":\"$APJ_AUTHOR\",\"work\":\"$APJ_WORK\",\"datadir\":\"${DDS[$APJ_A]}\",\"details\":true}" || true)"
 apj_ok "proof-complete work status" "$APJ_STATUS"
 APJ_CONFIRMATION="$(printf '%s' "$APJ_STATUS" | apj_jget data.confirmation_identity)"
 [ "$(printf '%s' "$APJ_STATUS" | apj_jget data.proof.approved_distinct_signers)" -eq 2 ] ||

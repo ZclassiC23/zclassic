@@ -260,7 +260,9 @@ void zcl_native_handle_presentation_release_confirm(
     }
     struct json_value status_input;
     json_init(&status_input); json_set_object(&status_input);
+    static const char status_details_key[] = "details";
     bool input_ok = json_push_kv_str(&status_input, "workspace", workspace) &&
+        json_push_kv_bool(&status_input, status_details_key, true) &&
         (!work || json_push_kv_str(&status_input, "work", work)) &&
         (!proof_datadir || json_push_kv_str(
             &status_input, "datadir", proof_datadir));

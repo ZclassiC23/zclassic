@@ -1196,6 +1196,10 @@ static bool run_admit(
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "state", passed ? "EVIDENCE_READY" :
                          retry_ready ? "REPAIR_NEEDED" : "BLOCKED") &&
+        json_push_kv_str(&reply->data, "stage",
+                         passed ? "Showing result" :
+                         retry_ready ? "Creating missing code" :
+                                       "Needs attention") &&
         json_push_kv_int(&reply->data, "changed_files",
                          json_get_int(changed)) &&
         json_push_kv_str(&reply->data, "candidate_root",

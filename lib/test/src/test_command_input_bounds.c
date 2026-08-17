@@ -360,6 +360,27 @@ static int t_no_collateral_loosening(void)
                                                       sizeof(why)));
         json_free(&input);
     }
+
+    const struct zcl_command_spec *work_status = zcl_command_registry_find(
+        zcl_command_catalog(), "zcode.work.status", NULL);
+    CIB_CHECK("zcode work status resolves", work_status != NULL);
+    if (work_status) {
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_bool(&input, "details", true);
+        CIB_CHECK("work proof details opt-in reaches its handler",
+                  zcl_command_registry_input_validate(
+                      work_status, &input, why, sizeof(why)));
+        json_free(&input);
+
+        json_init(&input);
+        json_set_object(&input);
+        (void)json_push_kv_str(&input, "details", "true");
+        CIB_CHECK("work proof details refuses a string lookalike",
+                  !zcl_command_registry_input_validate(
+                      work_status, &input, why, sizeof(why)));
+        json_free(&input);
+    }
     return failures;
 }
 

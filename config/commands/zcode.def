@@ -457,11 +457,12 @@ ZCL_COMMAND_READY_COMMAND(
     "Searches installed packages and the rebuildable local package index first, "
     "then composes the existing package, task, scope, context, toolchain and "
     "proof-policy owners only for behavior still missing. Exact reuse creates no "
-    "task; this command changes no source file and launches no model or build.",
+    "task. The default is root-free; details=true exposes exact identities. "
+    "This command changes no source file and launches no model or build.",
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,start,goal,reuse,package,api,profile,context,c23",
     "zcl.zcode_work_start.input.v1", "zcl.zcode_work_start.v1",
-    "workspace,goal,profile,context_symbol,max_cpu_seconds,datadir", "workspace,goal",
+    "workspace,goal,profile,context_symbol,max_cpu_seconds,datadir,details", "workspace,goal",
     "zclassic23-dev zcode work start --input='{\"workspace\":\".\",\"goal\":\"Make the parser reject overflowing lengths\",\"profile\":\"standard\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
@@ -475,12 +476,13 @@ ZCL_COMMAND_READY_COMMAND(
 ZCL_COMMAND_READY_READ(
     "zcode.work.status", "zcode.work", "", "Show one human-first work status",
     "Rebuilds task and candidate state, then read-only re-verifies the exact "
-    "receipt ledger. It reports unknown when evidence is unavailable and gives "
-    "the AI an exact confirmation identity only when policy is satisfied; no "
-    "window, acceptance, source edit or publication occurs.", ZCL_COMMAND_RESULT_BUDGET,
+    "receipt ledger. The default is root-free; details=true exposes proof and "
+    "identity roots. It gives the AI an exact confirmation identity only when "
+    "policy is satisfied; no acceptance, source edit or publication occurs.",
+    ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,status,human,evidence,latest",
     "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
-    "workspace,work,datadir", "",
+    "workspace,work,datadir,details", "",
     "zclassic23-dev zcode work status --input='{\"work\":\"latest\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
@@ -497,7 +499,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,show,human,evidence,result,latest",
     "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
-    "workspace,work", "",
+    "workspace,work,details", "",
     "zclassic23-dev zcode work show --input='{\"work\":\"latest\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,

@@ -86,6 +86,12 @@ static const char *zwork_str(const struct json_value *input, const char *key)
     return value && value->type == JSON_STR ? json_get_str(value) : NULL;
 }
 
+static bool zwork_bool(const struct json_value *input, const char *key)
+{
+    const struct json_value *value = input ? json_get(input, key) : NULL;
+    return value && value->type == JSON_BOOL && json_get_bool(value);
+}
+
 #ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
 static bool zwork_open_build_ledger(
     struct node_db *ndb, const char *path, const char *reason,
@@ -667,7 +673,8 @@ static bool zwork_plan_input(
 
 static bool zwork_render_selection(
     struct json_value *out, const struct zcode_goal_selection *selection,
-    const struct json_value *plan_data, uint64_t total_source_bytes)
+    const struct json_value *plan_data, uint64_t total_source_bytes,
+    bool details)
 {
     json_init(out); json_set_object(out);
     const struct json_value *bytes =
@@ -677,7 +684,6 @@ static bool zwork_render_selection(
     int64_t selected_bytes = bytes && bytes->type == JSON_INT
         ? json_get_int(bytes) : 0;
     return json_push_kv_str(out, "symbol", selection->selected.name) &&
-        json_push_kv_str(out, "symbol_id", selection->selected_symbol_id) &&
         json_push_kv_str(out, "why", selection->why) &&
         json_push_kv_int(out, "selected_context_bytes", selected_bytes) &&
         json_push_kv_int(out, "total_source_bytes",
@@ -693,8 +699,10 @@ static bool zwork_render_selection(
                           selection->budget_exhausted) &&
         json_push_kv_int(out, "generation_us",
                          (int64_t)selection->generation_us) &&
-        json_push_kv_int(out, "context_service_generation",
-                         selection->service_generation);
+        (!details || (json_push_kv_str(
+            out, "symbol_id", selection->selected_symbol_id) &&
+            json_push_kv_int(out, "context_service_generation",
+                             selection->service_generation)));
 }
 
 void zcl_native_handle_zcode_work_context(
@@ -744,6 +752,7 @@ void zcl_native_handle_zcode_work_start(
     if (!request || !reply) return;
     const char *workspace = zwork_str(request->input, "workspace");
     const char *goal = zwork_str(request->input, "goal");
+    bool details = zwork_bool(request->input, "details");
     const char *profile_name = zwork_str(request->input, "profile");
     const char *exact_symbol = zwork_str(request->input, "context_symbol");
     int64_t max_cpu_seconds = zwork_int(
@@ -783,12 +792,15 @@ void zcl_native_handle_zcode_work_start(
         bool rendered = json_push_kv_str(&reply->data, "work_id", "") &&
             json_push_kv_str(&reply->data, "goal", goal) &&
             json_push_kv_str(&reply->data, "state", "REUSE_READY") &&
+            json_push_kv_str(&reply->data, "stage", "Ready to use") &&
             json_push_kv_str(&reply->data, "profile", profile.name) &&
             json_push_kv(&reply->data, "reuse_plan", &reuse_plan) &&
             json_push_kv_str(&reply->data, "authoritative_workspace",
                              "unchanged") &&
             json_push_kv_str(&reply->data, "next_safe_command", "zcode use") &&
-            json_push_kv(&reply->data, "expert", &reuse_expert);
+            json_push_kv_bool(&reply->data, "details_available", true) &&
+            (!details || json_push_kv(
+                &reply->data, "expert", &reuse_expert));
         json_free(&reuse_expert); json_free(&reuse_plan);
         vcs_package_prepared_free(&prepared);
         if (!rendered)
@@ -847,7 +859,7 @@ void zcl_native_handle_zcode_work_start(
     uint64_t source_bytes = zwork_source_bytes(&prepared);
     bool ok = task_hex && strlen(task_hex) == 64 && source_bytes != 0 &&
         zwork_render_selection(&context, &selection, &inner.data,
-                               source_bytes);
+                               source_bytes, details);
     json_init(&expert);
     if (ok) {
         json_copy(&expert, &inner.data);
@@ -859,6 +871,8 @@ void zcl_native_handle_zcode_work_start(
         ok = json_push_kv_str(&reply->data, "work_id", work_id) &&
              json_push_kv_str(&reply->data, "goal", goal) &&
              json_push_kv_str(&reply->data, "state", "AWAITING_CANDIDATE") &&
+             json_push_kv_str(&reply->data, "stage",
+                              "Creating missing code") &&
              json_push_kv_str(&reply->data, "profile", profile.name) &&
              json_push_kv(&reply->data, "reuse_plan", &reuse_plan) &&
              json_push_kv(&reply->data, "selected_context", &context) &&
@@ -866,7 +880,8 @@ void zcl_native_handle_zcode_work_start(
                               "unchanged") &&
              json_push_kv_str(&reply->data, "next_safe_command",
                               "zcode work run") &&
-             json_push_kv(&reply->data, "expert", &expert);
+             json_push_kv_bool(&reply->data, "details_available", true) &&
+             (!details || json_push_kv(&reply->data, "expert", &expert));
     }
     json_free(&expert); json_free(&context);
     json_free(&reuse_expert); json_free(&reuse_plan);
@@ -1163,6 +1178,7 @@ void zcl_native_handle_zcode_work_status(
     const char *workspace = zwork_str(request->input, "workspace");
     const char *work = zwork_str(request->input, "work");
     const char *proof_datadir = zwork_str(request->input, "datadir");
+    bool details = zwork_bool(request->input, "details");
     if (zcl_native_forward_live_command(
             request, proof_datadir, "zcode_work_status",
             "LIVE_WORK_STATUS_FAILED", "status", "zcode.work.status",
@@ -1215,6 +1231,12 @@ void zcl_native_handle_zcode_work_status(
     char confirmation_identity[65];
     bool confirmation_ready = zwork_confirmation_identity(
         entry, &proof, confirmation_identity);
+    const char *stage = entry->expired ? "Understanding request" :
+        accepted ? "Accepted" :
+        repair_needed || !entry->latest_action_root_hex[0]
+            ? "Creating missing code" :
+        confirmation_ready ? "Ready for your decision" :
+        "Waiting for independent reproduction";
     bool compile_required = zwork_proof_required(
         &policy, VCS_ZCODE_PROOF_COMPILE,
         policy.minimum_compile_receipts > policy.minimum_matching_receipts
@@ -1406,6 +1428,7 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "goal", goal) &&
         json_push_kv_str(&reply->data, "state", state) &&
+        json_push_kv_str(&reply->data, "stage", stage) &&
         json_push_kv_int(&reply->data, "changed_files",
                          (int64_t)summary.patch.count) &&
         json_push_kv(&reply->data, "changed_paths", &changed_paths) &&
@@ -1430,8 +1453,8 @@ void zcl_native_handle_zcode_work_status(
                          remaining_risks) &&
         json_push_kv_bool(&reply->data, "confirmation_ready",
                           confirmation_ready) &&
-        json_push_kv_str(&reply->data, "confirmation_identity",
-                         confirmation_identity) &&
+        (!details || json_push_kv_str(
+            &reply->data, "confirmation_identity", confirmation_identity)) &&
         json_push_kv_str(&reply->data, "confirmation_effect",
                          confirmation_ready
                            ? "advance exact candidate to PROVEN; do not apply, sign, or publish"
@@ -1440,8 +1463,9 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&reply->data, "next_action", next_action) &&
         json_push_kv_str(&reply->data, "next_safe_command",
                          next_safe_command) &&
-        json_push_kv(&reply->data, "proof", &proof_json) &&
-        json_push_kv(&reply->data, "expert", &expert);
+        json_push_kv_bool(&reply->data, "details_available", true) &&
+        (!details || (json_push_kv(&reply->data, "proof", &proof_json) &&
+                      json_push_kv(&reply->data, "expert", &expert)));
     json_free(&changed_paths); json_free(&proof_json); json_free(&expert);
     vcs_zcode_patch_free(&summary.patch);
     free(goal); vcs_zcode_task_index_free(index);
@@ -2065,6 +2089,7 @@ void zcl_native_handle_zcode_work_accept(
         bool ok = json_push_kv_str(&reply->data, "work_id", work_id) &&
             json_push_kv_str(&reply->data, "goal_decision", "accepted") &&
             json_push_kv_str(&reply->data, "state", "PROVEN") &&
+            json_push_kv_str(&reply->data, "stage", "Accepted") &&
             (!confirmed_identity ||
              json_push_kv_str(&reply->data, "confirmation_identity",
                               acceptance_hex)) &&

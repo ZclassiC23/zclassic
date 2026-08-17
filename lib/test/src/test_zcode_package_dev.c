@@ -277,6 +277,8 @@ static int zpd_test_twelve_task_benchmark(void)
                               cases[i].goal) == 0);
                 ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                               "PROVEN") == 0);
+                ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                              "Accepted") == 0);
                 ASSERT(json_get(&reply.data, "next_safe_command") != NULL);
                 zcl_command_reply_free(&reply); json_free(&input);
             }
@@ -882,13 +884,38 @@ static int zpd_test_work_start(void)
                        json_get_str(work_id));
         ASSERT(state && strcmp(json_get_str(state),
                                "AWAITING_CANDIDATE") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Creating missing code") == 0);
         ASSERT(context && context->type == JSON_OBJ);
         ASSERT(strcmp(json_get_str(json_get(context, "symbol")), "x") == 0);
+        ASSERT(json_get(context, "symbol_id") == NULL);
         ASSERT(reuse && reuse->type == JSON_OBJ);
         ASSERT(strcmp(json_get_str(json_get(reuse, "search_status")),
                       "datadir_not_provided") == 0);
         ASSERT(json_get_bool(json_get(reuse, "new_code_required")));
-        ASSERT(expert && json_get(expert, "task_root") != NULL);
+        ASSERT(expert == NULL);
+        ASSERT(json_get_bool(json_get(&reply.data, "details_available")));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "goal", "Fix x"));
+        ASSERT(json_push_kv_str(&input, "profile", "quick"));
+        ASSERT(json_push_kv_bool(&input, "details", true));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_start_test.v1");
+        zcl_native_handle_zcode_work_start(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        expert = json_get(&reply.data, "expert");
+        context = json_get(&reply.data, "selected_context");
+        const char *detailed_work_id = json_get_str(json_get(
+            &reply.data, "work_id"));
+        const char *detailed_task_root = expert
+            ? json_get_str(json_get(expert, "task_root")) : NULL;
+        ASSERT(detailed_work_id && detailed_task_root &&
+               strncmp(detailed_work_id + 5, detailed_task_root, 12) == 0);
+        ASSERT(context && json_get(context, "symbol_id") != NULL);
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -903,6 +930,8 @@ static int zpd_test_work_start(void)
                       "Fix x") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "AWAITING_CANDIDATE") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Creating missing code") == 0);
         ASSERT(strcmp(json_get_str(json_get(
                           &reply.data, "build_result")),
                       "not_started") == 0);
@@ -916,12 +945,10 @@ static int zpd_test_work_start(void)
                           &reply.data, "next_safe_command")),
                       "zcode work run") == 0);
         ASSERT(!json_get_bool(json_get(&reply.data, "confirmation_ready")));
-        ASSERT(strcmp(json_get_str(json_get(
-                          &reply.data, "confirmation_identity")), "") == 0);
-        const struct json_value *status_proof =
-            json_get(&reply.data, "proof");
-        ASSERT(status_proof && status_proof->type == JSON_OBJ);
-        ASSERT(!json_get_bool(json_get(status_proof, "facts_available")));
+        ASSERT(json_get(&reply.data, "confirmation_identity") == NULL);
+        ASSERT(json_get(&reply.data, "proof") == NULL);
+        ASSERT(json_get(&reply.data, "expert") == NULL);
+        ASSERT(json_get_bool(json_get(&reply.data, "details_available")));
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -998,6 +1025,8 @@ static int zpd_test_work_start(void)
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "REPAIR_NEEDED") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Creating missing code") == 0);
         ASSERT(json_get(&reply.data, "changed_files") &&
                json_get_int(json_get(&reply.data, "changed_files")) == 1);
         ASSERT(json_get(&reply.data, "candidate_root") != NULL);
@@ -1037,6 +1066,7 @@ static int zpd_test_work_start(void)
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_bool(&input, "details", true));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_status_test.v1");
         zcl_native_handle_zcode_work_status(&request, &reply);
@@ -1045,7 +1075,8 @@ static int zpd_test_work_start(void)
                       "REPAIR_NEEDED") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
                       "failed") == 0);
-        status_proof = json_get(&reply.data, "proof");
+        const struct json_value *status_proof =
+            json_get(&reply.data, "proof");
         ASSERT(status_proof &&
                json_get_bool(json_get(status_proof, "facts_available")));
         ASSERT(strcmp(json_get_str(json_get(
@@ -1068,6 +1099,8 @@ static int zpd_test_work_start(void)
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "EVIDENCE_READY") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Showing result") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
                       "passed") == 0);
         ASSERT(strcmp(json_get_str(json_get(
@@ -1093,12 +1126,15 @@ static int zpd_test_work_start(void)
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_bool(&input, "details", true));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_status_test.v1");
         zcl_native_handle_zcode_work_status(&request, &reply);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "EVIDENCE_READY") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Ready for your decision") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
                       "passed") == 0);
         ASSERT(json_get_int(json_get(&reply.data, "changed_files")) == 1);
@@ -1176,6 +1212,7 @@ static int zpd_test_work_start(void)
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_bool(&input, "details", true));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_status_test.v1");
         zcl_native_handle_zcode_work_status(&request, &reply);
@@ -1323,6 +1360,8 @@ static int zpd_test_work_start(void)
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "PROVEN") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Accepted") == 0);
         ASSERT(json_get_bool(json_get(
             &reply.data, "confirmation_identity_checked")));
         ASSERT(strcmp(json_get_str(json_get(
@@ -1598,6 +1637,7 @@ static int zpd_test_standard_profile(void)
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
         ASSERT(json_push_kv_str(&input, "work", work_id));
+        ASSERT(json_push_kv_bool(&input, "details", true));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_standard_status_test.v1");
         zcl_native_handle_zcode_work_status(&request, &reply);

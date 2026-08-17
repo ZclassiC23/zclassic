@@ -266,7 +266,7 @@ printf '%s\n' '#include "source_envelope.h"' '' \
     'int main(void) { return zclassic23_source_envelope() == 1 ? 0 : 1; }' \
     >"$SSN_SOURCE/tests/test_source_envelope.c"
 
-START="$(ssn_local zcode.work.start --input="{\"workspace\":\"$SSN_SOURCE\",\"goal\":\"Accept the exact enclosed Zclassic23 source and root license for sovereign P2P publication\",\"profile\":\"quick\"}")"
+START="$(ssn_local zcode.work.start --input="{\"workspace\":\"$SSN_SOURCE\",\"goal\":\"Accept the exact enclosed Zclassic23 source and root license for sovereign P2P publication\",\"profile\":\"quick\",\"details\":true}")"
 ssn_require_ok "work start" "$START"
 TASK_ROOT="$(ssn_json "$START" 'd["data"]["expert"]["task_root"]')"
 

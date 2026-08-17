@@ -1002,6 +1002,7 @@ bool zcl_command_registry_input_validate(const struct zcl_command_spec *spec,
                           strlen(text) <= ZCL_COMMAND_INPUT_FILES_PATH_MAX;
             }
         } else if (strcmp(key, "verbose") == 0 ||
+                   strcmp(key, "details") == 0 ||
                    strcmp(key, "confirm") == 0 ||
                    strcmp(key, "enabled") == 0 ||
                    strcmp(key, "relink_generation") == 0 ||
