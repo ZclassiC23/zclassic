@@ -1,11 +1,15 @@
 # What hosted CI actually checks, and what it does not.
 #
-# WHY THIS FILE EXISTS. .github/workflows/build.yml produces five green checks
-# on every commit to main. A reader who sees five green checks reasonably
-# concludes the commit was fully verified. It was not: the test suite never runs
-# hosted. Nothing anywhere said so in a form a machine could check, so the gap
-# was invisible to exactly the person the checks exist to inform — someone who
-# does not trust this machine and is reading the commit on GitHub.
+# WHY THIS FILE EXISTS. .github/workflows/build.yml produces a row of green
+# checks on every commit to main, and a reader who sees them reasonably
+# concludes the commit was fully verified. For a long time it was not: the
+# test suite did not run hosted at all, and nothing said so in a form a
+# machine could check, so the gap was invisible to exactly the person the
+# checks exist to inform — someone who does not trust this machine and is
+# reading the commit on GitHub. The suite is hosted now (see the `tests`
+# row), which is precisely why this file must keep saying what each check
+# does and does not cover: the failure mode was never a missing job, it was
+# a green whose meaning nobody had written down.
 #
 # This file is the declared coverage, and tools/lint/check_verification_coverage.sh
 # holds it to the workflow. It cannot drift: every item claiming to be hosted
@@ -42,14 +46,18 @@
 # against a real check-run attached to commit df752afce on origin/main (run
 # 30509201499, all five success).
 #
-# The `tests` row is hosted; its first hosted run was RED, and this file
-# tracked that honestly (see the ARCHIVED paragraph below, kept verbatim for
-# the record). All six of that run's failures, plus a fourth and separate
-# defect this session found while proving the fix (see below), have since
-# been root-caused and fixed on branch lane/hosted-ci-green, commit
-# 722e25a14 (a clean fast-forward of main). Read the confirmation status
-# paragraph before trusting this as hosted-green: as of this writing the fix
-# has been proven LOCALLY, not yet on a hosted runner.
+# The `tests` row is hosted and is now CONFIRMED hosted-green. Its first
+# hosted run was RED, and this file tracked that honestly (see the ARCHIVED
+# paragraph below, kept verbatim for the record). See the confirmation
+# paragraph below for the run id and verdict line that closed it.
+#
+# The `arena` row is hosted. It is the only job that runs the three commands
+# the README gives a stranger, from a clean checkout, with no vendored-
+# dependency cache and no restored build tree. It re-derives the Arena roots
+# pinned in tools/dev/arena_demo.sh — roots that were produced on the
+# maintainer's host — on a machine nobody here controls, so it is also the
+# cross-machine half of the reproducibility claim docs/ARENA.md makes. It
+# does NOT verify consensus, the node, or anything the other rows cover.
 #
 # CONFIRMATION STATUS OF THE FIX (2026-07-30). `make lint` (128 gates) and
 # `make test-parallel -j"$(nproc)"` — the exact commands build.yml's `lint`
@@ -60,18 +68,36 @@
 # groups_failed=0 self_skips=25. Each of the four fixed test groups was also
 # re-run 8-15 times in isolation with zero flakes.
 #
-# This is NOT yet a hosted confirmation. This session could not push
-# lane/hosted-ci-green or dispatch workflow_dispatch against it: the repo's
-# local pre-push hook enforces "origin holds ONLY main" (see the publish
-# policy this file's sibling docs describe), so triggering the hosted
-# `pull_request` or `workflow_dispatch` path for this exact commit requires
-# an owner-authorized merge of this branch to main (confirmed clean
-# fast-forward, no conflicts) or a PR opened from a fork. Until that push
-# happens and a new hosted run attaches to a commit, do not read this row as
-# hosted-green — read it as locally-green-and-pending-hosted-confirmation.
-# Update this paragraph with the new run id and commit the moment that
-# hosted run's own verdict line is in hand; do not infer it from the local
-# run above.
+# HOSTED CONFIRMATION (2026-08-17) — this closes the pending status above.
+# Run 32001633676, commit 0d154f6c3 on origin/main. All six jobs success,
+# `tests` among them. The suite's own verdict line from that run's log,
+# quoted rather than inferred:
+#
+#   SUITE VERDICT mode=cold groups_total=939 groups_ran=930 groups_cached=0
+#   groups_gated=9 groups_failed=0 self_skips=26 toolkey=c84ebf8a37e1
+#
+# Two further hosted-only defects were found and fixed between the local
+# confirmation above and this hosted green, both of the same class the
+# `tests` job exists to catch — a green that depended on the maintainer
+# host's ambient state:
+#
+#  7. test_dev_platform attributed a cancellation to the wrong resident
+#     process under cold/concurrent conditions (fixed in 93933f260).
+#
+#  8. test_test_group_selector's Make admission probe ran
+#     `make -n t-fast-exact ONLY=api`, which exits 2 on a COLD checkout and
+#     0 on a warm one. Root cause is general and was not in the test:
+#     `$(file >...)` is a make FUNCTION, evaluated when a recipe line is
+#     EXPANDED, and make expands every recipe line under -n in order to
+#     print it. Every response-file recipe therefore WROTE its file during a
+#     dry run and died when the epoch directory did not exist yet, because
+#     the mkdir that creates it lives in a recipe -n only prints. `make -n`
+#     on any test goal was broken on every cold checkout. Fixed by guarding
+#     all nine sites on ZCL_MAKE_NO_EXEC (Makefile). The same test also
+#     buffered the whole dry run into 8 MiB against a claimed ~2 MB worst
+#     case; a cold clone emits 12.2 MB and the assertion it needs is in the
+#     tail truncation would have dropped, so it now captures a bounded head
+#     and a bounded tail and discards the middle.
 #
 # WHAT WAS ACTUALLY WRONG, one paragraph per fix, each independently
 # root-caused by reading the real code path and reproducing the mechanism
@@ -192,3 +218,4 @@ lint|yes|lint|lint (make lint)|-
 fuzz-replay|yes|fuzz-replay|fuzz-replay (saved findings)|-
 compile-all-tus|yes|build|build (cached dependencies)|-
 tests|yes|tests|tests (make test-parallel)|-
+arena|yes|arena|arena (make arena-demo)|-

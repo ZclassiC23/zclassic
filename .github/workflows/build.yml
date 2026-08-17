@@ -511,3 +511,60 @@ jobs:
           name: test-parallel-log-${{ github.sha }}
           path: /tmp/suite.log
           retention-days: 14
+
+  # ── JOB 6 — THE NEW-READER JOB ─────────────────────────────────────────
+  # Runs the exact three commands the README gives a stranger, on a machine
+  # nobody here controls, from a genuinely clean checkout. It is the only
+  # job whose failure means "the front door is broken" rather than "a test
+  # regressed", so it deliberately shares nothing with the others: no
+  # vendored-dependency cache, no restored build tree, no toolchain beyond
+  # the C compiler. If it needs something the README does not mention, that
+  # is the bug.
+  #
+  # It also does work no local run can do. The pinned roots in
+  # tools/dev/arena_demo.sh were produced on the maintainer's host; this job
+  # re-derives them on a different machine, a different CPU and a fresh
+  # userland every push, which is the cross-machine half of the
+  # reproducibility claim docs/ARENA.md makes.
+  #
+  # Kernel confinement is NOT assumed. arena_runner exits 3 when Landlock or
+  # seccomp is unavailable and the demo then falls back to an unconfined run
+  # and says so; the roots are identical either way because confinement
+  # bounds a pilot process and is not an input to the simulation. So this
+  # job is honest on a runner image that has Landlock and on one that does
+  # not, without either weakening an assertion or pinning us to a kernel.
+  arena:
+    name: arena (make arena-demo)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Toolchain
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends build-essential gcc-14
+          # Same -std=c23 reason as every other job here: ubuntu-latest's
+          # default gcc (13) rejects the `c23` spelling outright.
+          sudo update-alternatives --install /usr/bin/gcc gcc /usr/bin/gcc-14 100
+          sudo update-alternatives --install /usr/bin/cc cc /usr/bin/gcc-14 100
+          sudo update-alternatives --set gcc /usr/bin/gcc-14
+          sudo update-alternatives --set cc /usr/bin/gcc-14
+          gcc --version
+
+      # The demo asserts the pinned roots, the replay re-simulation, and the
+      # named refusal of a tampered control byte on its own, and exits
+      # non-zero on any of them — so running it IS the gate.
+      - name: make arena-demo
+        run: make arena-demo
+
+      # Stale artwork is a documentation lie with a long half-life: the SVG
+      # carries the seed, the pilot identities and both roots, so a reader
+      # checks the picture against numbers it claims to depict.
+      - name: make arena-svg-check
+        run: make arena-svg-check
+
+      - name: make arena-demo-opt-parity
+        run: make arena-demo-opt-parity

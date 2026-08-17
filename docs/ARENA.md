@@ -79,6 +79,22 @@ tick onward its whole team receives neutral controls — recorded in the replay
 like any other control. A misbehaving pilot cannot abort a match or make it
 nondeterministic; it can only lose.
 
+Confinement is a property of your kernel, not of the match. `arena_runner`
+refuses to run unconfined by default and exits 3 with a named reason when
+Landlock or seccomp is unavailable — inside some containers, on older kernels,
+under some VMs. `make arena-demo` catches that one exit code, re-runs with
+`--no-sandbox`, and prints which mode it used:
+
+```text
+Pilot confinement:         Landlock + seccomp
+```
+
+The roots are identical either way, because confinement bounds what a pilot
+*process* may do and is not an input to the simulation. Nothing else about the
+demo changes: every root, the re-simulation and the tamper refusal are checked
+at full strength in both modes. If you are running a pilot you did not write,
+use a kernel that can confine it.
+
 ## Write your own pilot
 
 Copy the smaller pilot and change its decision function:
@@ -179,8 +195,14 @@ These are named because they are real, not because they are about to be fixed.
   acceptance script pins its own separate roots.
 - **The cross-node proof runs two nodes on one host.** It proves independent
   fetch, install, build and replay across two disjoint datadirs and stores; it
-  does not yet prove it across two physical machines or two CPU
-  microarchitectures.
+  does not prove it across two CPU microarchitectures. It is no longer the only
+  cross-machine evidence: the `arena (make arena-demo)` job in
+  [`.github/workflows/build.yml`](../.github/workflows/build.yml) re-derives
+  these exact roots on a hosted runner — a different machine, a fresh userland,
+  every push — from a clean checkout with no cache. That covers the *match*
+  reproducing elsewhere. It does not cover the *package swarm* reproducing
+  elsewhere, which is what the two-node script is for and what still runs on one
+  host.
 - **Match definitions are carried out of band.** The acceptance script writes
   the seed, plane count and package roots to a file both nodes read. There is
   no signed on-network challenge/accept wire for a match yet; the transport

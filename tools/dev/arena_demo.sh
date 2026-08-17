@@ -106,12 +106,47 @@ ad_expect()
     [ "$2" = "$3" ] || ad_die "$1: got '$2', expected '$3'"
 }
 
+# Pilot confinement is a property of the HOST KERNEL, not of the match.
+# Landlock and seccomp bound what a pilot PROCESS may do; they are not
+# inputs to the simulation, so a confined and an unconfined run of the same
+# pilots produce the same replay byte for byte — which is why every
+# assertion below stays at full strength in either mode.
+#
+# arena_runner refuses to run unconfined by default and exits 3 with a named
+# reason when the kernel cannot confine (no Landlock, no seccomp, a
+# container or VM that blocks either). That refusal is right for a tool. It
+# is wrong for a first impression: a reader on macOS under a VM, on WSL, on
+# an older kernel, or inside a locked-down container would clone the repo,
+# run the one command the README gives them, and get exit 3 — with nothing
+# to look at and no idea their machine was fine. So fall back exactly once,
+# print which mode ran in plain words, and never soften a check for it.
+AD_SANDBOX="confined"
+AD_SANDBOX_ARGS=()
+
+ad_run_once()
+{
+    local rc=0
+    "$RUNNER" --seed "$SEED" --planes-per-team "$PLANES" \
+        --pilot-red "$1" --pilot-blue "$2" --replay-out "$3" \
+        "${AD_SANDBOX_ARGS[@]}" > "$4" 2>"$4.err" || rc=$?
+    return "$rc"
+}
+
 # Play one match with the given pilots and report file.
 ad_play()
 {
-    "$RUNNER" --seed "$SEED" --planes-per-team "$PLANES" \
-        --pilot-red "$1" --pilot-blue "$2" --replay-out "$3" > "$4" 2>"$4.err" \
-        || { cat "$4.err" >&2; ad_die "arena_runner failed"; }
+    local rc=0
+    ad_run_once "$@" || rc=$?
+    if [ "$rc" -eq 3 ] && [ "$AD_SANDBOX" = confined ]; then
+        AD_SANDBOX="unconfined"
+        AD_SANDBOX_ARGS=(--no-sandbox)
+        rc=0
+        ad_run_once "$@" || rc=$?
+    fi
+    if [ "$rc" -ne 0 ]; then
+        cat "$4.err" >&2
+        ad_die "arena_runner failed (exit $rc)"
+    fi
 }
 
 # Assert one report's fields and roots against the pinned reference.
@@ -245,6 +280,14 @@ printf '\n'
 printf 'Replay verification:       MATCH\n'
 printf 'Result vs pinned roots:    MATCH\n'
 printf 'Altered control byte:      REFUSED (%s)\n' "$TAMPER_REASON"
+if [ "$AD_SANDBOX" = confined ]; then
+    printf 'Pilot confinement:         Landlock + seccomp\n'
+else
+    printf 'Pilot confinement:         UNAVAILABLE on this kernel — pilots ran\n'
+    printf '                           unconfined. The match is unaffected:\n'
+    printf '                           confinement bounds a pilot process, it\n'
+    printf '                           is not an input to the simulation.\n'
+fi
 if [ -n "$OPT_PARITY_LINE" ]; then printf '%s\n' "$OPT_PARITY_LINE"; fi
 printf '\n'
 printf 'Seed:                      %s (%sv%s)\n' "$SEED" "$PLANES" "$PLANES"
