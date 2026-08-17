@@ -323,6 +323,14 @@ static bool process_run_impl(const char *cwd, int exec_fd,
         pid_t waited = waitpid(pid, &status, WNOHANG);
         if (waited == pid) {
             finished = true;
+            /* Cancellation armed before this reap owns the child's death:
+             * cancel_request() signals the leader synchronously, so under
+             * CPU saturation waitpid can reap the terminated child in the
+             * SAME iteration, before the cancel/deadline branch below runs.
+             * Attribute the cancellation here or the receipt lies about why
+             * the child died. */
+            if (g_process_cancel_requested != 0)
+                out->cancelled = true;
             break;
         }
         if (waited < 0 && errno != EINTR) {

@@ -342,6 +342,18 @@ static int test_process_sensitive_groups_are_catalog_exclusive(void)
     return failures;
 }
 
+/* Hosted-CI diagnosis: an rc assert failing deep into this test used to
+ * leave no evidence (the captured command output never made the group log).
+ * Print the command tag, both rc values, and a bounded output prefix. */
+static void dump_bad_rc(const char *tag, int rc, int expected,
+                        const char *out)
+{
+    if (rc == expected) return;
+    fprintf(stderr, "%s: rc=%d (expected %d), captured output prefix:\n",
+            tag, rc, expected);
+    fprintf(stderr, "%.4000s\n", out ? out : "(null)");
+}
+
 static int test_runner_exact_selection(void)
 {
     int failures = 0;
@@ -383,6 +395,7 @@ static int test_runner_exact_selection(void)
                      exe);
         ASSERT(n > 0 && (size_t)n < sizeof(command));
         rc = capture_command(command, out, sizeof(out));
+        dump_bad_rc("nested --source-id", rc, 0, out);
         ASSERT(rc == 0);
         char expected_source[80];
         ASSERT(snprintf(expected_source, sizeof(expected_source), "%s\n",
@@ -393,6 +406,7 @@ static int test_runner_exact_selection(void)
                      "\"%s\" --source-record 2>&1", exe);
         ASSERT(n > 0 && (size_t)n < sizeof(command));
         rc = capture_command(command, out, sizeof(out));
+        dump_bad_rc("nested --source-record", rc, 0, out);
         ASSERT(rc == 0);
         char expected_record[160];
         ASSERT(snprintf(expected_record, sizeof(expected_record),
@@ -413,6 +427,7 @@ static int test_runner_exact_selection(void)
                      "--no-cache 2>&1", exe);
         ASSERT(n > 0 && (size_t)n < sizeof(command));
         rc = capture_command(command, out, sizeof(out));
+        dump_bad_rc("nested exact two-id", rc, 0, out);
         ASSERT(rc == 0);
         ASSERT(strstr(out, "groups_ran=2") != NULL);
         ASSERT(strstr(out, "groups_failed=0") != NULL);
@@ -448,6 +463,7 @@ static int test_runner_exact_selection(void)
                      zcl_build_source_mutation_sha256());
         ASSERT(n > 0 && (size_t)n < sizeof(command));
         rc = capture_command(command, out, sizeof(out));
+        dump_bad_rc("make -n t-fast-exact ONLY=api", rc, 0, out);
         ASSERT(rc == 0);
         ASSERT(strstr(out, "resolves to exact set test_api") != NULL);
         ASSERT(strstr(out, "--exact=test_api") != NULL);
