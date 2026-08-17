@@ -608,8 +608,6 @@ static bool run_candidate_workspace(const char *store,
 static bool run_packet(struct json_value *packet, const char *goal,
                        const char *workspace, const char *candidate_workspace,
                        const char *datadir,
-                       const struct vcs_zcode_task_index_entry *entry,
-                       const struct vcs_zcode_task_context_entry *context_entry,
                        const struct vcs_zcode_task_v1 *task,
                        const struct vcs_zcode_agent_context_v1 *context,
                        const struct vcs_zcode_write_scope_v1 *scope,
@@ -633,11 +631,8 @@ static bool run_packet(struct json_value *packet, const char *goal,
         json_free(&excerpts);
         return false;
     }
-    char scope_hex[65], recipe_hex[65], lock_hex[65], toolchain_hex[65];
-    zcl_hex_encode(task->write_scope_root, 32, scope_hex);
-    zcl_hex_encode(task->acceptance_tests_root, 32, recipe_hex);
+    char lock_hex[65];
     zcl_hex_encode(task->dependency_lock_root, 32, lock_hex);
-    zcl_hex_encode(task->toolchain_capsule_root, 32, toolchain_hex);
     json_init(&limits); json_set_object(&limits);
     json_init(&scopes); json_set_array(&scopes);
     bool ok = json_push_kv_int(&limits, "max_changed_files",
@@ -660,10 +655,6 @@ static bool run_packet(struct json_value *packet, const char *goal,
     json_init(packet); json_set_object(packet);
     ok = ok && json_push_kv_str(packet, "goal", goal) &&
         json_push_kv_str(packet, "candidate_workspace", candidate_workspace) &&
-        json_push_kv_str(packet, "task_root", entry->task_root_hex) &&
-        json_push_kv_str(packet, "source_root", entry->source_root_hex) &&
-        json_push_kv_str(packet, "context_root",
-                         context_entry->context_root_hex) &&
         json_push_kv_str(packet, "context_query", context->query) &&
         json_push_kv(packet, "selected_excerpts", &excerpts) &&
         json_push_kv(packet, "locked_dependencies", &locked) &&
@@ -673,15 +664,10 @@ static bool run_packet(struct json_value *packet, const char *goal,
         json_push_kv_int(packet, "dependency_context_headers",
                          (int64_t)dependency_headers) &&
         json_push_kv(packet, "allowed_write_scopes", &scopes) &&
-        json_push_kv_str(packet, "write_scope_root", scope_hex) &&
-        json_push_kv_str(packet, "package_recipe_root", recipe_hex) &&
         json_push_kv_str(packet, "dependency_lock_root", lock_hex) &&
-        json_push_kv_str(packet, "proof_policy_root",
-                         entry->proof_policy_root_hex) &&
-        json_push_kv_str(packet, "toolchain_capsule_root", toolchain_hex) &&
         json_push_kv(packet, "limits", &limits) &&
         json_push_kv_str(packet, "instruction",
-                         "Edit only the candidate workspace. Do not accept, publish, or claim proof.");
+                         "Write C23 only. Reuse the selected APIs before creating code. Edit only allowed paths. Do not accept, publish, or claim proof.");
     json_free(&dependencies); json_free(&locked);
     json_free(&scopes); json_free(&limits); json_free(&excerpts);
     if (!ok)
@@ -1201,8 +1187,8 @@ static bool run_admit(
     char repair_detail[256];
     bool repair_packet_ok = !retry_ready || !details ||
         (candidate && patch && run_packet(
-             &repair_packet, goal, workspace, next_workspace, datadir, entry,
-             context_entry, task, context, scope, repair_detail) &&
+             &repair_packet, goal, workspace, next_workspace, datadir, task,
+             context, scope, repair_detail) &&
          json_push_kv_str(&repair_packet, "parent_candidate_root",
                           json_get_str(candidate)) &&
          json_push_kv_str(&repair_packet, "prior_patch_root",
@@ -1451,8 +1437,8 @@ void zcl_native_handle_zcode_work_run(
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
     bool packet_ok = run_packet(
-        &packet, goal, workspace, candidate_workspace, proof_datadir, entry,
-        context_entry, &task, &context, &scope, packet_detail);
+        &packet, goal, workspace, candidate_workspace, proof_datadir, &task,
+        &context, &scope, packet_detail);
     if (!packet_ok) {
         run_fail(reply, "MODEL_CONTEXT_REFUSED", "context",
                  packet_detail[0] ? packet_detail

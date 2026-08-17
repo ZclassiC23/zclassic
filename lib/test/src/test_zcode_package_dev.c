@@ -3,6 +3,7 @@
 
 #include "test/test_core.h"
 #include "base/hex.h"
+#include "base/safe_alloc.h"
 #include "command/native_command.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
@@ -33,6 +34,26 @@ static bool zpd_write(const char *path, const char *text)
     bool ok = fwrite(text, 1, len, f) == len;
     if (fclose(f) != 0) ok = false;
     return ok;
+}
+
+static char *zpd_read_bounded(const char *path, size_t maximum_bytes)
+{
+    struct stat st;
+    if (stat(path, &st) != 0 || st.st_size < 0 ||
+        (uint64_t)st.st_size > maximum_bytes)
+        return NULL;
+    size_t len = (size_t)st.st_size;
+    char *text = zcl_malloc(len + 1u, "zcode.packet.test");
+    if (!text) return NULL;
+    FILE *f = fopen(path, "rb");
+    bool ok = f && fread(text, 1, len, f) == len;
+    if (f && fclose(f) != 0) ok = false;
+    if (!ok) {
+        free(text);
+        return NULL;
+    }
+    text[len] = '\0';
+    return text;
 }
 
 static bool zpd_pubkey(secp256k1_context *ctx, const uint8_t secret[32],
@@ -984,6 +1005,23 @@ static int zpd_test_work_start(void)
         ASSERT(access(json_get_str(packet_path), F_OK) == 0);
         ASSERT(json_get_int(json_get(&reply.data,
                                      "adapter_packet_bytes")) > 0);
+        char *packet_text = zpd_read_bounded(json_get_str(packet_path),
+                                             2u * 1024u * 1024u);
+        ASSERT(packet_text != NULL);
+        ASSERT(strstr(packet_text, "\"Write C23 only.") != NULL);
+        ASSERT(strstr(packet_text,
+                      "\"selected_dependency_context\"") != NULL);
+        ASSERT(strstr(packet_text, "\"selected_excerpts\"") != NULL);
+        ASSERT(strstr(packet_text, "\"allowed_write_scopes\"") != NULL);
+        ASSERT(strstr(packet_text, "\"dependency_lock_root\"") != NULL);
+        ASSERT(strstr(packet_text, "\"task_root\"") == NULL);
+        ASSERT(strstr(packet_text, "\"source_root\"") == NULL);
+        ASSERT(strstr(packet_text, "\"context_root\"") == NULL);
+        ASSERT(strstr(packet_text, "\"write_scope_root\"") == NULL);
+        ASSERT(strstr(packet_text, "\"package_recipe_root\"") == NULL);
+        ASSERT(strstr(packet_text, "\"proof_policy_root\"") == NULL);
+        ASSERT(strstr(packet_text, "\"toolchain_capsule_root\"") == NULL);
+        free(packet_text);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "authority")),
                       "NONE_MANUAL_HANDOFF") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
