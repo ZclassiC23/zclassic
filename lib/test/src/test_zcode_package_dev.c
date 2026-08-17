@@ -1037,6 +1037,8 @@ static int zpd_test_work_start(void)
         ASSERT(json_get(&reply.data, "proof") == NULL);
         ASSERT(json_get(&reply.data, "expert") == NULL);
         ASSERT(json_get_bool(json_get(&reply.data, "details_available")));
+        ASSERT(zpd_next_is(&reply, "zcode.work.run", absolute_root,
+                           saved_work_id, NULL));
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -1217,6 +1219,8 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(
                           &reply.data, "remaining_risks")),
                       "latest candidate failed confined package build or tests") == 0);
+        ASSERT(zpd_next_is(&reply, "zcode.work.run", absolute_root,
+                           saved_work_id, NULL));
         zcl_command_reply_free(&reply);
         json_free(&input);
 
@@ -1334,6 +1338,7 @@ static int zpd_test_work_start(void)
                           &reply.data, "next_safe_command")),
                       "ask user to confirm exact candidate") == 0);
         ASSERT(json_get_bool(json_get(&reply.data, "confirmation_ready")));
+        ASSERT(reply.next_count == 0);
         ASSERT(strlen(json_get_str(json_get(
                    &reply.data, "confirmation_identity"))) == 64);
         status_proof = json_get(&reply.data, "proof");
@@ -1411,6 +1416,7 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(
                           &reply.data, "next_safe_command")),
                       "ask user to confirm exact candidate") == 0);
+        ASSERT(reply.next_count == 0);
         const char *status_confirmation = json_get_str(json_get(
             &reply.data, "confirmation_identity"));
         ASSERT(status_confirmation && strlen(status_confirmation) == 64);

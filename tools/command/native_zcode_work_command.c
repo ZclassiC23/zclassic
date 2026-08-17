@@ -1340,6 +1340,11 @@ void zcl_native_handle_zcode_work_status(
             proof.facts.fuzz_satisfied && !proof.facts.review_satisfied
             ? "Review the exact candidate evidence." :
               "Keep thinking while the missing proof arrives.";
+    char continuation_workspace[ZWORK_PATH_MAX] = {0};
+    bool can_resume_candidate = !entry->expired && !accepted &&
+        (repair_needed || !entry->latest_action_root_hex[0]);
+    bool continuation_ready = !can_resume_candidate ||
+        realpath(workspace, continuation_workspace) != NULL;
     char remaining_risks[256];
     if (entry->expired)
         (void)snprintf(remaining_risks, sizeof(remaining_risks),
@@ -1505,6 +1510,20 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_bool(&reply->data, "details_available", true) &&
         (!details || (json_push_kv(&reply->data, "proof", &proof_json) &&
                       json_push_kv(&reply->data, "expert", &expert)));
+    struct json_value next_input;
+    json_init(&next_input); json_set_object(&next_input);
+    if (ok && can_resume_candidate) {
+        ok = continuation_ready &&
+            json_push_kv_str(&next_input, "workspace",
+                             continuation_workspace) &&
+            json_push_kv_str(&next_input, "work", work_id) &&
+            zwork_add_next(
+                reply, "zcode.work.run", &next_input,
+                repair_needed
+                  ? "repair the bounded candidate and admit this exact work again"
+                  : "create only the behavior still missing from this exact work");
+    }
+    json_free(&next_input);
     json_free(&changed_paths); json_free(&proof_json); json_free(&expert);
     vcs_zcode_patch_free(&summary.patch);
     free(goal); vcs_zcode_task_index_free(index);
