@@ -5,6 +5,7 @@
 #include "base/hex.h"
 #include "base/safe_alloc.h"
 #include "command/native_command.h"
+#include "config/command_catalog.h"
 #include "json/json.h"
 #include "models/build_fabric.h"
 #include "models/database.h"
@@ -925,6 +926,25 @@ static int zpd_test_work_start(void)
         ASSERT(json_get_bool(json_get(reuse, "new_code_required")));
         ASSERT(expert == NULL);
         ASSERT(json_get_bool(json_get(&reply.data, "details_available")));
+        ASSERT(reply.next_count == 1);
+        ASSERT(strcmp(reply.next[0].command, "zcode.work.run") == 0);
+        struct json_value next_input;
+        json_init(&next_input);
+        ASSERT(json_read(&next_input, reply.next[0].input_json,
+                         strlen(reply.next[0].input_json)));
+        ASSERT(strcmp(json_get_str(json_get(&next_input, "workspace")),
+                      root) == 0);
+        ASSERT(strcmp(json_get_str(json_get(&next_input, "work")),
+                      saved_work_id) == 0);
+        ASSERT(json_get(&next_input, "task_root") == NULL);
+        ASSERT(json_get(&next_input, "package_root") == NULL);
+        const struct zcl_command_spec *next_spec =
+            zcl_command_registry_find(zcl_command_catalog(),
+                                      reply.next[0].command, NULL);
+        char next_why[160] = {0};
+        ASSERT(next_spec && zcl_command_registry_input_validate(
+            next_spec, &next_input, next_why, sizeof(next_why)));
+        json_free(&next_input);
         zcl_command_reply_free(&reply);
         json_free(&input);
 

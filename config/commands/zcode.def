@@ -457,7 +457,9 @@ ZCL_COMMAND_READY_COMMAND(
     "Searches installed packages and the rebuildable local package index first, "
     "then composes the existing package, task, scope, context, toolchain and "
     "proof-policy owners only for behavior still missing. Exact reuse creates no "
-    "task. The default is root-free; details=true exposes exact identities. "
+    "task. Its typed next action carries the selected name or work ID without "
+    "requiring a root copy. The default is root-free; details=true exposes "
+    "exact identities. "
     "This command changes no source file and launches no model or build.",
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,start,goal,reuse,package,api,profile,context,c23",

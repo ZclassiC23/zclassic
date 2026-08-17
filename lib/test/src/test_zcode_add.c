@@ -29,6 +29,7 @@
 #include "test/test_core.h"
 
 #include "command/native_command.h"
+#include "config/command_catalog.h"
 #include "core/uint256.h"
 #include "crypto/sha3.h"
 #include "json/json.h"
@@ -797,6 +798,22 @@ static int t_e2e(void)
             saw_ring_symbol = true;
     }
     snprintf(workspace_path, sizeof(workspace_path), "%s/.zvcs", workspace);
+    struct json_value reuse_next_input;
+    json_init(&reuse_next_input);
+    bool reuse_next_ok = work_reply.next_count == 1 &&
+        json_read(&reuse_next_input, work_reply.next[0].input_json,
+                  strlen(work_reply.next[0].input_json)) &&
+        reuse_next_input.type == JSON_OBJ &&
+        reuse_next_input.num_children == 1 &&
+        strcmp(json_get_str(json_get(&reuse_next_input, "name_or_root")),
+               "alice/ringbuffer@1.0.0") == 0;
+    const struct zcl_command_spec *reuse_next_spec =
+        zcl_command_registry_find(zcl_command_catalog(), "zcode.use", NULL);
+    char reuse_next_why[160] = {0};
+    reuse_next_ok = reuse_next_ok && reuse_next_spec &&
+        zcl_command_registry_input_validate(
+            reuse_next_spec, &reuse_next_input, reuse_next_why,
+            sizeof(reuse_next_why));
     ZA_CHECK("work start reuses exact installed APIs and creates zero task",
              input_ready &&
                  work_reply.status == ZCL_COMMAND_STATUS_PASSED &&
@@ -807,7 +824,11 @@ static int t_e2e(void)
                  reuse_plan && !json_get_bool(json_get(
                      reuse_plan, "new_code_required")) &&
                  selected && json_get_bool(json_get(selected, "installed")) &&
-                 saw_ring_symbol && !za_exists(workspace_path));
+                 saw_ring_symbol && !za_exists(workspace_path) &&
+                 reuse_next_ok &&
+                 strcmp(work_reply.next[0].command, "zcode.use") == 0 &&
+                 strstr(work_reply.next[0].input_json, root_hex) == NULL);
+    json_free(&reuse_next_input);
     zcl_command_reply_free(&work_reply);
     json_free(&work_input);
 

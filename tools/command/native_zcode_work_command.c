@@ -705,6 +705,17 @@ static bool zwork_render_selection(
                              selection->service_generation)));
 }
 
+static bool zwork_add_next(struct zcl_command_reply *reply,
+                           const char *command,
+                           const struct json_value *input,
+                           const char *reason)
+{
+    char wire[sizeof(reply->next[0].input_json)];
+    size_t n = input ? json_write(input, wire, sizeof(wire)) : 0;
+    return n > 0 && n < sizeof(wire) &&
+        zcl_command_reply_add_next(reply, command, wire, reason);
+}
+
 void zcl_native_handle_zcode_work_context(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
@@ -789,7 +800,21 @@ void zcl_native_handle_zcode_work_start(
         return;
     }
     if (reuse_complete) {
-        bool rendered = json_push_kv_str(&reply->data, "work_id", "") &&
+        const struct json_value *reused = json_get(&reuse_plan, "reused");
+        const struct json_value *selected = reused ? json_at(reused, 0) : NULL;
+        const char *name = selected ? zwork_str(selected, "name") : NULL;
+        const char *semver = selected ? zwork_str(selected, "semver") : NULL;
+        char package_ref[VCS_PACKAGE_RELEASE_NAME_MAX +
+                         VCS_PACKAGE_RELEASE_SEMVER_MAX + 2u];
+        int package_ref_len = name && semver
+            ? snprintf(package_ref, sizeof(package_ref), "%s@%s", name,
+                       semver) : -1;
+        struct json_value next_input;
+        json_init(&next_input); json_set_object(&next_input);
+        bool rendered = package_ref_len > 0 &&
+            (size_t)package_ref_len < sizeof(package_ref) &&
+            json_push_kv_str(&next_input, "name_or_root", package_ref) &&
+            json_push_kv_str(&reply->data, "work_id", "") &&
             json_push_kv_str(&reply->data, "goal", goal) &&
             json_push_kv_str(&reply->data, "state", "REUSE_READY") &&
             json_push_kv_str(&reply->data, "stage", "Ready to use") &&
@@ -800,7 +825,11 @@ void zcl_native_handle_zcode_work_start(
             json_push_kv_str(&reply->data, "next_safe_command", "zcode use") &&
             json_push_kv_bool(&reply->data, "details_available", true) &&
             (!details || json_push_kv(
-                &reply->data, "expert", &reuse_expert));
+                &reply->data, "expert", &reuse_expert)) &&
+            zwork_add_next(
+                reply, "zcode.use", &next_input,
+                "use the exact compatible package without copying a root");
+        json_free(&next_input);
         json_free(&reuse_expert); json_free(&reuse_plan);
         vcs_package_prepared_free(&prepared);
         if (!rendered)
@@ -883,6 +912,16 @@ void zcl_native_handle_zcode_work_start(
              json_push_kv_bool(&reply->data, "details_available", true) &&
              (!details || json_push_kv(&reply->data, "expert", &expert));
     }
+    struct json_value next_input;
+    json_init(&next_input); json_set_object(&next_input);
+    if (ok) {
+        ok = json_push_kv_str(&next_input, "workspace", workspace) &&
+            json_push_kv_str(&next_input, "work", work_id) &&
+            zwork_add_next(
+                reply, "zcode.work.run", &next_input,
+                "create only the behavior the reuse plan still marks missing");
+    }
+    json_free(&next_input);
     json_free(&expert); json_free(&context);
     json_free(&reuse_expert); json_free(&reuse_plan);
     zcl_command_reply_free(&inner);
