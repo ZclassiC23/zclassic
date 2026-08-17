@@ -551,7 +551,7 @@ static int commons_command_noncreating_test(void)
 static int commons_mission_api_test(void)
 {
     int failures = 0;
-    TEST("ZCODE guide states the shared mission and shortest creation paths") {
+    TEST("ZCODE guide has one root-free reuse-first front door") {
         struct json_value input;
         json_init(&input); json_set_object(&input);
         struct zcl_command_request request = {.input = &input};
@@ -560,28 +560,27 @@ static int commons_mission_api_test(void)
         zcl_native_handle_zcode_guide(&request, &reply);
         ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "mission")),
-            "ZClassic23 is a metaverse where people and AI create real "
-            "things together, and nobody owns the world they build in.") == 0);
-        ASSERT(strcmp(json_get_str(json_get(&reply.data, "find_work")),
-                      "zcode package guide") == 0);
-        ASSERT(strcmp(json_get_str(json_get(&reply.data,
-                                            "search_local_packages")),
-                      "zcode package search") == 0);
-        ASSERT(strcmp(json_get_str(json_get(&reply.data, "create_work")),
-                      "zcode create") == 0);
-        ASSERT(strcmp(json_get_str(json_get(&reply.data,
-                                            "package_workflow")),
-                      "zcode package guide") == 0);
-        ASSERT(strcmp(json_get_str(json_get(&reply.data, "verify_commons")),
-                      "zcode commons verify") == 0);
-        ASSERT(!json_get_bool(json_get(&reply.data, "token_required")));
-        ASSERT(!json_get_bool(json_get(&reply.data, "balance_grants_truth")));
-        ASSERT(!json_get_bool(json_get(&reply.data, "commons_is_owned")));
-        ASSERT(json_get_bool(json_get(&reply.data,
-                                      "portable_source_identity")));
-        ASSERT(strcmp(json_get_str(json_get(&reply.data,
-                                            "current_package_build_target")),
-                      "linux-x86_64") == 0);
+            "Tell ZClassic23 what you want C23 software on this device to "
+            "do.") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "next_action")),
+                      "Describe the behavior you want.") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "start_command")),
+                      "zcode work start --input='{\"workspace\":\".\","
+                      "\"goal\":\"<desired behavior>\"}'") == 0);
+        ASSERT(strstr(json_get_str(json_get(&reply.data, "journey")),
+                      "reuse C23 -> create only missing code") != NULL);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "continue_rule")),
+                      "Follow the next_safe_command returned by each work "
+                      "step.") == 0);
+        ASSERT(strstr(json_get_str(json_get(&reply.data, "proof_view")),
+                      "details=true") != NULL);
+        ASSERT(json_get(&reply.data, "find_work") == NULL);
+        ASSERT(json_get(&reply.data, "create_work") == NULL);
+        ASSERT(json_get(&reply.data, "improve_work") == NULL);
+        ASSERT(json_get(&reply.data, "token_required") == NULL);
+        ASSERT(json_get(&reply.data, "task_root") == NULL);
+        ASSERT(json_get(&reply.data, "package_root") == NULL);
+        ASSERT(json_get(&reply.data, "receipt_root") == NULL);
         zcl_command_reply_free(&reply); json_free(&input);
         PASS();
     } _test_next:;

@@ -142,36 +142,28 @@ void zcl_native_handle_zcode_guide(
                  "zcode guide accepts no input keys");
         return;
     }
-    (void)json_push_kv_str(&reply->data, "mission",
-        "ZClassic23 is a metaverse where people and AI create real things "
-        "together, and nobody owns the world they build in.");
-    (void)json_push_kv_str(&reply->data, "find_work", "zcode package guide");
-    (void)json_push_kv_str(&reply->data, "search_local_packages",
-                           "zcode package search");
-    (void)json_push_kv_str(&reply->data, "inspect_work", "zcode package show");
-    (void)json_push_kv_str(&reply->data, "fetch_work", "zcode package fetch");
-    (void)json_push_kv_str(&reply->data, "package_workflow",
-                           "zcode package guide");
-    (void)json_push_kv_str(&reply->data, "create_work", "zcode create");
-    (void)json_push_kv_str(&reply->data, "improve_work", "zcode improve");
-    (void)json_push_kv_str(&reply->data, "record_evidence", "zcode evidence");
-    (void)json_push_kv_str(&reply->data, "accept_work", "zcode accept");
-    (void)json_push_kv_str(&reply->data, "publish_work", "zcode publish plan");
-    (void)json_push_kv_str(&reply->data, "verify_commons",
-                           "zcode commons verify");
-    (void)json_push_kv_str(&reply->data, "exact_inputs",
-                           "discover schema <leaf>");
-    (void)json_push_kv_bool(&reply->data, "token_required", false);
-    (void)json_push_kv_bool(&reply->data, "balance_grants_truth", false);
-    (void)json_push_kv_bool(&reply->data, "commons_is_owned", false);
-    (void)json_push_kv_str(&reply->data, "availability_rule",
-                           "ready executes; planned fails closed");
-    (void)json_push_kv_str(
-        &reply->data, "verification_rule",
-        "verify exact roots and evidence locally; identity and reputation never replace proof");
-    (void)json_push_kv_bool(&reply->data, "portable_source_identity", true);
-    (void)json_push_kv_str(&reply->data, "current_package_build_target",
-                           ZCL_C23_COMMONS_BUILD_TARGET_V2);
+    bool ok = json_push_kv_str(
+            &reply->data, "mission",
+            "Tell ZClassic23 what you want C23 software on this device to do.") &&
+        json_push_kv_str(&reply->data, "next_action",
+                         "Describe the behavior you want.") &&
+        json_push_kv_str(
+            &reply->data, "start_command",
+            "zcode work start --input='{\"workspace\":\".\","
+            "\"goal\":\"<desired behavior>\"}'") &&
+        json_push_kv_str(
+            &reply->data, "journey",
+            "reuse C23 -> create only missing code -> build and test -> show "
+            "behavior -> reproduce -> accept exact version -> fetch and use") &&
+        json_push_kv_str(
+            &reply->data, "continue_rule",
+            "Follow the next_safe_command returned by each work step.") &&
+        json_push_kv_str(
+            &reply->data, "proof_view",
+            "Add details=true only when you want exact roots and receipts.");
+    if (!ok)
+        zcc_fail(reply, "ZCODE_GUIDE_OUTPUT",
+                 "the reuse-first guide could not be rendered");
 }
 
 static const char *zcc_status_name(

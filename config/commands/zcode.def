@@ -577,12 +577,13 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_zcode_work_review)
 
 ZCL_COMMAND_READY_READ(
-    "zcode.guide", "zcode", "", "Start creating in the shared C23 commons",
-    "Returns the shortest ready command paths for finding, inspecting, "
-    "creating, improving, evidencing, accepting, publishing and verifying "
-    "public work. It grants no ownership or truth authority.",
+    "zcode.guide", "zcode", "", "Tell ZClassic23 what you want C23 to do",
+    "Returns one root-free, reuse-first start command and the plain journey "
+    "from desired behavior to an exact accepted version. Proof identities "
+    "remain available on request. It grants no acceptance or publication "
+    "authority.",
     ZCL_COMMAND_LIST_BUDGET,
-    "zcode,guide,mission,create,people,ai,commons,metaverse",
+    "zcode,guide,intent,reuse,c23,work,start,journey",
     "zcl.zcode_guide.input.v1", "zcl.zcode_guide.v1", "", "",
     "zclassic23 zcode guide", ZCL_COMMAND_LAYER_APP,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_PUBLIC,

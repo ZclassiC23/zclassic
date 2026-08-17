@@ -979,7 +979,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `zcode guide` | ready | read / read / public · instant/tiny | none | `zcl.zcode_guide.v1` | `zclassic23 zcode guide` | Start creating in the shared C23 commons |
+| `zcode guide` | ready | read / read / public · instant/tiny | none | `zcl.zcode_guide.v1` | `zclassic23 zcode guide` | Tell ZClassic23 what you want C23 to do |
 
 #### `zcode.project` — C23 projects
 
