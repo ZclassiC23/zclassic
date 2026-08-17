@@ -1068,11 +1068,11 @@ static int zpd_test_work_start(void)
                        saved_candidate_workspace,
                        strlen(saved_candidate_workspace)) == 0);
         ASSERT(access(json_get_str(packet_path), F_OK) == 0);
-        ASSERT(json_get_int(json_get(&reply.data,
-                                     "adapter_packet_bytes")) > 0);
-        ASSERT(json_get_int(json_get(&reply.data, "model_context_bytes")) ==
-               json_get_int(json_get(&reply.data,
-                                     "adapter_packet_bytes")));
+        ASSERT(json_get_int(json_get(
+                   &reply.data, "model_context_bytes")) > 0);
+        ASSERT(json_get(&reply.data, "adapter_packet_bytes") == NULL);
+        ASSERT(json_get(&reply.data, "workspace_created") == NULL);
+        ASSERT(json_get(&reply.data, "next_safe_command") == NULL);
         char *packet_text = zpd_read_bounded(json_get_str(packet_path),
                                              2u * 1024u * 1024u);
         ASSERT(packet_text != NULL);
@@ -1105,8 +1105,31 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
                       "Creating missing code") == 0);
         ASSERT(json_get_bool(json_get(&reply.data, "details_available")));
-        ASSERT(zpd_next_is(&reply, "zcode.work.run", absolute_root,
-                           saved_work_id, "manual"));
+        ASSERT(zpd_next_is(&reply, "zcode.work.status", absolute_root,
+                           saved_work_id, NULL));
+        {
+            const struct zcl_command_registry *registry =
+                zcl_command_catalog();
+            const struct zcl_command_spec *run_spec =
+                zcl_command_registry_find(registry, "zcode.work.run", NULL);
+            struct zcl_command_context context = {
+                .registry = registry,
+                .granted_capabilities = ~(uint64_t)0,
+                .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+            };
+            char rendered[ZCL_COMMAND_RESULT_BUDGET + 1u];
+            enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_OK;
+            ASSERT(run_spec != NULL);
+            size_t rendered_bytes = zcl_command_registry_execute_json(
+                registry, run_spec, &context, &input, false, run_spec->path,
+                "normal", 0, 0, NULL, rendered, sizeof(rendered),
+                &exit_code);
+            ASSERT(rendered_bytes > 0);
+            ASSERT(exit_code == ZCL_COMMAND_EXIT_OK);
+            ASSERT(strstr(rendered, "RESPONSE_BUDGET_EXCEEDED") == NULL);
+            ASSERT(strstr(rendered,
+                          "\"command\":\"zcode.work.status\"") != NULL);
+        }
         ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
         ASSERT(memcmp(source_before, source_after, sizeof(source_before)) == 0);
         struct stat candidate_stat;
@@ -1145,7 +1168,12 @@ static int zpd_test_work_start(void)
         ASSERT(json_push_kv_bool(&input, "details", true));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
+        /* The operator's default node is not candidate authority. Omission of
+         * datadir must retain the closed scratch worker even when the native
+         * bridge has a default node bound. */
+        zcl_native_bridge_bind_rpc(absolute_root, 0);
         zcl_native_handle_zcode_work_run(&request, &reply);
+        zcl_native_bridge_bind_rpc("", 0);
         if (reply.status != ZCL_COMMAND_STATUS_PASSED)
             printf("failed-candidate admission failed: %s: %s\n", reply.error.code,
                    reply.error.message);
@@ -1192,8 +1220,8 @@ static int zpd_test_work_start(void)
                access(json_get_str(repair_packet_path), F_OK) == 0);
         ASSERT(json_get_int(json_get(&reply.data,
                                      "model_context_bytes")) > 0);
-        ASSERT(zpd_next_is(&reply, "zcode.work.run", absolute_root,
-                           saved_work_id, "manual"));
+        ASSERT(zpd_next_is(&reply, "zcode.work.status", absolute_root,
+                           saved_work_id, NULL));
         (void)snprintf(saved_candidate_workspace,
                        sizeof(saved_candidate_workspace), "%s",
                        json_get_str(repair_workspace));
@@ -1234,8 +1262,8 @@ static int zpd_test_work_start(void)
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "REPAIR_NEEDED") == 0);
-        ASSERT(zpd_next_is(&reply, "zcode.work.run", absolute_root,
-                           saved_work_id, "manual"));
+        ASSERT(zpd_next_is(&reply, "zcode.work.status", absolute_root,
+                           saved_work_id, NULL));
         repair_packet_path = json_get(&reply.data, "adapter_packet_path");
         ASSERT(repair_packet_path != NULL);
         char *repair_packet_text = zpd_read_bounded(
@@ -1574,6 +1602,7 @@ static int zpd_test_work_start(void)
         json_set_str((struct json_value *)json_get(
                          &input, "confirmation_identity"),
                      confirmation_identity);
+        ASSERT(json_push_kv_bool(&input, "details", true));
         zcl_command_reply_init(&reply, "zcl.zcode_work_accept_test.v1");
         zcl_native_handle_zcode_work_accept(&request, &reply);
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
@@ -1605,6 +1634,8 @@ static int zpd_test_work_start(void)
                       "ACCEPTED_LANE_BOUND") == 0);
         ASSERT(!json_get_bool(json_get(
             &reply.data, "publication_reused")));
+        ASSERT(json_get_bool(json_get(
+            &reply.data, "details_available")));
         ASSERT(strlen(json_get_str(json_get(
                    &reply.data, "publication_progress_root"))) == 64);
         char accepted_publication_workspace[4400];
@@ -1616,6 +1647,32 @@ static int zpd_test_work_start(void)
                        publication_job_text);
         char resolved_authority_workspace[4400];
         ASSERT(realpath(root, resolved_authority_workspace) != NULL);
+        ASSERT(reply.next_count == 1);
+        ASSERT(strcmp(reply.next[0].command,
+                      "dev.publication.advance") == 0);
+        struct json_value publication_next;
+        json_init(&publication_next);
+        ASSERT(json_read(&publication_next, reply.next[0].input_json,
+                         strlen(reply.next[0].input_json)));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &publication_next, "workspace")),
+                      resolved_authority_workspace) == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &publication_next, "datadir")),
+                      zbuild_datadir) == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &publication_next, "job_root")),
+                      publication_job_hex) == 0);
+        ASSERT(json_get(&publication_next, "task_root") == NULL);
+        ASSERT(json_get(&publication_next, "candidate_root") == NULL);
+        const struct zcl_command_spec *publication_next_spec =
+            zcl_command_registry_find(
+                zcl_command_catalog(), reply.next[0].command, NULL);
+        char publication_next_why[160] = {0};
+        ASSERT(publication_next_spec && zcl_command_registry_input_validate(
+            publication_next_spec, &publication_next,
+            publication_next_why, sizeof(publication_next_why)));
+        json_free(&publication_next);
         ASSERT(strcmp(accepted_publication_workspace,
                       resolved_authority_workspace) == 0);
         ASSERT(strcmp(accepted_candidate_workspace,
@@ -1734,9 +1791,13 @@ static int zpd_test_work_start(void)
         ASSERT(json_get_bool(json_get(&reply.data, "idempotent")));
         ASSERT(json_get_bool(json_get(
             &reply.data, "publication_reused")));
-        ASSERT(strcmp(json_get_str(json_get(
-                          &reply.data, "publication_job_root")),
-                      publication_job_hex) == 0);
+        ASSERT(json_get(&reply.data, "publication_job_root") == NULL);
+        ASSERT(json_get(&reply.data, "publication_progress_root") == NULL);
+        ASSERT(json_get(&reply.data, "expert") == NULL);
+        ASSERT(json_get_bool(json_get(&reply.data, "details_available")));
+        ASSERT(reply.next_count == 1);
+        ASSERT(strcmp(reply.next[0].command,
+                      "dev.publication.advance") == 0);
         zcl_command_reply_free(&reply);
         json_free(&input);
 

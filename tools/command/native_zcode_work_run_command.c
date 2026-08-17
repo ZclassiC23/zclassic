@@ -6,6 +6,7 @@
 #include "base/hex.h"
 #include "base/cleanse.h"
 #include "base/log_macros.h"
+#include "config/runtime.h"
 #include "json/json.h"
 #include "platform/os_proc.h"
 #include "platform/time_compat.h"
@@ -1321,10 +1322,9 @@ static bool run_admit(
                            json_get_int(proof_request)) &&
           json_push_kv(&reply->data, "expert", &expert))) &&
         run_add_work_next(
-            reply, retry_ready ? "zcode.work.run" : "zcode.work.status",
-            workspace, work_id, retry_ready ? adapter_name : NULL,
+            reply, "zcode.work.status", workspace, work_id, NULL,
             retry_ready
-              ? "after the bounded repair edit, admit this exact work again"
+              ? "show the repair state and its exact resumable action"
               : "show the exact build and reproduction state");
     json_free(&compiler_feedback);
     json_free(&repair_packet); json_free(&diagnostic); json_free(&expert);
@@ -1355,7 +1355,10 @@ void zcl_native_handle_zcode_work_run(
     const char *adapter = run_str(request->input, "adapter");
     const char *proof_datadir_arg = run_str(request->input, "datadir");
     bool details = run_bool(request->input, "details");
-    if (!proof_datadir_arg || !proof_datadir_arg[0])
+    struct node_db *runtime_db = app_runtime_node_db();
+    if ((!proof_datadir_arg || !proof_datadir_arg[0]) &&
+        ((runtime_db && app_runtime_node_db_handle_open(runtime_db)) ||
+         zcl_native_command_datadir_is_explicit()))
         proof_datadir_arg = zcl_native_command_datadir();
     if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
     if (!adapter || !adapter[0]) adapter = "manual";
@@ -1630,27 +1633,20 @@ void zcl_native_handle_zcode_work_run(
         run_write_packet(candidate_workspace, &packet, manual_packet_path);
     bool ok = manual_staged &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
-        json_push_kv_str(&reply->data, "adapter", "manual") &&
         json_push_kv_str(&reply->data, "state", repairing
                          ? "REPAIR_NEEDED" : "AWAITING_CANDIDATE") &&
         json_push_kv_str(&reply->data, "stage", "Creating missing code") &&
         json_push_kv_str(&reply->data, "candidate_workspace",
                          candidate_workspace) &&
-        json_push_kv_bool(&reply->data, "workspace_created", created) &&
         json_push_kv_str(&reply->data, "adapter_packet_path",
                          manual_packet_path) &&
-        json_push_kv_int(&reply->data, "adapter_packet_bytes",
-                         (int64_t)model_context_bytes) &&
         json_push_kv_int(&reply->data, "model_context_bytes",
                          (int64_t)model_context_bytes) &&
         json_push_kv_str(&reply->data, "authority", "NONE_MANUAL_HANDOFF") &&
         json_push_kv_bool(&reply->data, "details_available", true) &&
-        json_push_kv_str(
-            &reply->data, "next_safe_command",
-            "edit only candidate_workspace, then rerun zcode work run") &&
         run_add_work_next(
-            reply, "zcode.work.run", workspace, work_id, "manual",
-            "after editing only the candidate workspace, admit this exact work");
+            reply, "zcode.work.status", workspace, work_id, NULL,
+            "after editing the candidate workspace, show its exact next action");
     json_free(&packet); free(goal); vcs_zcode_agent_context_free(&context);
     vcs_zcode_task_index_free(index);
     if (!ok)

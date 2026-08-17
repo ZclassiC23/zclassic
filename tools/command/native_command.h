@@ -26,7 +26,8 @@ bool zcl_native_command_is_root(const char *word);
 int zcl_native_command_main(const char *root_word,
                             const char *const *args, int nargs,
                             const char *datadir, int rpc_port,
-                            enum chain_network network);
+                            enum chain_network network,
+                            bool datadir_explicit);
 
 /* Network selected by the current one-shot native invocation. Direct
  * in-process callers default to mainnet until command_main selects another
@@ -1201,6 +1202,7 @@ void zcl_native_handle_network_graph(
  * accessor for handlers that open a datadir-relative store directly. */
 const char *zcl_native_command_datadir(void);
 int zcl_native_command_rpc_port(void);
+bool zcl_native_command_datadir_is_explicit(void);
 
 /* A one-shot native handler which targets a resident node must submit the
  * canonical input to that daemon instead of opening its live node.db. Returns

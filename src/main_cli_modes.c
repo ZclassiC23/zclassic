@@ -2564,7 +2564,8 @@ int cli_main(int argc, char **argv)
                                        (const char *const *)params_storage,
                                        nparams, datadir, cli_port,
                                        regtest_set ? CHAIN_REGTEST :
-                                       testnet_set ? CHAIN_TESTNET : CHAIN_MAIN);
+                                       testnet_set ? CHAIN_TESTNET : CHAIN_MAIN,
+                                       datadir_set);
 
     if (cli_static_agent_method(method)) {
         agent_runtime_availability_reset();

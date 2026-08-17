@@ -230,6 +230,46 @@ static bool zdev_root(const struct json_value *input, const char *key,
     return false;
 }
 
+static const char *zdev_task_mismatch_field(
+    const char *workspace, const uint8_t planned_root[32],
+    const struct vcs_zcode_task_v1 *actual)
+{
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    struct vcs_zcode_task_v1 planned;
+    bool loaded = workspace && planned_root && actual &&
+        vcs_object_load_raw_bounded(
+            workspace, planned_root, VCS_ZCODE_TASK_WIRE_BYTES,
+            &wire, &wire_len) == 0 &&
+        vcs_zcode_task_parse(wire, wire_len, &planned) == VCS_ZCODE_DEV_OK;
+    free(wire);
+    if (!loaded) return "planned task object";
+#define ZDEV_TASK_ROOT_DIFF(field) \
+    if (memcmp(planned.field, actual->field, 32) != 0) return #field
+    ZDEV_TASK_ROOT_DIFF(source_root);
+    ZDEV_TASK_ROOT_DIFF(dependency_lock_root);
+    ZDEV_TASK_ROOT_DIFF(toolchain_capsule_root);
+    ZDEV_TASK_ROOT_DIFF(write_scope_root);
+    ZDEV_TASK_ROOT_DIFF(acceptance_tests_root);
+    ZDEV_TASK_ROOT_DIFF(proof_policy_root);
+    ZDEV_TASK_ROOT_DIFF(model_policy_root);
+    ZDEV_TASK_ROOT_DIFF(goal_root);
+#undef ZDEV_TASK_ROOT_DIFF
+#define ZDEV_TASK_VALUE_DIFF(field) \
+    if (planned.field != actual->field) return #field
+    ZDEV_TASK_VALUE_DIFF(schema_version);
+    ZDEV_TASK_VALUE_DIFF(capabilities);
+    ZDEV_TASK_VALUE_DIFF(max_changed_files);
+    ZDEV_TASK_VALUE_DIFF(max_patch_bytes);
+    ZDEV_TASK_VALUE_DIFF(max_context_bytes);
+    ZDEV_TASK_VALUE_DIFF(max_cpu_seconds);
+    ZDEV_TASK_VALUE_DIFF(max_memory_bytes);
+    ZDEV_TASK_VALUE_DIFF(max_output_bytes);
+    ZDEV_TASK_VALUE_DIFF(expires_unix);
+#undef ZDEV_TASK_VALUE_DIFF
+    return "canonical task bytes";
+}
+
 static void zdev_push_root(struct json_value *out, const char *key,
                            const uint8_t root[32])
 {
@@ -1174,8 +1214,15 @@ void zcl_native_handle_zcode_improve(
     if (explicit_admit &&
         (!zcl_hex_decode_lower(planned_task_root, expected_task_root, 32) ||
          memcmp(expected_task_root, task_root, 32) != 0)) {
+        char detail[160];
+        const char *field = zcl_hex_decode_lower(
+            planned_task_root, expected_task_root, 32)
+            ? zdev_task_mismatch_field(workspace, expected_task_root, &task)
+            : "planned_task_root encoding";
+        (void)snprintf(detail, sizeof(detail),
+                       "admit parameters changed planned %s", field);
         zdev_fail(reply, "PLANNED_TASK_MISMATCH",
-                  "admit parameters do not rederive planned_task_root");
+                  detail);
         return;
     }
     if (!vcs_object_store_init(workspace) ||

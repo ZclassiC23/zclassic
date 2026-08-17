@@ -518,8 +518,11 @@ ZCL_COMMAND_READY_COMMAND(
     "isolated candidate workspace, and either emits a bounded manual packet or "
     "runs the fixed opt-in Codex adapter behind Landlock, a scrubbed environment "
     "and strict limits. A failed bounded build carries its structured compiler "
-    "diagnostic into the next adapter packet. Its typed next action retains the "
-    "workspace and short work ID without exposing proof roots. The default "
+    "diagnostic into the next adapter packet. Its typed status handoff retains "
+    "the workspace and short work ID without a forbidden command self-loop or "
+    "proof roots. Only an explicitly targeted datadir or the resident node's "
+    "already-owned ledger may receive live admission; a one-shot default target "
+    "stays in the closed scratch build lifecycle. The default "
     "result is root-free; "
     "details=true exposes "
     "exact proof identities. No adapter receives acceptance or publication authority.",
@@ -549,10 +552,12 @@ ZCL_COMMAND_READY_COMMAND(
     "identity, and stale or mismatched facts are refused. "
     "It does not edit source files, publish a package, or give the adapter "
     "acceptance authority. Repeating an already-PROVEN acceptance is "
-    "idempotent.", ZCL_COMMAND_RESULT_BUDGET,
+    "idempotent. The default result hides roots and carries the existing "
+    "publication job in a typed next action; details=true exposes exact "
+    "identities.", ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,accept,human,proven,lane,evidence",
     "zcl.zcode_work_accept.input.v1", "zcl.zcode_work_accept.v1",
-    "workspace,work,datadir,confirmation_identity", "",
+    "workspace,work,datadir,confirmation_identity,details", "",
     "zclassic23-dev zcode work accept --input='{\"work\":\"latest\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,

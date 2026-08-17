@@ -384,6 +384,7 @@ static char g_bridge_datadir[512];
 static int g_bridge_rpc_port;
 static bool g_bridge_rpc_ready;
 static bool g_native_input_from_stdin;
+static bool g_native_datadir_explicit;
 static enum chain_network g_native_network = CHAIN_MAIN;
 
 bool zcl_native_input_was_stdin(void)
@@ -399,6 +400,11 @@ const char *zcl_native_command_datadir(void)
 int zcl_native_command_rpc_port(void)
 {
     return g_bridge_rpc_port;
+}
+
+bool zcl_native_command_datadir_is_explicit(void)
+{
+    return g_native_datadir_explicit;
 }
 
 enum chain_network zcl_native_command_network(void)
@@ -3334,7 +3340,8 @@ const char *zcl_native_agent_session_env(void)
 
 int zcl_native_command_main(const char *root_word, const char *const *args,
                             int nargs, const char *datadir, int rpc_port,
-                            enum chain_network network)
+                            enum chain_network network,
+                            bool datadir_explicit)
 {
     if (!root_word || !root_word[0])
         return ZCL_COMMAND_EXIT_INVALID;
@@ -3342,6 +3349,7 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
      * handlers perform node-bound validation locally. Keep their selected
      * chain identical to the explicitly targeted resident. */
     g_native_network = network;
+    g_native_datadir_explicit = datadir_explicit;
     chain_params_select(network);
     zcl_native_bridge_bind_rpc(datadir, rpc_port);
 

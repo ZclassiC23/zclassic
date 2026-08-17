@@ -2713,6 +2713,8 @@ static int test_zd_improve_command(void)
         zcl_native_handle_zcode_improve(&request, &drift_reply);
         ASSERT_EQ(drift_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
         ASSERT_STR_EQ(drift_reply.error.code, "PLANNED_TASK_MISMATCH");
+        ASSERT_STR_EQ(drift_reply.error.message,
+                      "admit parameters changed planned source_root");
         zcl_command_reply_free(&drift_reply);
         drift_file = fopen(source_path, "wb");
         ASSERT(drift_file != NULL);
@@ -2732,6 +2734,8 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(scope_mismatch_reply.exit_code, ZCL_COMMAND_EXIT_INVALID);
         ASSERT_STR_EQ(scope_mismatch_reply.error.code,
                       "PLANNED_TASK_MISMATCH");
+        ASSERT_STR_EQ(scope_mismatch_reply.error.message,
+                      "admit parameters changed planned write_scope_root");
         zcl_command_reply_free(&scope_mismatch_reply);
         json_set_str((struct json_value *)json_get(&input, "write_scope_csv"),
                      "src");

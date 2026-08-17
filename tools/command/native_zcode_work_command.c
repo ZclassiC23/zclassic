@@ -1968,6 +1968,7 @@ void zcl_native_handle_zcode_work_accept(
     const char *confirmed_identity =
         zwork_str(request->input, "confirmation_identity");
     const char *proof_datadir = zwork_str(request->input, "datadir");
+    bool details = zwork_bool(request->input, "details");
     if (zcl_native_forward_live_command(
             request, proof_datadir, "zcode_work_accept",
             "LIVE_WORK_ACCEPT_FAILED", "accept", "zcode.work.accept",
@@ -2153,11 +2154,13 @@ void zcl_native_handle_zcode_work_accept(
         char work_id[32];
         (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                        entry->task_root_hex);
+        struct json_value next_input;
+        json_init(&next_input); json_set_object(&next_input);
         bool ok = json_push_kv_str(&reply->data, "work_id", work_id) &&
             json_push_kv_str(&reply->data, "goal_decision", "accepted") &&
             json_push_kv_str(&reply->data, "state", "PROVEN") &&
             json_push_kv_str(&reply->data, "stage", "Accepted") &&
-            (!confirmed_identity ||
+            (!details || !confirmed_identity ||
              json_push_kv_str(&reply->data, "confirmation_identity",
                               acceptance_hex)) &&
             json_push_kv_bool(&reply->data, "confirmation_identity_checked",
@@ -2165,25 +2168,36 @@ void zcl_native_handle_zcode_work_accept(
             json_push_kv_bool(&reply->data, "idempotent", already_proven) &&
             json_push_kv_str(&reply->data, "authoritative_workspace",
                              "unchanged") &&
-            json_push_kv_str(&reply->data, "publication_workspace",
-                             workspace) &&
-            json_push_kv_str(&reply->data, "candidate_workspace",
-                             retained_candidate_workspace) &&
             json_push_kv_str(&reply->data, "publication_status",
                              "ACCEPTED_LANE_BOUND") &&
-            json_push_kv_str(&reply->data, "publication_job_root",
-                             publication_job_hex) &&
-            json_push_kv_str(&reply->data, "publication_progress_root",
-                             publication_progress_hex) &&
-            json_push_kv_str(&reply->data, "publication_commit_root",
-                             publication_commit_hex) &&
-            json_push_kv_str(&reply->data, "publication_proof_receipt_root",
-                             publication_proof_hex) &&
             json_push_kv_bool(&reply->data, "publication_reused",
                               publication.reused) &&
             json_push_kv_str(&reply->data, "next_safe_command",
                              "dev.publication advance") &&
-            json_push_kv(&reply->data, "expert", &expert);
+            json_push_kv_bool(&reply->data, "details_available", true) &&
+            (!details || (
+                json_push_kv_str(&reply->data, "publication_workspace",
+                                 workspace) &&
+                json_push_kv_str(&reply->data, "candidate_workspace",
+                                 retained_candidate_workspace) &&
+                json_push_kv_str(&reply->data, "publication_job_root",
+                                 publication_job_hex) &&
+                json_push_kv_str(&reply->data, "publication_progress_root",
+                                 publication_progress_hex) &&
+                json_push_kv_str(&reply->data, "publication_commit_root",
+                                 publication_commit_hex) &&
+                json_push_kv_str(
+                    &reply->data, "publication_proof_receipt_root",
+                    publication_proof_hex) &&
+                json_push_kv(&reply->data, "expert", &expert))) &&
+            json_push_kv_str(&next_input, "workspace", workspace) &&
+            json_push_kv_str(&next_input, "datadir", datadir) &&
+            json_push_kv_str(&next_input, "job_root",
+                             publication_job_hex) &&
+            zwork_add_next(
+                reply, "dev.publication.advance", &next_input,
+                "advance the accepted exact source through its existing publication job");
+        json_free(&next_input);
         json_free(&expert);
         if (!ok)
             zwork_fail(reply, "ACCEPT_OUTPUT_FAILED", "render",

@@ -317,7 +317,7 @@ ssn_require_ok "candidate proof" "$RUN"
     ssn_die "candidate did not reach EVIDENCE_READY: $RUN"
 REVIEW="$(ssn_local zcode.work.review --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"adapter\":\"manual\",\"verdict\":\"approve\",\"findings\":\"The exact nested Zclassic23 source and root license are bound; only the inert envelope marker changed.\"}")"
 ssn_require_ok "independent review" "$REVIEW"
-ACCEPT="$(ssn_local zcode.work.accept --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\"}")"
+ACCEPT="$(ssn_local zcode.work.accept --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"details\":true}")"
 ssn_require_ok "explicit human acceptance" "$ACCEPT"
 [ "$(ssn_json "$ACCEPT" 'd["data"]["state"]')" = PROVEN ] ||
     ssn_die "human acceptance did not produce PROVEN: $ACCEPT"

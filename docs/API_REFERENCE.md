@@ -999,7 +999,7 @@ represented by its children's sections.
 | `zcode work status` | ready | read / read / operator · fast/low | `workspace`, `work`, `datadir`, `details` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work status --input='{"work":"latest"}'` | Show one human-first work status |
 | `zcode work show` | ready | read / read / operator · fast/low | `workspace`, `work`, `details` | `zcl.zcode_work_status.v1` | `zclassic23-dev zcode work show --input='{"work":"latest"}'` | Show one human-first work result |
 | `zcode work run` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter`, `datadir`, `details` | `zcl.zcode_work_run.v1` | `zclassic23-dev zcode work run --input='{"work":"latest","adapter":"manual"}'` | Run one contained adapter handoff |
-| `zcode work accept` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `datadir`, `confirmation_identity` | `zcl.zcode_work_accept.v1` | `zclassic23-dev zcode work accept --input='{"work":"latest"}'` | Accept one exact proven candidate |
+| `zcode work accept` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `datadir`, `confirmation_identity`, `details` | `zcl.zcode_work_accept.v1` | `zclassic23-dev zcode work accept --input='{"work":"latest"}'` | Accept one exact proven candidate |
 | `zcode work review` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter`, **`verdict`**, **`findings`** | `zcl.zcode_work_review.v1` | `zclassic23-dev zcode work review --input='{"work":"latest","adapter":"manual","verdict":"approve","findings":"No blocking findings."}'` | Review one exact candidate |
 
 #### `zcode.passport` — Signed C23 module Passports

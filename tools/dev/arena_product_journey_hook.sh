@@ -395,7 +395,7 @@ APJ_STALE_REPLY="$(apj_native "$APJ_A" zcode work accept \
 [ "$(printf '%s' "$APJ_STALE_REPLY" | apj_jget error.code 2>/dev/null || true)" = CONFIRMATION_IDENTITY_STALE ] ||
     apj_die "stale confirmation was not refused by name: $APJ_STALE_REPLY"
 APJ_ACCEPT="$(apj_native "$APJ_A" zcode work accept \
-    --input="{\"workspace\":\"$APJ_AUTHOR\",\"work\":\"$APJ_WORK\",\"datadir\":\"${DDS[$APJ_A]}\",\"confirmation_identity\":\"$APJ_CONFIRMATION\"}" || true)"
+    --input="{\"workspace\":\"$APJ_AUTHOR\",\"work\":\"$APJ_WORK\",\"datadir\":\"${DDS[$APJ_A]}\",\"confirmation_identity\":\"$APJ_CONFIRMATION\",\"details\":true}" || true)"
 apj_ok "exact human acceptance" "$APJ_ACCEPT"
 APJ_ACCEPTED_ROOT="$(printf '%s' "$APJ_ACCEPT" | apj_jget data.expert.lane_receipt_root)"
 APJ_JOB="$(printf '%s' "$APJ_ACCEPT" | apj_jget data.publication_job_root)"
