@@ -513,7 +513,9 @@ ZCL_COMMAND_READY_COMMAND(
     "Reloads the verified task and canonical agent context, materializes an "
     "isolated candidate workspace, and either emits a bounded manual packet or "
     "runs the fixed opt-in Codex adapter behind Landlock, a scrubbed environment "
-    "and strict limits. The default result is root-free; details=true exposes "
+    "and strict limits. A failed bounded build carries its structured compiler "
+    "diagnostic into the next adapter packet. The default result is root-free; "
+    "details=true exposes "
     "exact proof identities. No adapter receives acceptance or publication authority.",
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,run,adapter,manual,codex,contained,candidate",

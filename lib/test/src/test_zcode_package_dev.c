@@ -1103,11 +1103,13 @@ static int zpd_test_work_start(void)
         ASSERT(repair_packet && repair_packet->type == JSON_OBJ);
         ASSERT(strcmp(json_get_str(json_get(repair_packet, "goal")),
                       "Fix x") == 0);
-        ASSERT(json_get(repair_packet, "parent_candidate_root") != NULL);
-        ASSERT(json_get(repair_packet, "prior_patch_root") != NULL);
+        ASSERT(json_get(repair_packet, "parent_candidate_root") == NULL);
+        ASSERT(json_get(repair_packet, "prior_patch_root") == NULL);
         ASSERT(json_get(repair_packet, "selected_excerpts") != NULL);
         const struct json_value *repair_diagnostic =
             json_get(repair_packet, "diagnostic");
+        ASSERT(json_get(repair_diagnostic, "evidence_root") == NULL);
+        ASSERT(json_get(repair_diagnostic, "work_receipt_root") == NULL);
         const struct json_value *compiler_feedback = repair_diagnostic
             ? json_get(repair_diagnostic, "compiler_feedback") : NULL;
         ASSERT(compiler_feedback &&
@@ -1120,8 +1122,14 @@ static int zpd_test_work_start(void)
         ASSERT(json_get_str(json_get(compiler_feedback, "message"))[0]);
         const struct json_value *repair_workspace =
             json_get(&reply.data, "candidate_workspace");
+        const struct json_value *repair_packet_path =
+            json_get(&reply.data, "repair_packet_path");
         ASSERT(repair_workspace && strstr(json_get_str(repair_workspace),
                                            "/attempt-2") != NULL);
+        ASSERT(repair_packet_path &&
+               access(json_get_str(repair_packet_path), F_OK) == 0);
+        ASSERT(json_get_int(json_get(&reply.data,
+                                     "model_context_bytes")) > 0);
         (void)snprintf(saved_candidate_workspace,
                        sizeof(saved_candidate_workspace), "%s",
                        json_get_str(repair_workspace));
@@ -1147,6 +1155,50 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(
                           &reply.data, "remaining_risks")),
                       "latest candidate failed confined package build or tests") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                      "REPAIR_NEEDED") == 0);
+        repair_packet_path = json_get(&reply.data, "adapter_packet_path");
+        ASSERT(repair_packet_path != NULL);
+        char *repair_packet_text = zpd_read_bounded(
+            json_get_str(repair_packet_path), 2u * 1024u * 1024u);
+        ASSERT(repair_packet_text != NULL);
+        ASSERT(strstr(repair_packet_text, "\"diagnostic\"") != NULL);
+        ASSERT(strstr(repair_packet_text,
+                      "\"compiler_feedback\"") != NULL);
+        ASSERT(strstr(repair_packet_text, "\"parent_candidate_root\"") ==
+               NULL);
+        ASSERT(strstr(repair_packet_text, "\"prior_patch_root\"") == NULL);
+        ASSERT(strstr(repair_packet_text, "\"evidence_root\"") == NULL);
+        ASSERT(strstr(repair_packet_text, "\"work_receipt_root\"") == NULL);
+        free(repair_packet_text);
+        char staged_repair_path[4500];
+        (void)snprintf(staged_repair_path, sizeof(staged_repair_path), "%s",
+                       json_get_str(repair_packet_path));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        ASSERT(chmod(staged_repair_path, 0644) == 0);
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(strcmp(reply.error.code, "REPAIR_CONTEXT_REFUSED") == 0);
+        ASSERT(access(staged_repair_path, F_OK) != 0);
         zcl_command_reply_free(&reply);
         json_free(&input);
 

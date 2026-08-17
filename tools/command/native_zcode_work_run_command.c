@@ -148,6 +148,79 @@ static bool run_write_packet(const char *candidate_workspace,
     return ok;
 }
 
+/* The packet is an ephemeral proposal aid, never a task/candidate/receipt
+ * authority.  Reading it before candidate capture lets a later adapter turn
+ * retain bounded compiler feedback while the canonical source and evidence
+ * are still reloaded and verified independently. */
+static int run_read_packet(const char *candidate_workspace,
+                           char **wire_out, size_t *len_out)
+{
+    *wire_out = NULL;
+    *len_out = 0;
+    char path[ZWORK_RUN_PATH_MAX];
+    if (!run_packet_path(candidate_workspace, path)) return -1;
+    struct stat before;
+    if (lstat(path, &before) != 0)
+        return errno == ENOENT ? 0 : -1;
+    if (!S_ISREG(before.st_mode) || before.st_uid != geteuid() ||
+        (before.st_mode & 077u) != 0 || before.st_size <= 0 ||
+        (uint64_t)before.st_size > ZWORK_ADAPTER_PACKET_MAX)
+        return -1;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    struct stat opened;
+    bool ok = fd >= 0 && fstat(fd, &opened) == 0 &&
+        opened.st_dev == before.st_dev && opened.st_ino == before.st_ino &&
+        opened.st_size == before.st_size && S_ISREG(opened.st_mode) &&
+        opened.st_uid == geteuid() && (opened.st_mode & 077u) == 0;
+    size_t len = ok ? (size_t)opened.st_size : 0;
+    char *wire = ok ? zcl_malloc(len + 1u, "zcode.work.repair.packet") : NULL;
+    if (ok && !wire) ok = false;
+    size_t off = 0;
+    while (ok && off < len) {
+        ssize_t got = read(fd, wire + off, len - off);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0)
+            ok = false;
+        else
+            off += (size_t)got;
+    }
+    if (fd >= 0 && close(fd) != 0) ok = false;
+    if (!ok) {
+        free(wire);
+        return -1;
+    }
+    wire[len] = '\0';
+    *wire_out = wire;
+    *len_out = len;
+    return 1;
+}
+
+static bool run_repair_packet_valid(const struct json_value *packet,
+                                    const char *goal,
+                                    uint64_t candidate_sequence)
+{
+    const struct json_value *diagnostic = packet && packet->type == JSON_OBJ
+        ? json_get(packet, "diagnostic") : NULL;
+    const struct json_value *attempt = diagnostic
+        ? json_get(diagnostic, "attempt") : NULL;
+    const struct json_value *exit_status = diagnostic
+        ? json_get(diagnostic, "exit_status") : NULL;
+    const struct json_value *feedback = diagnostic
+        ? json_get(diagnostic, "compiler_feedback") : NULL;
+    return goal && candidate_sequence > 1u &&
+        run_str(packet, "goal") && strcmp(run_str(packet, "goal"), goal) == 0 &&
+        diagnostic && diagnostic->type == JSON_OBJ &&
+        run_str(diagnostic, "stage") &&
+        strcmp(run_str(diagnostic, "stage"),
+               "package_build_and_tests") == 0 &&
+        attempt && attempt->type == JSON_INT &&
+        json_get_int(attempt) == (int64_t)candidate_sequence - 1 &&
+        exit_status && exit_status->type == JSON_INT &&
+        json_get_int(exit_status) != 0 &&
+        run_bool(diagnostic, "retry_safe") &&
+        feedback && feedback->type == JSON_OBJ;
+}
+
 static void run_adapter_cleanup(const char *candidate_workspace,
                                 const char *packet_path)
 {
@@ -1153,27 +1226,25 @@ static bool run_admit(
         json_push_kv_int(&diagnostic, "exit_status", receipt.exit_status) &&
         json_push_kv_bool(&diagnostic, "retry_safe", retry_ready) &&
         feedback_ok &&
-        json_push_kv(&diagnostic, "compiler_feedback", &compiler_feedback) &&
-        (!details ||
-         (json_push_kv_str(&diagnostic, "evidence_root",
-                           receipt.output_sha3) &&
-          json_push_kv_str(&diagnostic, "work_receipt_root",
-                           receipt.work_receipt_sha3)));
+        json_push_kv(&diagnostic, "compiler_feedback", &compiler_feedback);
     struct json_value repair_packet;
     json_init(&repair_packet); json_set_object(&repair_packet);
     char repair_detail[256];
-    bool repair_packet_ok = !retry_ready || !details ||
-        (candidate && patch && run_packet(
+    bool repair_packet_ok = !retry_ready ||
+        (run_packet(
              &repair_packet, goal, workspace, datadir, task,
              context, scope, repair_detail) &&
-         json_push_kv_str(&repair_packet, "parent_candidate_root",
-                          json_get_str(candidate)) &&
-         json_push_kv_str(&repair_packet, "prior_patch_root",
-                          json_get_str(patch)) &&
          json_push_kv(&repair_packet, "diagnostic", &diagnostic));
+    char repair_packet_path[ZWORK_RUN_PATH_MAX] = {0};
+    size_t repair_packet_bytes = retry_ready && repair_packet_ok
+        ? json_write(&repair_packet, NULL, 0) : 0;
+    bool repair_packet_staged = !retry_ready ||
+        (repair_packet_bytes > 0 && run_write_packet(
+            next_workspace, &repair_packet, repair_packet_path));
     bool ok = changed && candidate && patch && proof_state && proof_event &&
         proof_request && submit_us && diagnostic_ok && expert_ok &&
-        repair_packet_ok && receipt.work_receipt_sha3[0] &&
+        repair_packet_ok && repair_packet_staged &&
+        receipt.work_receipt_sha3[0] &&
         json_push_kv_str(&reply->data, "work_id", work_id) &&
         json_push_kv_str(&reply->data, "state", passed ? "EVIDENCE_READY" :
                          retry_ready ? "REPAIR_NEEDED" : "BLOCKED") &&
@@ -1203,6 +1274,11 @@ static bool run_admit(
         (!retry_ready ||
          json_push_kv_str(&reply->data, "candidate_workspace",
                           next_workspace)) &&
+        (!retry_ready ||
+         (json_push_kv_str(&reply->data, "repair_packet_path",
+                           repair_packet_path) &&
+          json_push_kv_int(&reply->data, "model_context_bytes",
+                           (int64_t)repair_packet_bytes))) &&
         (!retry_ready || !details ||
          json_push_kv(&reply->data, "repair_packet", &repair_packet)) &&
         json_push_kv_str(&reply->data, "adapter", adapter_name) &&
@@ -1380,8 +1456,22 @@ void zcl_native_handle_zcode_work_run(
         vcs_zcode_task_index_free(index); return;
     }
     char prior_packet_path[ZWORK_RUN_PATH_MAX] = {0};
+    char *prior_packet = NULL;
+    size_t prior_packet_len = 0;
+    int prior_packet_status = repairing && !created
+        ? run_read_packet(candidate_workspace, &prior_packet,
+                          &prior_packet_len)
+        : 0;
     if (run_packet_path(candidate_workspace, prior_packet_path))
         run_adapter_cleanup(candidate_workspace, prior_packet_path);
+    if (prior_packet_status < 0) {
+        run_fail(reply, "REPAIR_CONTEXT_REFUSED", "context",
+                 "the bounded repair handoff was not a private regular packet",
+                 true, false);
+        free(prior_packet); free(goal);
+        vcs_zcode_agent_context_free(&context);
+        vcs_zcode_task_index_free(index); return;
+    }
     if (!created) {
         uint8_t candidate_root[32];
         if (vcs_tree_capture_into(candidate_workspace, workspace,
@@ -1389,7 +1479,8 @@ void zcl_native_handle_zcode_work_run(
             run_fail(reply, "CANDIDATE_CAPTURE_FAILED", "capture",
                      "candidate workspace changed or contains a refused file",
                      true, false);
-            free(goal); vcs_zcode_agent_context_free(&context);
+            free(prior_packet); free(goal);
+            vcs_zcode_agent_context_free(&context);
             vcs_zcode_task_index_free(index); return;
         }
         if (memcmp(candidate_root, materialize_root, 32) != 0) {
@@ -1403,7 +1494,8 @@ void zcl_native_handle_zcode_work_run(
                 run_fail(reply, "CANDIDATE_ADMISSION_FAILED", "admit",
                          "scratch identity or existing task composition failed",
                          true, false);
-            free(goal); vcs_zcode_agent_context_free(&context);
+            free(prior_packet); free(goal);
+            vcs_zcode_agent_context_free(&context);
             vcs_zcode_task_index_free(index); return;
         }
     }
@@ -1413,9 +1505,19 @@ void zcl_native_handle_zcode_work_run(
     char work_id[32];
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
-    bool packet_ok = run_packet(
-        &packet, goal, workspace, proof_datadir, &task, &context, &scope,
-        packet_detail);
+    bool packet_ok = false;
+    if (prior_packet) {
+        packet_ok = json_read(&packet, prior_packet, prior_packet_len) &&
+            run_repair_packet_valid(&packet, goal, candidate_sequence);
+        if (!packet_ok)
+            (void)snprintf(packet_detail, sizeof(packet_detail),
+                           "the bounded repair packet did not match the current goal and diagnostic");
+    } else {
+        packet_ok = run_packet(
+            &packet, goal, workspace, proof_datadir, &task, &context, &scope,
+            packet_detail);
+    }
+    free(prior_packet);
     if (!packet_ok) {
         run_fail(reply, "MODEL_CONTEXT_REFUSED", "context",
                  packet_detail[0] ? packet_detail
