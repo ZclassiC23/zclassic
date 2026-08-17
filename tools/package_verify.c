@@ -1628,8 +1628,8 @@ static bool pv_emit_dep_plan(const char *plan_path, const char *package_name,
                              const uint8_t package_root[32],
                              const uint8_t recipe_root[32],
                              const uint8_t lock_root[32],
-                             const char *profile, const char *cc,
-                             const char *cc_version,
+                             const char *profile, const char *cc_id,
+                             const char *cc_path, const char *cc_version,
                              struct pv_plan_ctx *ctx,
                              uint8_t preproc_out[][32])
 {
@@ -1686,7 +1686,7 @@ static bool pv_emit_dep_plan(const char *plan_path, const char *package_name,
         zcl_hex_encode(capsule_root, 32, hex);
         /* march/mtune mirror the fixed flags pv_compile_argv emits; the
          * argv array below carries them verbatim. */
-        ok = ok && json_push_kv_str(&tc, "compiler_id", cc) &&
+        ok = ok && json_push_kv_str(&tc, "compiler_id", cc_id) &&
              json_push_kv_str(&tc, "compiler_version", cc_version) &&
              json_push_kv_str(&tc, "march", "x86-64") &&
              json_push_kv_str(&tc, "mtune", "generic") &&
@@ -1718,9 +1718,9 @@ static bool pv_emit_dep_plan(const char *plan_path, const char *package_name,
         }
         struct pv_compile_args store;
         memset(&store, 0, sizeof(store));
-        pv_compile_argv(&store, cc, false, ctx->warning_fatal, ctx->recipe,
-                        ctx->src_root, ctx->deps, ctx->dep_count, src_file,
-                        obj_file);
+        pv_compile_argv(&store, cc_path, false, ctx->warning_fatal,
+                        ctx->recipe, ctx->src_root, ctx->deps,
+                        ctx->dep_count, src_file, obj_file);
         const char *pargv[224];
         if (!pv_plan_probe_argv(pargv, sizeof(pargv) / sizeof(pargv[0]),
                                 &store, false, dpath, src_file, ipath)) {
@@ -3592,8 +3592,8 @@ int main(int argc, char **argv)
             !pv_emit_dep_plan(plan_path, release.name, package_root,
                               recipe_root, emit_lock_root,
                               standard_profile ? "standard" : "quick",
-                              compilers[1].id, compilers[1].version,
-                              &pctx, plan_preproc)) {
+                              compilers[1].id, compilers[1].path,
+                              compilers[1].version, &pctx, plan_preproc)) {
             fprintf(stderr, "%s: dependency plan failed: %s\n", PV_LOG,
                     pctx.error);
             pv_rm_rf(work);
