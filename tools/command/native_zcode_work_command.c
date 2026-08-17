@@ -1343,7 +1343,10 @@ void zcl_native_handle_zcode_work_status(
     char continuation_workspace[ZWORK_PATH_MAX] = {0};
     bool can_resume_candidate = !entry->expired && !accepted &&
         (repair_needed || !entry->latest_action_root_hex[0]);
-    bool continuation_ready = !can_resume_candidate ||
+    bool can_present_confirmation = !entry->expired && !accepted &&
+        confirmation_ready;
+    bool continuation_ready =
+        (!can_resume_candidate && !can_present_confirmation) ||
         realpath(workspace, continuation_workspace) != NULL;
     char remaining_risks[256];
     if (entry->expired)
@@ -1512,14 +1515,20 @@ void zcl_native_handle_zcode_work_status(
                       json_push_kv(&reply->data, "expert", &expert)));
     struct json_value next_input;
     json_init(&next_input); json_set_object(&next_input);
-    if (ok && can_resume_candidate) {
+    if (ok && (can_resume_candidate || can_present_confirmation)) {
         ok = continuation_ready &&
             json_push_kv_str(&next_input, "workspace",
                              continuation_workspace) &&
             json_push_kv_str(&next_input, "work", work_id) &&
             zwork_add_next(
-                reply, "zcode.work.run", &next_input,
-                repair_needed
+                reply,
+                can_resume_candidate
+                  ? "zcode.work.run"
+                  : "app.presentation.release-confirm",
+                &next_input,
+                can_present_confirmation
+                  ? "show the real result and ask for one exact human decision"
+                  : repair_needed
                   ? "repair the bounded candidate and admit this exact work again"
                   : "create only the behavior still missing from this exact work");
     }

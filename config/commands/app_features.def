@@ -305,8 +305,9 @@ ZCL_COMMAND_READY_COMMAND(
     "ZClassic23-authored Confirm/Cancel decision only when the exact candidate "
     "satisfies its task-bound proof policy. The inert confirmation identity "
     "binds task, candidate, proof-policy and proof-set roots. This command "
-    "cannot accept, apply, sign or publish anything; the separate zcode work "
-    "accept command re-derives the identity and rechecks current evidence.", 0,
+    "cannot accept, apply, sign or publish anything; it returns a typed action "
+    "for the separate zcode work accept command unless the user cancels. That "
+    "command re-derives the identity and rechecks current evidence.", 0,
     "presentation,native,confirmation,release,candidate,proof,human",
     "zcl.app_presentation_release_confirm.input.v1",
     "zcl.app_presentation_release_confirm.v1",

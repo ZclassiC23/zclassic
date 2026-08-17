@@ -1009,7 +1009,7 @@ static int zpd_test_work_start(void)
 
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));
-        ASSERT(json_push_kv_str(&input, "work", "latest"));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
         request.input = &input;
         zcl_command_reply_init(&reply, "zcl.zcode_work_status_test.v1");
         zcl_native_handle_zcode_work_status(&request, &reply);
@@ -1338,7 +1338,8 @@ static int zpd_test_work_start(void)
                           &reply.data, "next_safe_command")),
                       "ask user to confirm exact candidate") == 0);
         ASSERT(json_get_bool(json_get(&reply.data, "confirmation_ready")));
-        ASSERT(reply.next_count == 0);
+        ASSERT(zpd_next_is(&reply, "app.presentation.release-confirm",
+                           absolute_root, saved_work_id, NULL));
         ASSERT(strlen(json_get_str(json_get(
                    &reply.data, "confirmation_identity"))) == 64);
         status_proof = json_get(&reply.data, "proof");
@@ -1416,7 +1417,8 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(
                           &reply.data, "next_safe_command")),
                       "ask user to confirm exact candidate") == 0);
-        ASSERT(reply.next_count == 0);
+        ASSERT(zpd_next_is(&reply, "app.presentation.release-confirm",
+                           absolute_root, saved_work_id, NULL));
         const char *status_confirmation = json_get_str(json_get(
             &reply.data, "confirmation_identity"));
         ASSERT(status_confirmation && strlen(status_confirmation) == 64);
@@ -1519,6 +1521,33 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(
                           &release_confirm_reply.data, "authority")),
                       "display-only") == 0);
+        ASSERT(release_confirm_reply.next_count == 1);
+        ASSERT(strcmp(release_confirm_reply.next[0].command,
+                      "zcode.work.accept") == 0);
+        struct json_value accept_next;
+        json_init(&accept_next);
+        ASSERT(json_read(
+            &accept_next, release_confirm_reply.next[0].input_json,
+            strlen(release_confirm_reply.next[0].input_json)));
+        ASSERT(strcmp(json_get_str(json_get(&accept_next, "workspace")),
+                      absolute_root) == 0);
+        ASSERT(strcmp(json_get_str(json_get(&accept_next, "work")),
+                      saved_work_id) == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &accept_next, "confirmation_identity")),
+                      confirmation_identity) == 0);
+        ASSERT(json_get(&accept_next, "task_root") == NULL);
+        ASSERT(json_get(&accept_next, "candidate_root") == NULL);
+        ASSERT(json_get(&accept_next, "proof_set_root") == NULL);
+        const struct zcl_command_spec *accept_next_spec =
+            zcl_command_registry_find(
+                zcl_command_catalog(),
+                release_confirm_reply.next[0].command, NULL);
+        char accept_next_why[160] = {0};
+        ASSERT(accept_next_spec && zcl_command_registry_input_validate(
+            accept_next_spec, &accept_next, accept_next_why,
+            sizeof(accept_next_why)));
+        json_free(&accept_next);
         zcl_command_reply_free(&release_confirm_reply);
         json_free(&release_confirm_input);
         struct zcl_result before_accept = zcode_accepted_work_find(

@@ -480,10 +480,9 @@ ZCL_COMMAND_READY_READ(
     "Rebuilds task and candidate state, then read-only re-verifies the exact "
     "receipt ledger. The default is root-free; details=true exposes proof and "
     "identity roots. It gives the AI an exact confirmation identity only when "
-    "policy is satisfied. Candidate creation and repair receive a typed "
-    "workspace/work continuation; proof, review and acceptance boundaries do "
-    "not invent an automatic action. No acceptance, source edit or publication "
-    "occurs.",
+    "policy is satisfied. Candidate creation and repair resume through typed "
+    "workspace/work inputs; a ready candidate opens the separate display-only "
+    "human decision. No acceptance, source edit or publication occurs.",
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,status,human,evidence,latest",
     "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
@@ -546,7 +545,8 @@ ZCL_COMMAND_READY_COMMAND(
     "CANDIDATE remains proof readiness; only this command's PROVEN result is "
     "human acceptance. An optional confirmation_identity binds this write to "
     "the exact task, candidate, proof policy and proof set previously shown by "
-    "app presentation release-confirm; stale or mismatched facts are refused. "
+    "app presentation release-confirm; its typed handoff avoids copying that "
+    "identity, and stale or mismatched facts are refused. "
     "It does not edit source files, publish a package, or give the adapter "
     "acceptance authority. Repeating an already-PROVEN acceptance is "
     "idempotent.", ZCL_COMMAND_RESULT_BUDGET,

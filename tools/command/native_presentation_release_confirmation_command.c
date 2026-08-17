@@ -289,9 +289,14 @@ void zcl_native_handle_presentation_release_confirm(
         workspace, &status.data, proof_datadir, &evidence, why, sizeof(why));
     struct zcl_present_model_v1 model;
     char identity[65] = {0};
+    char work_id[32] = {0};
+    const char *canonical_work = nprc_str(&status.data, "work_id");
     bool built = evidence_ok &&
         zcl_native_presentation_release_confirm_model_from_facts(
-            &status.data, &evidence, &model, identity, why, sizeof(why));
+            &status.data, &evidence, &model, identity, why, sizeof(why)) &&
+        canonical_work && strlen(canonical_work) < sizeof(work_id);
+    if (built)
+        (void)snprintf(work_id, sizeof(work_id), "%s", canonical_work);
     json_free(&evidence);
     zcl_command_reply_free(&status);
     if (!built) {
@@ -317,4 +322,24 @@ void zcl_native_handle_presentation_release_confirm(
     (void)json_push_kv_bool(&reply->data, "publication_performed", false);
     (void)json_push_kv_str(&reply->data, "effect_boundary",
                           "separate_zcode_work_accept_rechecks_everything");
+    if (!observed || confirmed) {
+        struct json_value next_input;
+        json_init(&next_input); json_set_object(&next_input);
+        bool next_ok = json_push_kv_str(
+                           &next_input, "workspace", workspace) &&
+            json_push_kv_str(&next_input, "work", work_id) &&
+            json_push_kv_str(&next_input, "confirmation_identity", identity);
+        char wire[sizeof(reply->next[0].input_json)];
+        size_t wire_len = next_ok
+            ? json_write(&next_input, wire, sizeof(wire)) : 0;
+        next_ok = wire_len > 0 && wire_len < sizeof(wire) &&
+            zcl_command_reply_add_next(
+                reply, "zcode.work.accept", wire,
+                "after reviewing the consequence, accept this exact version");
+        json_free(&next_input);
+        if (!next_ok)
+            nprc_fail(reply, "ACCEPT_HANDOFF_FAILED",
+                      "exact acceptance input could not be rendered",
+                      NPRC_LEAF);
+    }
 }
