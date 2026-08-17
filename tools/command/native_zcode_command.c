@@ -67,6 +67,7 @@
 #include "base/log_macros.h"
 #include "base/safe_alloc.h"
 #include "chain/chainparams.h"
+#include "config/runtime.h"
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "services/zcode_package_view_service.h"
@@ -279,8 +280,12 @@ static bool zc_validate(const struct zcl_command_request *request,
         return true;
 
     /* Acceptance (rule 7): replay the persisted releases, then classify.
-     * Node-bound: select a chain for the one-shot CLI process first. */
-    chain_params_select(zcl_native_command_network());
+     * A one-shot CLI selects its argv chain here.  A handler running inside
+     * the live node must retain that node's already-selected chain instead
+     * of replacing regtest/testnet with the CLI's default mainnet value. */
+    struct node_db *runtime_db = app_runtime_node_db();
+    if (!runtime_db || !app_runtime_node_db_handle_open(runtime_db))
+        chain_params_select(zcl_native_command_network());
     char zcode_dir[4400];
     int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
     if (n < 0 || (size_t)n >= sizeof(zcode_dir)) {

@@ -1246,6 +1246,34 @@ static int zpd_test_work_start(void)
         char accepted_root_hex[65];
         (void)snprintf(accepted_root_hex, sizeof(accepted_root_hex), "%s",
                        accepted_root_text);
+        const char *publication_workspace_text = json_get_str(json_get(
+            &reply.data, "publication_workspace"));
+        const char *publication_job_text = json_get_str(json_get(
+            &reply.data, "publication_job_root"));
+        const char *accepted_candidate_workspace = json_get_str(json_get(
+            &reply.data, "candidate_workspace"));
+        ASSERT(publication_workspace_text && publication_job_text &&
+               accepted_candidate_workspace);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "publication_status")),
+                      "ACCEPTED_LANE_BOUND") == 0);
+        ASSERT(!json_get_bool(json_get(
+            &reply.data, "publication_reused")));
+        ASSERT(strlen(json_get_str(json_get(
+                   &reply.data, "publication_progress_root"))) == 64);
+        char accepted_publication_workspace[4400];
+        char publication_job_hex[65];
+        (void)snprintf(accepted_publication_workspace,
+                       sizeof(accepted_publication_workspace), "%s",
+                       publication_workspace_text);
+        (void)snprintf(publication_job_hex, sizeof(publication_job_hex), "%s",
+                       publication_job_text);
+        char resolved_authority_workspace[4400];
+        ASSERT(realpath(root, resolved_authority_workspace) != NULL);
+        ASSERT(strcmp(accepted_publication_workspace,
+                      resolved_authority_workspace) == 0);
+        ASSERT(strcmp(accepted_candidate_workspace,
+                      saved_candidate_workspace) == 0);
         zcl_command_reply_free(&reply);
         json_free(&input);
         ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
@@ -1311,45 +1339,11 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(resolved_acceptance_hex, accepted_root_hex) == 0);
         node_db_close(&acceptance_db);
 
-        char authoritative_source[4500];
-        (void)snprintf(authoritative_source, sizeof(authoritative_source),
-                       "%s/src/x.c", root);
-        ASSERT(zpd_write(authoritative_source,
-                         "int x(void) { return 2; }\n"));
-        ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
-        ASSERT(memcmp(source_after, candidate_source_root, 32) == 0);
-        char source_id_hex[65], source_cas_hex[65], generation_hex[65];
-        zcl_hex_encode(candidate_source_root, 32, source_id_hex);
-        zcl_hex_encode(candidate_source_root, 32, source_cas_hex);
-        memset(generation_hex, 'a', 64); generation_hex[64] = '\0';
-        struct vcs_devloop_verdict publication_verdict = {
-            .phase = "verify",
-            .elapsed_ms = 1,
-            .generation_hex = generation_hex,
-            .proof_complete = true,
-            .proof_scope = "source_wide_compile_tests_lint_fast",
-            .source_identity_hex = source_id_hex,
-            .source_cas_hex = source_cas_hex,
-        };
-        struct vcs_devloop_anchor_result publication_anchor = {0};
-        vcs_devloop_anchor_cycle(
-            root, &publication_verdict, &publication_anchor);
-        ASSERT(publication_anchor.status == VCS_DEVLOOP_ANCHOR_OK);
-        ASSERT(publication_anchor.publication_status ==
-               VCS_DEVLOOP_PUBLICATION_QUEUED);
-        uint8_t waiting_root[32]; bool waiting_reused = false;
-        ASSERT(vcs_devloop_publication_advance_waiting_acceptance(
-            root, publication_anchor.publication_job_root,
-            waiting_root, &waiting_reused));
-        ASSERT(!waiting_reused);
-        char publication_job_hex[65];
-        zcl_hex_encode(publication_anchor.publication_job_root, 32,
-                       publication_job_hex);
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "job_root", publication_job_hex));
         ASSERT(json_push_kv_str(&input, "datadir", zbuild_datadir));
         struct zcl_command_context publication_context = {
-            .source_root = root,
+            .source_root = accepted_publication_workspace,
             .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
             .dev_build = true,
         };
@@ -1373,13 +1367,12 @@ static int zpd_test_work_start(void)
         uint8_t mapping_root[32];
         ASSERT(zcl_hex_decode_lower(mapping_text, mapping_root, 32));
         struct vcs_package_mapping_set mapping;
-        ASSERT(vcs_package_mapping_set_load(root, mapping_root, &mapping));
+        ASSERT(vcs_package_mapping_set_load(
+            accepted_publication_workspace, mapping_root, &mapping));
         ASSERT(memcmp(mapping.lane_receipt_root,
                       accepted_status.accepted.accepted_work_root, 32) == 0);
         vcs_package_mapping_set_free(&mapping);
         zcl_command_reply_free(&reply); json_free(&input);
-        ASSERT(zpd_write(authoritative_source,
-                         "int x(void) { return 1; }\n"));
         ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
         ASSERT(memcmp(source_before, source_after, 32) == 0);
 
@@ -1393,6 +1386,11 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "PROVEN") == 0);
         ASSERT(json_get_bool(json_get(&reply.data, "idempotent")));
+        ASSERT(json_get_bool(json_get(
+            &reply.data, "publication_reused")));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "publication_job_root")),
+                      publication_job_hex) == 0);
         zcl_command_reply_free(&reply);
         json_free(&input);
 

@@ -12,6 +12,7 @@
  *       --pilot-red <path> --pilot-blue <path>
  *       [--replay-out <file>] [--no-sandbox]
  *   arena_runner --verify-replay <file>
+ *       [--expect-replay-root <64hex>]
  *
  * PILOT PROTOCOL (fixed; the pilots implement it): per tick, for each
  * LIVING plane of the pilot's team in ascending plane-index order, the
@@ -67,7 +68,8 @@
  * checks the match goes DONE at the exact recorded tick count and that the
  * re-encoded final state byte-equals the file's trailing state block, then
  * prints the recomputed roots and verify=ok (exit 0) or
- * verify=MISMATCH <what> (exit 1).
+ * verify=MISMATCH <what> (exit 1).  --expect-replay-root additionally binds
+ * an otherwise valid replay to the exact accepted replay identity.
  *
  * Exit codes: 0 ok / verify ok; 1 verify mismatch; 2 usage; 3 sandbox
  * unavailable; 4 runtime failure (spawn/io/allocation, logged to stderr).
@@ -145,7 +147,8 @@ static void ar_usage(FILE *out)
             "  arena_runner --seed <u64> --planes-per-team <1..4>\n"
             "      --pilot-red <path> --pilot-blue <path>\n"
             "      [--replay-out <file>] [--no-sandbox]\n"
-            "  arena_runner --verify-replay <file>\n");
+            "  arena_runner --verify-replay <file>\n"
+            "      [--expect-replay-root <64hex>]\n");
 }
 
 /* Write exactly len bytes; false on any error/short write (EPIPE when the
@@ -678,7 +681,7 @@ static int ar_verify_mismatch(const char *what)
     return 1;
 }
 
-static int ar_verify_replay(const char *path)
+static int ar_verify_replay(const char *path, const char *expected_root_hex)
 {
     size_t len = 0;
     uint8_t *buf = ar_read_file(path, &len);
@@ -760,6 +763,20 @@ static int ar_verify_replay(const char *path)
     uint8_t final_state_root[SHA3_256_OUTPUT_SIZE];
     ar_sha3(buf, len, replay_root);
     ar_sha3(state, sizeof(state), final_state_root);
+    if (expected_root_hex) {
+        uint8_t expected_root[SHA3_256_OUTPUT_SIZE];
+        if (!zcl_hex_decode(expected_root_hex, expected_root,
+                            sizeof(expected_root))) {
+            ar_log_err("bad --expect-replay-root (want 64 hex)",
+                       expected_root_hex);
+            rc = 2;
+            goto out;
+        }
+        if (memcmp(replay_root, expected_root, sizeof(replay_root)) != 0) {
+            rc = ar_verify_mismatch("replay-root");
+            goto out;
+        }
+    }
 
     printf("seed=%llu planes_per_team=%u ticks=%llu\n",
            (unsigned long long)seed, (unsigned)planes_per_team,
@@ -784,6 +801,7 @@ int main(int argc, char **argv)
     const char *pilot_blue = NULL;
     const char *replay_out = NULL;
     const char *verify_replay = NULL;
+    const char *expected_replay_root = NULL;
     bool no_sandbox = false;
 
     for (int i = 1; i < argc; i++) {
@@ -817,6 +835,8 @@ int main(int argc, char **argv)
             replay_out = v;
         else if (strcmp(name, "--verify-replay") == 0)
             verify_replay = v;
+        else if (strcmp(name, "--expect-replay-root") == 0)
+            expected_replay_root = v;
         else if (strcmp(name, "--no-sandbox") == 0)
             takes_value = false, no_sandbox = true;
         else if (strcmp(name, "--help") == 0) {
@@ -847,7 +867,13 @@ int main(int argc, char **argv)
             ar_usage(stderr);
             return 2;
         }
-        return ar_verify_replay(verify_replay);
+        return ar_verify_replay(verify_replay, expected_replay_root);
+    }
+
+    if (expected_replay_root) {
+        ar_log_err("--expect-replay-root requires --verify-replay", NULL);
+        ar_usage(stderr);
+        return 2;
     }
 
     if (!seed_s || !planes_s || !pilot_red || !pilot_blue) {

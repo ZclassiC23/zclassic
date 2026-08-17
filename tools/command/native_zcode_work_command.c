@@ -11,6 +11,7 @@
 
 #include "base/cleanse.h"
 #include "base/hex.h"
+#include "config/runtime.h"
 #include "crypto/ed25519.h"
 #include "hotswap/hotswap_service.h"
 #include "models/build_fabric.h"
@@ -27,6 +28,7 @@
 #include "vcs/package_recipe.h"
 #include "vcs/build_action.h"
 #include "vcs/vcs.h"
+#include "vcs/vcs_devloop.h"
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev_product.h"
 #include "vcs/zcode_patch.h"
@@ -76,6 +78,14 @@ static bool zwork_open_build_ledger(
         return node_db_open_existing_runtime(ndb, path, reason);
     return allow_create && node_db_open(ndb, path);
 }
+
+static struct node_db *zwork_runtime_ledger(const char *db_path)
+{
+    struct node_db *owned = app_runtime_node_db();
+    return db_path && app_runtime_node_db_handle_open(owned) &&
+           strcmp(db_path, owned->path) == 0
+        ? owned : NULL;
+}
 #endif
 
 static int64_t zwork_int(
@@ -102,6 +112,42 @@ static char *zwork_hex_alloc(const uint8_t *bytes, size_t len,
     char *hex = zcl_malloc(len * 2u + 1u, label);
     if (hex) zcl_hex_encode(bytes, len, hex);
     return hex;
+}
+
+static bool zwork_bind_accepted_publication(
+    const char *workspace, const struct vcs_zcode_task_index_entry *entry,
+    const struct zcl_command_reply *accepted_reply,
+    char candidate_workspace[ZWORK_PATH_MAX],
+    struct vcs_devloop_accepted_candidate_result *publication)
+{
+    if (!candidate_workspace || !publication) return false;
+    candidate_workspace[0] = '\0';
+    memset(publication, 0, sizeof(*publication));
+    const struct json_value *accepted_value = accepted_reply
+        ? json_get(&accepted_reply->data, "lane_receipt_root") : NULL;
+    const char *accepted_hex = accepted_value &&
+            accepted_value->type == JSON_STR
+        ? json_get_str(accepted_value) : NULL;
+    uint8_t accepted_root[32], source_root[32];
+    if (!workspace || !entry || !accepted_hex ||
+        entry->latest_candidate_sequence == 0 ||
+        entry->latest_candidate_sequence > UINT32_MAX ||
+        !zcl_hex_decode_lower(accepted_hex, accepted_root, 32) ||
+        !zcl_hex_decode_lower(entry->latest_candidate_source_root_hex,
+                              source_root, 32))
+        return false;
+    char candidate_path[ZWORK_PATH_MAX];
+    int n = snprintf(candidate_path, sizeof(candidate_path),
+                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/attempt-%u",
+                     (unsigned long)getuid(), entry->task_root_hex,
+                     (uint32_t)entry->latest_candidate_sequence);
+    if (n <= 0 || (size_t)n >= sizeof(candidate_path) ||
+        !realpath(candidate_path, candidate_workspace))
+        return false;
+    vcs_devloop_publication_bind_accepted_candidate(
+        workspace, candidate_workspace, accepted_root, source_root,
+        platform_time_wall_unix(), publication);
+    return publication->ok;
 }
 #endif
 
@@ -623,26 +669,34 @@ static bool zwork_policy_load(
  * bytes without storing a proof set or promoting receipt trust. */
 static void zwork_proof_snapshot_read(
     const char *workspace, const char *task_root, const char *action_id,
-    int64_t now, struct zwork_proof_snapshot *out)
+    const char *proof_datadir, int64_t now, struct zwork_proof_snapshot *out)
 {
     memset(out, 0, sizeof(*out));
     if (!workspace || !task_root || strlen(task_root) != 64u ||
         !action_id || strlen(action_id) != 64u)
         return;
-    char db_path[ZWORK_PATH_MAX];
-    int n = snprintf(db_path, sizeof(db_path),
-                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild/node.db",
-                     (unsigned long)getuid(), task_root);
+    char resolved_datadir[ZWORK_PATH_MAX], db_path[ZWORK_PATH_MAX];
+    bool explicit_datadir = proof_datadir && proof_datadir[0];
+    int n = explicit_datadir
+        ? (realpath(proof_datadir, resolved_datadir)
+            ? snprintf(db_path, sizeof(db_path), "%s/node.db",
+                       resolved_datadir) : -1)
+        : snprintf(db_path, sizeof(db_path),
+                   "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild/node.db",
+                   (unsigned long)getuid(), task_root);
     if (n <= 0 || (size_t)n >= sizeof(db_path) ||
         access(db_path, F_OK) != 0)
         return;
-    struct node_db ndb = {0};
-    if (!node_db_open_existing_runtime(
-            &ndb, db_path, "zcode.work.status.proof"))
+    struct node_db local_ndb = {0};
+    struct node_db *ndb = zwork_runtime_ledger(db_path);
+    bool owned = ndb != NULL;
+    if (!owned) ndb = &local_ndb;
+    if (!owned && !node_db_open_existing_runtime(
+            ndb, db_path, "zcode.work.status.proof"))
         return;
     struct zcl_result result = build_fabric_proof_evaluate_readonly(
-        &ndb, workspace, action_id, now, &out->facts);
-    node_db_close(&ndb);
+        ndb, workspace, action_id, now, &out->facts);
+    if (!owned) node_db_close(ndb);
     out->available = result.ok;
 }
 
@@ -683,6 +737,12 @@ void zcl_native_handle_zcode_work_status(
     if (!request || !reply) return;
     const char *workspace = zwork_str(request->input, "workspace");
     const char *work = zwork_str(request->input, "work");
+    const char *proof_datadir = zwork_str(request->input, "datadir");
+    if (zcl_native_forward_live_command(
+            request, proof_datadir, "zcode_work_status",
+            "LIVE_WORK_STATUS_FAILED", "status", "zcode.work.status",
+            reply))
+        return;
     if (!workspace || !workspace[0]) workspace = ".";
     int64_t now = platform_time_wall_unix();
     struct vcs_zcode_task_index *index = vcs_zcode_task_index_build(
@@ -724,7 +784,9 @@ void zcl_native_handle_zcode_work_status(
     }
     struct zwork_proof_snapshot proof;
     zwork_proof_snapshot_read(workspace, entry->task_root_hex,
-                              entry->latest_action_root_hex, now, &proof);
+                              entry->latest_action_root_hex,
+                              proof_datadir, now,
+                              &proof);
     char confirmation_identity[65];
     bool confirmation_ready = zwork_confirmation_identity(
         entry, &proof, confirmation_identity);
@@ -973,23 +1035,27 @@ static void zwork_accept_inner(const char *workspace, const char *datadir,
             ? VCS_ZCODE_LANE_PROVEN : 0;
     char db_path[ZWORK_PATH_MAX];
     int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-    struct node_db ndb = {0};
+    struct node_db local_ndb = {0};
+    struct node_db *ndb = n > 0 && (size_t)n < sizeof(db_path)
+        ? zwork_runtime_ledger(db_path) : NULL;
+    bool owned = ndb != NULL;
+    if (!owned) ndb = &local_ndb;
     struct db_build_worker signer;
     uint8_t secret[32] = {0}, pubkey[32] = {0};
     struct zcode_lane_status status;
     bool opened = target != 0 && n > 0 && (size_t)n < sizeof(db_path) &&
-        zwork_open_build_ledger(
-            &ndb, db_path, "zcode.work.accept", false);
+        (owned || zwork_open_build_ledger(
+            ndb, db_path, "zcode.work.accept", false));
     struct zcl_result result = opened
         ? build_fabric_worker_identity_load(
               datadir, &signer, secret, pubkey)
         : ZCL_ERR(-1, "human acceptance ledger could not be opened");
     if (result.ok)
         result = zcode_lane_advance(
-            &ndb, workspace, action_id, target,
+            ndb, workspace, action_id, target,
             (int64_t)platform_time_wall_unix(), secret, pubkey, &status);
     memory_cleanse(secret, sizeof(secret));
-    if (opened) node_db_close(&ndb);
+    if (opened && !owned) node_db_close(ndb);
     if (!result.ok) {
         zwork_fail(reply, "LANE_PROMOTION_REFUSED", "accept",
                    result.message, false, false);
@@ -1385,6 +1451,12 @@ void zcl_native_handle_zcode_work_accept(
     const char *work = zwork_str(request->input, "work");
     const char *confirmed_identity =
         zwork_str(request->input, "confirmation_identity");
+    const char *proof_datadir = zwork_str(request->input, "datadir");
+    if (zcl_native_forward_live_command(
+            request, proof_datadir, "zcode_work_accept",
+            "LIVE_WORK_ACCEPT_FAILED", "accept", "zcode.work.accept",
+            reply))
+        return;
     if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
     char workspace[ZWORK_PATH_MAX];
     if (!realpath(workspace_arg, workspace)) {
@@ -1413,28 +1485,37 @@ void zcl_native_handle_zcode_work_accept(
         vcs_zcode_task_index_free(index); return;
     }
     char datadir[ZWORK_PATH_MAX];
-    int n = snprintf(datadir, sizeof(datadir),
-                     "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild",
-                     (unsigned long)getuid(), entry->task_root_hex);
+    int n = proof_datadir && proof_datadir[0]
+        ? (realpath(proof_datadir, datadir) ? (int)strlen(datadir) : -1)
+        : snprintf(datadir, sizeof(datadir),
+                   "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild",
+                   (unsigned long)getuid(), entry->task_root_hex);
     if (n <= 0 || (size_t)n >= sizeof(datadir)) {
         zwork_fail(reply, "ACCEPT_PATH_FAILED", "resolve",
-                   "task-local ZBuild path is too long", false, false);
+                   proof_datadir && proof_datadir[0]
+                     ? "explicit proof datadir must resolve to an existing directory"
+                     : "task-local ZBuild path is too long", false, false);
         vcs_zcode_task_index_free(index); return;
     }
     char acceptance_hex[65] = {0};
     if (confirmed_identity) {
         char db_path[ZWORK_PATH_MAX];
         int dbn = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
-        struct node_db identity_db = {0};
+        struct node_db local_identity_db = {0};
+        struct node_db *identity_db = dbn > 0 &&
+                (size_t)dbn < sizeof(db_path)
+            ? zwork_runtime_ledger(db_path) : NULL;
+        bool identity_owned = identity_db != NULL;
+        if (!identity_owned) identity_db = &local_identity_db;
         struct build_fabric_proof_evaluation identity_facts;
         bool identity_ready = dbn > 0 && (size_t)dbn < sizeof(db_path) &&
-            node_db_open_existing_runtime(
-                &identity_db, db_path, "zcode.work.accept.confirmation");
+            (identity_owned || node_db_open_existing_runtime(
+                identity_db, db_path, "zcode.work.accept.confirmation"));
         if (identity_ready) {
             identity_ready = build_fabric_proof_evaluate_readonly(
-                &identity_db, workspace, entry->latest_action_root_hex,
+                identity_db, workspace, entry->latest_action_root_hex,
                 (int64_t)platform_time_wall_unix(), &identity_facts).ok;
-            node_db_close(&identity_db);
+            if (!identity_owned) node_db_close(identity_db);
         }
         uint8_t task_root[32], candidate_root[32], policy_root[32];
         uint8_t proof_root[32], acceptance_root[32], supplied_root[32];
@@ -1527,8 +1608,32 @@ void zcl_native_handle_zcode_work_accept(
         zwork_fail(reply, "PROVEN_ACCEPTANCE_REFUSED", "accept",
                    final_reply.error.message, false, true);
     } else {
+        char retained_candidate_workspace[ZWORK_PATH_MAX] = {0};
+        struct vcs_devloop_accepted_candidate_result publication;
+        if (!zwork_bind_accepted_publication(
+                workspace, entry, &final_reply, retained_candidate_workspace,
+                &publication)) {
+            zwork_fail(reply, "ACCEPTED_PUBLICATION_BIND_FAILED", "publish",
+                       publication.error[0] ? publication.error :
+                       "the retained candidate or accepted-work identity could not enter dev.publication",
+                       true, true);
+            zcl_command_reply_free(&final_reply);
+            zcl_command_reply_free(&lane_reply);
+            vcs_zcode_task_index_free(index);
+            return;
+        }
         struct json_value expert;
         json_init(&expert); json_copy(&expert, &final_reply.data);
+        char publication_job_hex[65], publication_progress_hex[65];
+        char publication_commit_hex[65], publication_proof_hex[65];
+        zcl_hex_encode(publication.publication_job_root, 32,
+                       publication_job_hex);
+        zcl_hex_encode(publication.publication_progress_root, 32,
+                       publication_progress_hex);
+        zcl_hex_encode(publication.vcs_commit_root, 32,
+                       publication_commit_hex);
+        zcl_hex_encode(publication.proof_receipt_root, 32,
+                       publication_proof_hex);
         char work_id[32];
         (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                        entry->task_root_hex);
@@ -1543,8 +1648,24 @@ void zcl_native_handle_zcode_work_accept(
             json_push_kv_bool(&reply->data, "idempotent", already_proven) &&
             json_push_kv_str(&reply->data, "authoritative_workspace",
                              "unchanged") &&
+            json_push_kv_str(&reply->data, "publication_workspace",
+                             workspace) &&
+            json_push_kv_str(&reply->data, "candidate_workspace",
+                             retained_candidate_workspace) &&
+            json_push_kv_str(&reply->data, "publication_status",
+                             "ACCEPTED_LANE_BOUND") &&
+            json_push_kv_str(&reply->data, "publication_job_root",
+                             publication_job_hex) &&
+            json_push_kv_str(&reply->data, "publication_progress_root",
+                             publication_progress_hex) &&
+            json_push_kv_str(&reply->data, "publication_commit_root",
+                             publication_commit_hex) &&
+            json_push_kv_str(&reply->data, "publication_proof_receipt_root",
+                             publication_proof_hex) &&
+            json_push_kv_bool(&reply->data, "publication_reused",
+                              publication.reused) &&
             json_push_kv_str(&reply->data, "next_safe_command",
-                             "zcode work status") &&
+                             "dev.publication advance") &&
             json_push_kv(&reply->data, "expert", &expert);
         json_free(&expert);
         if (!ok)

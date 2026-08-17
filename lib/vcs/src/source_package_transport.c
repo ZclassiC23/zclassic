@@ -224,6 +224,24 @@ static bool source_package_offline_inputs(
 {
     size_t count = vcs_source_package_offline_input_count();
     if (count > VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX) return false;
+    size_t present = 0;
+    for (size_t i = 0; i < count; i++) {
+        char full[4096];
+        int n = snprintf(full, sizeof(full), "%s/%s", workspace,
+                         offline_input_paths[i]);
+        struct stat st;
+        if (n <= 0 || (size_t)n >= sizeof(full)) return false;
+        if (lstat(full, &st) == 0) {
+            present++;
+        } else if (errno != ENOENT) {
+            return false;
+        }
+    }
+    /* Standalone C23 packages reproduce from their declared package DAG and
+     * therefore have no node-toolchain cache.  A node-source publication may
+     * carry the existing closed cache, but a partial cache is never accepted. */
+    if (present == 0) return true;
+    if (present != count) return false;
     for (size_t i = 0; i < count; i++) {
         struct vcs_source_package_file *file =
             &transport->offline_inputs[transport->offline_input_count];

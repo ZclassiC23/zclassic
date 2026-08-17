@@ -169,6 +169,7 @@ struct rlw_leaf {
  * only be well-formed and non-zero; nothing at it has to exist, because
  * "the authority holds nothing here" is the answer being exercised. */
 #define RLW_PROPERTY_ID "content:" RLW_ZID_PUBKEY
+#define RLW_DATADIR_VALUE "@fixture-datadir@"
 
 static const struct rlw_leaf g_rlw_leaves[] = {
     { "app.service.access",     zcl_native_handle_service_access,
@@ -188,6 +189,8 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "zcode.package.dev.publish.plan",
       zcl_native_handle_zcode_publish_plan,
       "workspace", ".",         "source_root", RLW_ZID_PUBKEY, NULL },
+    { "zcode.work.status", zcl_native_handle_zcode_work_status,
+      "workspace", RLW_DATADIR_VALUE, "work", RLW_ZID_PUBKEY, NULL },
     /* The seventh. Declared READ, `datadir` defaults to the operator's LIVE
      * one, and it opened node.db with node_db_open() — so pointed at a
      * damaged database it renamed the user's wallet to
@@ -821,9 +824,11 @@ static bool rlw_invoke_refused(const struct rlw_leaf *lf, const char *datadir,
     json_set_object(&input);
     (void)json_push_kv_str(&input, "datadir", datadir);
     if (lf->k1)
-        (void)json_push_kv_str(&input, lf->k1, lf->v1);
+        (void)json_push_kv_str(&input, lf->k1,
+            strcmp(lf->v1, RLW_DATADIR_VALUE) == 0 ? datadir : lf->v1);
     if (lf->k2)
-        (void)json_push_kv_str(&input, lf->k2, lf->v2);
+        (void)json_push_kv_str(&input, lf->k2,
+            strcmp(lf->v2, RLW_DATADIR_VALUE) == 0 ? datadir : lf->v2);
     rlw_add_complex_input(lf, &input);
 
     struct zcl_command_request request = { .input = &input };
@@ -866,9 +871,11 @@ static void rlw_invoke(const struct rlw_leaf *lf, const char *datadir)
     json_set_object(&input);
     (void)json_push_kv_str(&input, "datadir", datadir);
     if (lf->k1)
-        (void)json_push_kv_str(&input, lf->k1, lf->v1);
+        (void)json_push_kv_str(&input, lf->k1,
+            strcmp(lf->v1, RLW_DATADIR_VALUE) == 0 ? datadir : lf->v1);
     if (lf->k2)
-        (void)json_push_kv_str(&input, lf->k2, lf->v2);
+        (void)json_push_kv_str(&input, lf->k2,
+            strcmp(lf->v2, RLW_DATADIR_VALUE) == 0 ? datadir : lf->v2);
     rlw_add_complex_input(lf, &input);
 
     struct zcl_command_request request = { .input = &input };

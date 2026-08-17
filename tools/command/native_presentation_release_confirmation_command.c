@@ -4,6 +4,7 @@
 #include "command/native_command.h"
 
 #include "base/hex.h"
+#include "config/runtime.h"
 #include "json/json.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
@@ -171,6 +172,7 @@ static void nprc_fail(struct zcl_command_reply *reply, const char *code,
 
 static bool nprc_evidence_read(const char *workspace,
                                const struct json_value *status,
+                               const char *proof_datadir,
                                struct json_value *evidence,
                                char *why, size_t why_cap)
 {
@@ -183,23 +185,30 @@ static bool nprc_evidence_read(const char *workspace,
         return false;
     }
     char datadir[NPRC_PATH_MAX], db_path[NPRC_PATH_MAX];
-    int dn = snprintf(datadir, sizeof(datadir),
-                      "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild",
-                      (unsigned long)getuid(), task);
+    int dn = proof_datadir && proof_datadir[0]
+        ? (realpath(proof_datadir, datadir) ? (int)strlen(datadir) : -1)
+        : snprintf(datadir, sizeof(datadir),
+                   "/tmp/zclassic23-zcode-workspaces/%lu/%.64s/zbuild",
+                   (unsigned long)getuid(), task);
     int bn = dn > 0 && (size_t)dn < sizeof(datadir)
         ? snprintf(db_path, sizeof(db_path), "%s/node.db", datadir) : -1;
-    struct node_db ndb = {0};
+    struct node_db local_ndb = {0};
+    struct node_db *ndb = app_runtime_node_db();
+    bool owned = bn > 0 && (size_t)bn < sizeof(db_path) &&
+        app_runtime_node_db_handle_open(ndb) &&
+        strcmp(db_path, ndb->path) == 0;
+    if (!owned) ndb = &local_ndb;
     if (bn <= 0 || (size_t)bn >= sizeof(db_path) ||
-        !node_db_open_existing_runtime(&ndb, db_path,
-                                       "presentation.release-confirm")) {
+        (!owned && !node_db_open_existing_runtime(
+            ndb, db_path, "presentation.release-confirm"))) {
         (void)snprintf(why, why_cap,
                        "candidate proof ledger is unavailable");
         return false;
     }
     struct build_fabric_proof_evaluation facts;
     struct zcl_result result = build_fabric_proof_evaluate_readonly(
-        &ndb, workspace, action, (int64_t)platform_time_wall_unix(), &facts);
-    node_db_close(&ndb);
+        ndb, workspace, action, (int64_t)platform_time_wall_unix(), &facts);
+    if (!owned) node_db_close(ndb);
     if (!result.ok) {
         (void)snprintf(why, why_cap, "%s", result.message);
         return false;
@@ -235,6 +244,12 @@ void zcl_native_handle_presentation_release_confirm(
     if (!request || !reply || !request->input) return;
     const char *workspace_arg = nprc_str(request->input, "workspace");
     const char *work = nprc_str(request->input, "work");
+    const char *proof_datadir = nprc_str(request->input, "datadir");
+    if (zcl_native_forward_live_command(
+            request, proof_datadir, "zcode_work_release_confirm",
+            "LIVE_RELEASE_CONFIRM_FAILED", "present",
+            "app.presentation.release-confirm", reply))
+        return;
     if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
     char workspace[NPRC_PATH_MAX];
     if (!realpath(workspace_arg, workspace)) {
@@ -246,7 +261,9 @@ void zcl_native_handle_presentation_release_confirm(
     struct json_value status_input;
     json_init(&status_input); json_set_object(&status_input);
     bool input_ok = json_push_kv_str(&status_input, "workspace", workspace) &&
-        (!work || json_push_kv_str(&status_input, "work", work));
+        (!work || json_push_kv_str(&status_input, "work", work)) &&
+        (!proof_datadir || json_push_kv_str(
+            &status_input, "datadir", proof_datadir));
     struct zcl_command_request status_request = { .input = &status_input };
     struct zcl_command_reply status;
     zcl_command_reply_init(&status, "zcl.zcode_work_status.v1");
@@ -267,7 +284,7 @@ void zcl_native_handle_presentation_release_confirm(
     json_init(&evidence);
     char why[192];
     bool evidence_ok = nprc_evidence_read(
-        workspace, &status.data, &evidence, why, sizeof(why));
+        workspace, &status.data, proof_datadir, &evidence, why, sizeof(why));
     struct zcl_present_model_v1 model;
     char identity[65] = {0};
     bool built = evidence_ok &&

@@ -122,6 +122,9 @@ static bool async_proof_rpc_run(
         (void)json_push_kv_str(result, "message",
                                reply.error.message[0] ? reply.error.message :
                                                         "live admission failed");
+        (void)json_push_kv_str(result, "evidence",
+                               reply.error.evidence[0]
+                                   ? reply.error.evidence : fallback_phase);
         (void)json_push_kv_bool(result, "retryable", reply.error.retryable);
         (void)json_push_kv_bool(result, "mutated", reply.error.mutated);
     }
@@ -154,6 +157,39 @@ static bool async_proof_rpc_evidence(
         params, result, "zcl.zcode_evidence.v1",
         zcl_native_handle_zcode_evidence, "EVIDENCE_FAILED", "evaluate");
 }
+
+#define ASYNC_OWNED_WORK_RPC(name, method, schema, handler, fallback, phase) \
+    static bool name(const struct json_value *params, bool help, \
+                     struct json_value *result) \
+    { \
+        RPC_HELP(help, result, method " {input}\n" \
+            "Run one canonical work-product command through the live " \
+            "node's owned proof ledger."); \
+        return async_proof_rpc_run(params, result, schema, handler, \
+                                   fallback, phase); \
+    }
+
+ASYNC_OWNED_WORK_RPC(async_proof_rpc_work_status, "zcode_work_status",
+    "zcl.zcode_work_status.v1", zcl_native_handle_zcode_work_status,
+    "WORK_STATUS_FAILED", "status")
+ASYNC_OWNED_WORK_RPC(async_proof_rpc_work_accept, "zcode_work_accept",
+    "zcl.zcode_work_accept.v1", zcl_native_handle_zcode_work_accept,
+    "WORK_ACCEPT_FAILED", "accept")
+ASYNC_OWNED_WORK_RPC(async_proof_rpc_release_confirm,
+    "zcode_work_release_confirm",
+    "zcl.app_presentation_release_confirm.v1",
+    zcl_native_handle_presentation_release_confirm,
+    "RELEASE_CONFIRM_FAILED", "present")
+ASYNC_OWNED_WORK_RPC(async_proof_rpc_publish_plan,
+    "zcode_publish_plan_owned", "zcl.zcode_publish_plan.v1",
+    zcl_native_handle_zcode_publish_plan,
+    "PUBLISH_PLAN_FAILED", "plan")
+ASYNC_OWNED_WORK_RPC(async_proof_rpc_publish_commit,
+    "zcode_publish_commit_owned", "zcl.zcode_publish_commit.v1",
+    zcl_native_handle_zcode_publish_commit,
+    "PUBLISH_COMMIT_FAILED", "publish")
+
+#undef ASYNC_OWNED_WORK_RPC
 
 #define ASYNC_OWNED_BUILD_RPC(name, method, schema, handler, fallback) \
     static bool name(const struct json_value *params, bool help, \
@@ -189,6 +225,14 @@ void boot_zcode_async_proof_register_rpc(struct rpc_table *table)
     const struct rpc_command commands[] = {
         {"zcode", "zcode_work_admit", async_proof_rpc_admit, true},
         {"zcode", "zcode_work_evidence", async_proof_rpc_evidence, true},
+        {"zcode", "zcode_work_status", async_proof_rpc_work_status, true},
+        {"zcode", "zcode_work_accept", async_proof_rpc_work_accept, true},
+        {"zcode", "zcode_work_release_confirm",
+         async_proof_rpc_release_confirm, true},
+        {"zcode", "zcode_publish_plan_owned",
+         async_proof_rpc_publish_plan, true},
+        {"zcode", "zcode_publish_commit_owned",
+         async_proof_rpc_publish_commit, true},
         {"zcode", "build_plan_owned", async_proof_rpc_build_plan, true},
         {"zcode", "build_submit_owned", async_proof_rpc_build_submit, true},
         {"zcode", "build_cancel_owned", async_proof_rpc_build_cancel, true},

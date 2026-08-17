@@ -186,6 +186,8 @@ bool zcl_native_forward_live_command(
         const char *code = json_get_str(json_get(&body, "code"));
         const char *phase = json_get_str(json_get(&body, "phase"));
         const char *message = json_get_str(json_get(&body, "message"));
+        const char *remote_evidence =
+            json_get_str(json_get(&body, "evidence"));
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
             code && code[0] ? code : fallback_code,
@@ -194,7 +196,8 @@ bool zcl_native_forward_live_command(
             json_get_bool(json_get(&body, "mutated")),
             message && message[0] ? message :
                 "the selected full node refused canonical admission",
-            evidence);
+            remote_evidence && remote_evidence[0]
+                ? remote_evidence : evidence);
     }
     json_free(&body);
     return true;
@@ -1992,20 +1995,23 @@ static bool zpub_find_lane_readonly(
     struct zpub_accepted_bundle *bundle)
 {
     sqlite3 *db = NULL;
-    struct node_db ndb = {0};
-    if (!zcl_native_node_db_require_readonly(
+    struct node_db local_ndb = {0};
+    struct node_db *ndb = zdev_runtime_owns_ledger(bundle->acceptance_datadir)
+        ? app_runtime_node_db() : &local_ndb;
+    bool owned = ndb != &local_ndb;
+    if (!owned && !zcl_native_node_db_require_readonly(
             bundle->acceptance_datadir, reply, "the ZCODE lane ledger",
-            &db, &ndb))
+            &db, ndb))
         return false;
     struct zcode_accepted_work_status accepted;
     struct zcl_result found = zcode_accepted_work_find(
-        &ndb, bundle->workspace, zdev_str(request->input, "source_root"),
+        ndb, bundle->workspace, zdev_str(request->input, "source_root"),
         (int64_t)platform_time_wall_unix(), false, &accepted);
     if (found.ok)
         found = zcode_lane_find(
-            &ndb, bundle->workspace,
+            ndb, bundle->workspace,
             zdev_str(request->input, "source_root"), &bundle->lane);
-    zcl_native_node_db_close_readonly(&db, &ndb);
+    if (!owned) zcl_native_node_db_close_readonly(&db, ndb);
     return zpub_lane_acceptable(reply, bundle, found);
 }
 
@@ -2013,9 +2019,11 @@ static bool zpub_find_lane_commit(
     const struct zcl_command_request *request, struct zcl_command_reply *reply,
     struct zpub_accepted_bundle *bundle)
 {
-
-    struct node_db ndb = {0};
-    if (!zdev_open_db(bundle->acceptance_datadir, &ndb)) {
+    struct node_db local_ndb = {0};
+    struct node_db *ndb = zdev_runtime_owns_ledger(bundle->acceptance_datadir)
+        ? app_runtime_node_db() : &local_ndb;
+    bool owned = ndb != &local_ndb;
+    if (!owned && !zdev_open_db(bundle->acceptance_datadir, ndb)) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_FAILED, "DATABASE_OPEN_FAILED",
                                "accept", true, false,
@@ -2025,13 +2033,13 @@ static bool zpub_find_lane_commit(
     }
     struct zcode_accepted_work_status accepted;
     struct zcl_result found = zcode_accepted_work_find(
-        &ndb, bundle->workspace, zdev_str(request->input, "source_root"),
+        ndb, bundle->workspace, zdev_str(request->input, "source_root"),
         (int64_t)platform_time_wall_unix(), true, &accepted);
     if (found.ok)
         found = zcode_lane_find(
-            &ndb, bundle->workspace,
+            ndb, bundle->workspace,
             zdev_str(request->input, "source_root"), &bundle->lane);
-    node_db_close(&ndb);
+    if (!owned) node_db_close(ndb);
     return zpub_lane_acceptable(reply, bundle, found);
 }
 
@@ -2341,6 +2349,13 @@ void zcl_native_handle_zcode_publish_plan(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     if (!request || !reply) return;
+    const char *datadir = zdev_str(request->input, "acceptance_datadir");
+    if (!datadir || !datadir[0]) datadir = zdev_str(request->input, "datadir");
+    if (zcl_native_forward_live_command(
+            request, datadir, "zcode_publish_plan_owned",
+            "LIVE_PUBLISH_PLAN_FAILED", "plan", "zcode.publish.plan",
+            reply))
+        return;
     struct zpub_accepted_bundle bundle;
     if (!zpub_normalize(request, reply, &bundle) ||
         !zpub_find_lane_readonly(request, reply, &bundle) ||
@@ -2456,6 +2471,13 @@ void zcl_native_handle_zcode_publish_commit(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     if (!request || !reply) return;
+    const char *datadir = zdev_str(request->input, "acceptance_datadir");
+    if (!datadir || !datadir[0]) datadir = zdev_str(request->input, "datadir");
+    if (zcl_native_forward_live_command(
+            request, datadir, "zcode_publish_commit_owned",
+            "LIVE_PUBLISH_COMMIT_FAILED", "publish",
+            "zcode.publish.commit", reply))
+        return;
     struct zpub_accepted_bundle bundle;
     if (!zpub_normalize(request, reply, &bundle) ||
         !zpub_find_lane_commit(request, reply, &bundle) ||

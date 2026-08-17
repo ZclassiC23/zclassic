@@ -2371,7 +2371,7 @@ secure-release-regressions-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-ve
 	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE) \
 	  --exact=$(SECURE_RELEASE_REGRESSION_GROUPS) --no-cache
 
-.PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance
+.PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance arena-product-journey
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
 
@@ -2395,13 +2395,13 @@ zcode-c23-commons-alpha:
 # Runs the real DHT fixture's central lifecycle boundary without booting full
 # nodes: concurrent owners, a forced middle failure, signal cleanup, immediate
 # port reuse, and an uncontaminated rerun are all fail-closed assertions.
-zcode-dht-harness-selftest:
+zcode-dht-harness-selftest: tools/arena-product-journey-c23
 	@DHT_LIFECYCLE_MODE=selftest bash tools/dev/zcode_dht_acceptance.sh
 
 # Zero-wait development protocol acceptance. The exact groups jointly prove
 # three interchangeable signed work nodes, dead-peer retry/stale-result
 # refusal, the append-only requester ledger, and the user-facing local path.
-zcode-async-proof-acceptance: zclassic23 zcl-rpc
+zcode-async-proof-acceptance: zclassic23 zcl-rpc tools/arena-product-journey-c23
 	@$(MAKE) --no-print-directory zcode-dht-harness-selftest
 	@$(MAKE) --no-print-directory t-fast-exact \
 	  ONLY='test_build_fabric,test_zcode_dev_objects,test_zcode_package_dev'
@@ -2409,6 +2409,14 @@ zcode-async-proof-acceptance: zclassic23 zcl-rpc
 	@DHT_PACKAGEHOST=1 DHT_BUILDWORKERS=1 \
 	  DHT_AFTER_SPARSE_HOOK="$(CURDIR)/tools/dev/zcode_async_proof_acceptance_hook.sh" \
 	  bash tools/dev/zcode_dht_acceptance.sh
+
+# One installed-product story for the exact zdogace pursuit-sign correction.
+# The wrapper builds an ordinary portable product, changes cwd outside this
+# checkout, then composes the existing authenticated seven-node/DHT owner with
+# the accepted-work, publication, package, and Arena authorities.  It is
+# deliberately opt-in: real isolated daemons and confined build workers run.
+arena-product-journey:
+	@bash tools/dev/arena_product_journey.sh
 
 # One browser-free product proof for the AI-controlled native C23 UI. The two
 # exact semantic owners prove model sensitivity, provenance labels, bounded
@@ -3896,8 +3904,16 @@ $(BIN_DIR)/package-factory: tools/package_factory.c \
 # drives the fixed obs/ctl pipe protocol, and emits replay/final-state roots
 # for cross-node byte-identical replay verification. Standalone target like
 # the factory's; not wired into any default build path.
-.PHONY: tools/arena-runner
+.PHONY: tools/arena-runner tools/arena-product-journey-c23
 tools/arena-runner: $(BIN_DIR)/arena_runner
+tools/arena-product-journey-c23: $(BIN_DIR)/arena_product_journey_c23
+$(BIN_DIR)/arena_product_journey_c23: tools/arena_product_journey_c23.c \
+		lib/json/src/json.c lib/base/src/safe_alloc.c \
+		lib/base/src/log_level.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) -D_POSIX_C_SOURCE=200809L \
+	    -Ilib/json/include -Ilib/base/include -o $@ $^ -lpthread -lm
 $(BIN_DIR)/arena_runner: tools/arena_runner.c \
 		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
 		packages/zprng/src/zprng.c \
@@ -4722,7 +4738,7 @@ test-two-node-peer-tip: zclassic23 zcl-rpc
 	test-market-acceptance test-market-onion-acceptance \
 	test-market-moderation-acceptance \
 	zcode-reproduction-acceptance
-test-zcode-dht-acceptance: zclassic23 zcl-rpc
+test-zcode-dht-acceptance: zclassic23 zcl-rpc tools/arena-product-journey-c23
 	@bash tools/dev/zcode_dht_acceptance.sh
 
 test-science-acceptance: test-zcode-dht-acceptance

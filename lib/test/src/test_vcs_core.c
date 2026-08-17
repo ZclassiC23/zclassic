@@ -427,6 +427,23 @@ static int t_source_bundle(void)
     vcs_package_store_close(carrier_store);
     vcs_source_package_transport_free(&transport);
 
+    char offline_cache[4096], held_cache[4096];
+    (void)snprintf(offline_cache, sizeof(offline_cache),
+                   "%s/vendor/.cache", source);
+    (void)snprintf(held_cache, sizeof(held_cache),
+                   "%s/vendor/.cache-held", source);
+    struct vcs_source_package_transport standalone_transport;
+    vcs_source_package_transport_init(&standalone_transport);
+    bool cache_held = rename(offline_cache, held_cache) == 0;
+    bool standalone_ok = cache_held && vcs_source_package_transport_build(
+        source, first_root, lane_pubkey, lane_wire, sizeof(lane_wire),
+        &standalone_transport) &&
+        standalone_transport.offline_input_count == 0;
+    bool cache_restored = cache_held && rename(held_cache, offline_cache) == 0;
+    VC_CHECK("standalone source package uses its declared package DAG",
+             standalone_ok && cache_restored);
+    vcs_source_package_transport_free(&standalone_transport);
+
     uint8_t wrong_root[32];
     memcpy(wrong_root, first_root, sizeof(wrong_root));
     wrong_root[0] ^= 1u;

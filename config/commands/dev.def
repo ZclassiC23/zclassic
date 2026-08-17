@@ -113,7 +113,8 @@ ZCL_COMMAND_DEV_COMMAND(
     "for the existing PROVEN-work publisher.", 0,
     "dev,publication,advance,receipt,resume,idempotent",
     "zcl.dev_publication_advance_input.v1",
-    "zcl.dev_publication_advance.v1", "job_root,datadir", "job_root",
+    "zcl.dev_publication_advance.v1",
+    "job_root,datadir,workspace,action_id", "job_root",
     "zclassic23-dev dev publication advance --input='"
     "{\"job_root\":\"<64-lowercase-hex>\"}'",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,

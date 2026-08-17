@@ -8,6 +8,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 RUN_ROOT="$(mktemp -d /tmp/zcl23-c23-beta.XXXXXX)"
 KEEP="${C23_BETA_KEEP:-0}"
+PRODUCT_LABEL="${C23_BETA_LABEL:-c23-commons-beta}"
+PRODUCT_HOOK="${C23_BETA_HOOK:-$SCRIPT_DIR/c23_commons_beta_hook.sh}"
 
 beta_ui_host_pids() {
     local proc cmd environment
@@ -36,10 +38,10 @@ beta_cleanup() {
             if [ "$rc" -eq 0 ] && [ "$KEEP" != 1 ]; then
                 rm -rf "$RUN_ROOT"
             else
-                echo "c23-commons-beta: preserved run at $RUN_ROOT" >&2
+                echo "$PRODUCT_LABEL: preserved run at $RUN_ROOT" >&2
             fi
             ;;
-        *) echo "c23-commons-beta: refusing cleanup outside guarded root" >&2 ;;
+        *) echo "$PRODUCT_LABEL: refusing cleanup outside guarded root" >&2 ;;
     esac
     exit "$rc"
 }
@@ -69,7 +71,7 @@ if [ "${C23_BETA_NATIVE_UI_JOURNEY:-0}" = 1 ]; then
     export XDG_RUNTIME_DIR="$RUN_ROOT/native-ui-runtime"
 fi
 
-echo "c23-commons-beta: installing ordinary product into $PREFIX"
+echo "$PRODUCT_LABEL: installing ordinary product into $PREFIX"
 make -C "$REPO_ROOT" c23-portable-install DESTDIR="$PREFIX" PREFIX= >/dev/null
 for product in zclassic23 zcl-rpc zclassic23-package-sign \
         zclassic23-package-verify; do
@@ -78,6 +80,20 @@ for product in zclassic23 zcl-rpc zclassic23-package-sign \
         exit 2
     }
 done
+if [ "${C23_BETA_INSTALL_ARENA_RUNNER:-0}" = 1 ]; then
+    make -C "$REPO_ROOT" tools/arena-runner \
+        tools/arena-product-journey-c23 dev-bin >/dev/null
+    install -m 0755 "$REPO_ROOT/build/bin/arena_runner" \
+        "$PREFIX/bin/arena_runner"
+    install -m 0755 "$REPO_ROOT/build/bin/arena_product_journey_c23" \
+        "$PREFIX/bin/arena_product_journey_c23"
+    install -m 0755 "$REPO_ROOT/build/bin/zclassic23-dev" \
+        "$PREFIX/bin/zclassic23-dev"
+fi
+[ -r "$PRODUCT_HOOK" ] || {
+    echo "$PRODUCT_LABEL: composition hook is unavailable: $PRODUCT_HOOK" >&2
+    exit 2
+}
 
 # The physical-node owner remains zcode_dht_acceptance.sh. This product
 # runner supplies only an installed binary and an external scratch root; it
@@ -85,6 +101,8 @@ done
 export ZCL_NODE_BIN="$PREFIX/bin/zclassic23"
 export ZCL_RPC_BIN="$PREFIX/bin/zcl-rpc"
 export C23_BETA_INSTALL_BIN="$PREFIX/bin"
+export C23_BETA_DEV_BIN="$PREFIX/bin/zclassic23-dev"
+export DHT_ACCEPTANCE_C23="$PREFIX/bin/arena_product_journey_c23"
 export C23_BETA_FIXTURE_SOURCE="$REPO_ROOT"
 export DHT_WORK_PARENT="$WORK_PARENT"
 # This regtest scenario never proves or validates a shielded transaction.
@@ -97,7 +115,7 @@ export DHT_PACKAGEHOST=1
 # request exists; enabling a worker is capacity, never execution authority.
 export DHT_BUILDWORKERS=1
 export DHT_KEEP=1
-export DHT_AFTER_SPARSE_HOOK="$SCRIPT_DIR/c23_commons_beta_hook.sh"
+export DHT_AFTER_SPARSE_HOOK="$PRODUCT_HOOK"
 
 # Every child inherits an outside-checkout cwd. The only repository paths the
 # driver retains are its harness and the two pre-existing Commons fixtures;
@@ -105,4 +123,4 @@ export DHT_AFTER_SPARSE_HOOK="$SCRIPT_DIR/c23_commons_beta_hook.sh"
 cd "$RUN_ROOT"
 bash "$SCRIPT_DIR/zcode_dht_acceptance.sh"
 
-echo "=== c23-commons-installed-acceptance: PASSED ==="
+echo "=== $PRODUCT_LABEL: PASSED ==="

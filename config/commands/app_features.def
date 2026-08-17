@@ -310,7 +310,7 @@ ZCL_COMMAND_READY_COMMAND(
     "presentation,native,confirmation,release,candidate,proof,human",
     "zcl.app_presentation_release_confirm.input.v1",
     "zcl.app_presentation_release_confirm.v1",
-    "workspace,work,output,page", "",
+    "workspace,work,datadir,output,page", "",
     "zclassic23-dev app presentation release-confirm --input='"
     "{\"workspace\":\".\",\"work\":\"latest\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,

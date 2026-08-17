@@ -32,6 +32,7 @@ struct source_checkout_loaded {
     size_t authority_len;
     uint8_t *offline[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX];
     size_t offline_len[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX];
+    size_t offline_count;
 };
 
 const char *vcs_source_package_checkout_result_string(
@@ -261,6 +262,7 @@ static enum vcs_source_package_checkout_result source_checkout_load_variable(
 {
     bool seen_shards[256] = {0};
     bool seen_offline[VCS_SOURCE_PACKAGE_OFFLINE_INPUT_MAX] = {0};
+    size_t offline_count = 0;
     size_t recognized = has_authority ? 5u : 4u;
     for (size_t i = 0; i < loaded->package.count; i++) {
         const char *path = loaded->package.files[i].path;
@@ -288,11 +290,16 @@ static enum vcs_source_package_checkout_result source_checkout_load_variable(
                     &loaded->offline_len[offline]))
                 return VCS_SOURCE_PACKAGE_CHECKOUT_CHUNK;
             seen_offline[offline] = true;
+            offline_count++;
             recognized++;
         }
     }
-    for (size_t i = 0; i < vcs_source_package_offline_input_count(); i++)
+    size_t expected_offline = vcs_source_package_offline_input_count();
+    if (offline_count != 0 && offline_count != expected_offline)
+        return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    for (size_t i = 0; offline_count > 0 && i < expected_offline; i++)
         if (!seen_offline[i]) return VCS_SOURCE_PACKAGE_CHECKOUT_SHAPE;
+    loaded->offline_count = offline_count;
     return recognized == loaded->package.count &&
            loaded->source.shard_count > 0
         ? VCS_SOURCE_PACKAGE_CHECKOUT_OK
@@ -337,6 +344,12 @@ static bool source_checkout_write_offline(
     const char *destination, const struct source_checkout_loaded *loaded,
     uint64_t *bytes_out)
 {
+    if (loaded->offline_count == 0) {
+        *bytes_out = 0;
+        return true;
+    }
+    if (loaded->offline_count != vcs_source_package_offline_input_count())
+        return false;
     char cache[SOURCE_CHECKOUT_PATH_MAX];
     int n = snprintf(cache, sizeof(cache), "%s/vendor/.cache", destination);
     if (n <= 0 || (size_t)n >= sizeof(cache) ||
@@ -476,8 +489,7 @@ static enum vcs_source_package_checkout_result source_package_checkout_common(
     if (result == VCS_SOURCE_PACKAGE_CHECKOUT_OK && metrics) {
         metrics->source = source_metrics;
         metrics->offline_input_bytes = offline_bytes;
-        metrics->offline_input_files =
-            (uint32_t)vcs_source_package_offline_input_count();
+        metrics->offline_input_files = (uint32_t)loaded.offline_count;
         metrics->source_shards = (uint32_t)loaded.source.shard_count;
         metrics->carrier_files = (uint32_t)loaded.package.count;
         metrics->authority_objects = authority_objects;

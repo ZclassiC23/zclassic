@@ -137,6 +137,24 @@ struct vcs_devloop_anchor_result {
     char publication_error[256];
 };
 
+/* Result of binding one already-PROVEN ZCODE candidate to the existing
+ * publication queue from its retained candidate workspace.  No source files
+ * are copied or applied: the destination re-captures the exact candidate
+ * tree, imports and independently verifies the accepted-work authority
+ * bundle, then advances the ordinary publication job to the accepted lane. */
+struct vcs_devloop_accepted_candidate_result {
+    bool ok;
+    bool reused;
+    uint8_t source_tree_root[32];
+    uint8_t vcs_commit_root[32];
+    uint8_t proof_receipt_root[32];
+    uint8_t publication_job_root[32];
+    uint8_t publication_progress_root[32];
+    uint32_t imported_objects;
+    uint32_t imported_work_receipts;
+    char error[256];
+};
+
 /* Anchor one green dev-loop cycle: open (creating if absent) the ZVCS repo
  * rooted at repo_root, and take a snapshot bound to *v. Never aborts the
  * calling process. `out` is always fully populated (memset first) — check
@@ -152,6 +170,19 @@ struct vcs_devloop_anchor_result {
 void vcs_devloop_anchor_cycle(const char *repo_root,
                               const struct vcs_devloop_verdict *v,
                               struct vcs_devloop_anchor_result *out);
+
+/* Turn an existing accepted-work root into an ordinary dev.publication job
+ * without changing the authoritative source workspace.  authority_workspace
+ * owns the accepted proof chain; candidate_workspace owns the already-created
+ * exact candidate files.  Both source captures and the full authority bundle
+ * are independently checked against expected_source_root before queueing.
+ * Restart-safe: an existing same-source job is reused only when the normal
+ * accepted-work advancement independently accepts this exact root. */
+void vcs_devloop_publication_bind_accepted_candidate(
+    const char *authority_workspace, const char *candidate_workspace,
+    const uint8_t accepted_work_root[32],
+    const uint8_t expected_source_root[32], int64_t now_unix,
+    struct vcs_devloop_accepted_candidate_result *out);
 
 /* Run the generation-neutral initial ZVCS baseline SYNCHRONOUSLY: take the
  * .zvcs/bootstrap.lock flock singleton (open()/flock() only — no process

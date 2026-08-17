@@ -9,13 +9,6 @@
     dht_die "async proof hook requires DHT_PACKAGEHOST=1"
 trap 'dht_die "async proof hook command failed at line $LINENO"' ERR
 
-ZAP_PROJECT="$DHT_WORK/async-proof-project"
-mkdir -p "$ZAP_PROJECT/src" "$ZAP_PROJECT/include" "$ZAP_PROJECT/tests"
-printf '%s\n' 'MIT' >"$ZAP_PROJECT/LICENSE"
-printf '%s\n' 'int x(void);' >"$ZAP_PROJECT/include/x.h"
-printf '%s\n' 'int main(void) { return 0; }' >"$ZAP_PROJECT/tests/test.c"
-printf '%s\n' '{"schema":1,"name":"acceptance/async-proof","semver":"0.1.0","language":"c23","license":"MIT","include_dir":"include","source_dir":"src","dependencies":[]}' >"$ZAP_PROJECT/zcode-package.json"
-
 # Keep the package action observable long enough to stop a real executor after
 # started_at is durable. Candidate changes still differ by only one source file
 # and remain well below the task's fixed 16 MiB patch ceiling.
@@ -54,11 +47,8 @@ zap_write_source() {
         fi
     } >"$path"
 }
-zap_write_source "$ZAP_PROJECT/src/x.c" 1
-
 zap_field() {
-    local expression="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); print($expression)"
+    "$DHT_ACCEPTANCE_C23" json-get "$@"
 }
 
 zap_submit() {
@@ -69,12 +59,12 @@ zap_submit() {
     local ok action reproduction submit_us feedback_us event request work
     start="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work start \
         --input="{\"workspace\":\"$ZAP_PROJECT\",\"goal\":\"$goal\",\"profile\":\"$profile\",\"max_cpu_seconds\":$max_cpu}" || true)"
-    ok="$(printf '%s' "$start" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
+    ok="$(printf '%s' "$start" | zap_field ok False 2>/dev/null || true)"
     [ "$ok" = True ] || dht_die "node $node could not start async work: $start"
-    work="$(printf '%s' "$start" | zap_field 'd["data"]["work_id"]')"
+    work="$(printf '%s' "$start" | zap_field data.work_id)"
     handoff="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work run \
         --input="{\"workspace\":\"$ZAP_PROJECT\",\"work\":\"$work\",\"adapter\":\"manual\"}" || true)"
-    candidate="$(printf '%s' "$handoff" | zap_field 'd["data"]["candidate_workspace"]' 2>/dev/null || true)"
+    candidate="$(printf '%s' "$handoff" | zap_field data.candidate_workspace 2>/dev/null || true)"
     [ -d "$candidate/src" ] || dht_die "node $node did not materialize its candidate: $handoff"
     zap_write_source "$candidate/src/x.c" "$value" "$functions" "$pressure"
     started_ms="$(date +%s%3N)"
@@ -84,14 +74,14 @@ zap_submit() {
     printf '%s\n' "$handoff" >"$DHT_WORK/async-submit-${node}-${work}-handoff.json"
     printf '%s\n' "$result" >"$DHT_WORK/async-submit-${node}-${work}-result.json"
     finished_ms="$(date +%s%3N)"; elapsed_ms=$((finished_ms - started_ms))
-    ok="$(printf '%s' "$result" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
+    ok="$(printf '%s' "$result" | zap_field ok False 2>/dev/null || true)"
     [ "$ok" = True ] || dht_die "node $node foreground admission failed: $result"
-    action="$(printf '%s' "$result" | zap_field 'd["data"]["expert"]["action_id"]')"
-    reproduction="$(printf '%s' "$result" | zap_field 'd["data"].get("reproduction_action_id","")')"
-    event="$(printf '%s' "$result" | zap_field 'd["data"]["async_proof_event_root"]')"
-    request="$(printf '%s' "$result" | zap_field 'd["data"]["remote_request_id"]')"
-    submit_us="$(printf '%s' "$result" | zap_field 'd["data"]["local_submit_us"]')"
-    feedback_us="$(printf '%s' "$result" | zap_field 'd["data"]["local_first_feedback_us"]')"
+    action="$(printf '%s' "$result" | zap_field data.expert.action_id)"
+    reproduction="$(printf '%s' "$result" | zap_field data.reproduction_action_id '')"
+    event="$(printf '%s' "$result" | zap_field data.async_proof_event_root)"
+    request="$(printf '%s' "$result" | zap_field data.remote_request_id)"
+    submit_us="$(printf '%s' "$result" | zap_field data.local_submit_us)"
+    feedback_us="$(printf '%s' "$result" | zap_field data.local_first_feedback_us)"
     [ "${#action}" -eq 64 ] && [ "${#event}" -eq 64 ] &&
         [ "$request" -gt 0 ] && [ "$submit_us" -ge 0 ] &&
         [ "$feedback_us" -ge "$submit_us" ] ||
@@ -168,13 +158,13 @@ zap_publish_context_provider() {
     plan="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         zcode network publish --input="{\"mode\":\"plan\",$common}" || true)"
     printf '%s\n' "$plan" >"$DHT_WORK/async-context-provider-plan.json"
-    [ "$(printf '%s' "$plan" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+    [ "$(printf '%s' "$plan" | zap_field ok False 2>/dev/null || true)" = True ] ||
         dht_die "node $node could not plan the work-context provider record: $plan"
-    token="$(printf '%s' "$plan" | zap_field 'd["data"]["plan_token"]')"
+    token="$(printf '%s' "$plan" | zap_field data.plan_token)"
     commit="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         zcode network publish --input="{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}" || true)"
     printf '%s\n' "$commit" >"$DHT_WORK/async-context-provider-commit.json"
-    [ "$(printf '%s' "$commit" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+    [ "$(printf '%s' "$commit" | zap_field ok False 2>/dev/null || true)" = True ] ||
         dht_die "node $node could not publish the work-context provider record: $commit"
 }
 
@@ -183,14 +173,14 @@ zap_allow_context_policy() {
     common='"operation":"add","source":"local","effect":"allow","scope":"service_type","action_mask":63,"value":"zclassic23.work"'
     plan="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         zcode network policy mutate --input="{\"mode\":\"plan\",$common}" || true)"
-    [ "$(printf '%s' "$plan" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+    [ "$(printf '%s' "$plan" | zap_field ok False 2>/dev/null || true)" = True ] ||
         dht_die "node $node could not plan work-context policy: $plan"
-    token="$(printf '%s' "$plan" | zap_field 'd["data"]["plan_token"]')"
+    token="$(printf '%s' "$plan" | zap_field data.plan_token)"
     commit="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         zcode network policy mutate --input="{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}" || true)"
-    ok="$(printf '%s' "$commit" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
-    code="$(printf '%s' "$commit" | zap_field 'd.get("error",{}).get("code","")' 2>/dev/null || true)"
-    message="$(printf '%s' "$commit" | zap_field 'd.get("error",{}).get("message","")' 2>/dev/null || true)"
+    ok="$(printf '%s' "$commit" | zap_field ok False 2>/dev/null || true)"
+    code="$(printf '%s' "$commit" | zap_field error.code '' 2>/dev/null || true)"
+    message="$(printf '%s' "$commit" | zap_field error.message '' 2>/dev/null || true)"
     [ "$ok" = True ] || { [ "$code" = POLICY_REFUSED ] && [ "$message" = duplicate ]; } ||
         dht_die "node $node could not commit work-context policy: $commit"
 }
@@ -202,14 +192,14 @@ zap_fetch_inert_context() {
         dht_die "inert importer $node already owned an execution action"
     result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode package fetch \
         --input="{\"root\":\"$root\",\"namespace\":\"zclassic23.work\",\"maximum_bytes\":67108864}" || true)"
-    [ "$(printf '%s' "$result" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+    [ "$(printf '%s' "$result" | zap_field ok False 2>/dev/null || true)" = True ] ||
         dht_die "node $node could not fetch the inert work package: $result"
     deadline=$(( $(date +%s) + 120 ))
     next_resume=$(( $(date +%s) + 5 ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode package pin \
             --input="{\"root\":\"$root\",\"mode\":\"plan\"}" || true)"
-        complete="$(printf '%s' "$result" | zap_field 'd.get("data",{}).get("package",{}).get("complete",False)' 2>/dev/null || true)"
+        complete="$(printf '%s' "$result" | zap_field data.package.complete False 2>/dev/null || true)"
         [ "$complete" = True ] && break
         # A bounded provider/session I/O failure is a durable FAILED download
         # record, not completion. Re-admitting the same exact root is the
@@ -219,7 +209,7 @@ zap_fetch_inert_context() {
             result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
                 zcode package fetch \
                 --input="{\"root\":\"$root\",\"namespace\":\"zclassic23.work\",\"maximum_bytes\":67108864}" || true)"
-            [ "$(printf '%s' "$result" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+            [ "$(printf '%s' "$result" | zap_field ok False 2>/dev/null || true)" = True ] ||
                 dht_die "node $node could not resume the exact inert work package: $result"
             next_resume=$(( $(date +%s) + 5 ))
         fi
@@ -256,23 +246,23 @@ zap_evidence_output() {
     local node="$1" action="$2" evidence
     evidence="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode evidence \
         --input="{\"workspace\":\"$ZAP_PROJECT\",\"datadir\":\"${DDS[$node]}\",\"action_id\":\"$action\"}" || true)"
-    [ "$(printf '%s' "$evidence" | zap_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+    [ "$(printf '%s' "$evidence" | zap_field ok False 2>/dev/null || true)" = True ] ||
         dht_die "node $node could not evaluate reproduction output: $evidence"
-    printf '%s' "$evidence" | zap_field 'd["data"]["output_root"]'
+    printf '%s' "$evidence" | zap_field data.output_root
 }
 
 zap_sql_count() {
     local node="$1" sql="$2" out
     out="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         core storage query --sql="$sql" 2>/dev/null || true)"
-    printf '%s' "$out" | zap_field 'int(d["data"]["rows"][0][0])' 2>/dev/null || printf '%s' -1
+    printf '%s' "$out" | zap_field data.rows.0.0 2>/dev/null || printf '%s' -1
 }
 
 zap_sql_value() {
     local node="$1" sql="$2" out
     out="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         core storage query --sql="$sql" 2>/dev/null || true)"
-    printf '%s' "$out" | zap_field 'str(d["data"]["rows"][0][0])' 2>/dev/null || true
+    printf '%s' "$out" | zap_field data.rows.0.0 2>/dev/null || true
 }
 
 zap_approve_action_receipt() {
@@ -285,9 +275,12 @@ zap_approve_action_receipt() {
     response="$(dht_native "${DDS[$requester]}" "${RPCS[$requester]}" \
         metaverse build worker approve \
         --input="{\"worker_id\":\"$worker\",\"signer_pubkey\":\"$pubkey\",\"capabilities\":\"p2p-approved,c23.package.recipe.v1\",\"datadir\":\"${DDS[$requester]}\"}" || true)"
-    ok="$(printf '%s' "$response" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
+    ok="$(printf '%s' "$response" | zap_field ok False 2>/dev/null || true)"
     [ "$ok" = True ] || dht_die "requester $requester refused action $action signer approval: $response"
-    changed="$(printf '%s' "$response" | zap_field 'd["data"]["worker_id"]+":"+d["data"]["signer_pubkey"]+":"+str(d["data"]["approved"])' 2>/dev/null || true)"
+    changed="$(printf '%s:%s:%s' \
+        "$(printf '%s' "$response" | zap_field data.worker_id)" \
+        "$(printf '%s' "$response" | zap_field data.signer_pubkey)" \
+        "$(printf '%s' "$response" | zap_field data.approved)")"
     [ "$changed" = "$worker:$pubkey:True" ] ||
         dht_die "approval response did not name the exact worker owning action $action: $response"
 }
@@ -348,7 +341,7 @@ zap_latest_state() {
     sql="SELECT state FROM build_proof_events WHERE action_id='$action' ORDER BY rowid DESC LIMIT 1"
     out="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         core storage query --sql="$sql" 2>/dev/null || true)"
-    printf '%s' "$out" | zap_field 'd["data"]["rows"][0][0]' 2>/dev/null || true
+    printf '%s' "$out" | zap_field data.rows.0.0 2>/dev/null || true
 }
 
 zap_wait_ready() {
@@ -405,16 +398,8 @@ zap_assert_evidence() {
     evidence="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode evidence \
         --input="{\"workspace\":\"$ZAP_PROJECT\",\"datadir\":\"${DDS[$node]}\",\"action_id\":\"$action\"}")"
     printf '%s\n' "$evidence" >"$DHT_WORK/async-evidence-$action.json"
-    python3 - "$evidence" <<'PY' || dht_die "async timing/evidence report was incomplete: $evidence"
-import json,sys
-d=json.loads(sys.argv[1]); assert d.get("ok") is True,d
-x=d["data"]; assert x["async_timings_available"] is True,x
-t=x["latency"]
-keys=("local_submit_us","peer_discovery_us","transfer_us","remote_queue_us",
-      "remote_execution_us","receipt_verification_us","total_background_proof_us")
-assert all(isinstance(t.get(k),int) and t[k]>=0 for k in keys),t
-assert x["policy_satisfied"] is True and x["authority"]!="UNTRUSTED",x
-PY
+    "$DHT_ACCEPTANCE_C23" evidence-check "$evidence" ||
+        dht_die "async timing/evidence report was incomplete: $evidence"
     local bound mismatched
     bound="$(zap_sql_count "$node" "SELECT count(*) FROM build_proof_events e JOIN build_actions a ON a.action_id=e.action_id JOIN build_jobs j ON j.job_id=a.job_id WHERE e.action_id='$action' AND length(e.source_root_sha3)=64 AND e.source_root_sha3=j.source_cas_sha3")"
     mismatched="$(zap_sql_count "$node" "SELECT count(*) FROM build_proof_events e JOIN build_actions a ON a.action_id=e.action_id JOIN build_jobs j ON j.job_id=a.job_id WHERE e.action_id='$action' AND e.source_root_sha3<>j.source_cas_sha3")"
@@ -451,8 +436,8 @@ zap_assert_exact_reuse() {
     before_receipts="$(zap_sql_count "$requester" "SELECT count(*) FROM build_receipts WHERE action_id='$action'")"
     result="$(dht_native "${DDS[$requester]}" "${RPCS[$requester]}" zcode work run \
         --input="{\"workspace\":\"$ZAP_PROJECT\",\"work\":\"$work\",\"adapter\":\"manual\",\"datadir\":\"${DDS[$requester]}\"}" || true)"
-    ok="$(printf '%s' "$result" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
-    state="$(printf '%s' "$result" | zap_field 'd["data"]["state"]' 2>/dev/null || true)"
+    ok="$(printf '%s' "$result" | zap_field ok False 2>/dev/null || true)"
+    state="$(printf '%s' "$result" | zap_field data.state 2>/dev/null || true)"
     [ "$ok" = True ] && [ "$state" = EVIDENCE_READY ] ||
         dht_die "exact reuse did not resolve through the canonical task projection: $result"
     [ "$(zap_sql_count "$executor" "SELECT attempt_count FROM build_actions WHERE action_id='$action'")" -eq "$before_attempts" ] &&
@@ -494,10 +479,8 @@ zap_cancel_find_capability() {
     result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
         zcode network find cancel \
         --input="{\"lookup_id\":\"$lookup_id\",\"owner_token\":\"$owner_token\"}" || true)"
-    ok="$(printf '%s' "$result" | dht_jget \
-        'd.get("ok",False)' 2>/dev/null || true)"
-    code="$(printf '%s' "$result" | dht_jget \
-        'd.get("error",{}).get("code","")' 2>/dev/null || true)"
+    ok="$(printf '%s' "$result" | dht_jget ok False 2>/dev/null || true)"
+    code="$(printf '%s' "$result" | dht_jget error.code '' 2>/dev/null || true)"
     # Expiry cleanup cancels the service lookup before reporting the public
     # capability unknown. Both outcomes prove this client retains no slot.
     [ "$ok" = True ] || [ "$code" = LOOKUP_UNKNOWN ] ||
@@ -538,10 +521,8 @@ zap_connect() {
     while [ "$(date +%s)" -lt "$deadline" ]; do
         status_from="$(dht_status "${DDS[$from]}" "${RPCS[$from]}" 2>/dev/null || true)"
         status_to="$(dht_status "${DDS[$to]}" "${RPCS[$to]}" 2>/dev/null || true)"
-        enabled_from="$(printf '%s' "$status_from" | dht_jget \
-            'd.get("data",{}).get("enabled",False)' 2>/dev/null || true)"
-        enabled_to="$(printf '%s' "$status_to" | dht_jget \
-            'd.get("data",{}).get("enabled",False)' 2>/dev/null || true)"
+        enabled_from="$(printf '%s' "$status_from" | dht_jget data.enabled False 2>/dev/null || true)"
+        enabled_to="$(printf '%s' "$status_to" | dht_jget data.enabled False 2>/dev/null || true)"
         [ "$enabled_from" = True ] && [ "$enabled_to" = True ] && break
         sleep 0.5
     done
@@ -552,14 +533,11 @@ zap_connect() {
     find_result="$(dht_native "${DDS[$from]}" "${RPCS[$from]}" \
         zcode network find begin \
         --input="{\"node_id\":\"${NODES[$to]}\"}" || true)"
-    find_ok="$(printf '%s' "$find_result" | dht_jget \
-        'd.get("ok",False)' 2>/dev/null || true)"
+    find_ok="$(printf '%s' "$find_result" | dht_jget ok False 2>/dev/null || true)"
     [ "$find_ok" = True ] ||
         dht_die "async proof lookup $from/$to was not admitted: $find_result"
-    lookup_id="$(printf '%s' "$find_result" | dht_jget \
-        'd["data"].get("lookup_id","")')"
-    owner_token="$(printf '%s' "$find_result" | dht_jget \
-        'd["data"].get("owner_token","")')"
+    lookup_id="$(printf '%s' "$find_result" | dht_jget data.lookup_id '')"
+    owner_token="$(printf '%s' "$find_result" | dht_jget data.owner_token '')"
     cleanup_nodes+=("$from")
     cleanup_ids+=("$lookup_id")
     cleanup_owners+=("$owner_token")
@@ -577,14 +555,10 @@ zap_connect() {
     while [ "$(date +%s)" -lt "$deadline" ]; do
         status_from="$(dht_status "${DDS[$from]}" "${RPCS[$from]}" 2>/dev/null || true)"
         status_to="$(dht_status "${DDS[$to]}" "${RPCS[$to]}" 2>/dev/null || true)"
-        auth_from="$(printf '%s' "$status_from" | dht_jget \
-            'd.get("data",{}).get("connected_authenticated",0)' 2>/dev/null || true)"
-        auth_to="$(printf '%s' "$status_to" | dht_jget \
-            'd.get("data",{}).get("connected_authenticated",0)' 2>/dev/null || true)"
-        accepted_from="$(printf '%s' "$status_from" | dht_jget \
-            'd.get("data",{}).get("frames_accepted",0)' 2>/dev/null || true)"
-        accepted_to="$(printf '%s' "$status_to" | dht_jget \
-            'd.get("data",{}).get("frames_accepted",0)' 2>/dev/null || true)"
+        auth_from="$(printf '%s' "$status_from" | dht_jget data.connected_authenticated 0 2>/dev/null || true)"
+        auth_to="$(printf '%s' "$status_to" | dht_jget data.connected_authenticated 0 2>/dev/null || true)"
+        accepted_from="$(printf '%s' "$status_from" | dht_jget data.frames_accepted 0 2>/dev/null || true)"
+        accepted_to="$(printf '%s' "$status_to" | dht_jget data.frames_accepted 0 2>/dev/null || true)"
         if [ "${auth_from:-0}" -ge 1 ] && [ "${auth_to:-0}" -ge 1 ] &&
            [ "${accepted_from:-0}" -ge 1 ] && [ "${accepted_to:-0}" -ge 1 ]; then
             for cleanup_index in "${!cleanup_ids[@]}"; do
@@ -600,13 +574,10 @@ zap_connect() {
             find_result="$(dht_native "${DDS[$from]}" "${RPCS[$from]}" \
                 zcode network find begin \
                 --input="{\"node_id\":\"${NODES[$to]}\"}" 2>/dev/null || true)"
-            find_ok="$(printf '%s' "$find_result" | dht_jget \
-                'd.get("ok",False)' 2>/dev/null || true)"
+            find_ok="$(printf '%s' "$find_result" | dht_jget ok False 2>/dev/null || true)"
             if [ "$find_ok" = True ]; then
-                lookup_id="$(printf '%s' "$find_result" | dht_jget \
-                    'd["data"].get("lookup_id","")')"
-                owner_token="$(printf '%s' "$find_result" | dht_jget \
-                    'd["data"].get("owner_token","")')"
+                lookup_id="$(printf '%s' "$find_result" | dht_jget data.lookup_id '')"
+                owner_token="$(printf '%s' "$find_result" | dht_jget data.owner_token '')"
                 cleanup_nodes+=("$from")
                 cleanup_ids+=("$lookup_id")
                 cleanup_owners+=("$owner_token")
@@ -615,13 +586,10 @@ zap_connect() {
                 find_result="$(dht_native "${DDS[$to]}" "${RPCS[$to]}" \
                     zcode network find begin \
                     --input="{\"node_id\":\"${NODES[$from]}\"}" 2>/dev/null || true)"
-                find_ok="$(printf '%s' "$find_result" | dht_jget \
-                    'd.get("ok",False)' 2>/dev/null || true)"
+                find_ok="$(printf '%s' "$find_result" | dht_jget ok False 2>/dev/null || true)"
                 if [ "$find_ok" = True ]; then
-                    lookup_id="$(printf '%s' "$find_result" | dht_jget \
-                        'd["data"].get("lookup_id","")')"
-                    owner_token="$(printf '%s' "$find_result" | dht_jget \
-                        'd["data"].get("owner_token","")')"
+                    lookup_id="$(printf '%s' "$find_result" | dht_jget data.lookup_id '')"
+                    owner_token="$(printf '%s' "$find_result" | dht_jget data.owner_token '')"
                     cleanup_nodes+=("$to")
                     cleanup_ids+=("$lookup_id")
                     cleanup_owners+=("$owner_token")
@@ -648,6 +616,14 @@ zap_connect() {
 if [ "${ZAP_HELPERS_ONLY:-0}" = 1 ]; then
     return 0
 fi
+
+ZAP_PROJECT="$DHT_WORK/async-proof-project"
+mkdir -p "$ZAP_PROJECT/src" "$ZAP_PROJECT/include" "$ZAP_PROJECT/tests"
+printf '%s\n' 'MIT' >"$ZAP_PROJECT/LICENSE"
+printf '%s\n' 'int x(void);' >"$ZAP_PROJECT/include/x.h"
+printf '%s\n' 'int main(void) { return 0; }' >"$ZAP_PROJECT/tests/test.c"
+printf '%s\n' '{"schema":1,"name":"acceptance/async-proof","semver":"0.1.0","language":"c23","license":"MIT","include_dir":"include","source_dir":"src","dependencies":[]}' >"$ZAP_PROJECT/zcode-package.json"
+zap_write_source "$ZAP_PROJECT/src/x.c" 1
 
 # Keep the central SQLite/VFS ownership ledger enabled for every node started
 # by this composed phase. A clean run must contain no unauthorized lifecycle

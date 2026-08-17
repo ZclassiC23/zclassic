@@ -36,6 +36,7 @@
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "models/build_fabric.h"
 #include "platform/time_compat.h"
 #include "services/dev_reflex_policy_service.h"
 #include "services/zcode_lane_service.h"
@@ -777,25 +778,79 @@ static bool dev_publication_lane_lookup(
     uint8_t lane_root[32], char proof_set_hex[65], char lane_name[16],
     bool *projection_rebuilt)
 {
+    enum { DEV_PUBLICATION_ACTION_MAX = 64, DEV_PUBLICATION_WORKER_MAX = 256 };
     char source_hex[65];
     zcl_hex_encode(source_root, 32, source_hex);
-    char db_path[PATH_MAX];
-    int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
+    sqlite3 *db = NULL;
     struct node_db ndb = {0};
-    if (n <= 0 || (size_t)n >= sizeof(db_path) ||
-        !node_db_open(&ndb, db_path))
+    if (zcl_native_node_db_open_readonly(
+            datadir, &db, &ndb, NULL, 0) != ZCL_NODE_DB_RO_OK)
         return false;
-    struct zcode_accepted_work_status accepted;
-    struct zcl_result found = zcode_accepted_work_find(
-        &ndb, workspace, source_hex, (int64_t)platform_time_wall_unix(),
-        true, &accepted);
-    node_db_close(&ndb);
-    if (!found.ok) return false;
-    memcpy(lane_root, accepted.accepted.accepted_work_root, 32);
-    zcl_hex_encode(accepted.accepted.proof_set_root, 32, proof_set_hex);
+    int64_t now = (int64_t)platform_time_wall_unix();
+    struct zcode_lane_status status;
+    struct zcl_result found = zcode_lane_find(
+        &ndb, workspace, source_hex, &status);
+    uint8_t accepted_root[32];
+    struct vcs_zcode_accepted_work_v1 accepted;
+    bool accepted_ok = found.ok && status.lane == VCS_ZCODE_LANE_PROVEN &&
+        zcl_hex_decode_lower(status.receipt_root_sha3, accepted_root, 32) &&
+        vcs_zcode_accepted_work_resolve(
+            workspace, accepted_root, now, &accepted) &&
+        memcmp(accepted.candidate.candidate_source_root, source_root, 32) == 0 &&
+        memcmp(accepted.accepted_work_root, accepted_root, 32) == 0;
+    struct db_build_action actions[DEV_PUBLICATION_ACTION_MAX + 1];
+    int action_count = accepted_ok ? db_build_candidate_actions(
+        &ndb, status.task_root_sha3, status.candidate_root_sha3,
+        status.proof_policy_root_sha3, actions,
+        DEV_PUBLICATION_ACTION_MAX + 1) : 0;
+    struct db_build_worker workers[DEV_PUBLICATION_WORKER_MAX + 1];
+    int worker_count = accepted_ok ? db_build_workers_list(
+        &ndb, workers, DEV_PUBLICATION_WORKER_MAX + 1) : 0;
+    char expected_signer[65];
+    if (accepted_ok)
+        zcl_hex_encode(accepted.expected_signer, 32, expected_signer);
+    bool signer_current = false;
+    for (int i = 0; accepted_ok && i < worker_count; i++)
+        if (strcmp(workers[i].signer_pubkey, expected_signer) == 0 &&
+            workers[i].approved && !workers[i].revoked &&
+            (workers[i].expires_at == 0 || now < workers[i].expires_at))
+            signer_current = true;
+    zcl_native_node_db_close_readonly(&db, &ndb);
+    if (!accepted_ok || action_count <= 0 ||
+        action_count > DEV_PUBLICATION_ACTION_MAX || worker_count <= 0 ||
+        worker_count > DEV_PUBLICATION_WORKER_MAX || !signer_current)
+        return false;
+
+    bool proof_verified = false;
+    for (int i = 0; i < action_count && !proof_verified; i++) {
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        bool input_ok = json_push_kv_str(&input, "workspace", workspace) &&
+            json_push_kv_str(&input, "datadir", datadir) &&
+            json_push_kv_str(&input, "action_id", actions[i].action_id);
+        struct zcl_command_request evidence_request = { .input = &input };
+        struct zcl_command_reply evidence_reply;
+        zcl_command_reply_init(&evidence_reply, "zcl.zcode_evidence.v1");
+        if (input_ok)
+            zcl_native_handle_zcode_evidence(
+                &evidence_request, &evidence_reply);
+        const char *evaluated_proof = json_get_str(
+            json_get(&evidence_reply.data, "proof_set_root"));
+        const struct json_value *policy_value = json_get(
+            &evidence_reply.data, "policy_satisfied");
+        proof_verified = evidence_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+            evidence_reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+            policy_value && policy_value->type == JSON_BOOL &&
+            json_get_bool(policy_value) && evaluated_proof &&
+            strcmp(evaluated_proof, status.proof_set_root_sha3) == 0;
+        zcl_command_reply_free(&evidence_reply);
+        json_free(&input);
+    }
+    if (!proof_verified) return false;
+    memcpy(lane_root, accepted.accepted_work_root, 32);
+    zcl_hex_encode(accepted.proof_set_root, 32, proof_set_hex);
     (void)snprintf(lane_name, 16, "PROVEN");
-    if (projection_rebuilt)
-        *projection_rebuilt = accepted.projection_rebuilt;
+    if (projection_rebuilt) *projection_rebuilt = false;
     return true;
 }
 

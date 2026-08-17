@@ -11,6 +11,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
+DHT_ACCEPTANCE_C23="${DHT_ACCEPTANCE_C23:-$REPO_ROOT/build/bin/arena_product_journey_c23}"
 
 DHT_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
@@ -114,24 +115,7 @@ dht_assert_no_owned_processes() {
 
 dht_assert_ports_rebindable() {
     [ "${#DHT_OWNED_PORTS[@]}" -gt 0 ] || return 0
-    if ! python3 - "${DHT_OWNED_PORTS[@]}" <<'PY'
-import socket,sys
-sockets=[]
-try:
-    for text in sys.argv[1:]:
-        sock=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-        sock.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-        try:
-            sock.bind(("0.0.0.0",int(text)))
-        except OSError as exc:
-            print(f"port {text}: {exc}",file=sys.stderr)
-            sock.close()
-            raise SystemExit(1)
-        sockets.append(sock)
-finally:
-    for sock in sockets:
-        sock.close()
-PY
+    if ! "$DHT_ACCEPTANCE_C23" ports-rebind "${DHT_OWNED_PORTS[@]}"
     then
         dht_die "owned ports could not be rebound immediately after cleanup"
     fi
@@ -175,15 +159,10 @@ dht_rpc() {
 a_rpc() { dht_rpc "$DHT_DD_A" "$A_RPC" "$@"; }
 b_rpc() { dht_rpc "$DHT_DD_B" "$B_RPC" "$@"; }
 dht_result() {
-    python3 -c 'import json,sys
-d=json.load(sys.stdin)
-if d.get("error") is not None: raise SystemExit(2)
-v=d.get("result")
-print(json.dumps(v,separators=(",",":")) if isinstance(v,(dict,list)) else v)'
+    "$DHT_ACCEPTANCE_C23" rpc-result
 }
 dht_jget() {
-    local expr="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); print($expr)"
+    "$DHT_ACCEPTANCE_C23" json-get "$@"
 }
 dht_native() {
     local dd="$1" rpc="$2"; shift 2
@@ -255,7 +234,9 @@ dht_process_identity_alive() {
 dht_probe_read_report() {
     local path="$1" pid_name="$2" port_name="$3" start_name="$4"
     local probe_pid probe_port probe_start extra
-    read -r probe_pid probe_port probe_start extra <"$path"
+    read -r probe_pid probe_port extra <"$path"
+    probe_start="$(awk '{print $22}' "/proc/$probe_pid/stat" \
+        2>/dev/null || true)"
     [ -n "$probe_pid" ] && [ -n "$probe_port" ] &&
         [ -n "$probe_start" ] && [ -z "${extra:-}" ] ||
         dht_die "invalid lifecycle probe report $path"
@@ -268,18 +249,8 @@ dht_lifecycle_probe_child() {
     local report="${DHT_PROBE_REPORT:?}" release="${DHT_PROBE_RELEASE:?}"
     local outcome="${DHT_PROBE_OUTCOME:?}" listener="" listener_port
     dht_make_work zcl23-dhtprobe
-    setsid python3 - "$report" >>"$DHT_WORK/listener.log" 2>&1 <<'PY' &
-import os,pathlib,signal,socket,sys
-s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
-s.setsockopt(socket.SOL_SOCKET,socket.SO_REUSEADDR,1)
-s.bind(("127.0.0.1",0)); s.listen(1)
-start=pathlib.Path(f"/proc/{os.getpid()}/stat").read_text().split()[21]
-path=pathlib.Path(sys.argv[1])
-tmp=path.with_suffix(path.suffix+".tmp")
-tmp.write_text(f"{os.getpid()} {s.getsockname()[1]} {start}\n")
-tmp.replace(path)
-signal.pause()
-PY
+    setsid "$DHT_ACCEPTANCE_C23" listen-report "$report" \
+        >>"$DHT_WORK/listener.log" 2>&1 &
     listener="$!"
     dht_register_owned_group "$listener"
     dht_wait_file "$report" "$listener" ||
@@ -434,9 +405,9 @@ dht_wait_auth() {
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         out="$(dht_status "$dd" "$rpc" 2>/dev/null || true)"
-        enabled="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("enabled",False)' 2>/dev/null || true)"
-        auth="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("connected_authenticated",0)' 2>/dev/null || true)"
-        accepted="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("frames_accepted",0)' 2>/dev/null || true)"
+        enabled="$(printf '%s' "$out" | dht_jget data.enabled False 2>/dev/null || true)"
+        auth="$(printf '%s' "$out" | dht_jget data.connected_authenticated 0 2>/dev/null || true)"
+        accepted="$(printf '%s' "$out" | dht_jget data.frames_accepted 0 2>/dev/null || true)"
         [ "$enabled" = True ] && [ "${auth:-0}" -ge "$want" ] &&
             [ "${accepted:-0}" -ge "$want" ] && return 0
         sleep 0.5
@@ -448,8 +419,8 @@ dht_wait_cold_load() {
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         out="$(dht_status "$dd" "$rpc" 2>/dev/null || true)"
-        loaded="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("persistence_loaded",False)' 2>/dev/null || true)"
-        cold="$(printf '%s' "$out" | dht_jget 'd.get("data",{}).get("cold_contacts",0)' 2>/dev/null || true)"
+        loaded="$(printf '%s' "$out" | dht_jget data.persistence_loaded False 2>/dev/null || true)"
+        cold="$(printf '%s' "$out" | dht_jget data.cold_contacts 0 2>/dev/null || true)"
         [ "$loaded" = True ] && [ "${cold:-0}" -ge "$want" ] && return 0
         sleep 0.5
     done
@@ -480,7 +451,7 @@ dht_wait_sync_live() {
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         state="$(dht_rpc "$dd" "$rpc" downloadstats 2>/dev/null \
-            | dht_jget 'd["result"]["sync_state"]' 2>/dev/null || true)"
+            | dht_jget result.sync_state 2>/dev/null || true)"
         case "$state" in
             blocks_download|connecting_blocks|at_tip) return 0 ;;
         esac
@@ -495,8 +466,8 @@ dht_wait_fold() {
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         dump="$(dht_native "$dd" "$rpc" dumpstate reducer_frontier || true)"
-        coins="$(printf '%s' "$dump" | dht_jget 'd["state"]["coins_best_height"]' 2>/dev/null || true)"
-        hstar="$(printf '%s' "$dump" | dht_jget 'd["state"]["hstar"]' 2>/dev/null || true)"
+        coins="$(printf '%s' "$dump" | dht_jget state.coins_best_height 2>/dev/null || true)"
+        hstar="$(printf '%s' "$dump" | dht_jget state.hstar 2>/dev/null || true)"
         [ "$coins" = "$tip" ] && [ "$hstar" = "$tip" ] && return 0
         sleep 1
     done
@@ -509,15 +480,8 @@ dht_wait_chain_loaded() {
     local dd="$1" rpc="$2" tip="$3" deadline loaded
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        loaded="$(dht_rpc "$dd" "$rpc" getblockchaininfo 2>/dev/null | python3 -c '
-import json,sys
-tip = int(sys.argv[1])
-try:
-    d = json.load(sys.stdin).get("result")
-except Exception:
-    d = None
-print(isinstance(d, dict) and d.get("blocks") == tip and d.get("initialblockdownload") is not True)' \
-            "$tip" 2>/dev/null || true)"
+        loaded="$(dht_rpc "$dd" "$rpc" getblockchaininfo 2>/dev/null |
+            "$DHT_ACCEPTANCE_C23" chain-loaded "$tip" 2>/dev/null || true)"
         [ "$loaded" = "True" ] && return 0
         sleep 1
     done
@@ -530,7 +494,7 @@ dht_wait_spendable() {
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         spend="$(dht_native "$dd" "$rpc" dumpstate vault 2>/dev/null \
-            | dht_jget 'd["state"]["zcl"]["spendable"]' 2>/dev/null || true)"
+            | dht_jget state.zcl.spendable 2>/dev/null || true)"
         case "$spend" in
             ''|*[!0-9]*) ;;
             *) [ "$spend" -gt 0 ] && return 0 ;;
@@ -542,12 +506,12 @@ dht_wait_spendable() {
 dht_unlock_wallet() {
     local dd="$1" rpc="$2" status unlock
     status="$(dht_native "$dd" "$rpc" core wallet security status || true)"
-    [ "$(printf '%s' "$status" | dht_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+    [ "$(printf '%s' "$status" | dht_jget ok False 2>/dev/null || true)" = "True" ] || {
         printf '%s\n' "$status" >&2; return 1; }
-    if [ "$(printf '%s' "$status" | dht_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" != "True" ]; then
+    if [ "$(printf '%s' "$status" | dht_jget data.unlocked 2>/dev/null || true)" != "True" ]; then
         unlock="$(printf '%s' "{\"passphrase\":\"$DHT_WALLET_PASS\",\"timeout_seconds\":3600}" \
             | dht_native "$dd" "$rpc" core wallet security unlock --input=- || true)"
-        [ "$(printf '%s' "$unlock" | dht_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" = "True" ] || {
+        [ "$(printf '%s' "$unlock" | dht_jget data.unlocked 2>/dev/null || true)" = "True" ] || {
             printf '%s\n' "$unlock" >&2; return 1; }
     fi
     return 0
@@ -556,7 +520,7 @@ dht_backup_wallet() {
     local dd="$1" rpc="$2" out
     out="$(printf '%s' "{\"confirm\":true,\"password\":\"$DHT_BACKUP_PASS\"}" \
         | dht_native "$dd" "$rpc" core wallet backup now --input=- || true)"
-    [ "$(printf '%s' "$out" | dht_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+    [ "$(printf '%s' "$out" | dht_jget ok False 2>/dev/null || true)" = "True" ] || {
         printf '%s\n' "$out" >&2; return 1; }
 }
 # Plan (retrying ONLY the transient OVERLAY_INTENT_REFUSED money-currency
@@ -573,14 +537,14 @@ dht_anchor() {
             *) break ;;
         esac
     done
-    [ "$(printf '%s' "$plan" | dht_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] &&
-    [ "$(printf '%s' "$plan" | dht_jget 'd["data"]["stage"]' 2>/dev/null || true)" = "plan" ] || {
+    [ "$(printf '%s' "$plan" | dht_jget ok False 2>/dev/null || true)" = "True" ] &&
+    [ "$(printf '%s' "$plan" | dht_jget data.stage 2>/dev/null || true)" = "plan" ] || {
         printf '%s\n' "$plan" >&2; return 1; }
-    plan_id="$(printf '%s' "$plan" | dht_jget 'd["data"]["plan_id"]' 2>/dev/null)" || return 1
+    plan_id="$(printf '%s' "$plan" | dht_jget data.plan_id 2>/dev/null)" || return 1
     commit="$(dht_native "$dd" "$rpc" core identity anchor \
         --input="{\"wallet_scope\":\"dev\",\"plan_id\":\"$plan_id\",\"confirm\":true}" || true)"
-    [ "$(printf '%s' "$commit" | dht_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] &&
-    [ "$(printf '%s' "$commit" | dht_jget 'd["data"]["stage"]' 2>/dev/null || true)" = "committed" ] || {
+    [ "$(printf '%s' "$commit" | dht_jget ok False 2>/dev/null || true)" = "True" ] &&
+    [ "$(printf '%s' "$commit" | dht_jget data.stage 2>/dev/null || true)" = "committed" ] || {
         printf '%s\n' "$commit" >&2; return 1; }
     printf '%s\n' "$commit"
 }
@@ -634,53 +598,27 @@ dht_build_helper() {
 
 dht_check_find() {
     local reply="$1" target="$2" a_id="$3" b_id="$4"
-    printf '%s' "$reply" | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-target=int(sys.argv[1],16); expected={sys.argv[2],sys.argv[3]}
-assert d["ok"] is True, d
-rows=d["data"]["node_ids"]
-assert len(rows) == 2 and set(rows) == expected, rows
-assert rows == sorted(rows,key=lambda x:(int(x,16)^target,x)), rows
-' "$target" "$a_id" "$b_id" || dht_die "FIND_NODE result/order mismatch"
+    "$DHT_ACCEPTANCE_C23" find-check "$reply" "$target" "$a_id" "$b_id" ||
+        dht_die "FIND_NODE result/order mismatch"
 }
 
 dht_check_contacts_file() {
     local path="$1" self_id="$2" expected="${3:-1}"
-    python3 -c '
-import pathlib,struct,sys
-p=pathlib.Path(sys.argv[1]); b=p.read_bytes(); self_id=bytes.fromhex(sys.argv[2])
-assert b[:8] == b"ZCDHTC\r\n"
-assert struct.unpack_from("<H",b,8)[0] == 2
-assert b[42:74] == self_id
-n=struct.unpack_from("<I",b,74)[0]
-entry_bytes=303 # node id + canonical delegation + local time/failures
-assert n == int(sys.argv[3]) and len(b) == 78 + n*entry_bytes
-ids=[b[78+i*entry_bytes:110+i*entry_bytes] for i in range(n)]
-assert ids == sorted(ids) and len(ids) == len(set(ids))
-' "$path" "$self_id" "$expected" || dht_die "non-canonical contacts file: $path"
+    "$DHT_ACCEPTANCE_C23" contacts-check "$path" "$self_id" "$expected" ||
+        dht_die "non-canonical contacts file: $path"
 }
 
 dht_check_attack_deltas() {
     local before="$1" after="$2"
-    python3 -c '
-import json,sys
-b=json.loads(sys.argv[1])["data"]; a=json.loads(sys.argv[2])["data"]
-br=b["frames_rejected"]; ar=a["frames_rejected"]
-want={"malformed":2,"identity":1,"replay":1,"unsolicited":1,
-      "expired":1,"poisoned-contacts":1}
-for key,delta in want.items():
-    assert ar[key]-br[key] == delta,(key,br[key],ar[key])
-for key in set(ar)-set(want):
-    assert ar[key]-br[key] == 0,(key,br[key],ar[key])
-assert a["frames_accepted"]-b["frames_accepted"] >= 1
-' "$before" "$after" || dht_die "hostile Noise-frame counter deltas differ"
+    "$DHT_ACCEPTANCE_C23" attack-deltas "$before" "$after" ||
+        dht_die "hostile Noise-frame counter deltas differ"
 }
 
 for port in $A_PORT $A_RPC $A_FS $A_HTTPS $B_PORT $B_RPC $B_FS $B_HTTPS; do
     dht_assert_port "$port"
 done
-[ -x "$NODE_BIN" ] && [ -x "$RPC_BIN" ] || dht_die "build node and RPC binaries first"
+[ -x "$NODE_BIN" ] && [ -x "$RPC_BIN" ] && [ -x "$DHT_ACCEPTANCE_C23" ] ||
+    dht_die "build node, RPC, and native C23 acceptance binaries first"
 dht_make_work zcl23-dhtacc
 # This regtest transport/package fixture never proves a shielded transaction.
 # Keep its boot cost and outcome independent of any operator-installed proving
@@ -813,10 +751,10 @@ dht_wait_height "$DHT_DD_B" "$B_RPC" 129 || dht_die "B did not sync final beacon
 dht_note "provisioning independent delegations through the operator leaf"
 DELEGATE_A="$(dht_native "$DHT_DD_A" "$A_RPC" zcode network delegate --input="{\"seed_file\":\"$DHT_WORK/master-a.hex\"}")"
 DELEGATE_B="$(dht_native "$DHT_DD_B" "$B_RPC" zcode network delegate --input="{\"seed_file\":\"$DHT_WORK/master-b.hex\"}")"
-[ "$(printf '%s' "$DELEGATE_A" | dht_jget 'd["ok"]')" = True ] || dht_die "A delegation failed: $DELEGATE_A"
-[ "$(printf '%s' "$DELEGATE_B" | dht_jget 'd["ok"]')" = True ] || dht_die "B delegation failed: $DELEGATE_B"
-NODE_A="$(printf '%s' "$DELEGATE_A" | dht_jget 'd["data"]["node_id"]')"
-NODE_B="$(printf '%s' "$DELEGATE_B" | dht_jget 'd["data"]["node_id"]')"
+[ "$(printf '%s' "$DELEGATE_A" | dht_jget ok)" = True ] || dht_die "A delegation failed: $DELEGATE_A"
+[ "$(printf '%s' "$DELEGATE_B" | dht_jget ok)" = True ] || dht_die "B delegation failed: $DELEGATE_B"
+NODE_A="$(printf '%s' "$DELEGATE_A" | dht_jget data.node_id)"
+NODE_B="$(printf '%s' "$DELEGATE_B" | dht_jget data.node_id)"
 NODES=("$NODE_A" "$NODE_B")
 [ "$NODE_A" != "$NODE_B" ] || dht_die "independent masters derived one node ID"
 
@@ -837,19 +775,16 @@ for i in 2 3 4 5 6; do
         "${DDS[$i]}/anchors.dat.sha3" "${DDS[$i]}/banlist.dat"
     delegated="$(dht_native "$DHT_DD_B" "$B_RPC" zcode network delegate \
         --input="{\"seed_file\":\"$DHT_WORK/master-$i.hex\",\"datadir\":\"${DDS[$i]}\"}")"
-    [ "$(printf '%s' "$delegated" | dht_jget 'd["ok"]')" = True ] ||
+    [ "$(printf '%s' "$delegated" | dht_jget ok)" = True ] ||
         dht_die "delegation $i failed: $delegated"
-    NODES[$i]="$(printf '%s' "$delegated" | dht_jget 'd["data"]["node_id"]')"
+    NODES[$i]="$(printf '%s' "$delegated" | dht_jget data.node_id)"
     [ -s "${DDS[$i]}/v2_identity.key" ] &&
     [ -s "${DDS[$i]}/zcode/dht/online_ed25519.key" ] &&
     [ -s "${DDS[$i]}/zcode/dht/delegation.v1" ] ||
         dht_die "independent identity files missing for node $i"
 done
-python3 - "${NODES[@]}" <<'PY' || dht_die "seven identities were not independent"
-import sys
-ids=sys.argv[1:]
-assert len(ids)==7 and len(set(ids))==7 and all(len(x)==64 for x in ids)
-PY
+"$DHT_ACCEPTANCE_C23" ids-distinct "${NODES[@]}" ||
+    dht_die "seven identities were not independent"
 
 dht_note "restarting to prove capability learning, Noise, and DHT bootstrap"
 dht_kill_group "$DHT_PGID_B"; DHT_PGID_B=""
@@ -905,7 +840,7 @@ dht_note "short disconnect retains incumbent, then reconnect resets it"
 dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
 sleep 2
 PEERS="$(dht_native "$DHT_DD_B" "$B_RPC" zcode network peers --input='{"limit":64}')"
-[ "$(printf '%s' "$PEERS" | dht_jget 'd["data"]["count"]')" -eq 1 ] || dht_die "B evicted A during a short disconnect"
+[ "$(printf '%s' "$PEERS" | dht_jget data.count)" -eq 1 ] || dht_die "B evicted A during a short disconnect"
 dht_spawn DHT_PGID_A "$DHT_DD_A" "$A_PORT" "$A_RPC" "$A_FS" \
     "$A_HTTPS" "127.0.0.1:$DEAD_SINK"
 dht_wait_rpc "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" || dht_die "A recovery boot failed"
@@ -950,20 +885,14 @@ for i in 0 1 2 3 4 5 6; do
     fi
     published="$(dht_native "${DDS[$i]}" "${RPCS[$i]}" zcode endpoint publish \
         --input="{\"ipv4\":\"127.0.0.1\",\"ipv4_port\":\"${PORTS[$i]}\",\"seed_file\":\"$seed_file\",\"seq\":\"1\",\"height\":129}")"
-    [ "$(printf '%s' "$published" | dht_jget 'd["ok"]')" = True ] ||
+    [ "$(printf '%s' "$published" | dht_jget ok)" = True ] ||
         dht_die "endpoint publish $i failed: $published"
-    DOCS[$i]="$(printf '%s' "$published" | dht_jget 'd["data"]["doc_hex"]')"
+    DOCS[$i]="$(printf '%s' "$published" | dht_jget data.doc_hex)"
 done
 
 # Choose a deterministic XOR-progress path ending at node 6. Only neighbours
 # (plus B-D) are connected initially; learned ZENDP hints create later edges.
-read -r -a ORDER <<<"$(python3 - "${NODES[@]}" <<'PY'
-import sys
-ids=[int(x,16) for x in sys.argv[1:]]
-t=ids[6]
-print(*sorted(range(6),key=lambda i:(ids[i]^t,ids[i]),reverse=True),6)
-PY
-)"
+read -r -a ORDER <<<"$("$DHT_ACCEPTANCE_C23" xor-order "${NODES[@]}")"
 # Only the lookup origin needs reachability hints: responders return
 # address-free IDs and never initiate a learned dial. Filing each signed doc
 # once at that origin is the genuine minimum and avoids manufacturing an
@@ -974,7 +903,7 @@ for publisher in 0 1 2 3 4 5 6; do
     [ "$ORIGIN" -eq "$publisher" ] && continue
     accepted="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" \
         zcode endpoint accept --input="{\"doc\":\"${DOCS[$publisher]}\"}")"
-    [ "$(printf '%s' "$accepted" | dht_jget 'd["ok"]')" = True ] ||
+    [ "$(printf '%s' "$accepted" | dht_jget ok)" = True ] ||
         dht_die "origin refused endpoint $publisher: $accepted"
 done
 for i in 0 1 2 3 4 5 6; do dht_kill_group "${PIDS[$i]}"; PIDS[$i]=""; done
@@ -1011,7 +940,7 @@ done
 
 NEXT="${ORDER[1]}"; BROKEN="${ORDER[2]}"; TARGET=6
 origin_status="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
-[ "$(printf '%s' "$origin_status" | dht_jget 'd["data"]["connected_authenticated"]')" -eq 1 ] ||
+[ "$(printf '%s' "$origin_status" | dht_jget data.connected_authenticated)" -eq 1 ] ||
     dht_die "origin was not sparse before lookup: $origin_status"
 
 dht_note "breaking the nearest path; FIND_NODE must recover through B-D"
@@ -1021,18 +950,8 @@ iterative="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" zcode network find 
     --input="{\"node_id\":\"${NODES[$TARGET]}\"}" || true)"
 after_find="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
 printf '%s\n' "$iterative" >"$DHT_WORK/iterative.json"
-if ! python3 - "$iterative" "$before_find" "$after_find" "${NODES[$TARGET]}" <<'PY'
-import json,sys
-r=json.loads(sys.argv[1]); b=json.loads(sys.argv[2])["data"]; a=json.loads(sys.argv[3])["data"]
-target=sys.argv[4]
-assert r["ok"] is True,r
-d=r["data"]
-assert d["termination"]=="target_authenticated",d
-assert d["rounds"]>=3 and d["xor_progress"]>=3,d
-assert target in d["node_ids"],d
-assert a["find_node_sent"]-b["find_node_sent"] <= 24,(b,a)
-assert a["frames_accepted"]-b["frames_accepted"] <= 64,(b,a)
-PY
+if ! "$DHT_ACCEPTANCE_C23" sparse-proof "$iterative" "$before_find" \
+    "$after_find" "${NODES[$TARGET]}"
 then
     dht_die "iterative sparse proof failed: $iterative"
 fi
@@ -1057,34 +976,20 @@ for i in 1 2 3 4 5 6 7 8; do
 done
 for job in "${jobs[@]}"; do wait "$job" || dht_die "lookup admission process failed"; done
 burst="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
-python3 - "$concurrent_dir" "$burst" <<'PY' || dht_die "true eight-caller admission proof failed"
-import json,pathlib,sys
-p=pathlib.Path(sys.argv[1])
-rows=[json.loads((p/f"{i}.begin.json").read_text()) for i in range(1,9)]
-assert all(r.get("ok") is True and r["data"]["state"]=="pending" for r in rows),rows
-ids=[r["data"]["lookup_id"] for r in rows]
-owners=[r["data"]["owner_token"] for r in rows]
-assert len(set(ids))==8 and len(set(owners))==8,(ids,owners)
-s=json.loads(sys.argv[2])["data"]
-assert s["queued_lookups"]==8,s
-assert s["active_queries"]==3,s
-PY
+"$DHT_ACCEPTANCE_C23" burst-proof "$concurrent_dir" "$burst" ||
+    dht_die "true eight-caller admission proof failed"
 for i in 1 2 3 4 5 6 7 8; do
-    read -r lookup owner <<<"$(python3 - "$concurrent_dir/$i.begin.json" <<'PY'
-import json,sys
-d=json.load(open(sys.argv[1]))["data"]
-print(d["lookup_id"],d["owner_token"])
-PY
-)"
+    read -r lookup owner <<<"$("$DHT_ACCEPTANCE_C23" begin-fields \
+        "$concurrent_dir/$i.begin.json")"
     polled="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" \
         zcode network find poll \
         --input="{\"lookup_id\":\"$lookup\",\"owner_token\":\"$owner\"}")"
-    [ "$(printf '%s' "$polled" | dht_jget 'd["data"]["state"]')" = pending ] ||
+    [ "$(printf '%s' "$polled" | dht_jget data.state)" = pending ] ||
         dht_die "stalled lookup $i was not pending: $polled"
     canceled="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" \
         zcode network find cancel \
         --input="{\"lookup_id\":\"$lookup\",\"owner_token\":\"$owner\"}")"
-    [ "$(printf '%s' "$canceled" | dht_jget 'd["ok"]')" = True ] ||
+    [ "$(printf '%s' "$canceled" | dht_jget ok)" = True ] ||
         dht_die "lookup cancel $i failed: $canceled"
 done
 for i in 0 1 2 3 4 5 6; do
@@ -1097,21 +1002,9 @@ for i in 0 1 2 3 4 5 6; do
     dht_kill_group "${PIDS[$i]:-}"
     PIDS[$i]=""
 done
-python3 - "${DDS[$ORIGIN]}/zcode/dht/contacts.v2" "${NODES[$NEXT]}" <<'PY' || dht_die "multi contact file is not canonical"
-import pathlib,struct,sys
-p=pathlib.Path(sys.argv[1]); b=p.read_bytes(); assert b[:8]==b"ZCDHTC\r\n"
-n=struct.unpack_from("<I",b,74)[0]; size=303
-entries=[b[78+i*size:78+(i+1)*size] for i in range(n)]
-ids=[entry[:32] for entry in entries]
-assert n>=3 and len(b)==78+n*size and ids==sorted(ids) and len(ids)==len(set(ids))
-keep=bytes.fromhex(sys.argv[2])
-selected=[entry for entry in entries if entry[:32]==keep]
-assert len(selected)==1
-# Canonical one-contact fixture built only from an already authenticated
-# contacts.v2 entry. No address is introduced; the untouched header remains
-# bound to the same network genesis and local node ID.
-p.write_bytes(b[:74]+struct.pack("<I",1)+selected[0])
-PY
+"$DHT_ACCEPTANCE_C23" contact-reduce \
+    "${DDS[$ORIGIN]}/zcode/dht/contacts.v2" "${NODES[$NEXT]}" ||
+    dht_die "multi contact file is not canonical"
 
 # peers.dat is deliberately absent. The only origin-side network facts are
 # one address-free authenticated-history ID plus the independently accepted,
@@ -1152,34 +1045,17 @@ dht_wait_cold_load "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" 1 ||
 cold="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
 connections="$(dht_rpc "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" getconnectioncount | dht_result)"
 [ "$connections" -eq 0 ] &&
-[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["connected_authenticated"]')" -eq 0 ] &&
-[ "$(printf '%s' "$cold" | dht_jget 'd["data"]["cold_contacts"]')" -eq 1 ] ||
+[ "$(printf '%s' "$cold" | dht_jget data.connected_authenticated)" -eq 0 ] &&
+[ "$(printf '%s' "$cold" | dht_jget data.cold_contacts)" -eq 1 ] ||
     dht_die "origin did not start with exactly zero peers: $cold connections=$connections"
 
 before_cold_find="$cold"
 cold_find="$(dht_native "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}" \
     zcode network find --input="{\"node_id\":\"${NODES[$TARGET]}\"}" || true)"
 after_cold_find="$(dht_status "${DDS[$ORIGIN]}" "${RPCS[$ORIGIN]}")"
-python3 - "$cold_find" "$before_cold_find" "$after_cold_find" \
-    "${NODES[$TARGET]}" <<'PY' || dht_die "autonomous cold-bootstrap lookup failed"
-import json,sys
-r=json.loads(sys.argv[1]); b=json.loads(sys.argv[2])["data"]; a=json.loads(sys.argv[3])["data"]
-assert r["ok"] is True,r
-d=r["data"]
-assert d["termination"]=="target_authenticated" and d["rounds"]>=2,d
-assert sys.argv[4] in d["node_ids"],d
-br=b["reachability"]; ar=a["reachability"]
-assert ar["entries"]>=6,ar
-requests=ar["requests_enqueued"]-br["requests_enqueued"]
-dials=ar["dials_queued"]-br["dials_queued"]
-# One persisted cold seed creates the first connection; standard iterative
-# Kademlia then directly authenticates further address-free IDs returned by
-# each hop. Every queued request must produce at most one dial, and the whole
-# proof stays bounded by the independently accepted endpoint index.
-assert 2<=dials<=ar["entries"]-1,(br,ar)
-assert requests==dials,(br,ar)
-assert a["connected_authenticated"]>=1,a
-PY
+"$DHT_ACCEPTANCE_C23" cold-proof "$cold_find" "$before_cold_find" \
+    "$after_cold_find" "${NODES[$TARGET]}" ||
+    dht_die "autonomous cold-bootstrap lookup failed"
 
 # Optional composition point for larger real-process acceptances. Run it only
 # after this owner's sparse/recovery assertions are complete: a composed proof
