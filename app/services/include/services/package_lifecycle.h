@@ -122,6 +122,15 @@ struct zcl_result package_lifecycle_receipt_read(
     const char *datadir, const uint8_t receipt_id[32],
     struct vcs_package_build_receipt *out);
 
+/* Read-only exact-root inspection for reuse planners. A directory named for
+ * the root is not evidence: when present, its filed receipt, package-scoped
+ * dependency lock, and every declared output are revalidated through the
+ * same lifecycle owner used by commit. Missing is an ordinary successful
+ * query with *installed_out false; tampered evidence is a named failure. */
+struct zcl_result package_lifecycle_installed_inspect(
+    const char *datadir, const uint8_t root[32],
+    struct package_lifecycle_step *out, bool *installed_out);
+
 struct zcl_result package_lifecycle_rollback(
     const char *datadir, const char *name, int64_t now_unix,
     struct package_lifecycle_rollback_report *out);

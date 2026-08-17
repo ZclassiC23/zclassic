@@ -28,8 +28,10 @@
 
 #include "test/test_core.h"
 
+#include "command/native_command.h"
 #include "core/uint256.h"
 #include "crypto/sha3.h"
+#include "json/json.h"
 #include "keys/key.h"
 #include "keys/pubkey.h"
 #include "services/package_lifecycle.h"
@@ -696,6 +698,92 @@ static int t_e2e(void)
                   commit.steps[0].rule[0] != '\0'));
     ZA_CHECK("the install carries a build receipt id",
              commit.steps[0].has_receipt);
+    struct package_lifecycle_step reuse_inspection;
+    bool reuse_installed = false;
+    struct zcl_result reuse_inspected =
+        package_lifecycle_installed_inspect(
+            base, ring_root, &reuse_inspection, &reuse_installed);
+    ZA_CHECK("reuse inspection accepts only the receipt-verified install",
+             reuse_inspected.ok && reuse_installed &&
+                 reuse_inspection.already_installed &&
+                 reuse_inspection.has_receipt &&
+                 memcmp(reuse_inspection.root, ring_root, 32) == 0);
+
+    char workspace[4200], workspace_path[4400];
+    snprintf(workspace, sizeof(workspace), "%s/workspace", base);
+    snprintf(workspace_path, sizeof(workspace_path), "%s/include", workspace);
+    bool workspace_ready = za_mkdir_p(workspace_path);
+    snprintf(workspace_path, sizeof(workspace_path), "%s/src", workspace);
+    workspace_ready = workspace_ready && za_mkdir_p(workspace_path);
+    snprintf(workspace_path, sizeof(workspace_path), "%s/tests", workspace);
+    workspace_ready = workspace_ready && za_mkdir_p(workspace_path);
+    snprintf(workspace_path, sizeof(workspace_path), "%s/LICENSE", workspace);
+    workspace_ready = workspace_ready &&
+        za_write_file(workspace_path, ZA_LICENSE, strlen(ZA_LICENSE), 0600);
+    static const char harness_header[] = "int harness(void);\n";
+    static const char harness_source[] = "int harness(void){return 1;}\n";
+    static const char harness_test[] = "int main(void){return 0;}\n";
+    static const char harness_meta[] =
+        "{\"schema\":1,\"name\":\"fixture/harness\","
+        "\"semver\":\"0.1.0\",\"language\":\"c23\","
+        "\"license\":\"MIT\",\"include_dir\":\"include\","
+        "\"source_dir\":\"src\",\"dependencies\":[]}\n";
+    snprintf(workspace_path, sizeof(workspace_path), "%s/include/harness.h",
+             workspace);
+    workspace_ready = workspace_ready && za_write_file(
+        workspace_path, harness_header, strlen(harness_header), 0600);
+    snprintf(workspace_path, sizeof(workspace_path), "%s/src/harness.c",
+             workspace);
+    workspace_ready = workspace_ready && za_write_file(
+        workspace_path, harness_source, strlen(harness_source), 0600);
+    snprintf(workspace_path, sizeof(workspace_path), "%s/tests/test.c",
+             workspace);
+    workspace_ready = workspace_ready && za_write_file(
+        workspace_path, harness_test, strlen(harness_test), 0600);
+    snprintf(workspace_path, sizeof(workspace_path), "%s/zcode-package.json",
+             workspace);
+    workspace_ready = workspace_ready && za_write_file(
+        workspace_path, harness_meta, strlen(harness_meta), 0600);
+    struct json_value work_input;
+    json_init(&work_input); json_set_object(&work_input);
+    bool input_ready = workspace_ready &&
+        json_push_kv_str(&work_input, "workspace", workspace) &&
+        json_push_kv_str(&work_input, "goal",
+                         "use alice/ringbuffer@1.0.0") &&
+        json_push_kv_str(&work_input, "profile", "quick") &&
+        json_push_kv_str(&work_input, "datadir", base);
+    struct zcl_command_request work_request = {.input = &work_input};
+    struct zcl_command_reply work_reply;
+    zcl_command_reply_init(&work_reply, "zcl.zcode_reuse_e2e.v1");
+    if (input_ready)
+        zcl_native_handle_zcode_work_start(&work_request, &work_reply);
+    const struct json_value *reuse_plan =
+        json_get(&work_reply.data, "reuse_plan");
+    const struct json_value *reused = reuse_plan
+        ? json_get(reuse_plan, "reused") : NULL;
+    const struct json_value *selected = reused ? json_at(reused, 0) : NULL;
+    const struct json_value *apis = selected ? json_get(selected, "apis") : NULL;
+    bool saw_ring_symbol = false;
+    for (size_t i = 0; apis && i < apis->num_children; i++) {
+        const struct json_value *api = json_at(apis, i);
+        if (api && api->type == JSON_STR &&
+            strcmp(json_get_str(api), "ring_push") == 0)
+            saw_ring_symbol = true;
+    }
+    snprintf(workspace_path, sizeof(workspace_path), "%s/.zvcs", workspace);
+    ZA_CHECK("work start reuses exact installed APIs and creates zero task",
+             input_ready &&
+                 work_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                 strcmp(json_get_str(json_get(&work_reply.data, "state")),
+                        "REUSE_READY") == 0 &&
+                 strcmp(json_get_str(json_get(&work_reply.data, "work_id")),
+                        "") == 0 &&
+                 reuse_plan && !json_get_bool(json_get(
+                     reuse_plan, "new_code_required")) &&
+                 selected && json_get_bool(json_get(selected, "installed")) &&
+                 saw_ring_symbol && !za_exists(workspace_path));
+    zcl_command_reply_free(&work_reply);
+    json_free(&work_input);
     uint8_t ring_receipt[32];
     memcpy(ring_receipt, commit.steps[0].receipt_id, sizeof(ring_receipt));
     struct vcs_package_build_receipt inspected_receipt;
@@ -911,6 +999,11 @@ static int t_e2e(void)
              damaged && damaged_planned.ok && !damaged_result.ok &&
                  strcmp(damaged_commit.rule,
                         "installed-receipt-invalid") == 0);
+    reuse_installed = true;
+    reuse_inspected = package_lifecycle_installed_inspect(
+        base, ring_root, &reuse_inspection, &reuse_installed);
+    ZA_CHECK("reuse inspection refuses a tampered installed output",
+             !reuse_inspected.ok && !reuse_installed);
 
     za_rm_rf(base);
     return failures;

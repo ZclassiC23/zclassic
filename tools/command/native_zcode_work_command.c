@@ -11,6 +11,7 @@
 
 #include "base/cleanse.h"
 #include "base/hex.h"
+#include "base/log_macros.h"
 #include "config/runtime.h"
 #include "crypto/ed25519.h"
 #include "hotswap/hotswap_service.h"
@@ -19,6 +20,7 @@
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
+#include "services/package_lifecycle.h"
 #include "services/zcode_goal_context_calc_service.h"
 #include "services/zcode_goal_context_service.h"
 #include "services/zcode_lane_service.h"
@@ -26,6 +28,11 @@
 #include "util/safe_alloc.h"
 #include "util/file_tree_ops.h"
 #include "vcs/package_recipe.h"
+#include "vcs/package_index.h"
+#include "vcs/package_manifest.h"
+#include "vcs/package_publish.h"
+#include "vcs/package_release.h"
+#include "vcs/package_reuse.h"
 #include "vcs/build_action.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_devloop.h"
@@ -40,13 +47,18 @@
 #include <string.h>
 #ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
 #include <limits.h>
+#include <fcntl.h>
 #include <stdlib.h>
+#include <sys/stat.h>
 #include <unistd.h>
 #endif
 
 #ifndef ZCL_HOTFORK_ZWORK_INPUT_CORE
 #define ZWORK_PATH_MAX 4400
 #define ZWORK_LINE_COUNT_MAX 65536u
+#define ZWORK_REUSE_API_TEXT_MAX 256u
+#define ZWORK_REUSE_HEADER_BYTES_MAX (64u * 1024u)
+#define ZWORK_LOG "zcode.work"
 
 struct zwork_patch_summary {
     struct vcs_zcode_patch_v1 patch;
@@ -59,6 +71,12 @@ struct zwork_patch_summary {
 struct zwork_proof_snapshot {
     bool available;
     struct build_fabric_proof_evaluation facts;
+};
+
+struct zwork_reuse_candidate {
+    struct vcs_package_reuse_input input;
+    char api_text[VCS_PACKAGE_REUSE_MAX_APIS][ZWORK_REUSE_API_TEXT_MAX];
+    bool installed_invalid;
 };
 #endif
 
@@ -232,6 +250,378 @@ static bool zwork_prepare(const char *workspace,
            VCS_PACKAGE_PREPARE_OK;
 }
 
+static bool zwork_read_bounded_regular(const char *path, size_t maximum,
+                                       uint8_t **out, size_t *out_len)
+{
+    if (!path || !out || !out_len || maximum == 0) {
+        LOG_ERROR(ZWORK_LOG, "reuse read received invalid arguments");
+        return false;
+    }
+    *out = NULL; *out_len = 0;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    struct stat st;
+    if (fstat(fd, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size <= 0 ||
+        (uint64_t)st.st_size > maximum) {
+        LOG_ERROR(ZWORK_LOG, "reuse object is not one bounded regular file: %s",
+                  path);
+        close(fd); return false;
+    }
+    size_t len = (size_t)st.st_size;
+    uint8_t *bytes = zcl_malloc(len + 1u, "zcode.work.reuse_read");
+    if (!bytes) { close(fd); return false; }
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = read(fd, bytes + off, len - off);
+        if (n <= 0) {
+            LOG_ERROR(ZWORK_LOG, "reuse object read failed: %s", path);
+            free(bytes); close(fd); return false;
+        }
+        off += (size_t)n;
+    }
+    if (close(fd) != 0) {
+        LOG_ERROR(ZWORK_LOG, "reuse object close failed: %s", path);
+        free(bytes); return false;
+    }
+    bytes[len] = 0; *out = bytes; *out_len = len; return true;
+}
+
+static bool zwork_reuse_load_facts(
+    const char *zcode_dir, const struct vcs_package_index_entry *entry,
+    struct vcs_package_recipe *recipe)
+{
+    char path[ZWORK_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/releases/%s", zcode_dir,
+                     entry->release_id_hex);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return false;
+    uint8_t *wire = NULL; size_t wire_len = 0;
+    if (!zwork_read_bounded_regular(path, VCS_PACKAGE_RELEASE_MAX_WIRE_BYTES,
+                                    &wire, &wire_len)) return false;
+    struct vcs_package_release release;
+    bool ok = vcs_package_release_parse(wire, wire_len, &release) ==
+                  VCS_PACKAGE_RELEASE_OK &&
+              vcs_package_release_verify(&release) == VCS_PACKAGE_RELEASE_OK;
+    free(wire);
+    if (!ok) return false;
+    uint8_t release_id[32];
+    char release_hex[65], package_hex[65];
+    if (vcs_package_release_id(&release, release_id) !=
+        VCS_PACKAGE_RELEASE_OK) return false;
+    zcl_hex_encode(release_id, 32, release_hex);
+    zcl_hex_encode(release.package_root, 32, package_hex);
+    if (strcmp(release_hex, entry->release_id_hex) != 0 ||
+        strcmp(package_hex, entry->package_root_hex) != 0) return false;
+
+    n = snprintf(path, sizeof(path), "%s/manifests/%s", zcode_dir,
+                 package_hex);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return false;
+    wire = NULL; wire_len = 0;
+    if (!zwork_read_bounded_regular(path,
+                                    VCS_PACKAGE_MANIFEST_MAX_WIRE_BYTES,
+                                    &wire, &wire_len)) return false;
+    struct vcs_package_manifest manifest;
+    vcs_package_manifest_init(&manifest);
+    ok = vcs_package_manifest_parse(wire, wire_len, &manifest);
+    free(wire);
+    if (!ok) return false;
+
+    char root_hex[65]; zcl_hex_encode(release.recipe_root, 32, root_hex);
+    n = snprintf(path, sizeof(path), "%s/recipes/%s", zcode_dir, root_hex);
+    if (n <= 0 || (size_t)n >= sizeof(path)) {
+        vcs_package_manifest_free(&manifest); return false;
+    }
+    wire = NULL; wire_len = 0;
+    if (!zwork_read_bounded_regular(path, VCS_PACKAGE_RECIPE_MAX_WIRE_BYTES,
+                                    &wire, &wire_len)) {
+        vcs_package_manifest_free(&manifest); return false;
+    }
+    ok = vcs_package_recipe_parse(wire, wire_len, recipe) ==
+         VCS_PACKAGE_RECIPE_OK;
+    free(wire);
+    struct vcs_package_publish_report report;
+    vcs_package_publish_report_init(&report);
+    if (ok) {
+        vcs_package_publish_validate(&release, &manifest, &report);
+        vcs_package_publish_validate_recipe(&release, &manifest, recipe,
+                                            &report);
+        ok = report.failure_count == 0 && report.release_ok &&
+             report.manifest_ok && report.recipe_ok;
+    }
+    vcs_package_manifest_free(&manifest);
+    return ok;
+}
+
+static bool zwork_reuse_api_add(struct zwork_reuse_candidate *candidate,
+                                const char *api, size_t len)
+{
+    if (!candidate || !api || len == 0 ||
+        len >= ZWORK_REUSE_API_TEXT_MAX ||
+        candidate->input.api_count >= VCS_PACKAGE_REUSE_MAX_APIS)
+        return false;
+    for (size_t i = 0; i < candidate->input.api_count; i++)
+        if (strlen(candidate->api_text[i]) == len &&
+            memcmp(candidate->api_text[i], api, len) == 0) return true;
+    size_t at = candidate->input.api_count++;
+    memcpy(candidate->api_text[at], api, len);
+    candidate->api_text[at][len] = '\0';
+    candidate->input.apis[at] = candidate->api_text[at];
+    return true;
+}
+
+static void zwork_reuse_header_symbols(struct zwork_reuse_candidate *candidate,
+                                       const char *path)
+{
+    uint8_t *bytes = NULL; size_t len = 0;
+    if (!zwork_read_bounded_regular(path, ZWORK_REUSE_HEADER_BYTES_MAX,
+                                    &bytes, &len)) return;
+    static const char *const rejected[] = {
+        "if", "for", "while", "switch", "sizeof", "return",
+    };
+    for (size_t i = 0; i < len &&
+         candidate->input.api_count < VCS_PACKAGE_REUSE_MAX_APIS; i++) {
+        if (bytes[i] != '(') continue;
+        size_t end = i;
+        while (end > 0 && (bytes[end - 1u] == ' ' ||
+                           bytes[end - 1u] == '\t' ||
+                           bytes[end - 1u] == '\n' ||
+                           bytes[end - 1u] == '\r')) end--;
+        size_t start = end;
+        while (start > 0 &&
+               ((bytes[start - 1u] >= 'A' && bytes[start - 1u] <= 'Z') ||
+                (bytes[start - 1u] >= 'a' && bytes[start - 1u] <= 'z') ||
+                (bytes[start - 1u] >= '0' && bytes[start - 1u] <= '9') ||
+                bytes[start - 1u] == '_')) start--;
+        if (start == end || (bytes[start] >= '0' && bytes[start] <= '9'))
+            continue;
+        bool keep = true;
+        for (size_t r = 0; r < sizeof(rejected) / sizeof(rejected[0]); r++)
+            if (strlen(rejected[r]) == end - start &&
+                memcmp(bytes + start, rejected[r], end - start) == 0)
+                keep = false;
+        if (keep) (void)zwork_reuse_api_add(
+            candidate, (const char *)bytes + start, end - start);
+    }
+    free(bytes);
+}
+
+static bool zwork_reuse_output_is_header(const char *path)
+{
+    size_t len = path ? strlen(path) : 0;
+    return len > 10u && strncmp(path, "include/", 8) == 0 &&
+           strcmp(path + len - 2u, ".h") == 0;
+}
+
+static void zwork_reuse_installed(
+    const char *datadir, const char *zcode_dir,
+    const struct vcs_package_index_entry *entry,
+    struct zwork_reuse_candidate *candidate)
+{
+    uint8_t root[32];
+    if (!zcl_hex_decode_lower(entry->package_root_hex, root, 32)) {
+        candidate->installed_invalid = true; return;
+    }
+    char installed[ZWORK_PATH_MAX];
+    int n = snprintf(installed, sizeof(installed), "%s/installed/%s",
+                     zcode_dir, entry->package_root_hex);
+    struct stat st;
+    if (n <= 0 || (size_t)n >= sizeof(installed)) {
+        candidate->installed_invalid = true; return;
+    }
+    if (lstat(installed, &st) != 0) return;
+    if (!S_ISDIR(st.st_mode) || S_ISLNK(st.st_mode)) {
+        candidate->installed_invalid = true; return;
+    }
+    struct package_lifecycle_step step;
+    bool verified = false;
+    struct zcl_result inspected = package_lifecycle_installed_inspect(
+        datadir, root, &step, &verified);
+    if (!inspected.ok || !verified) {
+        LOG_ERROR(ZWORK_LOG, "installed reuse refused for %s: %s",
+                  entry->name, inspected.message);
+        candidate->installed_invalid = true; return;
+    }
+    struct vcs_package_build_receipt receipt;
+    struct zcl_result read = package_lifecycle_receipt_read(
+        datadir, step.receipt_id, &receipt);
+    if (!read.ok) {
+        LOG_ERROR(ZWORK_LOG, "installed receipt read refused for %s: %s",
+                  entry->name, read.message);
+        candidate->installed_invalid = true; return;
+    }
+    candidate->input.installed = true;
+    for (size_t i = 0; i < receipt.output_count &&
+         candidate->input.api_count < VCS_PACKAGE_REUSE_MAX_APIS; i++) {
+        const char *output = receipt.outputs[i].path;
+        if (!zwork_reuse_output_is_header(output)) continue;
+        (void)zwork_reuse_api_add(candidate, output, strlen(output));
+        char header_path[ZWORK_PATH_MAX];
+        n = snprintf(header_path, sizeof(header_path), "%s/%s", installed,
+                     output);
+        if (n > 0 && (size_t)n < sizeof(header_path))
+            zwork_reuse_header_symbols(candidate, header_path);
+    }
+}
+
+static bool zwork_lock_has_root(const struct vcs_package_lock *lock,
+                                const char *root_hex)
+{
+    char node_hex[65];
+    if (!lock || !root_hex) return false;
+    for (size_t i = 0; i < lock->count; i++) {
+        if (lock->nodes[i].depth == 0) continue;
+        zcl_hex_encode(lock->nodes[i].root, 32, node_hex);
+        if (strcmp(node_hex, root_hex) == 0) return true;
+    }
+    return false;
+}
+
+static const char *zwork_reuse_datadir(
+    const struct zcl_command_request *request)
+{
+    const char *datadir = zwork_str(request->input, "datadir");
+    if (datadir && datadir[0]) return datadir;
+    datadir = zcl_native_command_datadir();
+    return datadir && datadir[0] ? datadir : NULL;
+}
+
+static bool zwork_reuse_render_unavailable(struct json_value *plan,
+                                           struct json_value *expert)
+{
+    json_init(plan); json_set_object(plan);
+    json_init(expert); json_set_object(expert);
+    struct json_value selected, roots;
+    json_init(&selected); json_set_array(&selected);
+    json_init(&roots); json_set_array(&roots);
+    bool ok = json_push_kv_str(plan, "stage", "Finding reusable software") &&
+        json_push_kv_str(plan, "search_status", "datadir_not_provided") &&
+        json_push_kv_str(plan, "network_discovery", "not_requested") &&
+        json_push_kv(plan, "reused", &selected) &&
+        json_push_kv_int(plan, "packages_scanned", 0) &&
+        json_push_kv_bool(plan, "new_code_required", true) &&
+        json_push_kv_str(plan, "missing", "local package facts unavailable") &&
+        json_push_kv(expert, "selected_roots", &roots);
+    json_free(&roots); json_free(&selected); return ok;
+}
+
+static bool zwork_reuse_render(
+    const struct zcl_command_request *request, const char *goal,
+    const struct vcs_package_prepared *prepared, struct json_value *plan_json,
+    struct json_value *expert_json, bool *complete_out)
+{
+    *complete_out = false;
+    const char *datadir = zwork_reuse_datadir(request);
+    if (!datadir) return zwork_reuse_render_unavailable(plan_json, expert_json);
+    char zcode_dir[ZWORK_PATH_MAX];
+    int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
+    if (n <= 0 || (size_t)n >= sizeof(zcode_dir)) return false;
+    struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
+    if (!index) return false;
+    size_t indexed = vcs_package_index_count(index);
+    size_t count = indexed < VCS_PACKAGE_REUSE_MAX_INPUTS
+        ? indexed : VCS_PACKAGE_REUSE_MAX_INPUTS;
+    struct zwork_reuse_candidate *candidates = zcl_calloc(
+        count ? count : 1u, sizeof(*candidates), "zcode.work.reuse_candidates");
+    struct vcs_package_recipe *recipes = zcl_calloc(
+        count ? count : 1u, sizeof(*recipes), "zcode.work.reuse_recipes");
+    struct vcs_package_reuse_input *inputs = zcl_calloc(
+        count ? count : 1u, sizeof(*inputs), "zcode.work.reuse_inputs");
+    if (!candidates || !recipes || !inputs) {
+        free(inputs); free(recipes); free(candidates);
+        vcs_package_index_free(index); return false;
+    }
+    size_t invalid_installs = 0;
+    for (size_t i = 0; i < count; i++) {
+        const struct vcs_package_index_entry *entry =
+            vcs_package_index_at(index, i);
+        candidates[i].input.package = entry;
+        candidates[i].input.locked = zwork_lock_has_root(
+            &prepared->lock, entry->package_root_hex);
+        vcs_package_recipe_init(&recipes[i]);
+        bool recipe_ok = zwork_reuse_load_facts(zcode_dir, entry,
+                                                 &recipes[i]);
+        candidates[i].input.compatible = recipe_ok;
+        if (recipe_ok) {
+            for (size_t h = 0; h < recipes[i].public_headers.count &&
+                 candidates[i].input.api_count < VCS_PACKAGE_REUSE_MAX_APIS;
+                 h++) {
+                const char *header = recipes[i].public_headers.items[h];
+                (void)zwork_reuse_api_add(&candidates[i], header,
+                                          strlen(header));
+            }
+            zwork_reuse_installed(datadir, zcode_dir, entry, &candidates[i]);
+        }
+        if (candidates[i].installed_invalid) invalid_installs++;
+        inputs[i] = candidates[i].input;
+    }
+    struct vcs_package_reuse_plan reuse;
+    bool ok = vcs_package_reuse_plan_build(goal, inputs, count, &reuse);
+    json_init(plan_json); json_set_object(plan_json);
+    json_init(expert_json); json_set_object(expert_json);
+    struct json_value selected, roots;
+    json_init(&selected); json_set_array(&selected);
+    json_init(&roots); json_set_array(&roots);
+    for (size_t i = 0; ok && i < reuse.selected_count; i++) {
+        size_t at = reuse.selected[i].input_index;
+        const struct vcs_package_reuse_input *input = &inputs[at];
+        struct json_value row, apis, root;
+        json_init(&row); json_set_object(&row);
+        json_init(&apis); json_set_array(&apis);
+        json_init(&root); json_set_object(&root);
+        ok = json_push_kv_str(&row, "name", input->package->name) &&
+            json_push_kv_str(&row, "semver", input->package->semver) &&
+            json_push_kv_bool(&row, "installed", input->installed);
+        for (size_t a = 0; ok && a < input->api_count; a++) {
+            struct json_value api; json_init(&api);
+            json_set_str(&api, input->apis[a]);
+            ok = json_push_back(&apis, &api); json_free(&api);
+        }
+        ok = ok && json_push_kv(&row, "apis", &apis) &&
+            json_push_back(&selected, &row) &&
+            json_push_kv_str(&root, "name", input->package->name) &&
+            json_push_kv_str(&root, "semver", input->package->semver) &&
+            json_push_kv_str(&root, "package_root",
+                             input->package->package_root_hex) &&
+            json_push_kv_bool(&root, "already_locked", input->locked) &&
+            json_push_kv_int(&root, "score", reuse.selected[i].score) &&
+            json_push_back(&roots, &root);
+        json_free(&root); json_free(&apis); json_free(&row);
+    }
+    if (ok) {
+        ok = json_push_kv_str(plan_json, "stage", "Finding reusable software") &&
+            json_push_kv_str(plan_json, "search_status", "complete") &&
+            json_push_kv_str(plan_json, "network_discovery", "not_requested") &&
+            json_push_kv_str(plan_json, "disposition",
+                vcs_package_reuse_disposition_string(reuse.disposition)) &&
+            json_push_kv(plan_json, "reused", &selected) &&
+            json_push_kv_bool(plan_json, "new_code_required",
+                              reuse.new_code_required) &&
+            json_push_kv_str(plan_json, "missing",
+                reuse.new_code_required ? goal : "none") &&
+            json_push_kv_str(expert_json, "search_order",
+                             "installed_then_local_metadata") &&
+            json_push_kv_int(expert_json, "packages_scanned",
+                             (int64_t)reuse.packages_scanned) &&
+            json_push_kv_bool(expert_json, "packages_truncated",
+                              indexed > count) &&
+            json_push_kv_int(expert_json, "compatible_matches",
+                             (int64_t)reuse.compatible_matches) &&
+            json_push_kv_int(expert_json, "incompatible_matches",
+                             (int64_t)reuse.incompatible_matches) &&
+            json_push_kv_int(expert_json, "invalid_installs",
+                             (int64_t)invalid_installs) &&
+            json_push_kv(expert_json, "selected_roots", &roots);
+    }
+    if (ok && invalid_installs > 0)
+        ok = json_push_kv_str(
+            plan_json, "note",
+            "One or more installed packages were ignored because their exact receipts or outputs did not verify");
+    *complete_out = ok && reuse.disposition == VCS_PACKAGE_REUSE_COMPLETE;
+    json_free(&roots); json_free(&selected);
+    for (size_t i = 0; i < count; i++) vcs_package_recipe_free(&recipes[i]);
+    free(inputs); free(recipes); free(candidates); vcs_package_index_free(index);
+    return ok;
+}
+
 static bool zwork_plan_input(
     struct json_value *input, const char *workspace, const char *goal,
     const struct vcs_package_prepared *prepared,
@@ -380,6 +770,33 @@ void zcl_native_handle_zcode_work_start(
                    false, false);
         return;
     }
+    struct json_value reuse_plan, reuse_expert;
+    bool reuse_complete = false;
+    if (!zwork_reuse_render(request, goal, &prepared, &reuse_plan,
+                            &reuse_expert, &reuse_complete)) {
+        zwork_fail(reply, "REUSE_PLAN_FAILED", "reuse",
+                   "local package facts could not be ranked", false, false);
+        vcs_package_prepared_free(&prepared);
+        return;
+    }
+    if (reuse_complete) {
+        bool rendered = json_push_kv_str(&reply->data, "work_id", "") &&
+            json_push_kv_str(&reply->data, "goal", goal) &&
+            json_push_kv_str(&reply->data, "state", "REUSE_READY") &&
+            json_push_kv_str(&reply->data, "profile", profile.name) &&
+            json_push_kv(&reply->data, "reuse_plan", &reuse_plan) &&
+            json_push_kv_str(&reply->data, "authoritative_workspace",
+                             "unchanged") &&
+            json_push_kv_str(&reply->data, "next_safe_command", "zcode use") &&
+            json_push_kv(&reply->data, "expert", &reuse_expert);
+        json_free(&reuse_expert); json_free(&reuse_plan);
+        vcs_package_prepared_free(&prepared);
+        if (!rendered)
+            zwork_fail(reply, "WORK_OUTPUT_FAILED", "render",
+                       "bounded reuse summary could not be rendered",
+                       false, false);
+        return;
+    }
     struct zcode_goal_selection selection;
     struct zcl_result selected = zcode_goal_context_select(
         workspace, goal, exact_symbol, &selection);
@@ -394,6 +811,7 @@ void zcl_native_handle_zcode_work_start(
                    selected.ok ? "project scopes or expiry could not be derived"
                                : selected.message,
                    false, false);
+        json_free(&reuse_expert); json_free(&reuse_plan);
         vcs_package_prepared_free(&prepared);
         return;
     }
@@ -403,6 +821,7 @@ void zcl_native_handle_zcode_work_start(
                           max_cpu_seconds)) {
         zwork_fail(reply, "WORK_COMPOSE_FAILED", "compose",
                    "existing task inputs could not be composed", false, false);
+        json_free(&reuse_expert); json_free(&reuse_plan);
         vcs_package_prepared_free(&prepared);
         return;
     }
@@ -418,6 +837,7 @@ void zcl_native_handle_zcode_work_start(
                                           : "existing task planner refused",
                    inner.error.retryable, inner.error.mutated);
         zcl_command_reply_free(&inner);
+        json_free(&reuse_expert); json_free(&reuse_plan);
         vcs_package_prepared_free(&prepared);
         return;
     }
@@ -429,7 +849,10 @@ void zcl_native_handle_zcode_work_start(
         zwork_render_selection(&context, &selection, &inner.data,
                                source_bytes);
     json_init(&expert);
-    if (ok) json_copy(&expert, &inner.data);
+    if (ok) {
+        json_copy(&expert, &inner.data);
+        ok = json_push_kv(&expert, "reuse", &reuse_expert);
+    }
     char work_id[32] = {0};
     if (ok) (void)snprintf(work_id, sizeof(work_id), "work-%.12s", task_hex);
     if (ok) {
@@ -437,6 +860,7 @@ void zcl_native_handle_zcode_work_start(
              json_push_kv_str(&reply->data, "goal", goal) &&
              json_push_kv_str(&reply->data, "state", "AWAITING_CANDIDATE") &&
              json_push_kv_str(&reply->data, "profile", profile.name) &&
+             json_push_kv(&reply->data, "reuse_plan", &reuse_plan) &&
              json_push_kv(&reply->data, "selected_context", &context) &&
              json_push_kv_str(&reply->data, "authoritative_workspace",
                               "unchanged") &&
@@ -445,6 +869,7 @@ void zcl_native_handle_zcode_work_start(
              json_push_kv(&reply->data, "expert", &expert);
     }
     json_free(&expert); json_free(&context);
+    json_free(&reuse_expert); json_free(&reuse_plan);
     zcl_command_reply_free(&inner);
     vcs_package_prepared_free(&prepared);
     if (!ok)

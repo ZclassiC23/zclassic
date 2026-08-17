@@ -9,9 +9,9 @@ cd "$ROOT"
 ref_pattern='ZCL_WITH_RUST|librustzcash\.a|librustzcash_[A-Za-z0-9_]*|-lrust[A-Za-z0-9_]*|(^|[^A-Za-z0-9_])(cargo|rustc)([^A-Za-z0-9_]|$)'
 
 if [[ "${1:-}" == "--selftest" ]]; then
-    printf '%s\n' 'cc -std=c23 main.c' | grep -Eq "$ref_pattern" && exit 1
-    printf '%s\n' 'cargo build' | grep -Eq "$ref_pattern" || exit 1
-    printf '%s\n' 'cc main.o -lrustzcash' | grep -Eq "$ref_pattern" || exit 1
+    [[ 'cc -std=c23 main.c' =~ $ref_pattern ]] && exit 1
+    [[ 'cargo build' =~ $ref_pattern ]] || exit 1
+    [[ 'cc main.o -lrustzcash' =~ $ref_pattern ]] || exit 1
     printf 'check_c23_only selftest: OK\n'
     exit 0
 fi

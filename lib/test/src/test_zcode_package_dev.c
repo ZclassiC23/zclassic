@@ -14,6 +14,7 @@
 #include "vcs/package_capsule.h"
 #include "vcs/package_prepare.h"
 #include "vcs/package_mapping.h"
+#include "vcs/package_reuse.h"
 #include "vcs/vcs.h"
 #include "vcs/vcs_devloop.h"
 
@@ -776,6 +777,75 @@ static int zpd_test_project_init(void)
     return failures;
 }
 
+static void zpd_reuse_entry(struct vcs_package_index_entry *entry,
+                            const char *name, const char *semver, char root)
+{
+    memset(entry, 0, sizeof(*entry));
+    (void)snprintf(entry->name, sizeof(entry->name), "%s", name);
+    (void)snprintf(entry->semver, sizeof(entry->semver), "%s", semver);
+    memset(entry->package_root_hex, root, 64);
+    entry->package_root_hex[64] = '\0';
+}
+
+static int zpd_test_reuse_plan(void)
+{
+    int failures = 0;
+    TEST("zcode reuse plan: exact, partial, absent, incompatible and conflict") {
+        struct vcs_package_index_entry entries[3];
+        zpd_reuse_entry(&entries[0], "zclassic23/json", "1.0.0", 'a');
+        zpd_reuse_entry(&entries[1], "zclassic23/codec", "1.0.0", 'b');
+        zpd_reuse_entry(&entries[2], "other/json", "1.0.0", 'c');
+        static const char *json_apis[] = {
+            "include/json/json.h", "json_read", "json_write",
+        };
+        static const char *codec_apis[] = {
+            "include/codec/cursor.h", "zcl_cursor_read_u32",
+        };
+        struct vcs_package_reuse_input inputs[3] = {
+            {.package = &entries[0],
+             .apis = {json_apis[0], json_apis[1], json_apis[2]},
+             .api_count = 3, .locked = true, .installed = true,
+             .compatible = true},
+            {.package = &entries[1],
+             .apis = {codec_apis[0], codec_apis[1]}, .api_count = 2,
+             .installed = true, .compatible = true},
+            {.package = &entries[2], .apis = {json_apis[0]}, .api_count = 1,
+             .compatible = true},
+        };
+        struct vcs_package_reuse_plan plan;
+        ASSERT(vcs_package_reuse_plan_build(
+            "use zclassic23/json@1.0.0", inputs, 2, &plan));
+        ASSERT(plan.disposition == VCS_PACKAGE_REUSE_COMPLETE);
+        ASSERT(!plan.new_code_required);
+        ASSERT(plan.selected_count == 1);
+        ASSERT(plan.selected[0].input_index == 0);
+
+        ASSERT(vcs_package_reuse_plan_build(
+            "Parse JSON with bounded cursor reads", inputs, 2, &plan));
+        ASSERT(plan.disposition == VCS_PACKAGE_REUSE_PARTIAL);
+        ASSERT(plan.new_code_required);
+        ASSERT(plan.selected_count == 2);
+        ASSERT(plan.selected[0].input_index == 0);
+
+        ASSERT(vcs_package_reuse_plan_build(
+            "Render a deterministic flight replay", inputs, 2, &plan));
+        ASSERT(plan.disposition == VCS_PACKAGE_REUSE_NONE);
+        ASSERT(plan.selected_count == 0);
+
+        ASSERT(vcs_package_reuse_plan_build(
+            "use zclassic23/json@2.0.0", inputs, 2, &plan));
+        ASSERT(plan.disposition == VCS_PACKAGE_REUSE_INCOMPATIBLE);
+        ASSERT(plan.incompatible_matches == 1);
+
+        ASSERT(vcs_package_reuse_plan_build("use json", inputs, 3, &plan));
+        ASSERT(plan.disposition == VCS_PACKAGE_REUSE_AMBIGUOUS);
+        ASSERT(plan.new_code_required);
+        ASSERT(plan.selected_count == 2);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int zpd_test_work_start(void)
 {
     int failures = 0;
@@ -803,6 +873,8 @@ static int zpd_test_work_start(void)
         const struct json_value *state = json_get(&reply.data, "state");
         const struct json_value *context =
             json_get(&reply.data, "selected_context");
+        const struct json_value *reuse =
+            json_get(&reply.data, "reuse_plan");
         const struct json_value *expert = json_get(&reply.data, "expert");
         ASSERT(work_id && strncmp(json_get_str(work_id), "work-", 5) == 0);
         char saved_work_id[32];
@@ -812,6 +884,10 @@ static int zpd_test_work_start(void)
                                "AWAITING_CANDIDATE") == 0);
         ASSERT(context && context->type == JSON_OBJ);
         ASSERT(strcmp(json_get_str(json_get(context, "symbol")), "x") == 0);
+        ASSERT(reuse && reuse->type == JSON_OBJ);
+        ASSERT(strcmp(json_get_str(json_get(reuse, "search_status")),
+                      "datadir_not_provided") == 0);
+        ASSERT(json_get_bool(json_get(reuse, "new_code_required")));
         ASSERT(expert && json_get(expert, "task_root") != NULL);
         zcl_command_reply_free(&reply);
         json_free(&input);
@@ -1582,6 +1658,7 @@ int test_zcode_package_dev(void)
                    zpd_test_fail_closed(pubkey) +
                    zpd_test_project_inspect() +
                    zpd_test_project_init() +
+                   zpd_test_reuse_plan() +
                    zpd_test_work_start() +
                    zpd_test_standard_profile() +
                    zpd_test_twelve_task_benchmark();

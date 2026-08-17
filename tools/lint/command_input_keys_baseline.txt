@@ -65,7 +65,6 @@ zcode.work.start model_policy_root # work start derives the fixed contained-adap
 zcode.work.start proof_policy_hex # work start expands the named profile for its private improve-plan request; request->input never reaches the nested planner.
 zcode.work.start expires_unix # work start derives a bounded expiry for its private improve-plan request; request->input never reaches the nested planner.
 zcode.work.start max_context_bytes # work start injects the product context cap into its private improve-plan request; request->input never reaches the nested planner.
-zcode.work.start datadir # the nested improve handler reads this only outside the work-start plan path; request->input never reaches that branch.
 zcode.work.start planned_task_root # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
 zcode.work.start planned_context_root # the nested improve handler reads this only on candidate admission; work start fixes mode=plan.
 zcode.work.start action_kind # the nested improve handler applies its fixed compile default to the private plan; request->input never reaches it.

@@ -356,6 +356,52 @@ static struct zcl_result pkgl_direct_deps(const struct pkgl_ctx *ctx,
     return ZCL_OK;
 }
 
+struct zcl_result package_lifecycle_installed_inspect(
+    const char *datadir, const uint8_t root[32],
+    struct package_lifecycle_step *out, bool *installed_out)
+{
+    if (!datadir || !root || !out || !installed_out)
+        return ZCL_ERR(-1, "datadir, root, output and installed flag are required");
+    memset(out, 0, sizeof(*out));
+    *installed_out = false;
+    struct pkgl_ctx ctx;
+    ZCL_CHECK(pkgl_ctx_open(&ctx, datadir));
+    const struct vcs_package_release *release =
+        pkgl_release_for_root(&ctx, root);
+    struct zcl_result result = release
+        ? ZCL_OK : ZCL_ERR(-1, "no release names the inspected package root");
+    char installed[PKGL_PATH_MAX];
+    bool present = false;
+    if (result.ok)
+        result = pkgl_installed_dir(&ctx, root, installed, sizeof(installed));
+    if (result.ok)
+        result = pkgl_exists(installed, &present);
+    if (result.ok && present) {
+        struct vcs_package_lock lock;
+        uint8_t lock_root[32];
+        result = pkgl_lock_for(&ctx, root, &lock, lock_root);
+        uint8_t deps[VCS_PACKAGE_BUILD_MAX_DEPS][32];
+        size_t dep_count = 0;
+        if (result.ok)
+            result = pkgl_direct_deps(&ctx, root, deps, &dep_count);
+        if (result.ok)
+            result = pkgl_verify_installed_receipt(
+                &ctx, root, release, lock_root,
+                (const uint8_t (*)[32])deps, dep_count, out);
+        if (result.ok) {
+            memcpy(out->root, root, 32);
+            (void)snprintf(out->name, sizeof(out->name), "%s", release->name);
+            (void)snprintf(out->semver, sizeof(out->semver), "%s",
+                           release->semver);
+            out->state = VCS_PACKAGE_LIFECYCLE_INSTALLED;
+            out->already_installed = true;
+            *installed_out = true;
+        }
+    }
+    pkgl_ctx_close(&ctx);
+    return result;
+}
+
 /* Advance ONE locked step from wherever it is to PINNED. */
 static struct zcl_result pkgl_commit_step(const struct pkgl_ctx *ctx,
                                           const struct vcs_package_plan *plan,

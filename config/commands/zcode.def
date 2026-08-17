@@ -453,13 +453,15 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_project_status)
 
 ZCL_COMMAND_READY_COMMAND(
-    "zcode.work.start", "zcode.work", "", "Start one bounded C23 change",
-    "Composes existing package, task, scope, context, toolchain and proof-policy "
-    "owners from a workspace, plain-language goal and named profile. It changes "
-    "no source file and launches no model or build.", ZCL_COMMAND_RESULT_BUDGET,
-    "zcode,work,start,goal,profile,context,c23",
+    "zcode.work.start", "zcode.work", "", "Start reuse-first C23 work",
+    "Searches installed packages and the rebuildable local package index first, "
+    "then composes the existing package, task, scope, context, toolchain and "
+    "proof-policy owners only for behavior still missing. Exact reuse creates no "
+    "task; this command changes no source file and launches no model or build.",
+    ZCL_COMMAND_RESULT_BUDGET,
+    "zcode,work,start,goal,reuse,package,api,profile,context,c23",
     "zcl.zcode_work_start.input.v1", "zcl.zcode_work_start.v1",
-    "workspace,goal,profile,context_symbol,max_cpu_seconds", "workspace,goal",
+    "workspace,goal,profile,context_symbol,max_cpu_seconds,datadir", "workspace,goal",
     "zclassic23-dev zcode work start --input='{\"workspace\":\".\",\"goal\":\"Make the parser reject overflowing lengths\",\"profile\":\"standard\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_LOCAL,
