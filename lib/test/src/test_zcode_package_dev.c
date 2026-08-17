@@ -57,6 +57,42 @@ static char *zpd_read_bounded(const char *path, size_t maximum_bytes)
     return text;
 }
 
+static bool zpd_next_is(const struct zcl_command_reply *reply,
+                        const char *command, const char *workspace,
+                        const char *work_id, const char *adapter)
+{
+    if (!reply || reply->next_count != 1 ||
+        strcmp(reply->next[0].command, command) != 0)
+        return false;
+    struct json_value input;
+    json_init(&input);
+    bool ok = json_read(&input, reply->next[0].input_json,
+                        strlen(reply->next[0].input_json)) &&
+        input.type == JSON_OBJ &&
+        strcmp(json_get_str(json_get(&input, "workspace")), workspace) == 0 &&
+        strcmp(json_get_str(json_get(&input, "work")), work_id) == 0 &&
+        (!adapter || strcmp(json_get_str(json_get(&input, "adapter")),
+                            adapter) == 0) &&
+        (adapter || json_get(&input, "adapter") == NULL) &&
+        json_get(&input, "task_root") == NULL &&
+        json_get(&input, "package_root") == NULL &&
+        json_get(&input, "candidate_root") == NULL;
+    const struct zcl_command_spec *spec = ok
+        ? zcl_command_registry_find(zcl_command_catalog(), command, NULL)
+        : NULL;
+    char why[160] = {0};
+    ok = ok && spec && zcl_command_registry_input_validate(
+        spec, &input, why, sizeof(why));
+    if (!ok)
+        printf("next mismatch: count=%zu command=%s input=%s why=%s\n",
+               reply->next_count,
+               reply->next_count ? reply->next[0].command : "<none>",
+               reply->next_count ? reply->next[0].input_json : "<none>",
+               why);
+    json_free(&input);
+    return ok;
+}
+
 static bool zpd_pubkey(secp256k1_context *ctx, const uint8_t secret[32],
                        uint8_t pubkey[33])
 {
@@ -887,6 +923,8 @@ static int zpd_test_work_start(void)
         (void)snprintf(root, sizeof(root),
                        "test-tmp/zcode-work-start-%ld", (long)getpid());
         ASSERT(zpd_fixture(root, false));
+        char absolute_root[4400];
+        ASSERT(realpath(root, absolute_root) != NULL);
         uint8_t source_before[32], source_after[32];
         ASSERT(vcs_tree_capture_path(root, source_before) == VCS_OK);
 
@@ -1065,6 +1103,8 @@ static int zpd_test_work_start(void)
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
                       "Creating missing code") == 0);
         ASSERT(json_get_bool(json_get(&reply.data, "details_available")));
+        ASSERT(zpd_next_is(&reply, "zcode.work.run", absolute_root,
+                           saved_work_id, "manual"));
         ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
         ASSERT(memcmp(source_before, source_after, sizeof(source_before)) == 0);
         struct stat candidate_stat;
@@ -1150,6 +1190,8 @@ static int zpd_test_work_start(void)
                access(json_get_str(repair_packet_path), F_OK) == 0);
         ASSERT(json_get_int(json_get(&reply.data,
                                      "model_context_bytes")) > 0);
+        ASSERT(zpd_next_is(&reply, "zcode.work.run", absolute_root,
+                           saved_work_id, "manual"));
         (void)snprintf(saved_candidate_workspace,
                        sizeof(saved_candidate_workspace), "%s",
                        json_get_str(repair_workspace));
@@ -1188,6 +1230,8 @@ static int zpd_test_work_start(void)
         ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
                       "REPAIR_NEEDED") == 0);
+        ASSERT(zpd_next_is(&reply, "zcode.work.run", absolute_root,
+                           saved_work_id, "manual"));
         repair_packet_path = json_get(&reply.data, "adapter_packet_path");
         ASSERT(repair_packet_path != NULL);
         char *repair_packet_text = zpd_read_bounded(
@@ -1241,6 +1285,8 @@ static int zpd_test_work_start(void)
                       "Showing result") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
                       "passed") == 0);
+        ASSERT(zpd_next_is(&reply, "zcode.work.status", absolute_root,
+                           saved_work_id, NULL));
         ASSERT(strcmp(json_get_str(json_get(
                           &reply.data, "async_proof_state")), "REQUESTED") == 0);
         ASSERT(strlen(json_get_str(json_get(

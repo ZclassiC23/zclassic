@@ -516,7 +516,9 @@ ZCL_COMMAND_READY_COMMAND(
     "isolated candidate workspace, and either emits a bounded manual packet or "
     "runs the fixed opt-in Codex adapter behind Landlock, a scrubbed environment "
     "and strict limits. A failed bounded build carries its structured compiler "
-    "diagnostic into the next adapter packet. The default result is root-free; "
+    "diagnostic into the next adapter packet. Its typed next action retains the "
+    "workspace and short work ID without exposing proof roots. The default "
+    "result is root-free; "
     "details=true exposes "
     "exact proof identities. No adapter receives acceptance or publication authority.",
     ZCL_COMMAND_RESULT_BUDGET,

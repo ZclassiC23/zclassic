@@ -79,6 +79,24 @@ static void run_fail(struct zcl_command_reply *reply, const char *code,
                            mutated, detail, "zcode.work.run");
 }
 
+static bool run_add_work_next(struct zcl_command_reply *reply,
+                              const char *command, const char *workspace,
+                              const char *work_id, const char *adapter,
+                              const char *reason)
+{
+    struct json_value input;
+    json_init(&input); json_set_object(&input);
+    bool ok = workspace && workspace[0] && work_id && work_id[0] &&
+        json_push_kv_str(&input, "workspace", workspace) &&
+        json_push_kv_str(&input, "work", work_id) &&
+        (!adapter || json_push_kv_str(&input, "adapter", adapter));
+    char wire[sizeof(reply->next[0].input_json)];
+    size_t n = ok ? json_write(&input, wire, sizeof(wire)) : 0;
+    json_free(&input);
+    return n > 0 && n < sizeof(wire) &&
+        zcl_command_reply_add_next(reply, command, wire, reason);
+}
+
 static bool run_codex_runner_path(char out[ZWORK_RUN_PATH_MAX])
 {
     char executable[ZWORK_RUN_PATH_MAX];
@@ -922,7 +940,7 @@ static bool run_render_async_admission(
     struct zcl_command_reply *reply,
     const struct vcs_zcode_task_index_entry *entry,
     const struct zcl_command_reply *inner, const char *adapter_name,
-    bool details)
+    const char *workspace, bool details)
 {
     const struct json_value *changed = json_get(&inner->data, "changed_files");
     const struct json_value *candidate = json_get(&inner->data, "candidate_root");
@@ -984,7 +1002,10 @@ static bool run_render_async_admission(
                            json_get_str(proof_event)) &&
           json_push_kv_int(&reply->data, "remote_request_id",
                            json_get_int(proof_request)) &&
-          json_push_kv(&reply->data, "expert", &expert)));
+          json_push_kv(&reply->data, "expert", &expert))) &&
+        run_add_work_next(
+            reply, "zcode.work.status", workspace, work_id, NULL,
+            "show the admitted candidate while independent proof arrives");
     static const char *const metric_keys[] = {
         "foreground_request_creation_us",
         "durable_action_lookup_dedup_us",
@@ -1139,7 +1160,7 @@ static bool run_admit(
     if (proof_datadir && proof_datadir[0]) {
         memory_cleanse(secret, sizeof(secret));
         bool rendered = run_render_async_admission(
-            reply, entry, &inner, adapter_name, details);
+            reply, entry, &inner, adapter_name, workspace, details);
         zcl_command_reply_free(&inner);
         if (!rendered)
             run_fail(reply, "ADMISSION_OUTPUT_FAILED", "render",
@@ -1298,7 +1319,13 @@ static bool run_admit(
                            json_get_str(proof_event)) &&
           json_push_kv_int(&reply->data, "remote_request_id",
                            json_get_int(proof_request)) &&
-          json_push_kv(&reply->data, "expert", &expert)));
+          json_push_kv(&reply->data, "expert", &expert))) &&
+        run_add_work_next(
+            reply, retry_ready ? "zcode.work.run" : "zcode.work.status",
+            workspace, work_id, retry_ready ? adapter_name : NULL,
+            retry_ready
+              ? "after the bounded repair edit, admit this exact work again"
+              : "show the exact build and reproduction state");
     json_free(&compiler_feedback);
     json_free(&repair_packet); json_free(&diagnostic); json_free(&expert);
     zcl_command_reply_free(&inner);
@@ -1409,7 +1436,10 @@ void zcl_native_handle_zcode_work_run(
             json_push_kv_str(&reply->data, "build_result", "passed") &&
             json_push_kv_str(&reply->data, "next_safe_command",
                              "zcode work status") &&
-            json_push_kv_bool(&reply->data, "details_available", true);
+            json_push_kv_bool(&reply->data, "details_available", true) &&
+            run_add_work_next(
+                reply, "zcode.work.status", workspace, work_id, NULL,
+                "show the exact build and reproduction state");
         if (!ok)
             run_fail(reply, "HANDOFF_OUTPUT_FAILED", "render",
                      "evidence-ready summary could not be rendered",
@@ -1615,9 +1645,12 @@ void zcl_native_handle_zcode_work_run(
                          (int64_t)model_context_bytes) &&
         json_push_kv_str(&reply->data, "authority", "NONE_MANUAL_HANDOFF") &&
         json_push_kv_bool(&reply->data, "details_available", true) &&
-        json_push_kv_str(&reply->data, "next_safe_command", repairing
-                         ? "edit candidate_workspace, then rerun zcode work run"
-                         : "edit only candidate_workspace, then inspect status");
+        json_push_kv_str(
+            &reply->data, "next_safe_command",
+            "edit only candidate_workspace, then rerun zcode work run") &&
+        run_add_work_next(
+            reply, "zcode.work.run", workspace, work_id, "manual",
+            "after editing only the candidate workspace, admit this exact work");
     json_free(&packet); free(goal); vcs_zcode_agent_context_free(&context);
     vcs_zcode_task_index_free(index);
     if (!ok)
