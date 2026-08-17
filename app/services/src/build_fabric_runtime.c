@@ -255,7 +255,7 @@ static void *bf_worker_loop(void *arg)
         struct zcl_result run = build_fabric_worker_execute(
             ndb, execution_workspace, g_worker_datadir, action.action_id,
             lease_id,
-            g_local_secret, g_local_pubkey, &receipt);
+            g_local_secret, g_local_pubkey, &receipt, NULL);
         if (run.ok) {
             struct zcl_result admitted = build_fabric_receipt_admit(
                 ndb, execution_workspace, receipt.receipt_id,

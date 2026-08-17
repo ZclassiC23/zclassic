@@ -1012,6 +1012,18 @@ static int zpd_test_work_start(void)
         ASSERT(json_get(repair_packet, "parent_candidate_root") != NULL);
         ASSERT(json_get(repair_packet, "prior_patch_root") != NULL);
         ASSERT(json_get(repair_packet, "selected_excerpts") != NULL);
+        const struct json_value *repair_diagnostic =
+            json_get(repair_packet, "diagnostic");
+        const struct json_value *compiler_feedback = repair_diagnostic
+            ? json_get(repair_diagnostic, "compiler_feedback") : NULL;
+        ASSERT(compiler_feedback &&
+               json_get_bool(json_get(compiler_feedback, "available")));
+        ASSERT(strcmp(json_get_str(json_get(compiler_feedback, "stage")),
+                      "compile") == 0);
+        ASSERT(strstr(json_get_str(json_get(compiler_feedback, "path")),
+                      "src/x.c") != NULL);
+        ASSERT(json_get_int(json_get(compiler_feedback, "line")) > 0);
+        ASSERT(json_get_str(json_get(compiler_feedback, "message"))[0]);
         const struct json_value *repair_workspace =
             json_get(&reply.data, "candidate_workspace");
         ASSERT(repair_workspace && strstr(json_get_str(repair_workspace),

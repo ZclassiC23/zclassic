@@ -5,12 +5,14 @@
 
 #include "base/hex.h"
 #include "base/cleanse.h"
+#include "base/log_macros.h"
 #include "json/json.h"
 #include "platform/os_proc.h"
 #include "platform/time_compat.h"
 #include "models/database.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
+#include "services/package_lifecycle.h"
 #include "sha3/sha3.h"
 #include "util/file_tree_ops.h"
 #include "util/safe_alloc.h"
@@ -20,6 +22,7 @@
 #include "vcs/build_action.h"
 #include "vcs/package_deps.h"
 #include "vcs/package_recipe.h"
+#include "vcs/package_reuse.h"
 #include "vcs/zcode_agent_context.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_task_index.h"
@@ -36,6 +39,17 @@
 #define ZWORK_RUN_PATH_MAX 4400
 #define ZWORK_ADAPTER_OUTPUT_MAX (32u * 1024u)
 #define ZWORK_ADAPTER_PACKET_MAX (512u * 1024u)
+#define ZWORK_DEPENDENCY_HEADER_MAX (64u * 1024u)
+#define ZWORK_DEPENDENCY_CONTEXT_MAX (192u * 1024u)
+#define ZWORK_DEPENDENCY_API_MAX 256u
+#define ZWORK_RUN_LOG "zcode.work.run"
+
+struct run_dependency_candidate {
+    struct vcs_package_index_entry package;
+    struct vcs_package_reuse_input reuse;
+    char api_text[VCS_PACKAGE_REUSE_MAX_APIS][ZWORK_DEPENDENCY_API_MAX];
+    struct vcs_package_build_receipt receipt;
+};
 
 static const char *run_str(const struct json_value *input, const char *key)
 {
@@ -254,6 +268,280 @@ static bool run_load_scope(const char *workspace,
     return ok;
 }
 
+static bool run_load_lock(const char *workspace,
+                          const struct vcs_zcode_task_v1 *task,
+                          struct vcs_package_lock *lock)
+{
+    uint8_t *wire = NULL, check[32];
+    size_t len = 0;
+    bool ok = vcs_object_load_raw_bounded(
+            workspace, task->dependency_lock_root,
+            VCS_PACKAGE_LOCK_MAX_WIRE_BYTES, &wire, &len) == 0 &&
+        vcs_package_lock_parse(wire, len, lock) == VCS_PACKAGE_DEPS_OK &&
+        vcs_package_lock_root(lock, check) == VCS_PACKAGE_DEPS_OK &&
+        memcmp(check, task->dependency_lock_root, 32) == 0;
+    free(wire);
+    return ok;
+}
+
+static bool run_output_is_header(const char *path)
+{
+    size_t len = path ? strlen(path) : 0;
+    return len > 10u && strncmp(path, "include/", 8) == 0 &&
+           strcmp(path + len - 2u, ".h") == 0;
+}
+
+static bool run_dependency_api_add(struct run_dependency_candidate *candidate,
+                                   const char *api, size_t len)
+{
+    if (!candidate || !api || len == 0 ||
+        len >= ZWORK_DEPENDENCY_API_MAX ||
+        candidate->reuse.api_count >= VCS_PACKAGE_REUSE_MAX_APIS)
+        return false;
+    for (size_t i = 0; i < candidate->reuse.api_count; i++)
+        if (strlen(candidate->api_text[i]) == len &&
+            memcmp(candidate->api_text[i], api, len) == 0)
+            return true;
+    size_t at = candidate->reuse.api_count++;
+    memcpy(candidate->api_text[at], api, len);
+    candidate->api_text[at][len] = '\0';
+    candidate->reuse.apis[at] = candidate->api_text[at];
+    return true;
+}
+
+static void run_dependency_header_symbols(
+    struct run_dependency_candidate *candidate,
+    const uint8_t *bytes, size_t len)
+{
+    static const char *const rejected[] = {
+        "if", "for", "while", "switch", "sizeof", "return",
+    };
+    for (size_t i = 0; i < len &&
+         candidate->reuse.api_count < VCS_PACKAGE_REUSE_MAX_APIS; i++) {
+        if (bytes[i] != '(') continue;
+        size_t end = i;
+        while (end > 0 && (bytes[end - 1u] == ' ' ||
+                           bytes[end - 1u] == '\t' ||
+                           bytes[end - 1u] == '\n' ||
+                           bytes[end - 1u] == '\r')) end--;
+        size_t start = end;
+        while (start > 0 &&
+               ((bytes[start - 1u] >= 'A' && bytes[start - 1u] <= 'Z') ||
+                (bytes[start - 1u] >= 'a' && bytes[start - 1u] <= 'z') ||
+                (bytes[start - 1u] >= '0' && bytes[start - 1u] <= '9') ||
+                bytes[start - 1u] == '_')) start--;
+        if (start == end || (bytes[start] >= '0' && bytes[start] <= '9'))
+            continue;
+        bool keep = true;
+        for (size_t r = 0; r < sizeof(rejected) / sizeof(rejected[0]); r++)
+            if (strlen(rejected[r]) == end - start &&
+                memcmp(bytes + start, rejected[r], end - start) == 0)
+                keep = false;
+        if (keep)
+            (void)run_dependency_api_add(
+                candidate, (const char *)bytes + start, end - start);
+    }
+}
+
+static bool run_read_dependency_header(
+    const char *datadir, const char root_hex[65],
+    const struct vcs_package_build_output *output,
+    uint8_t **bytes_out, size_t *len_out)
+{
+    *bytes_out = NULL;
+    *len_out = 0;
+    if (!datadir || !datadir[0] || !run_output_is_header(output->path) ||
+        output->bytes == 0 || output->bytes > ZWORK_DEPENDENCY_HEADER_MAX)
+        return false;
+    char path[ZWORK_RUN_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/zcode/installed/%s/%s",
+                     datadir, root_hex, output->path);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return false;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    struct stat st;
+    bool ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) &&
+        (uint64_t)st.st_size == output->bytes;
+    uint8_t *bytes = ok
+        ? zcl_malloc((size_t)output->bytes + 1u,
+                     "zcode.work.locked_header")
+        : NULL;
+    ok = ok && bytes;
+    size_t off = 0;
+    while (ok && off < (size_t)output->bytes) {
+        ssize_t got = read(fd, bytes + off, (size_t)output->bytes - off);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) ok = false;
+        else off += (size_t)got;
+    }
+    if (close(fd) != 0) ok = false;
+    uint8_t check[32];
+    if (ok) {
+        sha3_256(bytes, off, check);
+        ok = memcmp(check, output->sha3, 32) == 0 &&
+             memchr(bytes, '\0', off) == NULL;
+    }
+    if (!ok) {
+        free(bytes);
+        return false;
+    }
+    bytes[off] = '\0';
+    *bytes_out = bytes;
+    *len_out = off;
+    return true;
+}
+
+static bool run_dependency_context_json(
+    struct json_value *locked_out, struct json_value *selected_out,
+    const char *workspace, const char *datadir,
+    const struct vcs_zcode_task_v1 *task, const char *goal,
+    size_t *selected_bytes_out, size_t *selected_headers_out,
+    char detail[256])
+{
+    json_init(locked_out); json_set_array(locked_out);
+    json_init(selected_out); json_set_array(selected_out);
+    *selected_bytes_out = 0;
+    *selected_headers_out = 0;
+    struct vcs_package_lock lock;
+    vcs_package_lock_init(&lock);
+    if (!run_load_lock(workspace, task, &lock) || lock.count == 0) {
+        (void)snprintf(detail, 256, "the task dependency lock did not reverify");
+        return false;
+    }
+    size_t count = lock.count - 1u;
+    if (count == 0) return true;
+    if (!datadir || !datadir[0]) {
+        (void)snprintf(detail, 256,
+                       "locked packages require the existing node datadir");
+        return false;
+    }
+    struct run_dependency_candidate *candidates = zcl_calloc(
+        count, sizeof(*candidates), "zcode.work.locked_dependencies");
+    struct vcs_package_reuse_input *inputs = zcl_calloc(
+        count, sizeof(*inputs), "zcode.work.locked_dependency_inputs");
+    if (!candidates || !inputs) {
+        free(inputs); free(candidates);
+        (void)snprintf(detail, 256, "locked dependency context allocation failed");
+        return false;
+    }
+    bool ok = true;
+    for (size_t i = 0; ok && i < count; i++) {
+        const struct vcs_package_lock_node *node = &lock.nodes[i];
+        struct run_dependency_candidate *candidate = &candidates[i];
+        (void)snprintf(candidate->package.name,
+                       sizeof(candidate->package.name), "%s", node->name);
+        (void)snprintf(candidate->package.semver,
+                       sizeof(candidate->package.semver), "%s", node->semver);
+        zcl_hex_encode(node->root, 32, candidate->package.package_root_hex);
+        candidate->reuse.package = &candidate->package;
+        candidate->reuse.locked = true;
+        candidate->reuse.installed = true;
+        candidate->reuse.compatible = true;
+        struct package_lifecycle_step step;
+        bool installed = false;
+        struct zcl_result inspected = package_lifecycle_installed_inspect(
+            datadir, node->root, &step, &installed);
+        struct zcl_result receipt = inspected.ok && installed
+            ? package_lifecycle_receipt_read(
+                  datadir, step.receipt_id, &candidate->receipt)
+            : ZCL_ERR(-1, "locked package is not receipt-verified and installed");
+        if (!inspected.ok || !installed || !receipt.ok) {
+            (void)snprintf(detail, 256,
+                           "locked C23 package %s@%s is unavailable or failed receipt verification",
+                           node->name, node->semver);
+            ok = false;
+            break;
+        }
+        for (size_t h = 0; h < candidate->receipt.output_count &&
+             candidate->reuse.api_count < VCS_PACKAGE_REUSE_MAX_APIS; h++) {
+            const struct vcs_package_build_output *output =
+                &candidate->receipt.outputs[h];
+            if (!run_output_is_header(output->path)) continue;
+            (void)run_dependency_api_add(candidate, output->path,
+                                         strlen(output->path));
+            uint8_t *bytes = NULL; size_t len = 0;
+            if (run_read_dependency_header(
+                    datadir, candidate->package.package_root_hex,
+                    output, &bytes, &len)) {
+                run_dependency_header_symbols(candidate, bytes, len);
+                free(bytes);
+            }
+        }
+        inputs[i] = candidate->reuse;
+        struct json_value row;
+        json_init(&row); json_set_object(&row);
+        ok = json_push_kv_str(&row, "name", node->name) &&
+             json_push_kv_str(&row, "semver", node->semver) &&
+             json_push_kv_str(&row, "package_root",
+                              candidate->package.package_root_hex) &&
+             json_push_back(locked_out, &row);
+        json_free(&row);
+    }
+    struct vcs_package_reuse_plan plan;
+    if (ok) ok = vcs_package_reuse_plan_build(goal, inputs, count, &plan);
+    for (size_t s = 0; ok && s < plan.selected_count; s++) {
+        size_t at = plan.selected[s].input_index;
+        struct run_dependency_candidate *candidate = &candidates[at];
+        struct json_value row, apis, headers;
+        json_init(&row); json_set_object(&row);
+        json_init(&apis); json_set_array(&apis);
+        json_init(&headers); json_set_array(&headers);
+        for (size_t a = 0; ok && a < candidate->reuse.api_count; a++) {
+            struct json_value api;
+            json_init(&api); json_set_str(&api, candidate->reuse.apis[a]);
+            ok = json_push_back(&apis, &api);
+            json_free(&api);
+        }
+        for (size_t h = 0; ok && h < candidate->receipt.output_count; h++) {
+            const struct vcs_package_build_output *output =
+                &candidate->receipt.outputs[h];
+            if (!run_output_is_header(output->path)) continue;
+            uint8_t *bytes = NULL; size_t len = 0;
+            if (!run_read_dependency_header(
+                    datadir, candidate->package.package_root_hex,
+                    output, &bytes, &len)) {
+                (void)snprintf(detail, 256,
+                               "selected header %s changed after receipt verification",
+                               output->path);
+                ok = false;
+                break;
+            }
+            if (len > ZWORK_DEPENDENCY_CONTEXT_MAX - *selected_bytes_out) {
+                free(bytes);
+                (void)snprintf(detail, 256,
+                               "selected dependency headers exceed the context budget");
+                ok = false;
+                break;
+            }
+            char content_root[65];
+            zcl_hex_encode(output->sha3, 32, content_root);
+            struct json_value header;
+            json_init(&header); json_set_object(&header);
+            ok = json_push_kv_str(&header, "path", output->path) &&
+                 json_push_kv_str(&header, "content_root", content_root) &&
+                 json_push_kv_int(&header, "bytes", (int64_t)len) &&
+                 json_push_kv_str(&header, "content", (const char *)bytes) &&
+                 json_push_back(&headers, &header);
+            json_free(&header);
+            free(bytes);
+            if (ok) {
+                *selected_bytes_out += len;
+                (*selected_headers_out)++;
+            }
+        }
+        ok = ok && json_push_kv_str(&row, "name", candidate->package.name) &&
+             json_push_kv_str(&row, "semver", candidate->package.semver) &&
+             json_push_kv_str(&row, "package_root",
+                              candidate->package.package_root_hex) &&
+             json_push_kv(&row, "apis", &apis) &&
+             json_push_kv(&row, "headers", &headers) &&
+             json_push_back(selected_out, &row);
+        json_free(&headers); json_free(&apis); json_free(&row);
+    }
+    free(inputs); free(candidates);
+    return ok;
+}
+
 static bool run_excerpts_json(
     struct json_value *out, const struct vcs_zcode_agent_context_v1 *context)
 {
@@ -312,15 +600,33 @@ static bool run_candidate_workspace(const char *store,
 }
 
 static bool run_packet(struct json_value *packet, const char *goal,
-                       const char *candidate_workspace,
+                       const char *workspace, const char *candidate_workspace,
+                       const char *datadir,
                        const struct vcs_zcode_task_index_entry *entry,
                        const struct vcs_zcode_task_context_entry *context_entry,
                        const struct vcs_zcode_task_v1 *task,
                        const struct vcs_zcode_agent_context_v1 *context,
-                       const struct vcs_zcode_write_scope_v1 *scope)
+                       const struct vcs_zcode_write_scope_v1 *scope,
+                       char detail[256])
 {
-    struct json_value excerpts, limits, scopes;
-    if (!run_excerpts_json(&excerpts, context)) return false;
+    struct json_value excerpts, limits, scopes, locked, dependencies;
+    detail[0] = '\0';
+    if (!run_excerpts_json(&excerpts, context)) {
+        (void)snprintf(detail, 256,
+                       "the exact workspace source excerpts could not be rendered");
+        return false;
+    }
+    size_t dependency_bytes = 0, dependency_headers = 0;
+    if (!run_dependency_context_json(
+            &locked, &dependencies, workspace, datadir, task, goal,
+            &dependency_bytes, &dependency_headers, detail)) {
+        LOG_ERROR(ZWORK_RUN_LOG, "dependency context refused: %s",
+                  detail[0] ? detail : "unknown error");
+        json_free(&dependencies);
+        json_free(&locked);
+        json_free(&excerpts);
+        return false;
+    }
     char scope_hex[65], recipe_hex[65], lock_hex[65], toolchain_hex[65];
     zcl_hex_encode(task->write_scope_root, 32, scope_hex);
     zcl_hex_encode(task->acceptance_tests_root, 32, recipe_hex);
@@ -354,6 +660,12 @@ static bool run_packet(struct json_value *packet, const char *goal,
                          context_entry->context_root_hex) &&
         json_push_kv_str(packet, "context_query", context->query) &&
         json_push_kv(packet, "selected_excerpts", &excerpts) &&
+        json_push_kv(packet, "locked_dependencies", &locked) &&
+        json_push_kv(packet, "selected_dependency_context", &dependencies) &&
+        json_push_kv_int(packet, "dependency_context_bytes",
+                         (int64_t)dependency_bytes) &&
+        json_push_kv_int(packet, "dependency_context_headers",
+                         (int64_t)dependency_headers) &&
         json_push_kv(packet, "allowed_write_scopes", &scopes) &&
         json_push_kv_str(packet, "write_scope_root", scope_hex) &&
         json_push_kv_str(packet, "package_recipe_root", recipe_hex) &&
@@ -364,7 +676,11 @@ static bool run_packet(struct json_value *packet, const char *goal,
         json_push_kv(packet, "limits", &limits) &&
         json_push_kv_str(packet, "instruction",
                          "Edit only the candidate workspace. Do not accept, publish, or claim proof.");
+    json_free(&dependencies); json_free(&locked);
     json_free(&scopes); json_free(&limits); json_free(&excerpts);
+    if (!ok)
+        (void)snprintf(detail, 256,
+                       "the bounded model context exceeded its JSON budget");
     return ok;
 }
 
@@ -504,7 +820,8 @@ static struct zcl_result run_plan_standard_peer(
 static struct zcl_result run_execute_action(
     const char *workspace, const char *datadir, const char *action_id,
     struct db_build_worker *worker, const uint8_t secret[32],
-    const uint8_t pubkey[32], struct db_build_receipt *receipt)
+    const uint8_t pubkey[32], struct db_build_receipt *receipt,
+    struct build_fabric_worker_feedback *feedback)
 {
     char db_path[ZWORK_RUN_PATH_MAX];
     int n = snprintf(db_path, sizeof(db_path), "%s/node.db", datadir);
@@ -538,9 +855,25 @@ static struct zcl_result run_execute_action(
     if (result.ok)
         result = build_fabric_worker_execute(
             &ndb, workspace, datadir, action_id, lease_id,
-            secret, pubkey, receipt);
+            secret, pubkey, receipt, feedback);
     node_db_close(&ndb);
     return result;
+}
+
+static bool run_worker_feedback_json(
+    struct json_value *out,
+    const struct build_fabric_worker_feedback *feedback)
+{
+    json_init(out); json_set_object(out);
+    bool present = feedback && feedback->present;
+    return json_push_kv_bool(out, "available", present) &&
+        (!present ||
+         (json_push_kv_str(out, "stage", feedback->stage) &&
+          json_push_kv_str(out, "compiler", feedback->compiler) &&
+          json_push_kv_str(out, "path", feedback->path) &&
+          json_push_kv_int(out, "line", feedback->line) &&
+          json_push_kv_int(out, "column", feedback->column) &&
+          json_push_kv_str(out, "message", feedback->message)));
 }
 
 static bool run_render_async_admission(
@@ -764,9 +1097,11 @@ static bool run_admit(
         return true;
     }
     struct db_build_receipt receipt;
+    struct build_fabric_worker_feedback feedback;
+    memset(&feedback, 0, sizeof(feedback));
     struct zcl_result executed = action && json_get_str(action)
         ? run_execute_action(workspace, datadir, json_get_str(action), &worker,
-                             secret, pubkey, &receipt)
+                             secret, pubkey, &receipt, &feedback)
         : ZCL_ERR(-1, "admission did not return an action id");
     char peer_action_id[BUILD_FABRIC_ID_HEX + 1] = {0};
     struct db_build_receipt peer_receipt;
@@ -777,12 +1112,17 @@ static bool run_admit(
         if (executed.ok)
             executed = run_execute_action(
                 workspace, datadir, peer_action_id, &worker, secret, pubkey,
-                &peer_receipt);
+                &peer_receipt, NULL);
     }
     memory_cleanse(secret, sizeof(secret));
     if (!executed.ok) {
         run_fail(reply, "PACKAGE_BUILD_FAILED", "build", executed.message,
                  true, true);
+        struct json_value compiler_feedback;
+        if (run_worker_feedback_json(&compiler_feedback, &feedback))
+            (void)json_push_kv(&reply->data, "compiler_feedback",
+                               &compiler_feedback);
+        json_free(&compiler_feedback);
         zcl_command_reply_free(&inner);
         return true;
     }
@@ -824,6 +1164,9 @@ static bool run_admit(
     (void)next_created;
     struct json_value diagnostic;
     json_init(&diagnostic); json_set_object(&diagnostic);
+    struct json_value compiler_feedback;
+    bool feedback_ok = run_worker_feedback_json(
+        &compiler_feedback, &feedback);
     bool diagnostic_ok = json_push_kv_str(&diagnostic, "stage",
                                            "package_build_and_tests") &&
         json_push_kv_int(&diagnostic, "attempt",
@@ -832,12 +1175,16 @@ static bool run_admit(
         json_push_kv_str(&diagnostic, "evidence_root", receipt.output_sha3) &&
         json_push_kv_str(&diagnostic, "work_receipt_root",
                          receipt.work_receipt_sha3) &&
-        json_push_kv_bool(&diagnostic, "retry_safe", retry_ready);
+        json_push_kv_bool(&diagnostic, "retry_safe", retry_ready) &&
+        feedback_ok &&
+        json_push_kv(&diagnostic, "compiler_feedback", &compiler_feedback);
     struct json_value repair_packet;
     json_init(&repair_packet); json_set_object(&repair_packet);
+    char repair_detail[256];
     bool repair_packet_ok = !retry_ready ||
-        (candidate && patch && run_packet(&repair_packet, goal, next_workspace, entry,
-                    context_entry, task, context, scope) &&
+        (candidate && patch && run_packet(
+             &repair_packet, goal, workspace, next_workspace, datadir, entry,
+             context_entry, task, context, scope, repair_detail) &&
          json_push_kv_str(&repair_packet, "parent_candidate_root",
                           json_get_str(candidate)) &&
          json_push_kv_str(&repair_packet, "prior_patch_root",
@@ -888,6 +1235,7 @@ static bool run_admit(
                          retry_ready ? "edit candidate_workspace, then rerun zcode work run" :
                                        "zcode work status") &&
         json_push_kv(&reply->data, "expert", &expert);
+    json_free(&compiler_feedback);
     json_free(&repair_packet); json_free(&diagnostic); json_free(&expert);
     zcl_command_reply_free(&inner);
     if (!ok)
@@ -915,6 +1263,8 @@ void zcl_native_handle_zcode_work_run(
     const char *work = run_str(request->input, "work");
     const char *adapter = run_str(request->input, "adapter");
     const char *proof_datadir_arg = run_str(request->input, "datadir");
+    if (!proof_datadir_arg || !proof_datadir_arg[0])
+        proof_datadir_arg = zcl_native_command_datadir();
     if (!workspace_arg || !workspace_arg[0]) workspace_arg = ".";
     if (!adapter || !adapter[0]) adapter = "manual";
     bool codex_adapter = strcmp(adapter, "codex") == 0;
@@ -1067,11 +1417,22 @@ void zcl_native_handle_zcode_work_run(
     }
     struct json_value packet;
     json_init(&packet);
+    char packet_detail[256];
     char work_id[32];
     (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                    entry->task_root_hex);
-    bool packet_ok = run_packet(&packet, goal, candidate_workspace, entry,
-                                context_entry, &task, &context, &scope);
+    bool packet_ok = run_packet(
+        &packet, goal, workspace, candidate_workspace, proof_datadir, entry,
+        context_entry, &task, &context, &scope, packet_detail);
+    if (!packet_ok) {
+        run_fail(reply, "MODEL_CONTEXT_REFUSED", "context",
+                 packet_detail[0] ? packet_detail
+                                  : "the bounded model context could not be rendered",
+                 true, created);
+        json_free(&packet); free(goal);
+        vcs_zcode_agent_context_free(&context);
+        vcs_zcode_task_index_free(index); return;
+    }
     if (packet_ok && codex_adapter) {
         char packet_path[ZWORK_RUN_PATH_MAX] = {0};
         char *adapter_output = zcl_malloc(ZWORK_ADAPTER_OUTPUT_MAX,

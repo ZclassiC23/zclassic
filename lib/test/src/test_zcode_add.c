@@ -132,6 +132,32 @@ static bool za_exists(const char *path)
     return stat(path, &st) == 0;
 }
 
+static bool za_read_json_file(const char *path, struct json_value *out)
+{
+    FILE *f = fopen(path, "rb");
+    if (!f || fseek(f, 0, SEEK_END) != 0) {
+        if (f) fclose(f);
+        return false;
+    }
+    long end = ftell(f);
+    if (end <= 0 || end > 512 * 1024 || fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return false;
+    }
+    size_t len = (size_t)end;
+    char *wire = malloc(len);
+    bool ok = wire && fread(wire, 1, len, f) == len;
+    if (fclose(f) != 0) ok = false;
+    if (!ok) {
+        free(wire);
+        return false;
+    }
+    json_init(out);
+    ok = json_read(out, wire, len);
+    free(wire);
+    return ok;
+}
+
 /* ── 1. pure dependency rules ───────────────────────────────────────── */
 
 /* A synthetic DAG source: the ONLY way to present the resolver a cycle,
@@ -784,6 +810,109 @@ static int t_e2e(void)
                  saw_ring_symbol && !za_exists(workspace_path));
     zcl_command_reply_free(&work_reply);
     json_free(&work_input);
+
+    char harness_meta_with_dep[1024];
+    snprintf(harness_meta_with_dep, sizeof(harness_meta_with_dep),
+             "{\"schema\":1,\"name\":\"fixture/harness\","
+             "\"semver\":\"0.1.0\",\"language\":\"c23\","
+             "\"license\":\"MIT\",\"include_dir\":\"include\","
+             "\"source_dir\":\"src\",\"dependencies\":[{"
+             "\"root\":\"%s\",\"name\":\"alice/ringbuffer\","
+             "\"semver\":\"1.0.0\"}]}\n", root_hex);
+    snprintf(workspace_path, sizeof(workspace_path), "%s/zcode-package.json",
+             workspace);
+    bool dependency_workspace_ready = za_write_file(
+        workspace_path, harness_meta_with_dep, strlen(harness_meta_with_dep),
+        0600);
+    json_init(&work_input); json_set_object(&work_input);
+    input_ready = dependency_workspace_ready &&
+        json_push_kv_str(&work_input, "workspace", workspace) &&
+        json_push_kv_str(&work_input, "goal",
+                         "Make harness call ring_push") &&
+        json_push_kv_str(&work_input, "context_symbol", "harness") &&
+        json_push_kv_str(&work_input, "profile", "quick") &&
+        json_push_kv_str(&work_input, "datadir", base);
+    work_request.input = &work_input;
+    zcl_command_reply_init(&work_reply, "zcl.zcode_locked_context_start.v1");
+    if (input_ready)
+        zcl_native_handle_zcode_work_start(&work_request, &work_reply);
+    const struct json_value *locked_work_id =
+        json_get(&work_reply.data, "work_id");
+    char locked_work_id_text[40] = {0};
+    if (locked_work_id && locked_work_id->type == JSON_STR)
+        snprintf(locked_work_id_text, sizeof(locked_work_id_text), "%s",
+                 json_get_str(locked_work_id));
+    ZA_CHECK("a partial reuse goal enters the existing bounded work lifecycle",
+             input_ready && work_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                 strcmp(json_get_str(json_get(&work_reply.data, "state")),
+                        "AWAITING_CANDIDATE") == 0 &&
+                 strncmp(locked_work_id_text, "work-", 5) == 0);
+    zcl_command_reply_free(&work_reply);
+    json_free(&work_input);
+
+    json_init(&work_input); json_set_object(&work_input);
+    input_ready = locked_work_id_text[0] &&
+        json_push_kv_str(&work_input, "workspace", workspace) &&
+        json_push_kv_str(&work_input, "work", locked_work_id_text) &&
+        json_push_kv_str(&work_input, "adapter", "manual") &&
+        json_push_kv_str(&work_input, "datadir", base);
+    work_request.input = &work_input;
+    zcl_command_reply_init(&work_reply, "zcl.zcode_locked_context_run.v1");
+    if (input_ready)
+        zcl_native_handle_zcode_work_run(&work_request, &work_reply);
+    const struct json_value *adapter_packet =
+        json_get(&work_reply.data, "adapter_packet_path");
+    struct json_value packet_json;
+    bool packet_read = adapter_packet && adapter_packet->type == JSON_STR &&
+        za_read_json_file(json_get_str(adapter_packet), &packet_json);
+    const struct json_value *locked_dependencies = packet_read
+        ? json_get(&packet_json, "locked_dependencies") : NULL;
+    const struct json_value *dependency_context = packet_read
+        ? json_get(&packet_json, "selected_dependency_context") : NULL;
+    const struct json_value *ring_context = dependency_context
+        ? json_at(dependency_context, 0) : NULL;
+    const struct json_value *ring_headers = ring_context
+        ? json_get(ring_context, "headers") : NULL;
+    const struct json_value *ring_header = ring_headers
+        ? json_at(ring_headers, 0) : NULL;
+    const struct json_value *ring_content = ring_header
+        ? json_get(ring_header, "content") : NULL;
+    ZA_CHECK("the model packet contains only lock-bound receipt-verified C23 APIs",
+             input_ready &&
+                 work_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                 locked_dependencies && locked_dependencies->num_children == 1 &&
+                 dependency_context && dependency_context->num_children == 1 &&
+                 ring_context &&
+                 strcmp(json_get_str(json_get(ring_context, "package_root")),
+                        root_hex) == 0 &&
+                 ring_content && strstr(json_get_str(ring_content),
+                                        "ring_push") != NULL &&
+                 json_get_int(json_get(&packet_json,
+                                       "dependency_context_bytes")) > 0);
+    if (packet_read) json_free(&packet_json);
+    zcl_command_reply_free(&work_reply);
+    json_free(&work_input);
+
+    bool header_damaged = za_write_file(header, "corrupt\n", 8, 0600);
+    json_init(&work_input); json_set_object(&work_input);
+    input_ready = header_damaged && locked_work_id_text[0] &&
+        json_push_kv_str(&work_input, "workspace", workspace) &&
+        json_push_kv_str(&work_input, "work", locked_work_id_text) &&
+        json_push_kv_str(&work_input, "adapter", "manual") &&
+        json_push_kv_str(&work_input, "datadir", base);
+    work_request.input = &work_input;
+    zcl_command_reply_init(&work_reply, "zcl.zcode_locked_context_tamper.v1");
+    if (input_ready)
+        zcl_native_handle_zcode_work_run(&work_request, &work_reply);
+    ZA_CHECK("changed installed header bytes are refused before model execution",
+             input_ready &&
+                 work_reply.status == ZCL_COMMAND_STATUS_FAILED &&
+                 strcmp(work_reply.error.code, "MODEL_CONTEXT_REFUSED") == 0);
+    zcl_command_reply_free(&work_reply);
+    json_free(&work_input);
+    ZA_CHECK("the exact verified fixture header is restored",
+             za_write_file(header, ZA_RING_H, strlen(ZA_RING_H), 0600));
+
     uint8_t ring_receipt[32];
     memcpy(ring_receipt, commit.steps[0].receipt_id, sizeof(ring_receipt));
     struct vcs_package_build_receipt inspected_receipt;

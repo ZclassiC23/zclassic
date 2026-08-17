@@ -943,9 +943,19 @@ static void pv_detail_from_stderr(const char *prefix, const char *stderr_buf,
     }
     if (!line[0])
         snprintf(line, sizeof(line), "%s", first[0] ? first : "no diagnostics captured");
+    /* The isolated materialization path is attempt-specific and can consume
+     * the entire bounded diagnostic before the useful line/column/message.
+     * Keep the final source-relative `src/...` suffix when the compiler
+     * reported one. This is display/repair feedback, never an input path. */
+    const char *display = line;
+    const char *source_suffix = NULL;
+    for (const char *scan = strstr(line, "/src/"); scan;
+         scan = strstr(scan + 1u, "/src/"))
+        source_suffix = scan;
+    if (source_suffix) display = source_suffix + 1u;
     size_t o = snprintf(out, out_cap, "%s: ", prefix);
-    for (size_t i = 0; line[i] && o + 1 < out_cap && o < 150; i++) {
-        unsigned char c = (unsigned char)line[i];
+    for (size_t i = 0; display[i] && o + 1 < out_cap && o < 150; i++) {
+        unsigned char c = (unsigned char)display[i];
         out[o++] = (c >= 0x20 && c <= 0x7e) ? (char)c : '?';
     }
     out[o] = '\0';

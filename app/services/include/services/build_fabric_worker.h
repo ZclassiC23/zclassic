@@ -6,6 +6,7 @@
 
 #include "base/result.h"
 #include "models/build_fabric.h"
+#include "services/build_fabric_worker_feedback.h"
 
 #include <stdint.h>
 
@@ -15,7 +16,8 @@ struct zcl_result build_fabric_worker_execute(
     struct node_db *ndb, const char *workspace_root, const char *datadir,
     const char *action_id,
     const char *lease_id, const uint8_t signer_secret[32],
-    const uint8_t signer_pubkey[32], struct db_build_receipt *out_receipt);
+    const uint8_t signer_pubkey[32], struct db_build_receipt *out_receipt,
+    struct build_fabric_worker_feedback *out_feedback);
 
 /* Load or atomically create the operator-owned local worker key. The returned
  * row is suitable for explicit -buildworker self-approval. */

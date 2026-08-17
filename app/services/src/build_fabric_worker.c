@@ -22,7 +22,6 @@
 #include "vcs/zcode_action_input.h"
 #include "vcs/zcode_dev.h"
 #include "vcs/zcode_patch.h"
-
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -38,7 +37,6 @@
 #define BFW_PACKAGE_WALL_TIMEOUT_MS 605000
 #define BFW_FUZZ_CPU_CEILING_SECONDS 580u
 #define BFW_FUZZ_TIMEOUT_CEILING_MS 585000
-
 struct bfw_paths {
     char worker[BFW_PATH_MAX];
     char work[BFW_PATH_MAX];
@@ -49,7 +47,6 @@ struct bfw_paths {
     char input[BFW_PATH_MAX];
     char output[BFW_PATH_MAX];
 };
-
 static int64_t bfw_children_cpu_us(void)
 {
     struct rusage usage;
@@ -71,7 +68,6 @@ static uint64_t bfw_capture_metric(const char *capture, const char *key,
     unsigned long long value = strtoull(at + 1, &end, 10);
     return end != at + 1 ? (uint64_t)value : fallback;
 }
-
 static bool bfw_capability_has(const char *capabilities, const char *wanted)
 {
     if (!capabilities || !wanted || !wanted[0]) return false;
@@ -379,8 +375,10 @@ struct zcl_result build_fabric_worker_execute(
     struct node_db *ndb, const char *workspace, const char *datadir,
     const char *action_id,
     const char *lease_id, const uint8_t signer_secret[32],
-    const uint8_t signer_pubkey[32], struct db_build_receipt *out_receipt)
+    const uint8_t signer_pubkey[32], struct db_build_receipt *out_receipt,
+    struct build_fabric_worker_feedback *out_feedback)
 {
+    if (out_feedback) memset(out_feedback, 0, sizeof(*out_feedback));
     if (!ndb || !ndb->open || !workspace || !datadir || !action_id ||
         !lease_id ||
         !signer_secret || !signer_pubkey || !out_receipt)
@@ -603,6 +601,8 @@ struct zcl_result build_fabric_worker_execute(
         bfw_cancel_requested, &cancel_context, &spawn_cancelled);
     int64_t action_execution_us =
         platform_time_monotonic_us() - execution_started_us;
+    if (package_action)
+        build_fabric_worker_feedback_capture(out_feedback, capture, paths.src);
     int64_t child_cpu_us = bfw_children_cpu_us() - child_cpu_before_us;
     if (spawn_cancelled) {
         bfw_paths_cleanup(&paths);

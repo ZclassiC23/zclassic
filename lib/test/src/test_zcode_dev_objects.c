@@ -3023,7 +3023,7 @@ static int test_zd_improve_command(void)
         struct db_build_receipt receipt;
         ASSERT(build_fabric_worker_execute(
             &ndb, workspace, workspace, action_id, lease_hex, worker_secret,
-            worker_key, &receipt).ok);
+            worker_key, &receipt, NULL).ok);
         ASSERT(build_fabric_receipt_admit(
             &ndb, workspace, receipt.receipt_id, now + 1).ok);
         ASSERT(strlen(receipt.work_receipt_sha3) == 64);
@@ -3184,7 +3184,8 @@ static int test_zd_improve_command(void)
         struct db_build_receipt package_receipt;
         struct zcl_result package_executed = build_fabric_worker_execute(
             &ndb, workspace, workspace, package_action_saved,
-            package_lease_hex, worker_secret, worker_key, &package_receipt);
+            package_lease_hex, worker_secret, worker_key, &package_receipt,
+            NULL);
         if (!package_executed.ok)
             printf("package worker detail: %s\n", package_executed.message);
         ASSERT(package_executed.ok);
@@ -3296,7 +3297,7 @@ static int test_zd_improve_command(void)
         struct zcl_result dependency_refused = build_fabric_worker_execute(
             &ndb, workspace, workspace, dependency_drift_action,
             drift_lease_hex, worker_secret, worker_key,
-            &refused_dependency_receipt);
+            &refused_dependency_receipt, NULL);
         ASSERT(!dependency_refused.ok);
         ASSERT(strstr(dependency_refused.message,
                       "dependency-output-mismatch") != NULL);
@@ -3356,7 +3357,7 @@ static int test_zd_improve_command(void)
         struct db_build_receipt local_test_receipt;
         ASSERT(build_fabric_worker_execute(
             &ndb, workspace, workspace, test_action_id, test_lease_hex,
-            worker_secret, worker_key, &local_test_receipt).ok);
+            worker_secret, worker_key, &local_test_receipt, NULL).ok);
         uint8_t local_test_receipt_root[32];
         ASSERT(zcl_hex_decode_lower(local_test_receipt.work_receipt_sha3,
                                     local_test_receipt_root, 32));
@@ -3408,7 +3409,7 @@ static int test_zd_improve_command(void)
         struct db_build_receipt local_fuzz_receipt;
         ASSERT(build_fabric_worker_execute(
             &ndb, workspace, workspace, local_fuzz_action_id, fuzz_lease_hex,
-            worker_secret, worker_key, &local_fuzz_receipt).ok);
+            worker_secret, worker_key, &local_fuzz_receipt, NULL).ok);
         uint8_t local_fuzz_receipt_root[32];
         ASSERT(zcl_hex_decode_lower(local_fuzz_receipt.work_receipt_sha3,
                                     local_fuzz_receipt_root, 32));
@@ -3449,7 +3450,7 @@ static int test_zd_improve_command(void)
         struct db_build_receipt fuzz_fail_receipt;
         ASSERT(build_fabric_worker_execute(
             &ndb, workspace, workspace, fuzz_fail_action_id, fail_lease_hex,
-            worker_secret, worker_key, &fuzz_fail_receipt).ok);
+            worker_secret, worker_key, &fuzz_fail_receipt, NULL).ok);
         ASSERT_EQ(fuzz_fail_receipt.exit_status, 1);
         ASSERT(db_build_action_find(&ndb, fuzz_fail_action_id,
                                     &fuzz_fail_action));
