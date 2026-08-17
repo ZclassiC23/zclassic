@@ -5,6 +5,48 @@
 [![status](https://img.shields.io/badge/status-pre--v1-orange.svg)](docs/MVP.md)
 [![CI](https://img.shields.io/badge/CI-local%20make%20lint-success.svg)](docs/DEFENSIVE_CODING.md)
 
+**Write exact C23. Any node builds it, runs it under bounded authority, and
+reproduces the result byte-for-byte — with no central software registry.**
+
+ZClassic23 is a public ZClassic blockchain full node in one self-contained C23
+binary, and that same node is a decentralized C23 software commons. People and
+AI agents propose exact source; nodes fetch it, build it in confinement, run
+it, and check each other's results. Nothing is accepted because of who produced
+it.
+
+Here is the whole idea in one command — two pilot programs fly a deterministic
+dogfight, and your machine re-derives the exact same match:
+
+```bash
+git clone https://github.com/ZclassiC23/zclassic.git
+cd zclassic
+make arena-demo
+```
+
+![ZCODE Arena](docs/assets/zcode-arena.svg)
+
+```text
+ZCODE ARENA
+Red Ace defeated Blue Drone 10-6
+11,941 deterministic ticks
+
+Replay verification:       MATCH
+Result vs pinned roots:    MATCH
+Altered control byte:      REFUSED (match-incomplete)
+
+Replay root:               05ed352dbb2213aad289cdf403d424d18d9ae075db57252a52c4e745a25e8396
+Final-state root:          e4b37a9b94547cead91a7d4ae2a63b0385b29a99bb603bd0ac3519cebd270ebd
+```
+
+No blockchain sync, no Tor, no wallet, no browser, no JavaScript, no Python, no
+network, no running node — just a C compiler. Those roots are the point: a
+second machine that builds the same sources prints the same digests, and a
+single altered byte is refused by name. Write your own pilot, verify a replay,
+and read the two-node proof and the honest gaps in
+[`docs/ARENA.md`](docs/ARENA.md).
+
+---
+
 > **One binary, one onion, one stack.** ZClassic23 is first a public ZClassic
 > blockchain full node: consensus-compatible validation, wallet custody, peer
 > networking, synchronization, and optional in-process Tor in one C23 binary.

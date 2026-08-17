@@ -45,6 +45,79 @@ static int capture_command(const char *command, char *out, size_t cap)
     return WEXITSTATUS(status);
 }
 
+static void reverse_range(char *b, size_t lo, size_t hi)
+{
+    while (lo < hi) {
+        char t = b[lo];
+        b[lo] = b[hi];
+        b[hi] = t;
+        lo++;
+        hi--;
+    }
+}
+
+/* Left-rotate b[0..n) by k using three reversals. */
+static void reverse_rotate(char *b, size_t n, size_t k)
+{
+    if (n == 0 || k % n == 0)
+        return;
+    k %= n;
+    reverse_range(b, 0, k - 1);
+    reverse_range(b, k, n - 1);
+    reverse_range(b, 0, n - 1);
+}
+
+/* Capture a bounded HEAD and a bounded TAIL of a command whose total output
+ * is unbounded, discarding the middle. Both buffers are NUL-terminated and
+ * neither grows with the output. Return value matches capture_command. */
+static int capture_command_ends(const char *command, char *head,
+                                size_t head_cap, char *tail, size_t tail_cap)
+{
+    if (!command || !head || head_cap == 0 || !tail || tail_cap < 2)
+        return -1;
+    head[0] = '\0';
+    tail[0] = '\0';
+    FILE *pipe = popen(command, "r");
+    if (!pipe)
+        return -1;
+    const size_t ring_cap = tail_cap - 1;
+    size_t head_used = 0;
+    size_t ring_len = 0;  /* bytes held in the ring */
+    size_t ring_head = 0; /* index of the oldest byte once wrapped */
+    unsigned char chunk[4096];
+    for (;;) {
+        size_t got = fread(chunk, 1, sizeof(chunk), pipe);
+        if (got == 0)
+            break;
+        size_t room = head_cap - head_used - 1;
+        size_t keep = got < room ? got : room;
+        if (keep > 0) {
+            memcpy(head + head_used, chunk, keep);
+            head_used += keep;
+        }
+        /* Ring-append the same bytes; only the last ring_cap survive. */
+        for (size_t i = 0; i < got; i++) {
+            if (ring_len < ring_cap) {
+                tail[ring_len++] = (char)chunk[i];
+            } else {
+                tail[ring_head] = (char)chunk[i];
+                ring_head = (ring_head + 1) % ring_cap;
+            }
+        }
+    }
+    head[head_used] = '\0';
+    /* Rotate the ring into reading order in place (three reversals), so the
+     * capture needs no allocation at all. ring_head is non-zero only after
+     * the ring wrapped, and then ring_len == ring_cap. */
+    if (ring_head != 0)
+        reverse_rotate(tail, ring_len, ring_head);
+    tail[ring_len] = '\0';
+    int status = pclose(pipe);
+    if (status < 0 || !WIFEXITED(status))
+        return -1;
+    return WEXITSTATUS(status);
+}
+
 static int test_selector_predicate(void)
 {
     int failures = 0;
@@ -358,20 +431,30 @@ static int test_runner_exact_selection(void)
 {
     int failures = 0;
     TEST("test group selector: runner exact mode executes exactly one id") {
-        /* The make -n dry runs below print the full out-of-date recipe
-         * chain, and that chain's SIZE is context-dependent: invoked from a
-         * parent make that just built this profile's epoch chain (isolated
-         * t-fast) the dry run is a few KB, but invoked cold (the parallel
-         * suite, a direct runner process, or after the session lease
-         * expires) every stale session/link/stamp recipe prints — measured
-         * ~0.6 MB with most objects fresh, bounded by ~2 MB with every
-         * object in every chained profile stale. The two `make -n`
-         * assertions need BOTH the parse-time admission line (head of
-         * output) and the recipe's exact selector (tail), so no head- or
-         * tail-truncating capture can work; the buffer must simply exceed
-         * the worst case. Static storage: 8 MiB dwarfs the bound, costs no
-         * stack, and cannot leak on an assertion-failure exit. */
-        static char out[8 * 1024 * 1024];
+        /* The make -n dry run below prints the full out-of-date recipe
+         * chain, and that chain's SIZE is a property of the CHECKOUT's build
+         * state, not of the seam under test: invoked from a parent make that
+         * just built this profile's epoch chain (isolated t-fast) it is a
+         * few KB, but invoked cold — the parallel suite, which builds a
+         * different profile, or a fresh clone — every object, session, link
+         * and stamp recipe in the chain prints. Measured 12.2 MB on a cold
+         * clone of this commit, and it grows with the tree.
+         *
+         * This probe needs exactly two facts, and they sit at the two ends:
+         * the parse-time admission line is the FIRST line, and the selector
+         * actually handed to the runner is in the LAST. So capture a bounded
+         * head and a bounded tail and throw the middle away — a whole-output
+         * buffer is a race against the source tree that the tree wins. An
+         * earlier revision sized that buffer at 8 MiB against a claimed
+         * ~2 MB worst case; the cold measurement above is 1.5x past it, and
+         * the truncation would have silently dropped the tail assertion. */
+        static char head[64 * 1024];
+        static char tail[64 * 1024];
+        /* The nested-runner captures below still need the WHOLE output —
+         * --source-id/--source-record are compared exactly. Their size is
+         * bounded by one test group's own logging, not by the source tree,
+         * so a fixed buffer is honest here in a way it was not above. */
+        static char out[1024 * 1024];
         char exe[PATH_MAX];
         ASSERT(os_proc_exe_path(exe, sizeof(exe)));
         ASSERT(exe[0] != '\0');
@@ -462,11 +545,13 @@ static int test_runner_exact_selection(void)
                      zcl_build_source_id_sha256(),
                      zcl_build_source_mutation_sha256());
         ASSERT(n > 0 && (size_t)n < sizeof(command));
-        rc = capture_command(command, out, sizeof(out));
-        dump_bad_rc("make -n t-fast-exact ONLY=api", rc, 0, out);
+        rc = capture_command_ends(command, head, sizeof(head), tail,
+                                  sizeof(tail));
+        dump_bad_rc("make -n t-fast-exact ONLY=api (head)", rc, 0, head);
+        dump_bad_rc("make -n t-fast-exact ONLY=api (tail)", rc, 0, tail);
         ASSERT(rc == 0);
-        ASSERT(strstr(out, "resolves to exact set test_api") != NULL);
-        ASSERT(strstr(out, "--exact=test_api") != NULL);
+        ASSERT(strstr(head, "resolves to exact set test_api") != NULL);
+        ASSERT(strstr(tail, "--exact=test_api") != NULL);
 
         n = snprintf(command, sizeof(command),
                      "make -n t-fast-exact ONLY=api_missing "
@@ -477,9 +562,12 @@ static int test_runner_exact_selection(void)
                      zcl_build_source_id_sha256(),
                      zcl_build_source_mutation_sha256());
         ASSERT(n > 0 && (size_t)n < sizeof(command));
-        rc = capture_command(command, out, sizeof(out));
+        /* The refusal is a parse-time $(error): make stops before printing
+         * any recipe, so this leg is small and the head alone carries it. */
+        rc = capture_command_ends(command, head, sizeof(head), tail,
+                                  sizeof(tail));
         ASSERT(rc == 2);
-        ASSERT(strstr(out, "ONLY='api_missing' is not a valid exact registered group set") != NULL);
+        ASSERT(strstr(head, "ONLY='api_missing' is not a valid exact registered group set") != NULL);
         PASS();
     } _test_next:;
     return failures;

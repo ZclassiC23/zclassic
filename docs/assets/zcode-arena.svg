@@ -1,0 +1,354 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="996" height="892" viewBox="0 0 9960 8920" role="img" aria-label="ZCODE Arena deterministic replay contact sheet">
+<rect width="9960" height="8920" fill="#0b0f16"/>
+<text x="280" y="470" font-family="monospace" font-size="215" font-weight="bold" fill="#c9d6e4">ZCODE ARENA</text>
+<text x="280" y="680" font-family="monospace" font-size="125" fill="#66788c"><tspan fill="#ff6b5e">Red Ace — zdogace 0.1.1</tspan> vs <tspan fill="#57a6ff">Blue Drone — zdogdrone 0.1.0</tspan> &#183; seed 7 &#183; 3v3 &#183; 11941 ticks &#183; RED wins 10&#8211;6</text>
+<text x="280" y="870" font-family="monospace" font-size="105" fill="#66788c">overhead view of a 2 km toroidal world &#183; integer-only simulation &#183; every frame re-derived from the replay</text>
+<rect x="280" y="1180" width="3000" height="3000" rx="60" fill="#111823" stroke="#243044" stroke-width="10"/>
+<line x1="880" y1="1180" x2="880" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="280" y1="1780" x2="3280" y2="1780" stroke="#1a2432" stroke-width="5"/>
+<line x1="1480" y1="1180" x2="1480" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="280" y1="2380" x2="3280" y2="2380" stroke="#1a2432" stroke-width="5"/>
+<line x1="2080" y1="1180" x2="2080" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="280" y1="2980" x2="3280" y2="2980" stroke="#1a2432" stroke-width="5"/>
+<line x1="2680" y1="1180" x2="2680" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="280" y1="3580" x2="3280" y2="3580" stroke="#1a2432" stroke-width="5"/>
+<polygon points="1091,2980 997,3013 997,2947" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="1091,2680 997,2713 997,2647" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="1091,2380 997,2413 997,2347" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="2469,2980 2563,2947 2563,3013" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<polygon points="2469,2680 2563,2647 2563,2713" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<polygon points="2469,2380 2563,2347 2563,2413" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<text x="410" y="1390" font-family="monospace" font-size="115" fill="#66788c">1</text>
+<text x="280" y="4330" font-family="monospace" font-size="120" fill="#c9d6e4">1  START</text>
+<text x="280" y="4470" font-family="monospace" font-size="110" fill="#66788c">tick 0 &#183; red 0 &#183; blue 0</text>
+<rect x="3480" y="1180" width="3000" height="3000" rx="60" fill="#111823" stroke="#243044" stroke-width="10"/>
+<line x1="4080" y1="1180" x2="4080" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="3480" y1="1780" x2="6480" y2="1780" stroke="#1a2432" stroke-width="5"/>
+<line x1="4680" y1="1180" x2="4680" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="3480" y1="2380" x2="6480" y2="2380" stroke="#1a2432" stroke-width="5"/>
+<line x1="5280" y1="1180" x2="5280" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="3480" y1="2980" x2="6480" y2="2980" stroke="#1a2432" stroke-width="5"/>
+<line x1="5880" y1="1180" x2="5880" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="3480" y1="3580" x2="6480" y2="3580" stroke="#1a2432" stroke-width="5"/>
+<circle cx="5368" cy="2688" r="13" fill="#ff6b5e"/>
+<circle cx="5368" cy="2388" r="13" fill="#ff6b5e"/>
+<polygon points="5400,2894 5301,2912 5311,2846" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="5406,2686 5313,2723 5311,2657" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="5406,2386 5313,2423 5311,2357" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="5728,2994 5804,2928 5828,2990" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<polygon points="5728,2694 5804,2628 5828,2690" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<polygon points="5728,2394 5804,2328 5828,2390" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<text x="3610" y="1390" font-family="monospace" font-size="115" fill="#66788c">2</text>
+<text x="3480" y="4330" font-family="monospace" font-size="120" fill="#c9d6e4">2  FIRST ENGAGEMENT</text>
+<text x="3480" y="4470" font-family="monospace" font-size="110" fill="#66788c">tick 398 &#183; red 0 &#183; blue 0</text>
+<rect x="6680" y="1180" width="3000" height="3000" rx="60" fill="#111823" stroke="#243044" stroke-width="10"/>
+<line x1="7280" y1="1180" x2="7280" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="6680" y1="1780" x2="9680" y2="1780" stroke="#1a2432" stroke-width="5"/>
+<line x1="7880" y1="1180" x2="7880" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="6680" y1="2380" x2="9680" y2="2380" stroke="#1a2432" stroke-width="5"/>
+<line x1="8480" y1="1180" x2="8480" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="6680" y1="2980" x2="9680" y2="2980" stroke="#1a2432" stroke-width="5"/>
+<line x1="9080" y1="1180" x2="9080" y2="4180" stroke="#1a2432" stroke-width="5"/>
+<line x1="6680" y1="3580" x2="9680" y2="3580" stroke="#1a2432" stroke-width="5"/>
+<circle cx="7519" cy="3082" r="13" fill="#57a6ff"/>
+<circle cx="7836" cy="2742" r="13" fill="#57a6ff"/>
+<circle cx="8610" cy="1727" r="13" fill="#57a6ff"/>
+<circle cx="8585" cy="1410" r="13" fill="#57a6ff"/>
+<circle cx="7787" cy="3916" r="13" fill="#ff6b5e"/>
+<circle cx="8466" cy="1626" r="13" fill="#57a6ff"/>
+<circle cx="7947" cy="3920" r="13" fill="#57a6ff"/>
+<circle cx="7926" cy="3553" r="13" fill="#57a6ff"/>
+<circle cx="8378" cy="1254" r="13" fill="#57a6ff"/>
+<circle cx="7881" cy="3468" r="13" fill="#57a6ff"/>
+<circle cx="9143" cy="1241" r="13" fill="#ff6b5e"/>
+<circle cx="8259" cy="1437" r="13" fill="#57a6ff"/>
+<circle cx="8206" cy="4076" r="13" fill="#57a6ff"/>
+<circle cx="8157" cy="1314" r="13" fill="#57a6ff"/>
+<circle cx="7881" cy="3168" r="13" fill="#57a6ff"/>
+<circle cx="8071" cy="1185" r="13" fill="#57a6ff"/>
+<circle cx="8112" cy="3950" r="13" fill="#57a6ff"/>
+<circle cx="7894" cy="3349" r="13" fill="#57a6ff"/>
+<circle cx="8034" cy="3819" r="13" fill="#57a6ff"/>
+<circle cx="8001" cy="4053" r="13" fill="#57a6ff"/>
+<circle cx="7894" cy="3049" r="13" fill="#57a6ff"/>
+<circle cx="7836" cy="2350" r="13" fill="#ff6b5e"/>
+<circle cx="7896" cy="3421" r="13" fill="#57a6ff"/>
+<circle cx="7918" cy="3238" r="13" fill="#57a6ff"/>
+<circle cx="7918" cy="2938" r="13" fill="#57a6ff"/>
+<circle cx="7909" cy="3787" r="13" fill="#57a6ff"/>
+<circle cx="7954" cy="3136" r="13" fill="#57a6ff"/>
+<circle cx="7954" cy="2836" r="13" fill="#57a6ff"/>
+<circle cx="8000" cy="3043" r="13" fill="#57a6ff"/>
+<circle cx="8000" cy="2743" r="13" fill="#57a6ff"/>
+<circle cx="8054" cy="2960" r="13" fill="#57a6ff"/>
+<circle cx="8054" cy="2660" r="13" fill="#57a6ff"/>
+<circle cx="8114" cy="2889" r="13" fill="#57a6ff"/>
+<circle cx="8114" cy="2589" r="13" fill="#57a6ff"/>
+<circle cx="8180" cy="2829" r="13" fill="#57a6ff"/>
+<circle cx="8180" cy="2529" r="13" fill="#57a6ff"/>
+<circle cx="8249" cy="2781" r="13" fill="#57a6ff"/>
+<circle cx="8249" cy="2481" r="13" fill="#57a6ff"/>
+<circle cx="8320" cy="2745" r="13" fill="#57a6ff"/>
+<circle cx="8320" cy="2445" r="13" fill="#57a6ff"/>
+<circle cx="8392" cy="2721" r="13" fill="#57a6ff"/>
+<circle cx="8392" cy="2421" r="13" fill="#57a6ff"/>
+<circle cx="8463" cy="2709" r="13" fill="#57a6ff"/>
+<circle cx="8463" cy="2409" r="13" fill="#57a6ff"/>
+<circle cx="8531" cy="2708" r="13" fill="#57a6ff"/>
+<circle cx="8531" cy="2408" r="13" fill="#57a6ff"/>
+<circle cx="8750" cy="2804" r="13" fill="#57a6ff"/>
+<circle cx="8785" cy="2847" r="13" fill="#57a6ff"/>
+<circle cx="8595" cy="2718" r="13" fill="#57a6ff"/>
+<circle cx="8595" cy="2418" r="13" fill="#57a6ff"/>
+<circle cx="8653" cy="2738" r="13" fill="#57a6ff"/>
+<circle cx="8653" cy="2438" r="13" fill="#57a6ff"/>
+<circle cx="8705" cy="2767" r="13" fill="#57a6ff"/>
+<circle cx="8705" cy="2467" r="13" fill="#57a6ff"/>
+<circle cx="8750" cy="2504" r="13" fill="#57a6ff"/>
+<circle cx="8785" cy="2547" r="13" fill="#57a6ff"/>
+<circle cx="8836" cy="2642" r="13" fill="#ff6b5e"/>
+<polygon points="8826,2623 8900,2690 8842,2722" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="8809,3029 8857,3118 8791,3128" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="8755,2936 8849,2903 8849,2969" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="8788,2844 8857,2918 8795,2944" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<g stroke="#3d4a5c" stroke-width="16" opacity="0.75"><line x1="8779" y1="2566" x2="8847" y2="2634"/><line x1="8779" y1="2634" x2="8847" y2="2566"/></g>
+<polygon points="8788,2244 8857,2318 8795,2344" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<text x="6810" y="1390" font-family="monospace" font-size="115" fill="#66788c">3</text>
+<text x="6680" y="4330" font-family="monospace" font-size="120" fill="#c9d6e4">3  FIRST KILL</text>
+<text x="6680" y="4470" font-family="monospace" font-size="110" fill="#66788c">tick 1770 &#183; red 1 &#183; blue 0</text>
+<rect x="280" y="4720" width="3000" height="3000" rx="60" fill="#111823" stroke="#243044" stroke-width="10"/>
+<line x1="880" y1="4720" x2="880" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="280" y1="5320" x2="3280" y2="5320" stroke="#1a2432" stroke-width="5"/>
+<line x1="1480" y1="4720" x2="1480" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="280" y1="5920" x2="3280" y2="5920" stroke="#1a2432" stroke-width="5"/>
+<line x1="2080" y1="4720" x2="2080" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="280" y1="6520" x2="3280" y2="6520" stroke="#1a2432" stroke-width="5"/>
+<line x1="2680" y1="4720" x2="2680" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="280" y1="7120" x2="3280" y2="7120" stroke="#1a2432" stroke-width="5"/>
+<circle cx="2120" cy="6319" r="13" fill="#57a6ff"/>
+<circle cx="2857" cy="6600" r="13" fill="#57a6ff"/>
+<circle cx="2296" cy="5853" r="13" fill="#57a6ff"/>
+<circle cx="349" cy="5443" r="13" fill="#57a6ff"/>
+<circle cx="2829" cy="5673" r="13" fill="#57a6ff"/>
+<circle cx="2026" cy="6504" r="13" fill="#57a6ff"/>
+<circle cx="1756" cy="5983" r="13" fill="#57a6ff"/>
+<circle cx="1919" cy="6674" r="13" fill="#57a6ff"/>
+<circle cx="1527" cy="7086" r="13" fill="#57a6ff"/>
+<circle cx="384" cy="7104" r="13" fill="#57a6ff"/>
+<circle cx="1798" cy="6828" r="13" fill="#57a6ff"/>
+<circle cx="2964" cy="6739" r="13" fill="#57a6ff"/>
+<circle cx="2872" cy="6335" r="13" fill="#57a6ff"/>
+<circle cx="3227" cy="6993" r="13" fill="#57a6ff"/>
+<circle cx="1667" cy="6966" r="13" fill="#57a6ff"/>
+<circle cx="3087" cy="6870" r="13" fill="#57a6ff"/>
+<circle cx="1382" cy="7188" r="13" fill="#57a6ff"/>
+<circle cx="1231" cy="7273" r="13" fill="#57a6ff"/>
+<circle cx="2768" cy="6456" r="13" fill="#57a6ff"/>
+<circle cx="2697" cy="6310" r="13" fill="#57a6ff"/>
+<circle cx="2589" cy="6167" r="13" fill="#ff6b5e"/>
+<circle cx="2643" cy="6161" r="13" fill="#57a6ff"/>
+<circle cx="2606" cy="6014" r="13" fill="#57a6ff"/>
+<circle cx="2585" cy="5869" r="13" fill="#57a6ff"/>
+<circle cx="2579" cy="5728" r="13" fill="#57a6ff"/>
+<circle cx="2589" cy="5593" r="13" fill="#57a6ff"/>
+<circle cx="2612" cy="5465" r="13" fill="#57a6ff"/>
+<circle cx="2647" cy="5346" r="13" fill="#57a6ff"/>
+<circle cx="2813" cy="5049" r="13" fill="#57a6ff"/>
+<circle cx="2883" cy="4973" r="13" fill="#57a6ff"/>
+<circle cx="2958" cy="4910" r="13" fill="#57a6ff"/>
+<circle cx="3037" cy="4859" r="13" fill="#57a6ff"/>
+<circle cx="3117" cy="4820" r="13" fill="#57a6ff"/>
+<circle cx="2526" cy="6725" r="13" fill="#57a6ff"/>
+<circle cx="3197" cy="4794" r="13" fill="#57a6ff"/>
+<circle cx="2519" cy="6645" r="13" fill="#57a6ff"/>
+<circle cx="3276" cy="4781" r="13" fill="#57a6ff"/>
+<circle cx="2523" cy="6569" r="13" fill="#57a6ff"/>
+<circle cx="351" cy="4778" r="13" fill="#57a6ff"/>
+<circle cx="2537" cy="6498" r="13" fill="#57a6ff"/>
+<circle cx="422" cy="4787" r="13" fill="#57a6ff"/>
+<circle cx="2562" cy="6434" r="13" fill="#57a6ff"/>
+<circle cx="488" cy="4806" r="13" fill="#57a6ff"/>
+<circle cx="2594" cy="6378" r="13" fill="#57a6ff"/>
+<circle cx="546" cy="4834" r="13" fill="#57a6ff"/>
+<circle cx="2634" cy="6330" r="13" fill="#57a6ff"/>
+<circle cx="597" cy="4869" r="13" fill="#57a6ff"/>
+<circle cx="2680" cy="6292" r="13" fill="#57a6ff"/>
+<circle cx="638" cy="4912" r="13" fill="#57a6ff"/>
+<circle cx="2731" cy="6263" r="13" fill="#57a6ff"/>
+<circle cx="670" cy="4960" r="13" fill="#57a6ff"/>
+<circle cx="2784" cy="6246" r="13" fill="#57a6ff"/>
+<circle cx="692" cy="5012" r="13" fill="#57a6ff"/>
+<polygon points="781,5109 881,5097 867,5163" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="2867,6247 2887,6148 2945,6182" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="910,5191 874,5098 940,5096" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="2793,6240 2887,6206 2887,6272" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<polygon points="696,5010 740,5100 674,5108" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<polygon points="2877,5299 2975,5278 2967,5344" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<text x="410" y="4930" font-family="monospace" font-size="115" fill="#66788c">4</text>
+<text x="280" y="7870" font-family="monospace" font-size="120" fill="#c9d6e4">4  MIDPOINT</text>
+<text x="280" y="8010" font-family="monospace" font-size="110" fill="#66788c">tick 5970 &#183; red 6 &#183; blue 0</text>
+<rect x="3480" y="4720" width="3000" height="3000" rx="60" fill="#111823" stroke="#243044" stroke-width="10"/>
+<line x1="4080" y1="4720" x2="4080" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="3480" y1="5320" x2="6480" y2="5320" stroke="#1a2432" stroke-width="5"/>
+<line x1="4680" y1="4720" x2="4680" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="3480" y1="5920" x2="6480" y2="5920" stroke="#1a2432" stroke-width="5"/>
+<line x1="5280" y1="4720" x2="5280" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="3480" y1="6520" x2="6480" y2="6520" stroke="#1a2432" stroke-width="5"/>
+<line x1="5880" y1="4720" x2="5880" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="3480" y1="7120" x2="6480" y2="7120" stroke="#1a2432" stroke-width="5"/>
+<circle cx="5936" cy="6310" r="13" fill="#57a6ff"/>
+<circle cx="5999" cy="6316" r="13" fill="#ff6b5e"/>
+<circle cx="6292" cy="6193" r="13" fill="#57a6ff"/>
+<circle cx="4125" cy="7297" r="13" fill="#57a6ff"/>
+<circle cx="4302" cy="6261" r="13" fill="#57a6ff"/>
+<circle cx="5841" cy="6268" r="13" fill="#57a6ff"/>
+<circle cx="4078" cy="5522" r="13" fill="#57a6ff"/>
+<circle cx="6021" cy="6360" r="13" fill="#57a6ff"/>
+<circle cx="4035" cy="5305" r="13" fill="#57a6ff"/>
+<circle cx="5638" cy="6620" r="13" fill="#ff6b5e"/>
+<circle cx="5706" cy="6638" r="13" fill="#ff6b5e"/>
+<circle cx="6297" cy="6808" r="13" fill="#57a6ff"/>
+<circle cx="5503" cy="6207" r="13" fill="#57a6ff"/>
+<circle cx="6293" cy="6874" r="13" fill="#57a6ff"/>
+<circle cx="6280" cy="6936" r="13" fill="#57a6ff"/>
+<circle cx="6140" cy="7113" r="13" fill="#57a6ff"/>
+<circle cx="6147" cy="5997" r="13" fill="#ff6b5e"/>
+<circle cx="6252" cy="5776" r="13" fill="#ff6b5e"/>
+<circle cx="6377" cy="5529" r="13" fill="#ff6b5e"/>
+<circle cx="4871" cy="5777" r="13" fill="#57a6ff"/>
+<circle cx="5327" cy="5466" r="13" fill="#57a6ff"/>
+<circle cx="5804" cy="5200" r="13" fill="#57a6ff"/>
+<circle cx="3605" cy="5113" r="13" fill="#ff6b5e"/>
+<circle cx="3795" cy="4807" r="13" fill="#ff6b5e"/>
+<circle cx="4318" cy="7685" r="13" fill="#57a6ff"/>
+<circle cx="4544" cy="5494" r="13" fill="#57a6ff"/>
+<circle cx="5350" cy="7579" r="13" fill="#57a6ff"/>
+<circle cx="5861" cy="7596" r="13" fill="#57a6ff"/>
+<circle cx="6360" cy="7659" r="13" fill="#57a6ff"/>
+<circle cx="3847" cy="4765" r="13" fill="#57a6ff"/>
+<circle cx="4766" cy="5101" r="13" fill="#57a6ff"/>
+<circle cx="5589" cy="5585" r="13" fill="#57a6ff"/>
+<circle cx="5957" cy="5874" r="13" fill="#57a6ff"/>
+<circle cx="3594" cy="6536" r="13" fill="#57a6ff"/>
+<circle cx="3860" cy="6900" r="13" fill="#57a6ff"/>
+<circle cx="4089" cy="7281" r="13" fill="#57a6ff"/>
+<circle cx="4279" cy="7677" r="13" fill="#57a6ff"/>
+<circle cx="4431" cy="5082" r="13" fill="#57a6ff"/>
+<circle cx="4618" cy="5908" r="13" fill="#57a6ff"/>
+<circle cx="4651" cy="6731" r="13" fill="#57a6ff"/>
+<circle cx="4612" cy="7131" r="13" fill="#57a6ff"/>
+<circle cx="4013" cy="5090" r="13" fill="#57a6ff"/>
+<circle cx="4013" cy="4880" r="13" fill="#57a6ff"/>
+<circle cx="4196" cy="7124" r="13" fill="#57a6ff"/>
+<circle cx="4281" cy="6963" r="13" fill="#57a6ff"/>
+<circle cx="4378" cy="6817" r="13" fill="#57a6ff"/>
+<circle cx="4486" cy="6686" r="13" fill="#57a6ff"/>
+<circle cx="4602" cy="6570" r="13" fill="#57a6ff"/>
+<circle cx="4987" cy="6378" r="13" fill="#ff6b5e"/>
+<circle cx="4725" cy="6470" r="13" fill="#57a6ff"/>
+<circle cx="5248" cy="6233" r="13" fill="#57a6ff"/>
+<circle cx="4853" cy="6387" r="13" fill="#57a6ff"/>
+<circle cx="5229" cy="6483" r="13" fill="#ff6b5e"/>
+<circle cx="4984" cy="6320" r="13" fill="#57a6ff"/>
+<circle cx="5272" cy="6510" r="13" fill="#ff6b5e"/>
+<circle cx="5117" cy="6268" r="13" fill="#57a6ff"/>
+<circle cx="5378" cy="6213" r="13" fill="#57a6ff"/>
+<circle cx="5319" cy="6533" r="13" fill="#ff6b5e"/>
+<circle cx="5623" cy="6215" r="13" fill="#57a6ff"/>
+<circle cx="5371" cy="6553" r="13" fill="#ff6b5e"/>
+<circle cx="5736" cy="6236" r="13" fill="#57a6ff"/>
+<circle cx="5428" cy="6569" r="13" fill="#ff6b5e"/>
+<circle cx="5488" cy="6584" r="13" fill="#ff6b5e"/>
+<circle cx="5551" cy="6599" r="13" fill="#ff6b5e"/>
+<polygon points="6209,7145 6109,7141 6133,7079" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="6136,7098 6084,7184 6042,7132" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="5996,7020 5987,7120 5927,7092" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="6166,7102 6094,7172 6066,7112" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<polygon points="5124,7019 5056,6945 5118,6919" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<polygon points="6067,6474 6090,6376 6146,6412" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<text x="3610" y="4930" font-family="monospace" font-size="115" fill="#66788c">5</text>
+<text x="3480" y="7870" font-family="monospace" font-size="120" fill="#c9d6e4">5  WINNING ATTACK</text>
+<text x="3480" y="8010" font-family="monospace" font-size="110" fill="#66788c">tick 11881 &#183; red 9 &#183; blue 6</text>
+<rect x="6680" y="4720" width="3000" height="3000" rx="60" fill="#111823" stroke="#243044" stroke-width="10"/>
+<line x1="7280" y1="4720" x2="7280" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="6680" y1="5320" x2="9680" y2="5320" stroke="#1a2432" stroke-width="5"/>
+<line x1="7880" y1="4720" x2="7880" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="6680" y1="5920" x2="9680" y2="5920" stroke="#1a2432" stroke-width="5"/>
+<line x1="8480" y1="4720" x2="8480" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="6680" y1="6520" x2="9680" y2="6520" stroke="#1a2432" stroke-width="5"/>
+<line x1="9080" y1="4720" x2="9080" y2="7720" stroke="#1a2432" stroke-width="5"/>
+<line x1="6680" y1="7120" x2="9680" y2="7120" stroke="#1a2432" stroke-width="5"/>
+<circle cx="9067" cy="5638" r="13" fill="#57a6ff"/>
+<circle cx="9653" cy="7150" r="13" fill="#57a6ff"/>
+<circle cx="6918" cy="5670" r="13" fill="#57a6ff"/>
+<circle cx="9651" cy="7268" r="13" fill="#57a6ff"/>
+<circle cx="9383" cy="7107" r="13" fill="#ff6b5e"/>
+<circle cx="8912" cy="5605" r="13" fill="#57a6ff"/>
+<circle cx="6683" cy="5841" r="13" fill="#57a6ff"/>
+<circle cx="9213" cy="5686" r="13" fill="#57a6ff"/>
+<circle cx="9614" cy="5570" r="13" fill="#57a6ff"/>
+<circle cx="8483" cy="6046" r="13" fill="#ff6b5e"/>
+<circle cx="8586" cy="6043" r="13" fill="#ff6b5e"/>
+<circle cx="6867" cy="6244" r="13" fill="#57a6ff"/>
+<circle cx="8404" cy="5602" r="13" fill="#57a6ff"/>
+<circle cx="6913" cy="6345" r="13" fill="#57a6ff"/>
+<circle cx="6945" cy="6446" r="13" fill="#57a6ff"/>
+<circle cx="6946" cy="6817" r="13" fill="#57a6ff"/>
+<circle cx="9500" cy="7157" r="13" fill="#57a6ff"/>
+<circle cx="9447" cy="7139" r="13" fill="#57a6ff"/>
+<circle cx="8643" cy="7631" r="13" fill="#57a6ff"/>
+<circle cx="9180" cy="4860" r="13" fill="#ff6b5e"/>
+<circle cx="9385" cy="7517" r="13" fill="#ff6b5e"/>
+<circle cx="7320" cy="7040" r="13" fill="#57a6ff"/>
+<circle cx="8377" cy="5261" r="13" fill="#57a6ff"/>
+<circle cx="8470" cy="6909" r="13" fill="#57a6ff"/>
+<circle cx="9040" cy="6922" r="13" fill="#57a6ff"/>
+<circle cx="9599" cy="6985" r="13" fill="#57a6ff"/>
+<circle cx="7146" cy="7097" r="13" fill="#57a6ff"/>
+<circle cx="8182" cy="7462" r="13" fill="#57a6ff"/>
+<circle cx="9115" cy="4994" r="13" fill="#57a6ff"/>
+<circle cx="9534" cy="5315" r="13" fill="#57a6ff"/>
+<circle cx="7265" cy="6052" r="13" fill="#57a6ff"/>
+<circle cx="7572" cy="6460" r="13" fill="#57a6ff"/>
+<circle cx="7838" cy="6889" r="13" fill="#57a6ff"/>
+<circle cx="8061" cy="7335" r="13" fill="#57a6ff"/>
+<circle cx="8241" cy="4794" r="13" fill="#57a6ff"/>
+<circle cx="8469" cy="5733" r="13" fill="#57a6ff"/>
+<circle cx="8523" cy="6673" r="13" fill="#57a6ff"/>
+<circle cx="8487" cy="7133" r="13" fill="#57a6ff"/>
+<circle cx="9571" cy="5298" r="13" fill="#57a6ff"/>
+<circle cx="9555" cy="5030" r="13" fill="#57a6ff"/>
+<circle cx="6727" cy="7035" r="13" fill="#57a6ff"/>
+<circle cx="6822" cy="6816" r="13" fill="#57a6ff"/>
+<circle cx="6935" cy="6612" r="13" fill="#57a6ff"/>
+<circle cx="7064" cy="6424" r="13" fill="#57a6ff"/>
+<circle cx="7206" cy="6254" r="13" fill="#57a6ff"/>
+<circle cx="7687" cy="5925" r="13" fill="#ff6b5e"/>
+<circle cx="7360" cy="6102" r="13" fill="#57a6ff"/>
+<circle cx="8047" cy="5690" r="13" fill="#57a6ff"/>
+<circle cx="7523" cy="5970" r="13" fill="#57a6ff"/>
+<circle cx="7956" cy="6001" r="13" fill="#ff6b5e"/>
+<circle cx="7693" cy="5857" r="13" fill="#57a6ff"/>
+<circle cx="8003" cy="6024" r="13" fill="#ff6b5e"/>
+<circle cx="7869" cy="5764" r="13" fill="#57a6ff"/>
+<circle cx="8226" cy="5637" r="13" fill="#57a6ff"/>
+<circle cx="8058" cy="6040" r="13" fill="#ff6b5e"/>
+<circle cx="8579" cy="5586" r="13" fill="#57a6ff"/>
+<circle cx="8122" cy="6050" r="13" fill="#ff6b5e"/>
+<circle cx="8749" cy="5587" r="13" fill="#57a6ff"/>
+<circle cx="8192" cy="6054" r="13" fill="#ff6b5e"/>
+<circle cx="8271" cy="6053" r="13" fill="#ff6b5e"/>
+<circle cx="8357" cy="6051" r="13" fill="#ff6b5e"/>
+<polygon points="9306,7301 9371,7224 9405,7282" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="9524,7111 9432,7150 9428,7084" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<polygon points="9381,7105 9282,7088 9314,7030" fill="#ff6b5e" fill-opacity="0.9" stroke="#ff6b5e" stroke-width="7"/>
+<g stroke="#3d4a5c" stroke-width="16" opacity="0.75"><line x1="9392" y1="7095" x2="9460" y2="7163"/><line x1="9392" y1="7163" x2="9460" y2="7095"/></g>
+<polygon points="8267,7133 8280,7034 8340,7064" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<polygon points="9140,6488 9231,6446 9237,6512" fill="#57a6ff" fill-opacity="0.9" stroke="#57a6ff" stroke-width="7"/>
+<text x="6810" y="4930" font-family="monospace" font-size="115" fill="#66788c">6</text>
+<text x="6680" y="7870" font-family="monospace" font-size="120" fill="#c9d6e4">6  FINAL</text>
+<text x="6680" y="8010" font-family="monospace" font-size="110" fill="#66788c">tick 11941 &#183; red 10 &#183; blue 6</text>
+<text x="280" y="8280" font-family="monospace" font-size="105" fill="#66788c">replay root       05ed352dbb2213aad289cdf403d424d18d9ae075db57252a52c4e745a25e8396</text>
+<text x="280" y="8460" font-family="monospace" font-size="105" fill="#66788c">final-state root  e4b37a9b94547cead91a7d4ae2a63b0385b29a99bb603bd0ac3519cebd270ebd</text>
+<text x="280" y="8640" font-family="monospace" font-size="105" fill="#66788c">rendered only after the recorded controls re-derived this exact final state</text>
+</svg>

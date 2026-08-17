@@ -252,6 +252,27 @@ DEV_OBJ_ROOT = $(BUILD_DIR)/dev-obj
 OBJ_DIR = $(OBJ_ROOT)/epochs/$(BUILD_ONLY_COMPILE_EPOCH)
 DEV_OBJ_DIR = $(DEV_OBJ_ROOT)/epochs/$(DEV_COMPILE_EPOCH)
 
+# Non-executing make modes: -n (dry run), -q (question), -t (touch). GNU Make
+# puts the concatenated SHORT flags of the current invocation in the first
+# word of MAKEFLAGS, and that word never begins with '-' when it exists (long
+# options arrive as their own '--word' entries), so filtering '-%' out of word
+# 1 leaves exactly the short-flag letters or nothing.
+#
+# WHY THIS EXISTS. $(file >...) is a make FUNCTION, so it runs when the recipe
+# line is EXPANDED — and make expands every recipe line under -n in order to
+# print it. A response-file recipe written the obvious way therefore writes
+# its file during a dry run, which both violates -n's promise to change
+# nothing and hard-fails when the epoch directory does not exist yet, because
+# the mkdir that would have created it lives in a recipe -n only printed. On a
+# cold checkout that made `make -n <any test goal>` die with
+# "open: .../link-inputs.rsp: No such file or directory", exit 2 — observed on
+# the hosted runner via test_test_group_selector's Make admission probe, which
+# passes on a warm tree and fails on a cold one. Guard every $(file >...) with
+# this so a non-executing mode expands to nothing.
+ZCL_MAKE_SHORT_FLAGS := $(filter-out -%,$(word 1,$(MAKEFLAGS)))
+ZCL_MAKE_NO_EXEC := \
+    $(strip $(foreach f,n q t,$(findstring $(f),$(ZCL_MAKE_SHORT_FLAGS))))
+
 # Only ZCL_BUILD_SOURCE_ID is baked into the sovereign binary. Git commit ids
 # remain external GitHub trace/publish metadata: embedding them would make the
 # exact executable digest (and therefore producer receipts) change with a
@@ -1803,10 +1824,10 @@ $(TEST_PARALLEL_FAST_CANDIDATE): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(T
 # response file, keeping the shell command bounded without rediscovering or
 # reordering objects from the filesystem.
 $(TEST_PARALLEL_REL_LINK_RSP): $(TEST_PARALLEL_REL_OBJS)
-	@$(file >$@,$(TEST_PARALLEL_REL_OBJS)) test -s "$@"
+	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(TEST_PARALLEL_REL_OBJS))) test -s "$@"
 
 $(TEST_PARALLEL_FAST_LINK_RSP): $(TEST_PARALLEL_FAST_OBJS)
-	@$(file >$@,$(TEST_PARALLEL_FAST_OBJS)) test -s "$@"
+	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(TEST_PARALLEL_FAST_OBJS))) test -s "$@"
 
 TEST_RESTART_BASE_RELOC = $(TEST_FAST_OBJ_DIR)/restart-base.o
 $(TEST_RESTART_BASE_RELOC): $(TEST_PARALLEL_FAST_LINK_RSP) \
@@ -1843,7 +1864,7 @@ $(TEST_ASAN_CANDIDATE): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(TEST_ASAN_
 	trap - EXIT HUP INT TERM
 
 $(TEST_ASAN_LINK_RSP): $(TEST_ASAN_OBJS)
-	@$(file >$@,$(TEST_ASAN_OBJS)) test -s "$@"
+	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(TEST_ASAN_OBJS))) test -s "$@"
 
 test-tsan: $(TEST_TSAN_BIN)
 
@@ -1868,7 +1889,7 @@ $(TEST_TSAN_CANDIDATE): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(TEST_TSAN_
 	trap - EXIT HUP INT TERM
 
 $(TEST_TSAN_LINK_RSP): $(TEST_TSAN_OBJS)
-	@$(file >$@,$(TEST_TSAN_OBJS)) test -s "$@"
+	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(TEST_TSAN_OBJS))) test -s "$@"
 
 # Both active runners execute groups that spawn the fixed external package
 # verifier. Build that exact in-tree helper here, not only on the public
@@ -2806,7 +2827,7 @@ $(DEV_CANDIDATE_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(DEV_OBJ_COMP
 DEV_LINK_RSP = $(DEV_OBJ_DIR)/link-inputs.rsp
 DEV_RESTART_BASE_RELOC = $(DEV_OBJ_DIR)/restart-base.o
 $(DEV_LINK_RSP): $(DEV_OBJS)
-	@$(file >$@,$(DEV_OBJS)) test -s "$@"
+	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(DEV_OBJS))) test -s "$@"
 
 $(DEV_RESTART_BASE_RELOC): $(DEV_LINK_RSP) $(DEV_OBJS)
 	@set -eu; \
@@ -2874,7 +2895,7 @@ $(DEV_PACKAGE_VERIFY_BIN): $(DEV_PACKAGE_VERIFY_LINK_RSP) \
 
 $(DEV_PACKAGE_VERIFY_LINK_RSP): $(DEV_PACKAGE_VERIFY_OBJ) \
 		$(DEV_PACKAGE_VERIFY_NODE_OBJS)
-	@$(file >$@,$(DEV_PACKAGE_VERIFY_OBJ) $(DEV_PACKAGE_VERIFY_NODE_OBJS)) test -s "$@"
+	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(DEV_PACKAGE_VERIFY_OBJ) $(DEV_PACKAGE_VERIFY_NODE_OBJS))) test -s "$@"
 
 $(DEV_RESTART_PLAN): $(DEV_OBJ_COMPLETE) $(DEV_LINK_RSP) \
 		$(DEV_RESTART_BASE_RELOC) $(TEST_PARALLEL_FAST_LINK_RSP) \
@@ -2934,7 +2955,7 @@ $(DEV_ASAN_CANDIDATE_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(DEV_ASA
 	trap - EXIT HUP INT TERM
 
 $(DEV_ASAN_LINK_RSP): $(DEV_ASAN_OBJS)
-	@$(file >$@,$(DEV_ASAN_OBJS)) test -s "$@"
+	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(DEV_ASAN_OBJS))) test -s "$@"
 
 # dev-tsan: TSan dev node for local data-race debugging. Same source set as
 # zclassic23-dev, own epoch-keyed object tree (build/dev-tsan-obj); -Og,
@@ -2966,7 +2987,7 @@ $(DEV_TSAN_CANDIDATE_BIN): $(VIEW_GEN_HEADERS) $(BUILD_IDENTITY_STAMP) $(DEV_TSA
 	trap - EXIT HUP INT TERM
 
 $(DEV_TSAN_LINK_RSP): $(DEV_TSAN_OBJS)
-	@$(file >$@,$(DEV_TSAN_OBJS)) test -s "$@"
+	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(DEV_TSAN_OBJS))) test -s "$@"
 
 # ── Tier-1 in-process hot-swap (DEV-ONLY) ──────────────────────────────
 # Compile named app-layer native-handler TUs into a "generation" .so and
@@ -3962,6 +3983,86 @@ $(BIN_DIR)/test_zdogdrone: packages/zdogdrone/tests/test_zdogdrone.c \
 	    -Ipackages/zdogdrone/include -Ipackages/zdogfight/include \
 	    -Ipackages/zprng/include \
 	    -o $@ $^ -lm
+
+# ── ZCODE Arena: the public demo ──────────────────────────────────────────
+# `make arena-demo` is the one command a brand-new reader runs after cloning.
+# It needs no blockchain sync, no Tor, no wallet, no browser, no live node
+# and no network: it compiles the arena core, two pilot programs and the
+# runner, plays one deterministic match, re-simulates the recorded replay,
+# checks the result against the pinned reference roots, and proves that a
+# single altered control byte is refused by name.
+#
+# The pilots are linked -static on purpose: each one runs as a CONFINED
+# child (Landlock domain granting read+execute on the pilot image alone,
+# plus the session seccomp W^X deny-list), and W^X denies the PROT_EXEC
+# mapping a dynamic loader needs. -O1 matches tools/dev/arena_acceptance.sh,
+# whose two-node proof produced the pinned roots; the simulation is
+# integer-only so the optimisation level cannot move them, and `make
+# arena-demo-opt-parity` asserts exactly that instead of assuming it.
+ARENA_PILOT_CFLAGS = -std=c23 -O1 -static -Wall -Wextra -Werror -pedantic \
+    $(ZCL_WARN_STRINGOP_OVERFLOW) -D_POSIX_C_SOURCE=200809L
+
+$(BIN_DIR)/pilot_zdogace: packages/zdogace/app/main.c \
+		packages/zdogace/src/zdogace.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARENA_PILOT_CFLAGS) \
+	    -Ipackages/zdogace/include -Ipackages/zdogfight/include \
+	    -Ipackages/zprng/include \
+	    -o $@ $^ -lm
+
+$(BIN_DIR)/pilot_zdogdrone: packages/zdogdrone/app/main.c \
+		packages/zdogdrone/src/zdogdrone.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c
+	@mkdir -p $(dir $@)
+	$(CC) $(ARENA_PILOT_CFLAGS) \
+	    -Ipackages/zdogdrone/include -Ipackages/zdogfight/include \
+	    -Ipackages/zprng/include \
+	    -o $@ $^ -lm
+
+# arena_svg: deterministic headless replay renderer (see the file header).
+# Re-simulates a replay and refuses to draw anything it cannot re-derive.
+.PHONY: tools/arena-svg
+tools/arena-svg: $(BIN_DIR)/arena_svg
+$(BIN_DIR)/arena_svg: tools/arena_svg.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c \
+		lib/base/src/safe_alloc.c \
+		lib/sha3/src/sha3.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+	    -Ipackages/zdogfight/include -Ipackages/zprng/include \
+	    -Ilib/base/include -Ilib/util/include \
+	    -Ilib/sha3/include -Ilib/support/include -Ivendor/include \
+	    -o $@ $^ -lm
+
+ARENA_DEMO_BINS = $(BIN_DIR)/arena_runner $(BIN_DIR)/arena_svg \
+	$(BIN_DIR)/pilot_zdogace $(BIN_DIR)/pilot_zdogdrone
+
+.PHONY: arena-demo
+arena-demo: $(ARENA_DEMO_BINS)
+	@tools/dev/arena_demo.sh
+
+# Regenerate the committed artwork from a freshly played, freshly verified
+# match. The renderer is byte-deterministic, so `arena-svg-check` is a real
+# staleness gate: edit the arena, a pilot, or the renderer without
+# regenerating and it fails.
+.PHONY: arena-svg arena-svg-check
+arena-svg: $(ARENA_DEMO_BINS)
+	@ARENA_SVG_WRITE=1 tools/dev/arena_demo.sh
+arena-svg-check: $(ARENA_DEMO_BINS)
+	@ARENA_SVG_CHECK=1 tools/dev/arena_demo.sh
+
+# Determinism is a property of the simulation, not of the compiler flags:
+# play the pinned match with -O0 and -O2 pilots and require the same roots.
+.PHONY: arena-demo-opt-parity
+arena-demo-opt-parity: $(ARENA_DEMO_BINS)
+	@ARENA_OPT_PARITY=1 tools/dev/arena_demo.sh
 
 # End-to-end proof of the factory plus the census package-scope intake on
 # the tiny-lines fixture, entirely under test-tmp/.
@@ -7226,7 +7327,7 @@ $(COV_TEST_CANDIDATE): $(BUILD_IDENTITY_STAMP) $(COV_OBJS)
 	trap - EXIT HUP INT TERM
 
 $(COV_LINK_RSP): $(COV_OBJS)
-	@$(file >$@,$(COV_OBJS)) test -s "$@"
+	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(COV_OBJS))) test -s "$@"
 
 $(COV_TEST_CANDIDATE): $(COV_LINK_RSP)
 
