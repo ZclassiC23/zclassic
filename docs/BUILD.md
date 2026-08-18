@@ -35,10 +35,10 @@ suite actually running, the rest is compiling the test tree.
 
 How to read this:
 
-- **The measurement runs with the compiler cache switched off** (`ccache` is
-  auto-detected by the build and disabled for the run). A host that has built
-  this project before finishes far faster, and that faster number is not a
-  first build.
+- **The measurement runs with the compiler cache switched off** (the in-tree
+  cache described below is disabled for the run). A host that has built this
+  project before finishes far faster, and that faster number is not a first
+  build.
 - **The 92 s vendor stage is historical.** It was measured before the Rust
   archive path was removed, so current `make vendor` does strictly less work.
   The row is left as measured rather than guessed at—re-run
@@ -79,6 +79,62 @@ make timings               # print what was measured here, never elsewhere
 `NOT MEASURED` when it is absent, so this page can be re-derived rather than
 believed. A run whose stage exits nonzero is reported as `FAILED` with the
 total withheld: a build that did not work has no first-build cost.
+
+## The compile cache is in the repository
+
+Second and later builds are fast because of `tools/zcc.c`, a content-addressed
+compile cache that ships **with this repository**. There is nothing to install
+and nothing to switch on: the Makefile builds it at parse time
+(`tools/dev/zcc_bootstrap.sh`, one ~0.3 s compile on a fresh clone, two `stat`
+calls after that) and puts it in front of `$(CC)`. A developer who cloned five
+minutes ago gets the same rebuild speed as the maintainer. That is the same
+promise the node itself makes about its runtime: stock libc plus in-tree
+sources, nothing to fetch.
+
+What it is for, measured on the reference host. `check-standalone-tools-link`
+is a lint gate that rebuilds 47 one-shot compile-and-link tool binaries; the
+`z23`, `z23-dev`, `z23-dev-asan` and `z23-dev-tsan` links it pulls in are the
+expensive part. Same work, same tree, cache cold then warm:
+
+| | Wall | CPU |
+|---|---|---|
+| Cold (nothing cached) | 178.7 s | 1261 s |
+| Warm (served from the cache) | 25.1 s | 41.9 s |
+
+The cache keys any single-output compiler invocation, **link steps included** —
+those tool rules have no `-c`, so a per-object cache would not touch them.
+
+```bash
+make cc-cache-stats      # hits, misses, bypasses, size on disk
+make cc-cache-trim       # evict oldest entries down to ZCC_TRIM_MB (4096)
+make cc-cache-clear      # start over — do this after a toolchain change
+make cc-cache-audit      # recompile every hit and byte-compare it
+ZCL_USE_CCACHE=0 make …  # one build with no cache at all
+ZCC_LOG=/tmp/zcc.log make …   # one line per compile: HIT / MISS / BYPASS
+```
+
+### Why you can believe a hit
+
+A compile cache that serves the wrong bytes is worse than no cache, because
+every other proof in this project is a statement about bytes. Three things
+keep it honest:
+
+- **The key is what the compiler actually reads.** The content key hashes the
+  *preprocessed* text of every `.c` input, so headers, `-I` paths, `-D` macros
+  and include order are folded in exactly rather than approximated.
+- **The fast path records its own include set.** A stat-only fast path is
+  cheap but blind: an earlier version of this cache keyed it on the files named
+  on the command line, and editing a header left the `.c` file's timestamp
+  untouched, so it served a stale object. The fast path now stores a manifest
+  of every file the compile read and re-checks all of them. `check-zcc-cache`
+  builds a fixture five ways on every `make lint` and fails if a header edit is
+  ever served from cache.
+- **`make cc-cache-audit` proves it empirically**, recompiling every hit for
+  real and byte-comparing the result. Run it after touching `tools/zcc.c`.
+
+`ZCC_STRICT=1` skips the fast path entirely if you would rather pay for
+certainty, and the hermetic goals (`ci-reproducible`, `repro-verify`) already
+force the cache off, so no reproducibility claim is ever served from it.
 
 ## One command: `make vendor`
 

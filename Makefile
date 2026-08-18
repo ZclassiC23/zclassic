@@ -19,9 +19,17 @@ endif
 CC = cc
 CXX ?= c++
 ZCL_USE_CCACHE ?= 1
-ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then command -v sccache 2>/dev/null || command -v ccache 2>/dev/null; fi)
+# The compile cache ships in-tree (tools/zcc.c). Prefer it over any installed
+# sccache/ccache so every developer gets the same fast rebuilds with nothing
+# to install, and fall back to a host cache only if the in-tree one cannot be
+# built here. This is a parse-time $(shell) because $(CC) is fixed before the
+# first recipe runs; see tools/dev/zcc_bootstrap.sh for why and what it costs.
+ZCL_CCACHE_BIN := $(shell if [ "$(ZCL_USE_CCACHE)" != "0" ]; then \
+                              $(CURDIR)/tools/dev/zcc_bootstrap.sh 2>/dev/null \
+                              || command -v sccache 2>/dev/null \
+                              || command -v ccache 2>/dev/null; fi)
 ifneq ($(ZCL_CCACHE_BIN),)
-ifeq ($(filter sccache ccache,$(notdir $(firstword $(CC)))),)
+ifeq ($(filter zcc sccache ccache,$(notdir $(firstword $(CC)))),)
 CC := $(ZCL_CCACHE_BIN) $(CC)
 endif
 endif
@@ -3269,6 +3277,7 @@ LINT_FAST_GATES := \
     check-pthread-create \
     check-log-macro-return-type \
     check-wallet-raw-prepare-log \
+    check-zcc-cache \
     check-framework-shape \
     check-supervisor-registration \
     check-vendor-provenance
@@ -4070,6 +4079,45 @@ readme-svg: $(ZCLASSIC23_BIN)
 	@tools/dev/readme_svg.sh
 readme-svg-check: $(ZCLASSIC23_BIN)
 	@READMESVG_CHECK=1 tools/dev/readme_svg.sh
+
+
+# The in-tree compile cache (tools/zcc.c). Wired into $(CC) at parse time by
+# tools/dev/zcc_bootstrap.sh, so these targets are for inspecting and
+# maintaining it, never for enabling it. `ZCL_USE_CCACHE=0 make ...` opts out
+# for one invocation; the hermetic goals (ci-reproducible, repro-verify)
+# already force that and never serve a reproducibility claim from a cache.
+ZCC_BIN := $(BIN_DIR)/zcc
+ZCC_TRIM_MB ?= 4096
+CC_AUDIT_LOG := $(BUILD_DIR)/cc-cache-audit.log
+
+.PHONY: cc-cache cc-cache-stats cc-cache-clear cc-cache-trim cc-cache-audit
+cc-cache:
+	@tools/dev/zcc_bootstrap.sh >/dev/null
+cc-cache-stats: cc-cache
+	@$(ZCC_BIN) --zcc-stats
+cc-cache-clear: cc-cache
+	@$(ZCC_BIN) --zcc-clear
+cc-cache-trim: cc-cache
+	@$(ZCC_BIN) --zcc-trim $(ZCC_TRIM_MB)
+
+# Prove the cache rather than assert it: every served artifact is recompiled
+# for real and byte-compared against what the cache would have handed back.
+# Slower than a cold build by design — this is the gate to run after touching
+# tools/zcc.c, and the reason the fast path is believable rather than claimed.
+cc-cache-audit: cc-cache
+	@echo "cc-cache-audit: rebuilding with ZCC_AUDIT=1 (every hit is verified)"
+	@ZCC_AUDIT=1 $(MAKE) --no-print-directory build-only >$(CC_AUDIT_LOG) 2>&1 || \
+		{ echo "cc-cache-audit: FAIL - the audited build itself failed" >&2; \
+		  tail -40 $(CC_AUDIT_LOG) >&2; exit 1; }
+	@printf 'cc-cache-audit: %s verified, %s divergent\n' \
+		"$$(grep -c 'AUDIT MATCH' $(CC_AUDIT_LOG) || true)" \
+		"$$(grep -c 'AUDIT DIVERGENCE' $(CC_AUDIT_LOG) || true)"
+	@if grep -q 'AUDIT DIVERGENCE' $(CC_AUDIT_LOG); then \
+		grep 'AUDIT DIVERGENCE' $(CC_AUDIT_LOG) >&2; \
+		echo "cc-cache-audit: FAIL - a cached artifact did not match a fresh build" >&2; \
+		exit 1; \
+	fi
+	@echo "cc-cache-audit: PASS - every served artifact matched a fresh build"
 
 # End-to-end proof of the factory plus the census package-scope intake on
 # the tiny-lines fixture, entirely under test-tmp/.
@@ -8766,6 +8814,15 @@ check-scanner-immunity:
 	@echo "══ LINT: scanner fixture-race immunity regression proof (DX1) ══"
 	@./tools/lint/selftest_scanner_immunity.sh
 
+# The in-tree compile cache wraps EVERY compile in this repository, so a wrong
+# hit is a wrong binary underneath every other proof here. This gate builds a
+# fixture five ways and requires identical bytes on a hit, replayed warnings,
+# and a MISS after a header edit — the exact case an earlier version of
+# tools/zcc.c got wrong. See tools/lint/check_zcc_cache.sh.
+check-zcc-cache:
+	@echo "══ LINT: compile cache serves correct bytes ══"
+	@./tools/lint/check_zcc_cache.sh
+
 # ── Lint umbrella ────────────────────────────────────────────────────────
 # LINT_GATES is the single ordered source of truth for the lint umbrella
 # (E11 check-doc-accuracy cross-checks it against DEFENSIVE_CODING.md).
@@ -8832,6 +8889,7 @@ LINT_GATES := \
     check-log-macro-return-type \
     check-no-runtime-abort \
     check-wallet-raw-prepare-log \
+    check-zcc-cache \
     check-before-save-hooks \
     check-pthread-create \
     check-model-validation \

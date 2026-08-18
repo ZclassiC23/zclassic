@@ -203,6 +203,14 @@ make -j"$(nproc)" t-fast ONLY=<substring>
 `t-fast` resolves the substring against registered groups and refuses a missing
 or unknown selector. Never run `test_zcl` directly.
 
+Every compile here goes through the in-tree compile cache (`tools/zcc.c`),
+which the Makefile builds and wires in front of `$(CC)` by itself — there is
+nothing to install and nothing to enable. `make cc-cache-stats` shows whether
+you are getting hits; `ZCC_LOG=/tmp/zcc.log make …` says HIT, MISS or BYPASS
+for each compile when a rebuild is slower than it should be. See
+[`BUILD.md`](./BUILD.md#the-compile-cache-is-in-the-repository) for how a hit
+is kept honest and how to clear or audit the cache.
+
 For integration:
 
 ```bash

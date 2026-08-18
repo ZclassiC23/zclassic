@@ -84,6 +84,7 @@ gate_command() {
         check-no-stray-untracked-source)   echo './tools/lint/check_no_stray_untracked_source.sh' ;;
         check-no-stray-root-files)         echo './tools/lint/check_no_stray_root_files.sh' ;;
         check-scanner-immunity)            echo './tools/lint/selftest_scanner_immunity.sh' ;;
+        check-zcc-cache)                   echo './tools/lint/check_zcc_cache.sh' ;;
         check-git-hooks-installed)         echo './tools/scripts/check_git_hooks_installed.sh' ;;
         check-malloc)                      echo './tools/lint/check_malloc.sh' ;;
         check-hotswap-dev-only)            echo './tools/lint/check_hotswap_dev_only.sh' ;;

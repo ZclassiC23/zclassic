@@ -958,6 +958,7 @@ add/remove a gate.
 - `check-fuzz-artifact-ledger`
 - `check-live-datadir-isolation`
 - `check-standalone-tools-link`
+- `check-zcc-cache`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see
