@@ -424,8 +424,16 @@ apj_ok "dev.publication exact mapping" "$APJ_ADVANCE"
 APJ_MAPPING="$(printf '%s' "$APJ_ADVANCE" | apj_jget data.package_mapping_root)"
 
 APJ_PUBLISH_PLAN="$(apj_native "$APJ_A" zcode publish plan \
-    --input="{\"workspace\":\"$APJ_AUTHOR\",\"datadir\":\"${DDS[$APJ_A]}\",\"acceptance_datadir\":\"${DDS[$APJ_A]}\",\"source_root\":\"$APJ_SOURCE_ROOT\",\"publisher_pubkey\":\"$APJ_PUB\",\"name\":\"zdogace/zdogace\",\"semver\":\"0.1.1\",\"license\":\"MIT\",\"task_root\":\"$APJ_TASK_ROOT\",\"lane_receipt_root\":\"$APJ_ACCEPTED_ROOT\",\"package_mapping_root\":\"$APJ_MAPPING\",\"publication_job_root\":\"$APJ_JOB\"}" || true)"
+    --input="{\"workspace\":\"$APJ_AUTHOR\",\"datadir\":\"${DDS[$APJ_A]}\",\"acceptance_datadir\":\"${DDS[$APJ_A]}\",\"source_root\":\"$APJ_SOURCE_ROOT\",\"publisher_pubkey\":\"$APJ_PUB\",\"task_root\":\"$APJ_TASK_ROOT\",\"lane_receipt_root\":\"$APJ_ACCEPTED_ROOT\",\"package_mapping_root\":\"$APJ_MAPPING\",\"publication_job_root\":\"$APJ_JOB\"}" || true)"
 apj_ok "accepted source publish plan" "$APJ_PUBLISH_PLAN"
+APJ_PACKAGE_NAME="$(apj_jget name <"$APJ_AUTHOR/zcode-package.json")"
+APJ_PACKAGE_VERSION="$(apj_jget semver <"$APJ_AUTHOR/zcode-package.json")"
+APJ_PACKAGE_LICENSE="$(apj_jget license <"$APJ_AUTHOR/zcode-package.json")"
+[ "$(printf '%s' "$APJ_PUBLISH_PLAN" | apj_jget data.package_name)" = "$APJ_PACKAGE_NAME" ] &&
+    [ "$(printf '%s' "$APJ_PUBLISH_PLAN" | apj_jget data.package_version)" = "$APJ_PACKAGE_VERSION" ] &&
+    [ "$(printf '%s' "$APJ_PUBLISH_PLAN" | apj_jget data.package_license)" = "$APJ_PACKAGE_LICENSE" ] &&
+    [ "$(printf '%s' "$APJ_PUBLISH_PLAN" | apj_jget data.package_facts)" = exact_accepted_source ] ||
+    apj_die "accepted source package facts were not reused exactly"
 APJ_PACKAGE_ROOT="$(printf '%s' "$APJ_PUBLISH_PLAN" | apj_jget data.package_root)"
 APJ_RELEASE_SIGNATURE="$(apj_sign_digest "$(printf '%s' "$APJ_PUBLISH_PLAN" | apj_jget data.release_signing_digest)")"
 APJ_SEAL="$("$NODE_BIN" zcode package dev seal \

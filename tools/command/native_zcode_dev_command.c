@@ -2340,6 +2340,79 @@ struct zpub_job_binding {
     uint32_t reused_chunks;
 };
 
+struct zpub_package_facts {
+    char name[VCS_PACKAGE_RELEASE_NAME_MAX + 1u];
+    char semver[VCS_PACKAGE_RELEASE_SEMVER_MAX + 1u];
+    char license[VCS_PACKAGE_RELEASE_LICENSE_MAX + 1u];
+};
+
+enum zpub_package_facts_state {
+    ZPUB_PACKAGE_FACTS_INVALID = -1,
+    ZPUB_PACKAGE_FACTS_ABSENT = 0,
+    ZPUB_PACKAGE_FACTS_PRESENT = 1,
+};
+
+static enum zpub_package_facts_state zpub_package_facts_load(
+    const struct zpub_accepted_bundle *bundle,
+    struct zpub_package_facts *facts)
+{
+    memset(facts, 0, sizeof(*facts));
+    struct vcs_manifest tree;
+    if (!vcs_tree_load(bundle->workspace, bundle->source_root, &tree))
+        return ZPUB_PACKAGE_FACTS_INVALID;
+    const struct vcs_entry *entry = NULL;
+    for (size_t i = 0; i < tree.count; i++) {
+        if (strcmp(tree.entries[i].path, VCS_PACKAGE_DEPS_META_PATH) == 0) {
+            entry = &tree.entries[i];
+            break;
+        }
+    }
+    if (!entry) {
+        vcs_manifest_free(&tree);
+        return ZPUB_PACKAGE_FACTS_ABSENT;
+    }
+    bool bounded = S_ISREG(entry->mode) && entry->size > 0 &&
+        entry->size <= VCS_PACKAGE_DEPS_META_MAX_BYTES;
+    uint8_t *wire = NULL;
+    size_t wire_len = 0;
+    bool loaded = bounded && vcs_object_load_raw_bounded(
+        bundle->workspace, entry->blob, VCS_PACKAGE_DEPS_META_MAX_BYTES,
+        &wire, &wire_len) == 0 && wire_len == entry->size;
+    uint8_t derived[32];
+    if (loaded) {
+        struct sha3_256_ctx ctx;
+        uint8_t tag = VCS_TAG_BLOB;
+        sha3_256_init(&ctx);
+        sha3_256_write(&ctx, &tag, 1);
+        sha3_256_write(&ctx, wire, wire_len);
+        sha3_256_finalize(&ctx, derived);
+        loaded = memcmp(derived, entry->blob, sizeof(derived)) == 0;
+    }
+    vcs_manifest_free(&tree);
+    struct json_value meta;
+    bool parsed = loaded && json_read(
+        &meta, (const char *)wire, wire_len) && meta.type == JSON_OBJ;
+    const struct json_value *schema = parsed ? json_get(&meta, "schema") : NULL;
+    const char *name = parsed ? zdev_str(&meta, "name") : NULL;
+    const char *semver = parsed ? zdev_str(&meta, "semver") : NULL;
+    const char *license = parsed ? zdev_str(&meta, "license") : NULL;
+    const char *language = parsed ? zdev_str(&meta, "language") : NULL;
+    bool valid = parsed && schema && schema->type == JSON_INT &&
+        json_get_int(schema) == 1 && language && strcmp(language, "c23") == 0 &&
+        zpub_copy_field(facts->name, sizeof(facts->name), name) &&
+        zpub_copy_field(facts->semver, sizeof(facts->semver), semver) &&
+        zpub_copy_field(facts->license, sizeof(facts->license), license);
+    if (parsed) json_free(&meta);
+    free(wire);
+    return valid ? ZPUB_PACKAGE_FACTS_PRESENT : ZPUB_PACKAGE_FACTS_INVALID;
+}
+
+static bool zpub_package_fact_matches(const char *requested,
+                                      const char *accepted)
+{
+    return !requested || !requested[0] || strcmp(requested, accepted) == 0;
+}
+
 static bool zpub_job_preflight(
     const struct zcl_command_request *request, struct zcl_command_reply *reply,
     const struct zpub_accepted_bundle *bundle,
@@ -2418,6 +2491,30 @@ void zcl_native_handle_zcode_publish_plan(
     const char *name = zdev_str(request->input, "name");
     const char *semver = zdev_str(request->input, "semver");
     const char *license = zdev_str(request->input, "license");
+    struct zpub_package_facts package_facts;
+    enum zpub_package_facts_state package_facts_state =
+        zpub_package_facts_load(&bundle, &package_facts);
+    if (package_facts_state == ZPUB_PACKAGE_FACTS_INVALID) {
+        zpub_bundle_free(&bundle);
+        zpub_fail(reply, "PACKAGE_FACTS_INVALID",
+                  "the exact accepted zcode-package.json is malformed, "
+                  "unreadable, or not C23");
+        return;
+    }
+    if (package_facts_state == ZPUB_PACKAGE_FACTS_PRESENT) {
+        if (!zpub_package_fact_matches(name, package_facts.name) ||
+            !zpub_package_fact_matches(semver, package_facts.semver) ||
+            !zpub_package_fact_matches(license, package_facts.license)) {
+            zpub_bundle_free(&bundle);
+            zpub_fail(reply, "PACKAGE_FACTS_MISMATCH",
+                      "name, semver, and license may not override the exact "
+                      "accepted zcode-package.json");
+            return;
+        }
+        name = package_facts.name;
+        semver = package_facts.semver;
+        license = package_facts.license;
+    }
     const char *reward = zdev_str(request->input, "reward_address");
     const char *znam = zdev_str(request->input, "znam");
     struct vcs_package_release release;
@@ -2500,6 +2597,15 @@ void zcl_native_handle_zcode_publish_plan(
                                (int64_t)bundle.transport.source_transport_bytes +
                                (int64_t)bundle.transport.offline_input_bytes +
                                VCS_ZCODE_LANE_WIRE_BYTES);
+        (void)json_push_kv_str(&reply->data, "package_name", release.name);
+        (void)json_push_kv_str(&reply->data, "package_version",
+                               release.semver);
+        (void)json_push_kv_str(&reply->data, "package_license",
+                               release.license);
+        (void)json_push_kv_str(
+            &reply->data, "package_facts",
+            package_facts_state == ZPUB_PACKAGE_FACTS_PRESENT
+                ? "exact_accepted_source" : "explicit_input");
         if (bundle.have_mapping)
             zdev_push_root(&reply->data, "package_mapping_root",
                            bundle.mapping_root);

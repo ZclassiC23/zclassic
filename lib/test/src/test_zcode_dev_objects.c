@@ -2204,7 +2204,16 @@ static int test_zd_improve_command(void)
         char license_path[4352];
         (void)snprintf(license_path, sizeof(license_path), "%s/LICENSE",
                        workspace);
-        ASSERT(zd_write_text(license_path, "MIT\n"));
+        ASSERT(zd_write_text(license_path, "Apache License 2.0\n"));
+        static const char package_meta[] =
+            "{\"schema\":1,\"name\":\"fixture/accepted\","
+            "\"semver\":\"1.0.0\",\"language\":\"c23\","
+            "\"license\":\"Apache-2.0\",\"include_dir\":\"include\","
+            "\"source_dir\":\"src\",\"dependencies\":[]}\n";
+        char package_meta_path[4352];
+        (void)snprintf(package_meta_path, sizeof(package_meta_path),
+                       "%s/zcode-package.json", workspace);
+        ASSERT(zd_write_text(package_meta_path, package_meta));
         (void)snprintf(preprocessed, sizeof(preprocessed), "%s/unit.i",
                        workspace);
         FILE *f = fopen(preprocessed, "wb");
@@ -2239,7 +2248,10 @@ static int test_zd_improve_command(void)
         ASSERT(fclose(source_file) == 0);
         (void)snprintf(license_path, sizeof(license_path), "%s/LICENSE",
                        candidate_workspace);
-        ASSERT(zd_write_text(license_path, "MIT\n"));
+        ASSERT(zd_write_text(license_path, "Apache License 2.0\n"));
+        (void)snprintf(package_meta_path, sizeof(package_meta_path),
+                       "%s/zcode-package.json", candidate_workspace);
+        ASSERT(zd_write_text(package_meta_path, package_meta));
         (void)snprintf(candidate_input_path, sizeof(candidate_input_path),
                        "%s/unit.i", candidate_workspace);
         f = fopen(candidate_input_path, "wb");
@@ -2293,7 +2305,7 @@ static int test_zd_improve_command(void)
         struct vcs_manifest captured_manifest;
         ASSERT(vcs_tree_load(workspace, captured_source_root,
                              &captured_manifest));
-        ASSERT_EQ(captured_manifest.count, 5);
+        ASSERT_EQ(captured_manifest.count, 6);
         ASSERT_STR_EQ(captured_manifest.entries[0].path, "LICENSE");
         ASSERT_STR_EQ(captured_manifest.entries[1].path, "src/widget.c");
         ASSERT_STR_EQ(captured_manifest.entries[2].path, "test.false");
@@ -2925,7 +2937,7 @@ static int test_zd_improve_command(void)
         ASSERT(vcs_package_manifest_parse(
             transfer_manifest_wire, transfer_manifest_len,
             &transfer_manifest));
-        ASSERT_EQ(transfer_manifest.count, 8);
+        ASSERT_EQ(transfer_manifest.count, 9);
         vcs_package_manifest_free(&transfer_manifest);
         free(transfer_manifest_wire);
         struct vcs_zcode_work_context_v1 received_transfer;
@@ -3859,10 +3871,6 @@ static int test_zd_improve_command(void)
                                candidate_source_saved);
         (void)json_push_kv_str(&publish_plan_input, "publisher_pubkey",
                                publish_pubkey_hex);
-        (void)json_push_kv_str(&publish_plan_input, "name",
-                               "fixture/accepted");
-        (void)json_push_kv_str(&publish_plan_input, "semver", "1.0.0");
-        (void)json_push_kv_str(&publish_plan_input, "license", "MIT");
         (void)json_push_kv_str(&publish_plan_input, "task_root", task_hex);
         (void)json_push_kv_str(&publish_plan_input, "lane_receipt_root",
                                roots[9]);
@@ -3945,6 +3953,18 @@ static int test_zd_improve_command(void)
                           &publish_plan_reply.data, "signature_status")),
                       "unsigned");
         ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_plan_reply.data, "package_name")),
+                      "fixture/accepted");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_plan_reply.data, "package_version")),
+                      "1.0.0");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_plan_reply.data, "package_license")),
+                      "Apache-2.0");
+        ASSERT_STR_EQ(json_get_str(json_get(
+                          &publish_plan_reply.data, "package_facts")),
+                      "exact_accepted_source");
+        ASSERT_STR_EQ(json_get_str(json_get(
                           &publish_plan_reply.data, "lane")),
                       "PROVEN");
         ASSERT_EQ(json_get_int(json_get(
@@ -3962,6 +3982,19 @@ static int test_zd_improve_command(void)
                           &publish_plan_reply.data,
                           "publication_job_root")),
                       publication_job_hex);
+        (void)json_push_kv_str(&publish_plan_input, "license", "MIT");
+        struct zcl_command_reply conflicting_facts_reply;
+        zcl_command_reply_init(&conflicting_facts_reply,
+                               "zcl.zcode_publish_plan.v1");
+        zcl_native_handle_zcode_publish_plan(&publish_plan_request,
+                                             &conflicting_facts_reply);
+        ASSERT_EQ(conflicting_facts_reply.exit_code,
+                  ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(conflicting_facts_reply.error.code,
+                      "PACKAGE_FACTS_MISMATCH");
+        zcl_command_reply_free(&conflicting_facts_reply);
+        json_set_str((struct json_value *)json_get(
+                         &publish_plan_input, "license"), "");
         pre_publish_index = vcs_package_index_build(zcode_store_path);
         ASSERT(pre_publish_index != NULL);
         ASSERT_EQ(vcs_package_index_count(pre_publish_index), 0);
@@ -3993,7 +4026,7 @@ static int test_zd_improve_command(void)
                           &publish_plan_reply.data, "source_transport")),
                       "vcs_source_bundle.v2");
         ASSERT_EQ(json_get_int(json_get(
-                      &publish_plan_reply.data, "source_files")), 5);
+                      &publish_plan_reply.data, "source_files")), 6);
         ASSERT(json_get_int(json_get(
                    &publish_plan_reply.data, "source_bundle_bytes")) > 0);
         ASSERT(json_get_int(json_get(
