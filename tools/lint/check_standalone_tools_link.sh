@@ -132,13 +132,23 @@ echo "[check_standalone_tools_link] ${#TOOLS[@]} tool rule(s) in Makefile;" \
 
 # ── Build them ───────────────────────────────────────────────────────────
 # Each target is its own single-TU link; make no-ops the already-built ones.
-# A modest -j: this may itself run inside the parallel lint runner.
 violations=0
 failed=()
 build_log=$(mktemp)
 trap 'rm -f "$build_log"' EXIT
 
-if ! make -j4 --no-print-directory "${targets[@]}" >"$build_log" 2>&1; then
+# Parallelism. MEASURED, not guessed: this one gate was 191 s of a 199 s lint
+# wall on a 32-core host (the other 136 gates finished inside its shadow), and
+# it is cold on every push that touches the Makefile or a shared lib source.
+# The targets are independent single-TU links, so the work scales with -j. Half
+# the host, capped, leaves room for the lint driver's own workers running
+# alongside. Override with ZCL_TOOLS_LINK_JOBS=<n>.
+tl_nproc="$(nproc 2>/dev/null || echo 4)"
+tl_jobs="${ZCL_TOOLS_LINK_JOBS:-$(( tl_nproc / 2 ))}"
+if [ "$tl_jobs" -lt 4 ];  then tl_jobs=4;  fi
+if [ "$tl_jobs" -gt 16 ]; then tl_jobs=16; fi
+
+if ! make -j"$tl_jobs" --no-print-directory "${targets[@]}" >"$build_log" 2>&1; then
     # Re-probe serially so the report names every broken tool, not just the
     # one that happened to lose the race to fail first.
     for t in "${targets[@]}"; do

@@ -202,7 +202,7 @@ else ifneq ($(filter dev-tsan z23-dev-tsan zclassic23-dev-tsan,$(ZCL_EPOCH_SINGL
 ZCL_EPOCH_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := coverage
-else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop t-list templates site-css explorer-css,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop pre-push-ci t-list templates site-css explorer-css,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES :=
 endif
 endif
@@ -1002,7 +1002,7 @@ else ifneq ($(filter coverage coverage-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := coverage
 else ifneq ($(filter fuzz fuzz-ci fuzz-ci-leaks fuzz-replay fuzz_block fuzz_script fuzz_p2p fuzz_http fuzz_compactblock fuzz_snapshot fuzz_tx_bundle fuzz_rom_manifest fuzz_overlay fuzz_ecdsa,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := fuzz
-else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter lint lint-fast watcher-safety-gates dev-failure-execution-id ff t-changed fast-changed-compile fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop pre-push-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES :=
 endif
 endif
@@ -8791,7 +8791,15 @@ check-scanner-immunity:
 # duration into this comment — durations are per host and per commit, and the
 # ones that used to live here had gone stale. Ask the host instead:
 #   make timings   (says NOT MEASURED rather than quoting another machine)
-ZCL_LINT_JOBS ?= 8
+# Workers for the parallel lint driver. Measured on a 32-core host: the
+# umbrella burns ~4.5 min of CPU inside ~39 s of wall at 8 workers, so the
+# driver is CPU-starved, not gate-bound. Derive the default from the host and
+# keep headroom, because check-standalone-tools-link forks its own `make -j4`
+# underneath one of these workers. Override with ZCL_LINT_JOBS=<n>.
+ZCL_LINT_NPROC := $(shell nproc 2>/dev/null || echo 8)
+ZCL_LINT_JOBS ?= $(shell j=$$(( $(ZCL_LINT_NPROC) * 3 / 4 )); \
+                   if [ "$$j" -lt 8 ]; then j=8; fi; \
+                   if [ "$$j" -gt 24 ]; then j=24; fi; echo "$$j")
 LINT_GATES := \
     check-no-retired-agent-protocol \
     check-build-epoch-integrity \
