@@ -11,7 +11,9 @@
 #   - any test/ directory or test_*.c file
 #   - the safe_alloc.h header itself (which defines the wrappers)
 #   - the zcl_malloc / zcl_calloc / zcl_realloc identifiers themselves
-#   - lines annotated with `// raw-alloc-ok: <reason>` (or just `raw-alloc-ok`)
+#   - lines annotated with `// raw-alloc-ok:<reason-slug>` — no space after the
+#     colon, and the slug is one word ([A-Za-z][A-Za-z0-9_-]+). A prose reason
+#     with spaces does NOT match, so write `raw-alloc-ok:plain-libc-fixture`.
 #
 # Files listed in tools/scripts/raw_malloc_allowlist.txt are grandfathered.
 # The list is a ratchet: entries come off as each subsystem completes
@@ -60,7 +62,8 @@ if [[ -n "${violations//[[:space:]]/}" ]]; then
     echo "  Use zcl_malloc / zcl_calloc / zcl_realloc (see"
     echo "  lib/util/include/util/safe_alloc.h) — the wrappers log + emit an"
     echo "  EV_OOM event on failure. For unavoidable cases, add a"
-    echo "  // raw-alloc-ok: <reason> comment on the line."
+    echo "  // raw-alloc-ok:<reason-slug> comment on the line — no space"
+    echo "  after the colon, slug is one word, e.g. raw-alloc-ok:build-tool."
     if (( allowed_total > 0 )); then
         echo "  Allowlisted (still pending migration):"
         echo "    $allowed_total raw call sites"

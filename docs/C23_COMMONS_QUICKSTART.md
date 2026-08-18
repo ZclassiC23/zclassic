@@ -31,7 +31,7 @@ remember the table.
 | Describe the behavior you want | `z23 zcode guide` | above |
 | Reuse existing C23 first, create only what is missing | `z23 zcode work start --datadir=/tmp/z23-work` | [`work walkthrough`](work/ZCODE_DEVELOPMENT_WALKTHROUGH.md) |
 | Build and test it, contained | `z23 zcode work run --datadir=/tmp/z23-work` | [`work walkthrough`](work/ZCODE_DEVELOPMENT_WALKTHROUGH.md) |
-| See the real consequence | `z23 zcode work show` | [`work walkthrough`](work/ZCODE_DEVELOPMENT_WALKTHROUGH.md) |
+| See the real consequence | `z23 zcode work show --datadir=/tmp/z23-work` | [`work walkthrough`](work/ZCODE_DEVELOPMENT_WALKTHROUGH.md) |
 | Publish the exact source and release | `z23 zcode create --datadir=/tmp/z23-commons` | [Author](#author) |
 | Fetch inert bytes on another node | `z23 zcode package fetch --datadir=/tmp/z23-commons` | [Consumer](#consumer) |
 | Reproduce it independently | `z23 zcode package source reproduce --datadir=/tmp/z23-commons` | [Reproducer](#reproducer) |

@@ -458,6 +458,35 @@ static void zdn_forward(const struct zcl_command_request *request,
   json_free(&body);
 }
 
+
+/* Give back the bounded lookup capability this wrapper admitted.  A terminal
+ * poll leaves the node holding that result for a short retention window, so a
+ * client that walks away without cancelling burns one of the node's few
+ * discovery slots for the whole window.  The next honest lookup — the second
+ * `zcode package fetch` of the same carrier, say — is then refused for a
+ * reason that has nothing to do with the network.  The answer is already in
+ * hand here, so release the slot.  A failed release is not reportable: the
+ * capability expires on its own and the caller's answer still stands. */
+static void zdn_release_capability(const char *cancel_method,
+                                   const char *lookup, const char *owner) {
+  if (!cancel_method || !lookup || !owner)
+    return;
+  struct json_value cancel;
+  json_init(&cancel);
+  json_set_object(&cancel);
+  json_push_kv_str(&cancel, "lookup_id", lookup);
+  json_push_kv_str(&cancel, "owner_token", owner);
+  struct rpc_arg_builder args;
+  rpc_arg_builder_init(&args);
+  rpc_arg_builder_push_value(&args, &cancel);
+  char *params = rpc_arg_builder_to_json(&args);
+  json_free(&cancel);
+  if (!params)
+    return;
+  zcl_native_bridge_ensure_rpc();
+  free(node_rpc_call(cancel_method, params));
+  free(params);
+}
 static void zdn_async_wrapper(const struct zcl_command_request *request,
                               struct zcl_command_reply *reply,
                               const char *begin_method,
@@ -496,6 +525,7 @@ static void zdn_async_wrapper(const struct zcl_command_request *request,
     json_push_kv_str(&poll, "owner_token", owner_copy);
     if (!zdn_rpc_body(&poll, reply, poll_method, &body)) {
       json_free(&poll);
+      zdn_release_capability(cancel_method, lookup_copy, owner_copy);
       return;
     }
     json_free(&poll);
@@ -504,19 +534,12 @@ static void zdn_async_wrapper(const struct zcl_command_request *request,
         strcmp(state, "pending") != 0) {
       zdn_apply_body(reply, &body, poll_method);
       json_free(&body);
+      zdn_release_capability(cancel_method, lookup_copy, owner_copy);
       return;
     }
     json_free(&body);
     if (platform_time_monotonic_ms() >= deadline) {
-      struct json_value cancel;
-      json_init(&cancel);
-      json_set_object(&cancel);
-      json_push_kv_str(&cancel, "lookup_id", lookup_copy);
-      json_push_kv_str(&cancel, "owner_token", owner_copy);
-      struct json_value ignored;
-      if (zdn_rpc_body(&cancel, reply, cancel_method, &ignored))
-        json_free(&ignored);
-      json_free(&cancel);
+      zdn_release_capability(cancel_method, lookup_copy, owner_copy);
       zdn_fail(reply, "LOOKUP_TIMEOUT", "execute",
                "lookup capability expired before a terminal poll",
                poll_method);

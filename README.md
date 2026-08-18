@@ -99,7 +99,7 @@ build/bin/z23 zcode guide
 | Describe the behavior you want | `z23 zcode guide` |
 | Reuse existing C23 first, create only what is missing | `z23 zcode work start --datadir=/tmp/z23-work --input='{"workspace":".","goal":"<desired behavior>"}'` |
 | Build and test it, contained | `z23 zcode work run --datadir=/tmp/z23-work --input='{"work":"latest","adapter":"manual"}'` |
-| See the real consequence | `z23 zcode work show --input='{"work":"latest"}'` |
+| See the real consequence | `z23 zcode work show --datadir=/tmp/z23-work --input='{"work":"latest"}'` |
 | Reproduce it on another node | `z23 zcode package source reproduce --datadir=/tmp/z23-commons` |
 | Accept the exact version | `z23 zcode work accept --datadir=/tmp/z23-work --input='{"work":"latest"}'` |
 | Use it in a real application | `z23 zcode use --datadir=/tmp/z23-commons` |

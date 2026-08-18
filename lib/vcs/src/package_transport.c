@@ -352,20 +352,52 @@ enum vcs_package_transport_result vcs_package_transport_import(
     }
     uint8_t admitted_root[32], admitted_recipe[32];
     enum vcs_package_accept_result accept = VCS_PACKAGE_ACCEPT_INVALID;
-    if (vcs_package_store_put_manifest(
-            store, expected.package_manifest_wire,
-            expected.package_manifest_wire_len, admitted_root) !=
-            VCS_PACKAGE_STORE_OK ||
-        memcmp(admitted_root, expected.package_root, 32) != 0 ||
-        vcs_package_store_put_recipe(
-            store, expected.recipe_wire, expected.recipe_wire_len,
-            admitted_recipe) != VCS_PACKAGE_STORE_OK ||
-        memcmp(admitted_recipe, expected.recipe_root, 32) != 0 ||
-        vcs_package_store_put_release(store, &expected.release, &accept) !=
-            VCS_PACKAGE_STORE_OK) {
+    /* Five separate admissions, each with its own name. They used to share
+     * one `||` chain and one message — "inner package admission" — so a
+     * carrier refused because its publisher key does not own the namespace
+     * logged exactly the same three words as one whose recipe bytes hash to
+     * a recipe the release never named. The operator's next step differs for
+     * every one of them, and the caller only ever sees the class ("store"),
+     * so this log line is the whole diagnosis. The returned result is
+     * deliberately unchanged: this names the failure, it does not reclassify
+     * it. */
+    enum vcs_package_store_result put = vcs_package_store_put_manifest(
+        store, expected.package_manifest_wire,
+        expected.package_manifest_wire_len, admitted_root);
+    if (put != VCS_PACKAGE_STORE_OK) {
         vcs_package_transport_free(&expected);
-        LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_STORE,
-                   "vcs.package.transport", "inner package admission");
+        LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_STORE, "vcs.package.transport",
+                   "carrier package manifest refused: %s",
+                   vcs_package_store_result_string(put));
+    }
+    if (memcmp(admitted_root, expected.package_root, 32) != 0) {
+        vcs_package_transport_free(&expected);
+        LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_STORE, "vcs.package.transport",
+                   "carrier package manifest hashes to a different package "
+                   "root than the release names");
+    }
+    put = vcs_package_store_put_recipe(store, expected.recipe_wire,
+                                       expected.recipe_wire_len,
+                                       admitted_recipe);
+    if (put != VCS_PACKAGE_STORE_OK) {
+        vcs_package_transport_free(&expected);
+        LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_STORE, "vcs.package.transport",
+                   "carrier recipe refused: %s",
+                   vcs_package_store_result_string(put));
+    }
+    if (memcmp(admitted_recipe, expected.recipe_root, 32) != 0) {
+        vcs_package_transport_free(&expected);
+        LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_STORE, "vcs.package.transport",
+                   "carrier recipe hashes to a different recipe root than "
+                   "the release names");
+    }
+    put = vcs_package_store_put_release(store, &expected.release, &accept);
+    if (put != VCS_PACKAGE_STORE_OK) {
+        vcs_package_transport_free(&expected);
+        LOG_RETURN(VCS_PACKAGE_TRANSPORT_ERR_STORE, "vcs.package.transport",
+                   "carrier signed release refused: %s (acceptance: %s)",
+                   vcs_package_store_result_string(put),
+                   vcs_package_accept_result_string(accept));
     }
     struct vcs_package_store_status status;
     if (!vcs_package_store_package_status(

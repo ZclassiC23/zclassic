@@ -13,6 +13,8 @@
 #include "services/build_fabric_service.h"
 #include "services/zcode_lane_service.h"
 #include "util/file_tree_ops.h"
+#include "chain/chainparams.h"
+#include "vcs/package_accept.h"
 #include "vcs/package_capsule.h"
 #include "vcs/package_prepare.h"
 #include "vcs/package_mapping.h"
@@ -543,6 +545,63 @@ static int zpd_test_control_stores(const uint8_t pubkey[33])
         ASSERT(memcmp(before.package_root, after.package_root, 32) == 0);
         vcs_package_prepared_free(&after);
         vcs_package_prepared_free(&before);
+        zpd_fixture_cleanup(root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* A release prepared without an explicit chain_id must name the chain this
+ * node is on. The default was the literal "zclassic-main", so on a testnet or
+ * regtest node `zcode package dev prepare` produced a release that
+ * vcs_package_accept — the very next thing to touch it — could only refuse as
+ * wrong-chain-id, on the publishing node as much as on any peer that fetched
+ * the carrier. It cost the two-node commons journey a whole fetch-and-import
+ * round to find, and it was invisible to every existing test because they all
+ * pass chain_id explicitly. This one does not, and it asserts under regtest,
+ * where the literal and the truth differ. It goes through the leaf on
+ * purpose: vcs_package_prepare is deliberately free of chainparams (several
+ * standalone tools link it without them), so the leaf owns the default. */
+static int zpd_test_default_chain_id(const uint8_t pubkey[33])
+{
+    int failures = 0;
+    TEST("zcode package dev prepare: an unstated chain_id is the active chain") {
+        char root[256], pubkey_hex[67];
+        (void)snprintf(root, sizeof(root),
+                       "test-tmp/zcode-package-chain-%ld", (long)getpid());
+        ASSERT(zpd_fixture(root, false));
+        zcl_hex_encode(pubkey, 33, pubkey_hex);
+        chain_params_select(CHAIN_REGTEST);
+        char want[VCS_PACKAGE_RELEASE_CHAIN_ID_MAX + 1u];
+        ASSERT(vcs_package_accept_chain_id(want, sizeof(want)));
+        ASSERT(strcmp(want, "zclassic-main") != 0);
+
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "dir", root));
+        ASSERT(json_push_kv_str(&input, "publisher_pubkey", pubkey_hex));
+        ASSERT(json_push_kv_int(&input, "publisher_sequence", 1));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_package_dev_test.v1");
+        zcl_native_handle_zcode_package_dev_prepare(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        const struct json_value *got = json_get(&reply.data, "chain_id");
+        ASSERT(got && strcmp(json_get_str(got), want) == 0);
+        zcl_command_reply_free(&reply);
+
+        /* An explicit chain_id still wins: preparing a release for another
+         * chain stays possible on purpose. */
+        ASSERT(json_push_kv_str(&input, "chain_id", "zclassic-main"));
+        zcl_command_reply_init(&reply, "zcl.zcode_package_dev_test.v1");
+        zcl_native_handle_zcode_package_dev_prepare(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        got = json_get(&reply.data, "chain_id");
+        ASSERT(got && strcmp(json_get_str(got), "zclassic-main") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        chain_params_select(CHAIN_MAIN);
         zpd_fixture_cleanup(root);
         PASS();
     } _test_next:;
@@ -2092,6 +2151,7 @@ int test_zcode_package_dev(void)
     }
     int failures = zpd_test_base(ctx, secret, pubkey) +
                    zpd_test_control_stores(pubkey) +
+                   zpd_test_default_chain_id(pubkey) +
                    zpd_test_exact_file_selection(pubkey) +
                    zpd_test_fail_closed(pubkey) +
                    zpd_test_project_inspect() +

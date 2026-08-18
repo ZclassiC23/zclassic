@@ -68,6 +68,20 @@
 # to one leaf, so those leaves are excluded from the failing direction and
 # the excluded count is PRINTED — a known blind spot, stated, not hidden.
 #
+# One thing about them IS attributable, and is gated:
+#
+#   same handler + same input schema, different input_keys -> FAIL.
+#
+# Two leaves that bind one handler AND declare one input schema are a single
+# contract under two names; routing on the invoked path cannot justify
+# different inputs, because the schema states the inputs are the same. The
+# leaf missing a key answers INVALID_INPUT for an input its twin accepts.
+# LIVE: zcode.work.show and zcode.work.status both bind
+# zcl_native_handle_zcode_work_status under zcl.zcode_work_status.input.v1,
+# the handler reads `datadir`, and only `status` declared it — so
+# `zcode work show --input='{"datadir":...}'` was uninvokable while the
+# identical `zcode work status` worked. The exclusion above is what hid it.
+#
 # Grandfathered violations live in the baseline (shrink-only, the same
 # ratchet as check_route_command_parity): a NEW read-but-not-declared key
 # FAILS, and a baseline line whose violation is gone must be deleted in the
@@ -133,8 +147,9 @@ function emit(handler_idx,   h) {
     h = trim(args[handler_idx])
     if (h == "" || h == "NULL" || h == "0") return
     nbound++
-    printf "LEAF\t%s\t%s\t%d\t%s\t%s\t%s\t%s\n", literal(args[1]), startfile, \
-           startline, mtype, literal(args[10]), literal(args[11]), h
+    printf "LEAF\t%s\t%s\t%d\t%s\t%s\t%s\t%s\t%s\t%s\n", literal(args[1]), \
+           startfile, startline, mtype, literal(args[10]), literal(args[11]), \
+           h, literal(args[8]), literal(args[9])
 }
 function finish_leaf(ok) {
     nleaf++
@@ -426,6 +441,28 @@ function setadd(cur, add,   i, a, m, out) {
     return out
 }
 function has(set, k) { return index(set, " " k " ") > 0 }
+# Canonical form of the declared key set on one leaf: unique, sorted, joined.
+# Two leaves that declare the same keys in a different ORDER are the same
+# contract, and a gate that called that a divergence would be noise.
+function sortedkeys(csv,   i, j, n2, a, k, dup, cnt, arr, tmp, out) {
+    cnt = 0
+    n2 = split(csv, a, ",")
+    for (i = 1; i <= n2; i++) {
+        k = a[i]
+        if (k == "") continue
+        dup = 0
+        for (j = 1; j <= cnt; j++) if (arr[j] == k) dup = 1
+        if (!dup) arr[++cnt] = k
+    }
+    for (i = 2; i <= cnt; i++) {
+        tmp = arr[i]; j = i - 1
+        while (j >= 1 && arr[j] > tmp) { arr[j + 1] = arr[j]; j-- }
+        arr[j + 1] = tmp
+    }
+    out = ""
+    for (i = 1; i <= cnt; i++) out = out (i > 1 ? "," : "") arr[i]
+    return out
+}
 BEGIN {
     while ((getline bl < baseline) > 0) {
         sub(/#.*$/, "", bl); gsub(/^[ \t]+|[ \t]+$/, "", bl)
@@ -448,6 +485,7 @@ $1 == "LEAF" {
     nleaf++
     LPATH[nleaf] = $2; LFILE[nleaf] = $3; LLINE[nleaf] = $4
     LIN[nleaf] = $6; LPOS[nleaf] = $7; LH[nleaf] = $8
+    LSCHEMA[nleaf] = $9; LOUT[nleaf] = $10
     BOUNDBY[$8]++
     next
 }
@@ -476,7 +514,40 @@ END {
         for (i = 1; i <= nd; i++) if (d[i] != "") DECL[d[i]] = 1
         if (BOUNDBY[h] > 1) {
             shared++
-            continue   # shared dispatcher: reads are not attributable per leaf
+            # Reads are not attributable per leaf here — but one thing still
+            # is. Two leaves that bind the SAME handler and declare the SAME
+            # input AND output schema are one contract wearing two names: the
+            # handler cannot be routing on the path to justify different
+            # inputs, because both schemas say the two calls are the same
+            # call. Any divergence is a leaf that silently rejects a key its
+            # twin accepts.
+            #
+            # The OUTPUT schema is part of the key on purpose. core.chain.-
+            # transaction.get and core.wallet.transaction.get share an input
+            # schema name and the bridge, but answer zcl.transaction.v1 and
+            # zcl.wallet_tx.v1 — two different questions that happen to reuse
+            # one input schema name, and the wallet one has no raw paging to
+            # declare. Grouping on the input schema alone called that a
+            # divergence; it is not one.
+            #
+            # LIVE BUG THIS CAUGHT: zcode.work.show and zcode.work.status both
+            # bind zcl_native_handle_zcode_work_status and both declare
+            # zcl.zcode_work_status.input.v1, but only `status` declared
+            # `datadir`. The handler reads it; `show` answered
+            # INVALID_INPUT: unknown input key 'datadir'. The shared-dispatcher
+            # exclusion above is exactly what hid it.
+            if (LSCHEMA[n] != "" && LOUT[n] != "") {
+                grp = h SUBSEP LSCHEMA[n] SUBSEP LOUT[n]
+                canon = sortedkeys(LIN[n] "," LPOS[n])
+                if (!(grp in GRPKEYS)) {
+                    GRPKEYS[grp] = canon; GRPLEAF[grp] = LPATH[n]
+                } else if (GRPKEYS[grp] != canon) {
+                    printf "DIVERGENT\t%s\t%s\t%s\t%s\t%s\t%s\n", LPATH[n], \
+                           canon, GRPLEAF[grp], GRPKEYS[grp], h, LSCHEMA[n]
+                    ndiv++
+                }
+            }
+            continue
         }
         m = split(K[h], a, " ")
         for (i = 1; i <= m; i++) {
@@ -497,8 +568,8 @@ END {
         printf "STALE\t%s\t%s\n", bp[1], bp[2]
         nstale++
     }
-    printf "SUMMARY\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", resolved, unresolved, \
-           nmiss, nunread, grand, nstale, BASEN, shared
+    printf "SUMMARY\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\t%d\n", resolved, unresolved, \
+           nmiss, nunread, grand, nstale, BASEN, shared, ndiv
     if (unresolved > 0) printf "UNRESOLVED\t%s\n", UNRES
 }
 ')
@@ -527,7 +598,7 @@ if [ -z "$SUMMARY" ]; then
     exit 2
 fi
 IFS=$'\t' read -r _ RESOLVED UNRESOLVED NMISS NUNREAD NGRAND NSTALE NBASE NSHARED \
-    <<< "$SUMMARY"
+    NDIV <<< "$SUMMARY"
 
 gate_require_scanned "$RESOLVED" "$RESOLVED_FLOOR" check_command_input_keys \
     "only $RESOLVED of $BOUND_COUNT handler symbols resolved to C source — the handler-definition scan is hollow; re-point it before trusting a verdict."
@@ -549,6 +620,21 @@ if [ "$NMISS" -gt 0 ]; then
     echo "  regenerate the catalog doc (make docs-api-reference). If the read"
     echo "  is genuinely unreachable, add '<leaf> <key>' to $BASELINE with the"
     echo "  reason on the same line."
+fi
+if [ "${NDIV:-0}" -gt 0 ]; then
+    fail=1
+    echo ""
+    echo "check_command_input_keys: $NDIV leaf pair(s) share a handler AND an" \
+         "input schema but declare DIFFERENT input keys:"
+    printf '%s\n' "$REPORT" | grep '^DIVERGENT' \
+        | awk -F'\t' '{printf "  %s declares [%s]\n  %s declares [%s]\n    (handler %s, input schema %s)\n", $2, $3, $4, $5, $6, $7}'
+    echo ""
+    echo "  One contract under two names: the input schema says the inputs are"
+    echo "  identical, so the handler cannot be routing on the path to justify"
+    echo "  the difference. Whichever leaf is missing a key answers"
+    echo "  INVALID_INPUT for an input its twin accepts. Make the input_keys"
+    echo "  CSVs agree in $DEF_DIR/*.def and regenerate the catalog doc"
+    echo "  (make docs-api-reference)."
 fi
 if [ "$NSTALE" -gt 0 ]; then
     fail=1
@@ -575,4 +661,5 @@ if [ "$fail" = "1" ] && [ "$MODE" = "FAIL" ]; then exit 1; fi
 echo "[check_command_input_keys] PASS ($RESOLVED leaf handler(s) resolved over" \
      "$FN_COUNT function(s); every key they read is declared; $NSHARED leaf(s)" \
      "on a shared dispatcher not attributable; $NUNREAD declared-but-unread" \
-     "(ZCL_COMMAND_INPUT_KEYS_VERBOSE=1 to list); $NGRAND grandfathered)"
+     "(ZCL_COMMAND_INPUT_KEYS_VERBOSE=1 to list); $NGRAND grandfathered;" \
+     "shared-handler input contracts agree)"

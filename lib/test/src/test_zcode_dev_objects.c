@@ -4962,7 +4962,13 @@ static int test_zd_improve_command(void)
         ASSERT_EQ(zd_collect_genesis_calls, 1u);
         ASSERT_EQ(zd_collect_begin_calls, 1u);
         ASSERT_EQ(zd_collect_poll_calls, 1u);
-        ASSERT_EQ(zd_collect_cancel_calls, 0u);
+        /* One terminal poll, one release. The bounded lookup capability
+         * goes back to the node as soon as the answer is in hand; holding
+         * it through the retention window would refuse the next honest
+         * discovery for a reason that has nothing to do with the network.
+         * This used to assert 0 — the old wrapper cancelled only when the
+         * poll had NOT passed. */
+        ASSERT_EQ(zd_collect_cancel_calls, 1u);
         ASSERT(zd_collect_selector_exact);
         zcl_command_reply_free(&collect_reply);
         ASSERT(vcs_devloop_publication_progress_load(

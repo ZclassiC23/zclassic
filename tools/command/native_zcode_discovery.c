@@ -376,8 +376,11 @@ bool zcl_native_zcode_records_discover_until(
         json_copy(result, &body);
       json_free(&body);
       json_free(&poll);
-      if (!passed)
-        records_cancel_until(lookup, owner, deadline_mono_ms);
+      /* Terminal either way: give the bounded lookup slot back. The node
+       * retains a terminal result for a short window, so not cancelling
+       * would make the next honest discovery fail for a reason that has
+       * nothing to do with the network. */
+      records_cancel_until(lookup, owner, deadline_mono_ms);
       if (!passed && platform_time_monotonic_ms() >= cancel_at)
         *deadline_reached_out = true;
       return passed;

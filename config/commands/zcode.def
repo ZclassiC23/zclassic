@@ -510,7 +510,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,show,human,evidence,result,latest",
     "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
-    "workspace,work,details", "",
+    "workspace,work,datadir,details", "",
     "z23-dev zcode work show --input='{\"work\":\"latest\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,

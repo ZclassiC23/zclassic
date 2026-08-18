@@ -184,13 +184,55 @@ void zcl_native_handle_zcode_package_fetch(
                 &selector, &routed, &records);
         json_free(&selector);
         if (!routed_ok) {
+            /* Name the boundary that actually refused. Three unrelated facts
+             * used to wear one coat here: nobody published a provider record,
+             * the records name peers this node is not authenticated to right
+             * now, or the routed carrier arrived and something further along
+             * — the swarm fetch, the signed-release import — said no. Only
+             * the first two are discovery, and each has a different next step
+             * (wait, connect, change a policy rule, or stop retrying because
+             * the carrier itself is wrong). A failed reply carries no data
+             * object, so what the reader needs belongs in the message. */
+            const char *route_code = json_get_str(json_get(&routed, "code"));
+            const char *route_error = json_get_str(json_get(&routed, "error"));
+            const char *fetch_result = json_get_str(
+                json_get(&routed, "fetch_result"));
+            char detail[192];
+            if (route_code && route_code[0]) {
+                /* The node routed the root and then refused under its own
+                 * name. Pass that name through rather than blaming discovery
+                 * for a failure that happened after it succeeded. */
+                bool transient = strcmp(route_code, "FETCH_REFUSED") == 0;
+                (void)snprintf(detail, sizeof(detail),
+                               "%s: %s (fetch=%s, %lu provider record(s))",
+                               route_code,
+                               route_error ? route_error : "no reason given",
+                               fetch_result ? fetch_result : "none",
+                               (unsigned long)records);
+                json_free(&routed);
+                zcl_command_reply_fail(
+                    reply, ZCL_COMMAND_STATUS_BLOCKED,
+                    transient ? ZCL_COMMAND_EXIT_TRANSIENT
+                              : ZCL_COMMAND_EXIT_BLOCKED,
+                    route_code, "fetch", transient, false, detail,
+                    "zcode.package.fetch");
+                return;
+            }
+            (void)snprintf(
+                detail, sizeof(detail),
+                "no authenticated DHT provider routed the root: "
+                "records=%lu authenticated=%lld denied=%lld pending=%lld",
+                (unsigned long)records,
+                (long long)json_get_int(
+                    json_get(&routed, "authenticated_providers")),
+                (long long)json_get_int(json_get(&routed, "policy_denied")),
+                (long long)json_get_int(
+                    json_get(&routed, "reachability_pending")));
             json_free(&routed);
             zcl_command_reply_fail(
                 reply, ZCL_COMMAND_STATUS_BLOCKED,
                 ZCL_COMMAND_EXIT_TRANSIENT, "PROVIDER_DISCOVERY_FAILED",
-                "discover", true, false,
-                "no authenticated DHT provider could route the exact package root",
-                "zcode.package.fetch");
+                "discover", true, false, detail, "zcode.package.fetch");
             return;
         }
         json_copy(&reply->data, &routed);

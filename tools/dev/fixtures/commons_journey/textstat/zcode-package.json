@@ -1,0 +1,17 @@
+{
+  "schema": 1,
+  "name": "z23/textstat",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "Apache-2.0",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "include/textstat/textstat.h",
+    "src/textstat.c",
+    "tests/test_textstat.c",
+    "zcode-package.json"
+  ]
+}

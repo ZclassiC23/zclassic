@@ -6,6 +6,7 @@
 #include "base/hex.h"
 #include "json/json.h"
 #include "util/safe_alloc.h"
+#include "vcs/package_accept.h"
 #include "vcs/package_prepare.h"
 #include "vcs/package_release.h"
 
@@ -78,10 +79,24 @@ void zcl_native_handle_zcode_package_dev_prepare(
     const char *dir = zpd_str(request->input, "dir");
     const char *pubkey = zpd_str(request->input, "publisher_pubkey");
     int64_t sequence = 0;
+    /* An unstated chain is THIS node's chain, not a literal. vcs_package_-
+     * prepare defaults to "zclassic-main" because it is deliberately free of
+     * chainparams — several standalone tools link it without them — so the
+     * default belongs here, in the leaf that does know which chain it is on.
+     * vcs_package_accept, the very next thing to touch this release, compares
+     * chain_id against exactly this value, so without it every prepare on a
+     * testnet or regtest node produced a release that could only ever be
+     * refused as wrong-chain-id, on the publishing node as much as on any
+     * peer that fetched the carrier. An explicit chain_id still wins. */
+    const char *chain_id = zpd_str(request->input, "chain_id");
+    char active_chain[VCS_PACKAGE_RELEASE_CHAIN_ID_MAX + 1u];
+    if ((!chain_id || !chain_id[0]) &&
+        vcs_package_accept_chain_id(active_chain, sizeof(active_chain)))
+        chain_id = active_chain;
     struct vcs_package_prepare_options options = {
         .dir = dir,
         .reward_address = zpd_str(request->input, "reward_address"),
-        .chain_id = zpd_str(request->input, "chain_id"),
+        .chain_id = chain_id,
     };
     if (!dir || !pubkey ||
         !zcl_hex_decode_lower(pubkey, options.publisher_pubkey,
@@ -126,6 +141,9 @@ void zcl_native_handle_zcode_package_dev_prepare(
         json_push_kv_str(&reply->data, "name", prepared.release.name) &&
         json_push_kv_str(&reply->data, "semver", prepared.release.semver) &&
         json_push_kv_str(&reply->data, "license", prepared.release.license) &&
+        /* The chain this release binds to. It decides whether any peer will
+         * ever accept the carrier, and it used to be invisible here. */
+        json_push_kv_str(&reply->data, "chain_id", prepared.release.chain_id) &&
         json_push_kv_int(&reply->data, "publisher_sequence", sequence) &&
         json_push_kv_int(&reply->data, "file_count",
                          (int64_t)prepared.manifest.count) &&

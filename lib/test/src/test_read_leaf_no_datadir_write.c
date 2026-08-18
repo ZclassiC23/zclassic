@@ -191,6 +191,13 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       "workspace", ".",         "source_root", RLW_ZID_PUBKEY, NULL },
     { "zcode.work.status", zcl_native_handle_zcode_work_status,
       "workspace", RLW_DATADIR_VALUE, "work", RLW_ZID_PUBKEY, NULL },
+    /* The same handler under its discoverable name. It is listed
+     * separately on purpose: the coverage check keys on the leaf path, and
+     * an alias that quietly took `datadir` without being exercised is
+     * exactly how a read leaf acquires a live datadir nobody has proved it
+     * leaves alone. */
+    { "zcode.work.show", zcl_native_handle_zcode_work_status,
+      "workspace", RLW_DATADIR_VALUE, "work", RLW_ZID_PUBKEY, NULL },
     /* The seventh. Declared READ, `datadir` defaults to the operator's LIVE
      * one, and it opened node.db with node_db_open() — so pointed at a
      * damaged database it renamed the user's wallet to
