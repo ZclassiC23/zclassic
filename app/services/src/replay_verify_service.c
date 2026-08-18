@@ -7,10 +7,11 @@
  * active-chain order via block_log_port.iter_from, re-deriving four cheap
  * consensus invariants per block:
  *
- *   1. Equihash (200,9) solution  ─┐
- *   2. difficulty target (nBits)   ├─ delegated to check_block(check_pow=1)
- *   4. merkle root vs transactions ┘   and check_merkle_root=1
- *   3. prev-block linkage          ── computed here over the iteration order
+ *   1. Equihash solution (height-selected N,K) ─┐
+ *   2. difficulty target (nBits)                ├─ delegated to check_block
+ *   4. merkle root vs transactions             ┘  (check_pow=1,
+ *                                                  check_merkle_root=1)
+ *   3. prev-block linkage  ── computed here over the iteration order
  *
  * The crypto is reused, never reimplemented (DEFENSIVE_CODING: do not
  * reinvent consensus primitives). The sweep is read-only and emits a single

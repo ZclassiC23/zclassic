@@ -128,7 +128,7 @@ Every command below runs against your machine. You are not asking a service.
 | **Register an on-chain name** — ZNAM, 1–63 characters, carrying ZCL/BTC/LTC/DOGE addresses plus free-form text records | `build/bin/zclassic-cli name_register "yourname"` |
 | **Browse your own chain** — block explorer at `/explorer`, JSON API from `/api/v1` (the RPC port answers a plain `GET` with `405`, by design) | `build/bin/z23 status` |
 | **Send shielded messages** — on-chain messages ride inside the 512-byte encrypted Sapling memo | `build/bin/zclassic-cli msg_send <addr> "text"` |
-| **Mine** — Equihash 200,9 in the same binary, validating what it mines against the same rules as everyone else | `build/bin/z23 -gen` |
+| **Mine** — Equihash in the same binary (mainnet is 192,7 today; the parameters are height-selected), validating what it mines against the same rules as everyone else | `build/bin/z23 -gen` |
 | **Measure peers and play P2P games** — peer latency in microseconds, with a working TicTacToe as the reference implementation | `build/bin/z23 core network peers latency` |
 | **Publish and reproduce exact C23 packages** — the commons, plus optional application layers such as signed spaces | `build/bin/z23 zcode guide` |
 | **Let an AI agent operate the node** — typed commands with schemas, byte budgets and risk classes | `build/bin/z23 discover help` |

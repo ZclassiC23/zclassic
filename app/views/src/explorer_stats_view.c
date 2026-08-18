@@ -570,8 +570,8 @@ size_t explorer_stats_build(uint8_t *r, size_t buf_max, const char *datadir)
     gather_economy_data(db, tip, tip_time, &ctx);
 
     /* ── Derived values ── */
-    /* Equihash 200,9 measures SOLUTIONS, not hashes. Estimate uses the
-     * ACTIVE target spacing (75s post-Buttercup, 150s before) — the old
+    /* Equihash measures SOLUTIONS, not hashes, at every (N,K). The estimate uses
+     * the ACTIVE target spacing (75s post-Buttercup, 150s before) — the old
      * hard-coded /150 under-reported the live rate ~2x. */
     double solrate = explorer_solrate_from_diff(diff, tip);
     char hr_str[64];

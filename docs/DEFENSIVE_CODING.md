@@ -959,6 +959,7 @@ add/remove a gate.
 - `check-live-datadir-isolation`
 - `check-standalone-tools-link`
 - `check-zcc-cache`
+- `check-equihash-params`
 <!-- LINT-GATES-END -->
 
 (`check-consensus-parity` [E13, the parity mechanism — see

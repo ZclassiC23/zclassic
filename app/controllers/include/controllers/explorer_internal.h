@@ -651,8 +651,10 @@ static inline int64_t zcl_total_supply_zatoshi(int64_t height)
 
 /* ── Equihash solve-rate (NOT "hashrate") ──────────────────────────
  *
- * ZClassic is Equihash 200,9: miners produce *solutions*, not raw hashes,
- * so the network rate is measured in Sol/s. The estimate is
+ * ZClassic is Equihash: miners produce *solutions*, not raw hashes, so the
+ * network rate is measured in Sol/s. The (N,K) parameters are height-selected
+ * (docs/EQUIHASH_PARAMS.md) and do not enter this estimate — only difficulty
+ * and the target spacing do. The estimate is
  *   diff * 2^13 / target_block_spacing
  * where the target spacing switched 150s -> 75s at Buttercup
  * (BUTTERCUP_ACTIVATION_HEIGHT). Using the active spacing matters: the

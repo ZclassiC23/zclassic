@@ -66,7 +66,11 @@ sync, cleared when `bg_validation` completes full chain verification).
 
 ## Equihash Parameters
 
-ZClassic uses Equihash(200,9) with solution size 1344 bytes.
+ZClassic selects Equihash (N,K) BY HEIGHT. Mainnet is 192,7 from the Bubbles
+activation height (400-byte solution) and 200,9 below it (1344-byte solution);
+regtest is 48,5. The generated table is
+[`docs/EQUIHASH_PARAMS.md`](../EQUIHASH_PARAMS.md), printed by linking the same
+consensus tables the node validates with.
 - Personalization: `"ZcashPoW"` + LE32(N) + LE32(K)
 - Input: serialized header (version through nNonce, excluding solution)
 

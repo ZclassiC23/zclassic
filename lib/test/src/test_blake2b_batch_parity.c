@@ -4,7 +4,8 @@
  * ACCEL-ORACLE: lib/crypto/src/blake2b_avx2.c
  *
  * Differential parity oracle for the batched BLAKE2b compression that
- * Equihash (200,9) proof-of-work verification runs on
+ * Equihash proof-of-work verification runs on at every epoch — the oracle
+ * exercises the pre-Bubbles (200,9) shape, which is the wider batch
  * (lib/crypto/src/blake2b_avx2.c: AVX-512 8-way, AVX2 4-way, scalar).
  *
  * Why this is consensus crypto: core/consensus/src/equihash.c re-derives the

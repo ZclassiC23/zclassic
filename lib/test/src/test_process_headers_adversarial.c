@@ -504,7 +504,7 @@ int test_process_headers_adversarial(void)
         struct block_header big;
         block_header_init(&big);
         big.nBits = 0x1f07ffff;
-        big.nSolutionSize = MAX_SOLUTION_SIZE;   /* mainnet Equihash 200,9 */
+        big.nSolutionSize = MAX_SOLUTION_SIZE;   /* pre-Bubbles 200,9 size */
         memset(big.nSolution, 0xab, MAX_SOLUTION_SIZE);
 
         struct byte_stream body;

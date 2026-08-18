@@ -9,7 +9,8 @@
  * adapter (block_log_port.iter_from) and, for each block from
  * start_height up to (start_height + max_blocks - 1, or tip), verifies:
  *
- *   1. Equihash (200,9) solution against the block's persisted nSolution.
+ *   1. The Equihash solution against the block's persisted nSolution, at
+ *      the (N,K) consensus selects for that block's height.
  *   2. The block-header hash meets the difficulty target encoded in nBits.
  *   3. prev-block linkage is contiguous (each block's hashPrevBlock equals
  *      the hash of the previously iterated block).

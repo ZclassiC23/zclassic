@@ -86,7 +86,7 @@ Sealed code calls unsealed code on every block:
 |---|---|---|
 | `core/math/src/hash.c` | `lib/crypto/src/sha256.c` | block hash, txid, merkle root |
 | `core/consensus/src/script_interp.c` | `lib/crypto/src/sha256.c` | `OP_SHA256` / `OP_HASH256` |
-| `core/consensus/src/equihash.c` | `lib/crypto/src/blake2b_avx2.c` | Equihash (200,9) PoW |
+| `core/consensus/src/equihash.c` | `lib/crypto/src/blake2b_avx2.c` | Equihash PoW (height-selected N,K) |
 | `core/` → `coins/coins.h` → `sapling/incremental_merkle_tree.h` | `lib/sapling/src/fr_avx512.c` | Sapling commitment-tree anchor, Groth16 verdicts |
 | same closure, via `sapling/bn254.h` | `lib/sapling/src/bn254_accel.c` | Sprout Groth16 JoinSplit verdicts |
 

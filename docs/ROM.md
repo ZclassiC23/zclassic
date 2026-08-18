@@ -26,7 +26,7 @@ far less than that:
 
 | Field | Committed by | Notes |
 |---|---|---|
-| Header chain (PoW) | Equihash 200,9 solution in the header itself | The one thing a header alone proves: this chain cost real work. |
+| Header chain (PoW) | The Equihash solution in the header itself; parameters are height-selected (see [`EQUIHASH_PARAMS.md`](EQUIHASH_PARAMS.md)) | The one thing a header alone proves: this chain cost real work. |
 | Transaction bytes | `hashMerkleRoot` in the header | Committed, but only reachable by downloading and verifying the block body. |
 | Sapling note-commitment frontier | `hashFinalSaplingRoot` in the header | Committed, but only as a root — the shielded notes/nullifiers behind it are not. |
 | Nullifiers (Sprout + Sapling) | **Not committed** — ROM/checkpoint-only | A borrowed nullifier set cannot be authenticated from the header chain; only the compiled L0 checkpoint or a locally-folded L2 state can. |

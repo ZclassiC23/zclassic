@@ -19,7 +19,8 @@
  * main.cpp CheckBlockHeader). Looks only at the header's own bytes,
  * never at the surrounding chain:
  *   1. nVersion >= MIN_BLOCK_VERSION                     (version-too-low)
- *   2. Equihash(200,9) solution verifies                (invalid-solution)
+ *   2. Equihash solution verifies, at the height-selected (N,K)
+ *                                                        (invalid-solution)
  *   3. PoW: header hash satisfies nBits                  (high-hash)
  *   4. nTime <= GetAdjustedTime() + 2h                   (time-too-new)
  *

@@ -509,12 +509,15 @@ static void bench_sha3_512_x4(unsigned char *msg)
 /* ═══════════════════════════════════════════════════════════════════
  * Primitive 5 — Equihash BLAKE2b batch (scalar vs AVX2 4-way vs AVX-512 8-way)
  *
- * THE consensus PoW inner loop: Equihash (200,9) needs 512 independent BLAKE2b
- * finalizations per block header. Until now this had NO tier selector, so no
- * test in the tree could force scalar-vs-AVX2-vs-AVX-512 on one input, and the
- * 8-way path at the SHIPPED (200,9) parameters was verified only by the live
- * chain. The selector added alongside this harness is what makes the row below
- * possible.
+ * THE consensus PoW inner loop. This row pins the pre-Bubbles (200,9)
+ * parameters, where one block header costs 512 independent BLAKE2b
+ * finalizations; the parameters consensus uses are height-selected
+ * (docs/EQUIHASH_PARAMS.md), and this benchmark deliberately measures the
+ * larger, older shape rather than tracking the active epoch. Until now this
+ * had NO tier selector, so no test in the tree could force
+ * scalar-vs-AVX2-vs-AVX-512 on one input, and the 8-way path at these
+ * parameters was verified only by the live chain. The selector added
+ * alongside this harness is what makes the row below possible.
  *
  * Base state is built exactly as equihash.c does it: BLAKE2b personalized with
  * "ZcashPoW" || N || K, digest length 2n/8 per output.
@@ -569,7 +572,7 @@ static void eh_body(long inner, void *vctx)
 static void bench_equihash_blake2b(void)
 {
     struct bench b = {
-        .primitive = "Equihash (200,9) BLAKE2b batch — 512 hashes = 1 block header",
+        .primitive = "Equihash BLAKE2b batch, pre-Bubbles 200,9 — 512 hashes = 1 header",
         .unit = "block headers",
         .inner = 400,
         .bytes_per_op = 0.0,   /* op = a whole header's worth of hashing */

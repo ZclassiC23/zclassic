@@ -114,8 +114,9 @@ no new command route or schema.
   contiguous ok=1 prefix from the anchor. This is what makes a silent halt
   impossible to represent.
 - The eight-stage reducer pipeline (advance-cursor-or-name-blocker).
-- Consensus validation: PoW (Equihash 200,9), script signatures, shielded proofs,
-  ZIP-209.
+- Consensus validation: PoW (Equihash, with height-selected parameters — see
+  [`EQUIHASH_PARAMS.md`](EQUIHASH_PARAMS.md)), script signatures, shielded
+  proofs, ZIP-209.
 - Reorg handling via the saved inverse coin changes.
 - The eight code "shapes" (controller / service / model / job / supervisor /
   condition / event / storage-adapter). Seven live one-folder-each under `app/`
