@@ -16,7 +16,7 @@
 #   * When the streak reaches the threshold (default 3) and a last-good slot
 #     exists, we exec the LAST-KNOWN-GOOD binary instead and set
 #     ZCL_BINARY_FALLBACK_ACTIVE=1 — the node then raises the
-#     binary.fallback_active blocker so `zclassic23 status` shows the
+#     binary.fallback_active blocker so `z23 status` shows the
 #     degraded-but-alive state.
 #
 # The last-good slot is an independent COPY of a binary that once reached ready

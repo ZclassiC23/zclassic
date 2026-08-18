@@ -692,7 +692,7 @@ void zcl_native_handle_zcode_package_source_reproduce(
       char retry[320];
       int n = snprintf(
           retry, sizeof(retry),
-          "zclassic23 zcode package source reproduce --input='"
+          "z23 zcode package source reproduce --input='"
           "{\"mode\":\"plan\",\"root\":\"%s\","
           "\"namespace\":\"%s\"}'",
           root_hex, namespace_name);

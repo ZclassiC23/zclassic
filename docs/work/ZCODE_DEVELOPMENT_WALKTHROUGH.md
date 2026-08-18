@@ -1,11 +1,25 @@
 # ZCODE C23 Development Loop — Five-Minute Walkthrough
 
-ZClassic23 is a metaverse where people and AI create real things together,
-and nobody owns the world they build in. This walkthrough exercises that
-mission as a developer product: the human supplies a C23 project and goal;
-ZCODE returns a contained candidate, exact evidence, and an explicit human
-accept-or-reject decision. Public permissively licensed source remains free,
-and neither a model nor a token receives technical authority.
+Z23 exists to make useful software abundant without taking control away from
+the user: software made for you, not imposed on you. This walkthrough is the
+middle of that journey as a developer product. The human describes desired
+behavior; ZCODE reuses existing C23 first, creates only what is missing,
+returns a contained candidate with exact evidence, and ends in an explicit
+human accept-or-reject decision about one exact version. Public permissively
+licensed source remains free, and neither a model nor a token receives
+technical authority. AI workers are replaceable; the exact source, recipe, and
+evidence are the durable layer.
+
+Ask the node for the journey before following this page — it answers with the
+current start command and the plain step order:
+
+```bash
+z23 zcode guide
+```
+
+The steps after acceptance — publish, fetch on another node, reproduce
+independently, then use the exact version — are in
+[`../C23_COMMONS_QUICKSTART.md`](../C23_COMMONS_QUICKSTART.md).
 
 This is a development-only path. It does not use a wallet, token, transaction,
 custody path, node datadir, deployment, service, or consensus code.
@@ -15,7 +29,7 @@ custody path, node datadir, deployment, service, or consensus code.
 From a small single-package C23 checkout:
 
 ```bash
-zclassic23-dev zcode project inspect \
+z23-dev zcode project inspect \
   --input='{"workspace":"."}'
 ```
 
@@ -27,7 +41,7 @@ resource ceilings, and proof profile. If `zcode-package.json` is absent, use
 ## 2. Start one goal
 
 ```bash
-zclassic23-dev zcode work start \
+z23-dev zcode work start --datadir=/tmp/z23-work \
   --input='{"workspace":".","goal":"Make the parser reject overflowing lengths","profile":"quick"}'
 ```
 
@@ -40,7 +54,7 @@ weaker alternate proof system.
 The always-available path is manual and model-neutral:
 
 ```bash
-zclassic23-dev zcode work run \
+z23-dev zcode work run --datadir=/tmp/z23-work \
   --input='{"workspace":".","work":"latest","adapter":"manual"}'
 ```
 
@@ -55,7 +69,7 @@ An installed Codex CLI is an opt-in convenience when exactly one documented
 single-run credential (`CODEX_API_KEY` or `CODEX_ACCESS_TOKEN`) is present:
 
 ```bash
-zclassic23-dev zcode work run \
+z23-dev zcode work run --datadir=/tmp/z23-work \
   --input='{"workspace":".","work":"latest","adapter":"codex"}'
 ```
 
@@ -75,7 +89,7 @@ a bounded attempt-2 packet. At most three candidate attempts are admitted.
 Inspect the result at any time:
 
 ```bash
-zclassic23-dev zcode work show \
+z23-dev zcode work show --datadir=/tmp/z23-work \
   --input='{"workspace":".","work":"latest"}'
 ```
 
@@ -87,7 +101,7 @@ When the selected profile requires a separate review, a human reviewer records
 bounded findings without editing or accepting the candidate:
 
 ```bash
-zclassic23-dev zcode work review \
+z23-dev zcode work review --datadir=/tmp/z23-work \
   --input='{"workspace":".","work":"latest","adapter":"manual","verdict":"approve","findings":"No blocking findings."}'
 ```
 
@@ -101,7 +115,7 @@ named v0.1 blocker rather than silently replacing the first review.
 Acceptance is explicit and pins the exact candidate and evidence:
 
 ```bash
-zclassic23-dev zcode work accept \
+z23-dev zcode work accept --datadir=/tmp/z23-work \
   --input='{"workspace":".","work":"latest"}'
 ```
 

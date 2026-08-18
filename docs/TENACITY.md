@@ -19,13 +19,13 @@ Companion docs: `docs/work/canonical-frontier-derived-state-plan.md` (the what),
 
 Live bootstrap/cure status: [`docs/HANDOFF.md`](HANDOFF.md); design:
 `docs/work/self-verified-tip-plan.md`. Verify live state from
-`zclassic23 status` / `zclassic23 dumpstate reducer_frontier`, never from this
+`z23 status` / `z23 dumpstate reducer_frontier`, never from this
 doctrine document. The six principles below are timeless, independent of that
 status.
 
 ---
 
-## The zclassic23 way
+## The z23 way
 
 Six principles, stated natively. Everything else here is an instance of one of
 them. The plain model first: **blocks are the input rows; everything else is a

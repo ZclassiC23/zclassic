@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_stopwatch_skip_watch — hermetic tests for the skip-streak detector
- * behind `zclassic23 ops state --subsystem=stopwatch_evidence`.
+ * behind `z23 ops state --subsystem=stopwatch_evidence`.
  *
  * The defect under regression: the C3 stopwatch recorded verdict=skip on
  * every scheduled run from 2026-07-28 06:02 onward and NOTHING said so. The

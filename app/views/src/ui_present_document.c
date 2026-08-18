@@ -75,7 +75,7 @@ bool ui_present_document_from_model(
         const char *kind = out->qr_card.is_deposit
             ? "Deposit ZCL" : out->model.title;
         (void)snprintf(out->title, sizeof(out->title),
-                       "ZClassic23 — %s — C copies, Esc closes", kind);
+                       "Z23 — %s — C copies, Esc closes", kind);
         out->page_count = 1;
         document_window(out, 0, out->qr_card.pixels,
                         out->qr_card.width, out->qr_card.height,
@@ -90,7 +90,7 @@ bool ui_present_document_from_model(
         return false;
     }
     (void)snprintf(out->title, sizeof(out->title),
-                   "ZClassic23 — %s", out->model.title);
+                   "Z23 — %s", out->model.title);
     for (uint32_t i = 0; i < out->page_count; i++) {
         if (!zcl_present_model_render_page_v1(
                 &out->model, i, &out->bitmaps[i], error, error_cap)) {

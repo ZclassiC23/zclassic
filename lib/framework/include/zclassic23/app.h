@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Stable ZClassic23 Core -> App ABI.
+ * Stable Z23 Core -> App ABI.
  *
  * This is the ONLY project header an external application generation may
  * include. Core owns consensus, keys, raw storage, sockets, boot, and process

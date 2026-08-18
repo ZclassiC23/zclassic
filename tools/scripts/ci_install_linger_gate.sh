@@ -74,7 +74,7 @@ P2P=39060; RPC=39061; FS=39062; HTTPS=39063; SINK=39999
 mkdir -p "$USER_UNIT_DIR"
 cat > "$UNIT_FILE" <<EOF
 [Unit]
-Description=ZClassic23 CI install proof (isolated regtest; safe to remove)
+Description=Z23 CI install proof (isolated regtest; safe to remove)
 StartLimitIntervalSec=0
 
 [Service]

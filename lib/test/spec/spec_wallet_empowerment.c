@@ -5,7 +5,7 @@
  *
  * Frame: "I control the blockchain. I verify every block.
  *  I host a hidden service. I mint tokens."
- * Not: "ZClassic23 is a full node implementation." */
+ * Not: "Z23 is a full node implementation." */
 
 #include "test/spec_helpers.h"
 

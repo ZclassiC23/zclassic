@@ -4,7 +4,7 @@
  * guard for agent_security_posture_collect()'s bootstrap read.
  *
  * On a wedged node with a write-retry storm: the brief
- * typed status front door (`zclassic23 status` -> rpc_agent_summary) calls
+ * typed status front door (`z23 status` -> rpc_agent_summary) calls
  * agent_security_posture_collect() -> posture_collect_bootstrap() ->
  * chain_evidence_controller_snapshot(), which issues ~a dozen synchronous
  * reads on the SHARED node.db connection. node_db_long_op_active() only

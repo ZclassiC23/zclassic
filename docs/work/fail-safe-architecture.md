@@ -144,7 +144,7 @@ The response becomes total *by construction* instead of total by enumeration.
   named external halt, not a stuck internal state.
 
 Rules: every rung bounded in time; unwitnessed ⇒ next rung automatically;
-every transition emits an event AND a typed-registry blocker (`zclassic23 core sync blockers`
+every transition emits an event AND a typed-registry blocker (`z23 core sync blockers`
 can never again show 0 during a stall); ladder state is durable (crash mid-
 rung resumes at the same rung, idempotent by design).
 
@@ -314,7 +314,7 @@ behind a recursive mutex); the operator_needed-latch chain was caught.
 
 ## 6. Observability debts found during diagnosis (fix alongside)
 
-- `zclassic23 dbquery` cannot reach `*_log` tables (progress.kv, not node.db) — attach
+- `z23 dbquery` cannot reach `*_log` tables (progress.kv, not node.db) — attach
   progress.kv read-only or add a typed read surface.
 - `legacy_mirror` WARN-spams thousands of identical lines while zclassicd
   resyncs (RPC −28) — throttle to transitions + periodic keep-alive.

@@ -21,7 +21,7 @@
  * `check_transaction` and `check_block_header`) is covered by the
  * existing validation-path tests — here we only assert that the
  * event plumbing works, because the consumer
- * (`zclassic23 core consensus report`,
+ * (`z23 core consensus report`,
  * AGENT3 wave 7) just needs the event stream to be reliable.
  */
 

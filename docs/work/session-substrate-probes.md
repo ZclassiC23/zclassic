@@ -33,7 +33,7 @@ isolation is available rootless today. The caveat:
 creation for processes that are **AppArmor-confined** by a profile lacking
 the `userns,` rule; our probe process (and the current shell) is
 `unconfined`, which is why it worked. **Any future AppArmor hardening pass
-on the zclassic23 binary or a session-child binary must add an explicit
+on the z23 binary or a session-child binary must add an explicit
 `userns,` rule**, or this exact path silently reverts to `EPERM` on that
 host — a deployment-time regression risk, not a code bug; record it as a
 standing constraint on any AppArmor profile ever attached. Do **not**
@@ -122,7 +122,7 @@ write, no persistent circuit/session object, no raw-socket-equivalent API
 anywhere in either header. No `.c`/`.h` in `lib/net/` or `vendor/tor_stub.c`
 exposes a bidirectional, long-lived onion stream.
 
-**VERDICT — code-confirmed:** zclassic23's embedded-Tor surface is
+**VERDICT — code-confirmed:** z23's embedded-Tor surface is
 **request/response only, both directions**. This independently re-confirms
 `docs/adr/0003-os-substrate-verdict.md`'s framing ("no outbound-stream API
 in that header"). **Grounds the P1 boundary: P1 session traffic must use

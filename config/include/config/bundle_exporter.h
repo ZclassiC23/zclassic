@@ -23,7 +23,7 @@
  *
  * FAIL-SAFE: nothing here can fail a boot. When provenance does not qualify, the
  * session is not opened and the reason is a dumpstate-visible named degradation
- * (`zclassic23 dumpstate bundle_exporter`). */
+ * (`z23 dumpstate bundle_exporter`). */
 
 #ifndef ZCL_CONFIG_BUNDLE_EXPORTER_H
 #define ZCL_CONFIG_BUNDLE_EXPORTER_H
@@ -55,7 +55,7 @@ struct zcl_service_kernel;
 bool bundle_exporter_register_service(struct zcl_service_kernel *kernel,
                                       const char *datadir);
 
-/* `zclassic23 dumpstate bundle_exporter` (dump-state convention).
+/* `z23 dumpstate bundle_exporter` (dump-state convention).
  * `out` is json_set_object'd by the caller; this also does it defensively.
  * `key` is unused. */
 struct json_value;

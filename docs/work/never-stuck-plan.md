@@ -6,8 +6,8 @@
 > literal "self-mint a from-genesis SHA3 anchor → `-refold-from-anchor`
 > cutover → DELETE the borrowed loader" sequence (that sequence is still
 > undone in code — see `self-verified-tip-plan.md`'s top-of-file note).
-> Verify current live state fresh via `zclassic23 status` /
-> `zclassic23 dumpstate reducer_frontier`; this file is retained as a design
+> Verify current live state fresh via `z23 status` /
+> `z23 dumpstate reducer_frontier`; this file is retained as a design
 > record for the never-stuck hardening map + the per-height UTXO-ladder gap,
 > not as an open cure plan. The authoritative gates are in
 > `SOVEREIGN-NETWORK-ROADMAP.md`.

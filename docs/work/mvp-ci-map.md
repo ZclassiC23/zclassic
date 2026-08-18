@@ -26,7 +26,7 @@ The three **synced-node-dependent** criteria — **C3** (cold-start sync to tip)
 **C6** (168h soak), **C8** (consensus parity over the soak window) — CANNOT
 pass until the node holds a clean synced tip on the **sovereign foundation** and
 accrues a clean window. Re-run this reporter against the live node
-(`zcl-rpc getblockchaininfo`, `zclassic23 status`) rather than trusting a
+(`zcl-rpc getblockchaininfo`, `z23 status`) rather than trusting a
 pinned verdict here — no hermetic slice can stand in for "a fresh node
 reached the real ~3.15M-block tip in <10min" or "168h clean wall-clock". The
 reporter probes the live node: when `blocks != headers` (not at tip) the

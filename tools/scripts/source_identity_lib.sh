@@ -6,7 +6,7 @@
 #
 # WHY THIS EXISTS — read before touching any function below.
 #
-# `zclassic23 agentbuild` emits the key `source_id_sha256` SEVERAL times on a
+# `z23 agentbuild` emits the key `source_id_sha256` SEVERAL times on a
 # SINGLE line (8 on one build measured 2026-07-30 — the exact count is build-
 # and lane-state-dependent, so treat it as "more than one," not a fixed
 # number): once at the top level (the source this binary was actually

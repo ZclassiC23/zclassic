@@ -86,7 +86,7 @@ void projection_store_tx_unlock(void);
  * own close). */
 void projection_store_close(void);
 
-/* For `zclassic23 dumpstate projection_store` (dump-state convention). `out` is
+/* For `z23 dumpstate projection_store` (dump-state convention). `out` is
  * json_set_object'd by the caller; this also calls json_set_object(out)
  * defensively. `key` is unused. */
 struct json_value;

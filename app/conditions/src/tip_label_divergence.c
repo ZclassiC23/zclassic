@@ -7,7 +7,7 @@
  * (chain.coinbase_label_mismatch): OUR height labels diverged from the
  * chain's own structure. The blocker + EV_OPERATOR_NEEDED already fired
  * at detection; this Condition keeps the divergence VISIBLE in the
- * condition engine, `zclassic23 dumpstate`, and health until repaired,
+ * condition engine, `z23 dumpstate`, and health until repaired,
  * and escalates through the engine's attempt ladder.
  *
  * WINDOW_REBUILD TRIGGER SEAM (wired): the remedy consumes the latch's

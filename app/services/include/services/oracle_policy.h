@@ -64,7 +64,7 @@ const char *oracle_policy_state_name(enum oracle_policy_state s);
 /* Operator: reset to NORMAL (e.g. via native after investigation). */
 void oracle_policy_clear(void);
 
-/* `zclassic23 dumpstate oracle_policy` entry. */
+/* `z23 dumpstate oracle_policy` entry. */
 bool oracle_policy_dump_state_json(struct json_value *out, const char *key);
 
 /* Test hook — reset state + counters between unit tests. */

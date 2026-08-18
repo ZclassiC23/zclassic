@@ -20,10 +20,10 @@ Foundation record for the ZCODE program. The authority on existing foundations i
 [`../P2P_SOURCE_HOSTING.md`](../P2P_SOURCE_HOSTING.md); this file carries the
 owner's original 15-slice build order, naming, and boundaries on top of it.
 That order is retained as history, not as the current queue. Consensus
-parity is untouched: ZCODE is an application protocol over ZClassic23.
+parity is untouched: ZCODE is an application protocol over Z23.
 
 Core description: publish, test, maintain and share permissive C23 code
-through ZClassic23. Earn nontransferable ZCODE Score, appear in evidence-based
+through Z23. Earn nontransferable ZCODE Score, appear in evidence-based
 ZCODE Rankings, and collect identity-bound ZCODE Badges. Any future ZC23
 issuance is separately creation-attributed; transferable balance is never
 score or proof.

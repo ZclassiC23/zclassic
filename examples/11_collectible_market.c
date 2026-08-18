@@ -5,7 +5,7 @@
  *
  * WHAT THIS DEMONSTRATES
  * -----------------------
- * This is the executable design doc for zclassic23's commerce stack: mint a
+ * This is the executable design doc for z23's commerce stack: mint a
  * one-of-one digital collectible, claim a permanent on-chain storefront
  * identity for it, and sell it two different ways — once with a plain
  * direct payment, once through a trustless HTLC escrow. Every primitive here
@@ -842,7 +842,7 @@ int main(void)
           "net/src/msgprocessor.c) — the same \"pay, then receive\" shape "
           "as this example's direct sale, at the byte-transport layer "
           "instead of the token layer. The buy/offer RPC-to-transfer glue "
-          "(`zclassic23 app market buy`/`zclassic23 app market offer`) is "
+          "(`z23 app market buy`/`z23 app market offer`) is "
           "not yet wired end to "
           "end to on-chain settlement.\n");
 

@@ -354,7 +354,7 @@ static inline void stage_release_block_view(
  *
  * A rowless hole in any of script_validate_log, proof_validate_log,
  * body_fetch, body_persist can pin H* silently, with
- * `zclassic23 core sync blockers` reporting nothing (only last_blocked_unix
+ * `z23 core sync blockers` reporting nothing (only last_blocked_unix
  * timestamp — see reducer_frontier_reconcile_light.c's detect function and
  * its generic refill-hole scan). This helper generalizes
  * utxo_apply_upstream_hole_note ("reducer_frontier.upstream_log_hole") so
@@ -562,7 +562,7 @@ static inline int64_t stage_log_row_count(sqlite3 *db, const char *tag,
  * site (chainstate.c), but a caller that discards the boolean via (void) lets a
  * persistently-failing window extend on the fold path stop the stage's
  * progress with no attribution. LOG_WARN below names every failure loudly on
- * ALL EIGHT stages uniformly (node.log / `zclassic23 getnodelog`),
+ * ALL EIGHT stages uniformly (node.log / `z23 getnodelog`),
  * and this counter is for direct white-box inspection (the drain-harness test).
  *
  * Deliberately NOT rolled into stage_dump_counters(): this header is

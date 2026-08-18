@@ -481,7 +481,7 @@ size_t explorer_view_events(uint8_t *r, size_t max)
     size_t off = 0;
     char *response = (char *)r;
 
-    APPEND(off, response, max, EXPLORER_HEADER("Event Log — ZClassic23"));
+    APPEND(off, response, max, EXPLORER_HEADER("Event Log — Z23"));
     off += explorer_emit_nav(response + off, max - off, "events");
 
     APPEND(off, response, max,
@@ -570,7 +570,7 @@ size_t explorer_view_names(uint8_t *r, size_t max)
     size_t off = 0;
     char *response = (char *)r;
 
-    APPEND(off, response, max, EXPLORER_HEADER("ZCL Names — ZClassic23"));
+    APPEND(off, response, max, EXPLORER_HEADER("ZCL Names — Z23"));
     off += explorer_emit_nav(response + off, max - off, "names");
 
     APPEND(off, response, max,
@@ -647,7 +647,7 @@ size_t explorer_view_market(uint8_t *r, size_t max)
     size_t off = 0;
     char *response = (char *)r;
 
-    APPEND(off, response, max, EXPLORER_HEADER("ZCL Market — ZClassic23"));
+    APPEND(off, response, max, EXPLORER_HEADER("ZCL Market — Z23"));
     off += explorer_emit_nav(response + off, max - off, "market");
 
     APPEND(off, response, max,
@@ -700,7 +700,7 @@ size_t explorer_view_swaps(uint8_t *r, size_t max)
     size_t off = 0;
     char *response = (char *)r;
 
-    APPEND(off, response, max, EXPLORER_HEADER("Atomic Swaps — ZClassic23"));
+    APPEND(off, response, max, EXPLORER_HEADER("Atomic Swaps — Z23"));
     off += explorer_emit_nav(response + off, max - off, "swaps");
 
     APPEND(off, response, max,
@@ -767,7 +767,7 @@ size_t explorer_view_messages(uint8_t *r, size_t max)
     size_t off = 0;
     char *response = (char *)r;
 
-    APPEND(off, response, max, EXPLORER_HEADER("Messages — ZClassic23"));
+    APPEND(off, response, max, EXPLORER_HEADER("Messages — Z23"));
     off += explorer_emit_nav(response + off, max - off, NULL);
 
     APPEND(off, response, max,

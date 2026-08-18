@@ -464,11 +464,11 @@ next_action() {
             printf 'make agent-dev-recover'
         fi
     elif [ "$rpc_status" = "ok" ]; then
-        printf 'zclassic23-dev status'
+        printf 'z23-dev status'
     elif [ "$active_state" = "active" ]; then
         printf 'wait; tail -f %s' "$NODE_LOG"
     else
-        printf "%s" "build/bin/zclassic23-dev dev change apply --input='{\"files\":[\"<complete-dirty-set>\"]}'"
+        printf "%s" "build/bin/z23-dev dev change apply --input='{\"files\":[\"<complete-dirty-set>\"]}'"
     fi
 }
 

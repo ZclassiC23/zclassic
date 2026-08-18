@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 test-tmp Scratch Reclaimer Timer
+Description=Z23 test-tmp Scratch Reclaimer Timer
 
 [Timer]
 # Daily 03:45 — right after zclassic23-worktree-gc.timer (03:35), before

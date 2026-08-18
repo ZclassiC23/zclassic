@@ -345,7 +345,7 @@ uint32_t blocker_retired_transient_count(void);
  * has happened yet. */
 bool blocker_last_retired(struct blocker_retirement_info *out);
 
-/* JSON dumper backing `zclassic23 dumpstate blocker`.
+/* JSON dumper backing `z23 dumpstate blocker`.
  * Caller initializes `out` with json_set_object before calling. */
 struct json_value;
 bool blocker_dump_state_json(struct json_value *out, const char *key);

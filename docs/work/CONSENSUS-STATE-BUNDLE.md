@@ -7,7 +7,7 @@ suffix is allowed only for an incompatible encoding change. There is one
 canonical codec; the implementation may have only one canonical writer and one
 canonical reader for the current schema.
 
-ZClassic consensus is unchanged. ZClassic23 remains bit-for-bit
+ZClassic consensus is unchanged. Z23 remains bit-for-bit
 consensus-compatible with `zclassicd`; bundle and receipt schema evolution is
 local storage/provenance plumbing and changes no block, transaction, script,
 activation, or proof-validity rule. `USS v1`, `USS v2`, and `USS v3` are frozen

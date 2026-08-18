@@ -513,7 +513,7 @@ static int test_ic_incomplete_dimension_refuses_proof(void)
                       "\"why_not_live_path\":\"lib/net/src/tor_integration.c\"")
                != NULL);
         ASSERT(strstr(body,
-                      "\"agent_next_action\":\"zclassic23-dev dev begin\"")
+                      "\"agent_next_action\":\"z23-dev dev begin\"")
                != NULL);
 
         system("rm -rf " IC_FIX_TRUNC);

@@ -995,19 +995,19 @@ static int test_next_command_prioritizes_blocker_over_gap(void)
         fixture_brief_body(&d, 100, 200, 100, "syncing", "anchor_gap", 10, 0,
                            4, 256, false);
         ASSERT(strcmp(zcl_native_status_brief_next_command(&d),
-                      "zclassic23 explain blockers") == 0);
+                      "z23 explain blockers") == 0);
         json_free(&d);
 
         fixture_brief_body(&d, 100, 200, 100, "syncing", "none", 0, 0, 4,
                            256, false);
         ASSERT(strcmp(zcl_native_status_brief_next_command(&d),
-                      "zclassic23 explain sync") == 0);
+                      "z23 explain sync") == 0);
         json_free(&d);
 
         fixture_brief_body(&d, 200, 200, 0, "synced", "none", 0, 0, 4, 256,
                            true);
         ASSERT(strcmp(zcl_native_status_brief_next_command(&d),
-                      "zclassic23 ops health") == 0);
+                      "z23 ops health") == 0);
         json_free(&d);
         PASS();
     } _test_next:;
@@ -1112,7 +1112,7 @@ static int test_unknown_command_diagnostic_has_typed_shape(void)
         ASSERT(n > 0);
         ASSERT(strstr(buf, "error=UNKNOWN_COMMAND") != NULL);
         ASSERT(strstr(buf, "detail=") != NULL);
-        ASSERT(strstr(buf, "try=zclassic23 discover search stat") != NULL);
+        ASSERT(strstr(buf, "try=z23 discover search stat") != NULL);
         ASSERT(strstr(buf, "did you mean:") != NULL);
 
         /* A query the index has no hit for still gets the typed error line,

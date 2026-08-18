@@ -75,7 +75,7 @@ bool zcl_native_command_is_root(const char *word)
         "status", "core", "app", "dev", "ops", "discover", "code", "vault",
         "zcode", "metaverse", "yardsale", "help", "search",
         /* Operator-UX convenience roots: bare aliases of ops.explain /
-         * ops.profile so `zclassic23 explain sync` / `zclassic23 profile`
+         * ops.profile so `z23 explain sync` / `zclassic23 profile`
          * work without the `ops` prefix (each leaf carries the matching
          * alias in config/commands/ops.def). `meaning` joins them because the
          * field ontology is most needed by an operator who does not yet know
@@ -86,7 +86,7 @@ bool zcl_native_command_is_root(const char *word)
         if (strcmp(word, roots[i]) == 0)
             return true;
         /* CLI UX contract: the canonical dotted form
-         * (`zclassic23 zcode.science.study.list`) names the same leaf as the
+         * (`z23 zcode.science.study.list`) names the same leaf as the
          * spaced form — a first token of `<root>.<rest>` belongs to this
          * adapter too, and zcl_native_command_main splits it into path
          * segments before resolution. */
@@ -1249,7 +1249,7 @@ void zcl_native_handle_network_chain_view(
  * agent could only learn the names by reading
  * app/controllers/include/controllers/diagnostics_dumpers.def out of the
  * source tree — which is not shipped in a release binary. The catalog was
- * already reachable as the flat legacy `zclassic23 statecatalog` shim,
+ * already reachable as the flat legacy `z23 statecatalog` shim,
  * but flat shims carry no typed envelope, no declared risk/authority, and
  * no `discover` entry, so from the typed registry the 148-plus subsystems
  * were undiscoverable.
@@ -3115,11 +3115,11 @@ const char *zcl_native_status_brief_next_command(const struct json_value *d)
     const char *blocker = json_get_str(json_get(d, "primary_blocker"));
     if (blocker && blocker[0] && strcmp(blocker, "none") != 0 &&
         strcmp(blocker, "unknown") != 0)
-        return "zclassic23 explain blockers";
+        return "z23 explain blockers";
     const struct json_value *gapv = json_get(d, "gap");
     if (gapv && gapv->type == JSON_INT && json_get_int(gapv) > 0)
-        return "zclassic23 explain sync";
-    return "zclassic23 ops health";
+        return "z23 explain sync";
+    return "z23 ops health";
 }
 
 /* ── CLI UX contract: field selector ─────────────────────────────────
@@ -3270,7 +3270,7 @@ size_t zcl_native_render_unknown_command(
     size_t len = 0;
     int n = snprintf(out + len, out_cap - len,
                      "error=UNKNOWN_COMMAND detail=no such command '%s' "
-                     "try=zclassic23 discover search %s\n",
+                     "try=z23 discover search %s\n",
                      method, method);
     if (n <= 0 || (size_t)n >= out_cap - len)
         return 0;
@@ -3469,7 +3469,7 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
     bool seen_format = false;
     /* CLI UX contract: field selector + the bare no-arg entry point's next-
      * command hint. `field=` is accepted BOTH as a bare dash-less word (the
-     * documented `zclassic23 status field=a,b` convention) and as a normal
+     * documented `z23 status field=a,b` convention) and as a normal
      * `--field=a,b` flag; both set the same field_csv. --next is
      * internal-ish (used by the bare no-arg entry point) but harmless for a
      * caller to pass directly. */

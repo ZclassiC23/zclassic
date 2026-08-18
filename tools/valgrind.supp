@@ -5,7 +5,7 @@
 #
 # Vendor code (OpenSSL, libevent, SQLite, LevelDB, secp256k1) may allocate
 # one-time buffers that are never freed (intentional — process lifetime).
-# These are not bugs in zclassic23 code.
+# These are not bugs in z23 code.
 
 # OpenSSL global init allocations (one-time, process lifetime)
 {

@@ -112,12 +112,12 @@ int test_explorer(void)
         size_t n = explorer_dashboard_view_native(out, sizeof(out) - 1, &v);
         out[n < sizeof(out) ? n : sizeof(out) - 1] = '\0';
         bool ok = n > 0 &&
-             strstr((char *)out, "ZClassic23 Bootstrap") != NULL &&
+             strstr((char *)out, "Z23 Bootstrap") != NULL &&
              strstr((char *)out, "Ready") != NULL &&
              strstr((char *)out, "verified live peer handshakes") != NULL &&
              strstr((char *)out, "Connected Peers</div>"
                     "<div class='bb-value'>9") != NULL &&
-             strstr((char *)out, "ZClassic23 Nodes</div>"
+             strstr((char *)out, "Z23 Nodes</div>"
                     "<div class='bb-value'>2") != NULL &&
              strstr((char *)out, "this node + 1 peer") != NULL &&
              strstr((char *)out, "Legacy Peers</div>"

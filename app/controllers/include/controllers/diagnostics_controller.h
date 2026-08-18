@@ -36,7 +36,7 @@ bool diagnostics_controller_shutdown(void);
 void register_diagnostics_rpc_commands(struct rpc_table *t);
 
 /* Return the machine-readable catalog of `dumpstate` subsystems. Exposed so
- * the native CLI can serve `zclassic23 statecatalog`
+ * the native CLI can serve `z23 statecatalog`
  * directly without depending on a running RPC node. */
 bool diag_rpc_statecatalog(const struct json_value *params, bool help,
                            struct json_value *result);

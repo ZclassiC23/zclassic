@@ -1,4 +1,4 @@
-# clangd configuration for ZClassic23.
+# clangd configuration for Z23.
 #
 # The authoritative compile commands live in compile_commands.json at the repo
 # root, generated from the real dev-object recipes by `make compdb` (alias for

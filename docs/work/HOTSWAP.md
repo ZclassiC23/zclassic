@@ -1,8 +1,8 @@
 # Tier-1 in-process hot-swap (DEV-ONLY)
 
-ZClassic23 has three development layers:
+Z23 has three development layers:
 
-1. A persistent native build authority inside the `zclassic23-dev` watcher.
+1. A persistent native build authority inside the `z23-dev` watcher.
    In `mode=auto`, one edit to an allowlisted stateless island goes directly
    through compile, link, resident probe, and atomic registry publication. The
    edit path starts stock GCC/Clang and the linker as bounded children, but no
@@ -239,7 +239,7 @@ without it the commit fails closed with `no active registry bound`.
 Inspect activation state with:
 
 ```sh
-build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
+build/bin/z23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
   dumpstate hotswap
 ```
 
@@ -251,7 +251,7 @@ active slots, and the last activation or rejection.
 Start the isolated dev node normally, then arm its persistent watcher once:
 
 ```sh
-build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
+build/bin/z23-dev -datadir="$HOME/.zclassic-c23-dev" -rpcport=18252 \
   dev loop ensure --input='{"mode":"auto"}'
 ```
 
@@ -552,7 +552,7 @@ make hotswap-so FILES="app/controllers/src/status_native_handlers.c"
 make t ONLY=hotswap_loader
 
 # Inspect the resident staging state.
-build/bin/zclassic23-dev -datadir="$HOME/.zclassic-c23-dev" \
+build/bin/z23-dev -datadir="$HOME/.zclassic-c23-dev" \
   ops state --subsystem=hotswap
 
 # Deterministic three-node generation/network replay.
@@ -606,7 +606,7 @@ The native registry exposes `dev.hotswap.apply` and `dev.hotswap.probe` through
 `tools/command/native_dev_hotswap.c`:
 
 ```sh
-zclassic23-dev dev hotswap probe \
+z23-dev dev hotswap probe \
   --input='{"so_path":"/tmp/gen.so","probe_leaf":"core.status"}'
 ```
 
@@ -634,7 +634,7 @@ The automatic GENERATION (manifest/staging) path stays contained:
   and `dev.change.apply` all refuse before generation relinking.
 
 The deliberate exception is the owner-gated native transaction:
-`zclassic23-dev dev generation activate
+`z23-dev dev generation activate
 --input='{"idempotency_key":"<key>"}'`. Its first
 call stages and preflights the exact binary without stopping the service and
 returns `commit_input`. Re-running the same leaf with that input verifies the

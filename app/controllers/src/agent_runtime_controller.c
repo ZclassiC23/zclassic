@@ -604,7 +604,7 @@ void agent_push_runtime_services_json(struct json_value *out,
     json_push_kv_int(&svc, "p2p_configured_port", g_agent_runtime.p2p_port);
     json_push_kv_bool(&svc, "p2p_observed_here", false);
     json_push_kv_str(&svc, "p2p_observed_source",
-                     "zclassic23 agent, peer projection, or lane_health");
+                     "z23 agent, peer projection, or lane_health");
     json_push_kv_int(&svc, "https_configured_port",
                      g_agent_runtime.https_port);
     json_push_kv_bool(&svc, "https_running", https_running);

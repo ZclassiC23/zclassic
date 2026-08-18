@@ -1,4 +1,4 @@
-# Building zclassic23
+# Building z23
 
 This is the focused build reference — vendored-library sources/versions, the
 fast dev-compile targets, and the sanitizer profiles. For the full setup
@@ -6,7 +6,7 @@ path (build → run in production → run in development), start at
 [`docs/GETTING_STARTED.md`](GETTING_STARTED.md) instead; this page is what it
 links to for build detail.
 
-`zclassic23` is one whole-program C23 binary. The build is a single `cc` over
+`z23` is one whole-program C23 binary. The build is a single `cc` over
 ~660–1400 `.c` files with LTO, linked against a set of **static** third-party
 archives in `vendor/lib/`.
 
@@ -88,11 +88,11 @@ build) is committed to git; everything else is produced locally from
 SHA256-pinned sources. A fresh clone links in one shot:
 
 ```bash
-git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
-make zclassic23     # auto-runs `make vendor` if vendor/lib/ archives are absent
+git clone https://github.com/z23c/z23.git && cd z23
+make z23     # auto-runs `make vendor` if vendor/lib/ archives are absent
 ```
 
-`make zclassic23` first crosses a Make restart barrier when vendor archives are
+`make z23` first crosses a Make restart barrier when vendor archives are
 missing. The first parse invokes `tools/scripts/build_vendor.sh`; the restarted
 parse then captures source identity from the final archive bytes. Link targets
 also retain the archives as order-only prerequisites. This prevents a fresh
@@ -145,13 +145,13 @@ make agent-loop
 make fast-rebuild
 make agent-index
 make dev-loop-bench
-build/bin/zclassic23 discover help          # enumerate native commands
-build/bin/zclassic23 status                 # local node status
-build/bin/zclassic23-dev status             # dev-lane status
+build/bin/z23 discover help          # enumerate native commands
+build/bin/z23 status                 # local node status
+build/bin/z23-dev status             # dev-lane status
 make agent-doctor
 make agent-dev-status
-build/bin/zclassic23-dev agentdevstatus
-build/bin/zclassic23-dev agentbuild
+build/bin/z23-dev agentdevstatus
+build/bin/z23-dev agentbuild
 ```
 
 `make dev-watch` is the save-driven AI/operator loop: `MODE=verify` (default)
@@ -164,7 +164,7 @@ contract test; `make dev-activation-selftest` and
 `make dev-recovery-selftest` exercise the otherwise-unreachable
 activation/recovery machinery inside `/tmp` fixtures only — no public
 environment variable reaches the real dev HOME/unit.
-The registry-owned C23 interface (`build/bin/zclassic23-dev dev loop
+The registry-owned C23 interface (`build/bin/z23-dev dev loop
 ensure|status|wait`) reaches the same verify-only cycle without the shell
 wrapper. `make agent-loop` is the manual one-shot form
 (`ZCL_AGENT_LOOP_BIN=1` also links the dev binary); `make agent-doctor` and
@@ -177,7 +177,7 @@ guards, and the `agent-*` status contracts — live in
 [`docs/AGENT_API.md`](./AGENT_API.md) "Build loop"; this page stays the
 practical command list.
 
-Foreground candidate preflight uses `build/bin/zclassic23 ops selftest`. It
+Foreground candidate preflight uses `build/bin/z23 ops selftest`. It
 validates every native leaf and generated input schema inside the candidate
 without depending on the health of the process being replaced. The exhaustive
 handler-dispatch self-test remains a background/live diagnostic.
@@ -197,7 +197,7 @@ one swappable leaf into a module `.so`, runs the command in a one-shot CLI via
 override in the running `zcl23-dev` node, gated on `-hotswap-activate` +
 `ZCL_HOTSWAP_ACTIVATE=1`; canonical refused). Only the six read-only leaves in
 `config/hotswap_swappable.def` are eligible. Inspect provenance with
-`zclassic23 dumpstate hotswap` (`zcl.hotswap_generation.v2`,
+`z23 dumpstate hotswap` (`zcl.hotswap_generation.v2`,
 `artifact_inode_pinned=true` per accepted generation) — full contract in
 `docs/AGENT_API.md`.
 
@@ -211,9 +211,9 @@ publication atomic and `ccache`/`sccache`-cacheable; retention is bounded by
 `BUILD_EPOCH_KEEP` (default `3`), pruned only when a lease's `/proc` PID and
 start tick no longer match a live build.
 
-This binary is for local AI/operator iteration only. `make zclassic23`,
+This binary is for local AI/operator iteration only. `make z23`,
 `make deploy`, reproducible builds, and releases continue to use
-`build/bin/zclassic23` with the release flag profile.
+`build/bin/z23` with the release flag profile.
 
 ## Cached full test suite (`test_parallel`)
 
@@ -312,7 +312,7 @@ release/dev/test default builds.
   instrumented monolith harness. UBSan is fail-fast and no sanitizer class is
   suppressed.
 - **`make dev-asan`** — the dev node under ASan/UBSan
-  (`build/bin/zclassic23-dev-asan`, `-Og`, non-LTO, object tree
+  (`build/bin/z23-dev-asan`, `-Og`, non-LTO, object tree
   `build/dev-asan-obj/`). For local memory/UB debugging on a scratch
   datadir; boot with `ASAN_OPTIONS=detect_leaks=0` until leak triage is
   done.
@@ -369,7 +369,7 @@ inside them.
   times slower and push times must stay stable). Override the set with
   `TSAN_CI_GROUPS="..."`.
 - **`make dev-tsan`** — the dev node under TSan
-  (`build/bin/zclassic23-dev-tsan`, `-Og`, non-LTO, object tree
+  (`build/bin/z23-dev-tsan`, `-Og`, non-LTO, object tree
   `build/dev-tsan-obj/`). For local data-race debugging on a scratch
   datadir; race reports go to stderr.
 
@@ -412,9 +412,9 @@ without the doctor learning about it. Prose here can only describe it.
   from historical implementations remain inert test data; there is no in-tree
   path that fetches, builds, or links Rust.
 - **A C++ compiler is needed only for test/dev differential oracles.** The
-  shipped `zclassic23` node is compiled as C23, reads legacy LevelDB through the
+  shipped `z23` node is compiled as C23, reads legacy LevelDB through the
   in-tree C23 reader, and does not link `libleveldb` or `libstdc++`. A focused
-  `make zclassic23` therefore needs no C++ compiler. The full test/dev build
+  `make z23` therefore needs no C++ compiler. The full test/dev build
   still builds pinned LevelDB with `c++`/`g++` so the native reader can be
   checked byte-for-byte against the upstream implementation.
 - **Not needed:** `autoconf`. The zlib and libevent tarballs ship a generated
@@ -472,7 +472,7 @@ Notes:
   (e.g. `tools/sqlq.c`) stays in sync.
 - **Historical external reference vectors are inert data.** They retain their
   source attribution for auditability, but no historical prover is fetched,
-  built, or linked by ZClassic23. Wallet proving and consensus verification
+  built, or linked by Z23. Wallet proving and consensus verification
   stay in C23.
 - Downloads are cached under `vendor/.cache/` (gitignored); build trees live in
   `vendor/.build/` (removed on a clean full run). To bump a version, edit the
@@ -511,13 +511,13 @@ without opening a window or requiring `DISPLAY`; add the zero-based
 `"page":N` when the reply names more than one page. For example:
 
 ```bash
-build/bin/zclassic23 app qr show \
+build/bin/z23 app qr show \
   --input='{"payload":"zclassic:t1...","output":"text"}'
-build/bin/zclassic23 app presentation show \
+build/bin/z23 app presentation show \
   --input='{"kind":"status","request_id":"check-1","title":"Node",\
 "items":[{"kind":"key-value","label":"tip","value":"3216084"}],\
 "output":"text"}'
-build/bin/zclassic23 app presentation corpus \
+build/bin/z23 app presentation corpus \
   --input='{"output":"text"}'
 ```
 
@@ -625,15 +625,15 @@ as a dirty boot.
 ```bash
 make audit          # tools/dep_audit.sh — versions vs minimum-safe CVE floors
 make -j"$(nproc)" build-only  # compile every .o (no link) — should be clean
-make -j"$(nproc)" dev-bin     # fast non-LTO local node binary: build/bin/zclassic23-dev
+make -j"$(nproc)" dev-bin     # fast non-LTO local node binary: build/bin/z23-dev
 make vendor         # build the vendored archives from source
-make zclassic23     # full link
+make z23     # full link
 ```
 
 ## Build, test, deploy
 
 ```bash
-make -j"$(nproc)"   # test_zcl + zclassic23 + zclassic-cli
+make -j"$(nproc)"   # test_zcl + z23 + zclassic-cli
 make -j"$(nproc)" dev-bin  # fast local node executable, not for deploy/release
 make -j"$(nproc)" test     # full parallel suite via the cached per-TU test_parallel
 make -j"$(nproc)" test_parallel_wpo  # whole-program LTO test binary (debug per-TU/LTO divergence)

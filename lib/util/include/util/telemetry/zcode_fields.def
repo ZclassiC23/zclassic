@@ -72,7 +72,7 @@ TL_LEAF(store, tracked_packages, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
     "next publish or fetch of a package the store does not already hold will "
     "be refused with tracked-package-limit, and no amount of free quota will "
     "change that",
-    "zclassic23 ops state --subsystem=zcode_store to see which packages are "
+    "z23 ops state --subsystem=zcode_store to see which packages are "
     "tracked, then unpin and let eviction reclaim, or raise the bound")
 
 TL_LEAF(store, cas_chunks, TLC_I64, TFU_GAUGE, TLV_NORMAL,
@@ -114,7 +114,7 @@ TL_LEAF(store, quota_rejects_total, TLC_I64, TFU_COUNT_TOTAL, TLV_SUMMARY,
     "this node is dropping package bytes it was asked to hold: a publish, a "
     "swarm fetch or a pin into that pool cannot complete, and the packages "
     "already held are pinned or too hot to evict",
-    "zclassic23 ops state --subsystem=zcode_store and compare each pool's "
+    "z23 ops state --subsystem=zcode_store and compare each pool's "
     "usage_bytes against its budget_bytes, then unpin a package or restart "
     "with a larger -packagequota")
 

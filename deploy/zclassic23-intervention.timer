@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Intervention Ledger Timer — every 60s
+Description=Z23 Intervention Ledger Timer — every 60s
 
 [Timer]
 # OnCalendar (wall-clock), NOT OnBootSec/OnUnitActiveSec — same lesson the

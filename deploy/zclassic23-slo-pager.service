@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 SLO Pager — fail-state IS the page (canonical no-advance / stale ledger / unreachable)
+Description=Z23 SLO Pager — fail-state IS the page (canonical no-advance / stale ledger / unreachable)
 # THE PAGE SURFACE. This oneshot runs
 # tools/scripts/slo_page_if_stalled.sh. `evaluate` reads the external
 # ledger this pager does NOT itself produce

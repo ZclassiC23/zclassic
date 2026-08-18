@@ -86,7 +86,7 @@ struct bb_probe_ctx {
 };
 
 /* Probe one height against the in-memory active chain — the same authority
- * `zclassic23 dumpstate block_index <h>` reports, and the only one that
+ * `z23 dumpstate block_index <h>` reports, and the only one that
  * distinguishes a body on disk from a header row.
  *
  * Anything that is not a positive read returns INDETERMINATE. A NULL slot,

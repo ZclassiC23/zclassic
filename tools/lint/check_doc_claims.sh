@@ -492,7 +492,7 @@ if [ "$external" -eq 0 ]; then
         docs/DEVELOPING.md
         docs/HANDOFF.md
         docs/work/FORWARD_PLAN.md
-        .claude/skills/zclassic23-dev/SKILL.md
+        .claude/skills/z23-dev/SKILL.md
     )
     for f in "${entry_docs[@]}"; do
         if [ ! -f "$f" ]; then

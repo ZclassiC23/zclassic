@@ -321,7 +321,7 @@ const struct zcl_hotswap_probe_case *hotswap_probe_case_for_operation(
     const char *operation);
 
 /* Append the activation subsystem's telemetry into an already-open object.
- * Called by hotswap_dump_state_json() so `zclassic23 dumpstate hotswap` shows
+ * Called by hotswap_dump_state_json() so `z23 dumpstate hotswap` shows
  * both the generation loader and activation
  * slots/epochs/containment in one document. */
 void hotswap_activate_dump_json(struct json_value *out);

@@ -87,7 +87,7 @@ struct zcl_result header_probe_pull_range(int start_height, int max_headers,
  *            depend on it).
  * The stale_validate_headers_repair Condition orchestrates the ordering and
  * records which source acted via the note_* functions below, so the
- * `zclassic23 dumpstate header_probe` reports the last repair source and
+ * `z23 dumpstate header_probe` reports the last repair source and
  * per-source counters (which source served the last repair, how many repairs
  * each source served, how many P2P re-fetches were requested, and how many of
  * those fired with zero connected peers = a missing-input event). */
@@ -112,7 +112,7 @@ void header_probe_note_repair_served(enum header_probe_repair_source src,
  * repair right now (missing input) and is counted separately. */
 void header_probe_note_p2p_request(int height, int peers_available);
 
-/* Reentrant-safe dispatcher entry for `zclassic23 dumpstate header_probe`. */
+/* Reentrant-safe dispatcher entry for `z23 dumpstate header_probe`. */
 bool header_probe_dump_state_json(struct json_value *out, const char *key);
 
 /* Test hooks — reset state between unit tests. */

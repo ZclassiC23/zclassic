@@ -32,7 +32,7 @@ directory:
   commercial naming certificates.
 
 The fillable gap is **identity and authenticity**, not circuits and not
-bandwidth measurement. A fully-synced zclassic23 node already holds a
+bandwidth measurement. A fully-synced z23 node already holds a
 globally consistent, censorship-resistant, PoW-committed bulletin board
 that every other node agrees on byte-for-byte. Prior art (Antiblok,
 SmartMeasurer, TorCoin) bolted this onto foreign smart-contract chains;
@@ -125,7 +125,7 @@ signature → master-key anchor. Full authenticity for a descriptor, relay
 record, or package release **without the 10 GB chain** — the sovereignty
 story extended to light clients.
 
-`zclassic23 zcode proof walk` executes that chain as one read-only
+`z23 zcode proof walk` executes that chain as one read-only
 command over evidence passed in, and reports each rung separately as
 passed / failed / not_checked-with-a-reason
 (`tools/command/native_proof_chain_command.c`, proven by the

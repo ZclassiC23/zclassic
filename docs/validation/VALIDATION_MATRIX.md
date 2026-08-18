@@ -1,4 +1,4 @@
-# ZClassic23 Validation Audit Matrix
+# Z23 Validation Audit Matrix
 
 Exactly what cryptographic validation happens at each stage of block
 processing. Trust nothing — every hash, signature, and proof is verified by one
@@ -113,7 +113,7 @@ Sync methods and self-healing recovery are documented operator-side in
 
 **LevelDB tx index (key: `'t' + txid[32]`):**
 - Value (zclassicd): `varint(nFile) | varint(nDataPos) | varint(nTxOffset)`
-- Value (zclassic23): raw struct `{ int nFile; uint nPos; uint nTxOffset; }`
+- Value (z23): raw struct `{ int nFile; uint nPos; uint nTxOffset; }`
 - Reader handles both formats (`lib/storage/src/txdb.c`)
 
 **SQLite UTXO table:**

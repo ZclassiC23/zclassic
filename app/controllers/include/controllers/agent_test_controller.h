@@ -8,7 +8,7 @@
  * header for the async-by-design rationale.
  *
  * Poll a run via the diagnostics registry primitive:
- *   zclassic23 dumpstate agent_test <kind>-<name>
+ *   z23 dumpstate agent_test <kind>-<name>
  * See CLAUDE.md "Adding state introspection". Reentrant-safe.
  */
 #ifndef ZCL_CONTROLLERS_AGENT_TEST_H

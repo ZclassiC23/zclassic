@@ -1,6 +1,6 @@
 ---
-name: zclassic23-dev
-description: Use when developing ZClassic23, onboarding to the repository, understanding its architecture, or making a source change. Imports the canonical model-neutral agent contract and developer procedure instead of maintaining vendor-specific doctrine.
+name: z23-dev
+description: Use when developing Z23, onboarding to the repository, understanding its architecture, or making a source change. Imports the canonical model-neutral agent contract and developer procedure instead of maintaining vendor-specific doctrine.
 ---
 
 Read [`AGENTS.md`](../../../AGENTS.md) first, then the developer operating manual

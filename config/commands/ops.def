@@ -9,7 +9,7 @@ ZCL_COMMAND_READY_READ(
     "Every registered health check with its pass/fail and the overall serving "
     "verdict, read live from the running node at call time.", 0,
     "health,checks,status,rollup", "zcl.command.empty_input.v1",
-    "zcl.health.v1", "", "", "zclassic23 ops health",
+    "zcl.health.v1", "", "", "z23 ops health",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -21,7 +21,7 @@ ZCL_COMMAND_READY_READ(
     "A triage summary — the current primary blocker, likely cause, and "
     "suggested next action — synthesized live from node state at call time.", 0,
     "diagnose,triage,operator,summary", "zcl.command.empty_input.v1",
-    "zcl.ops_diagnose.v1", "", "", "zclassic23 ops diagnose",
+    "zcl.ops_diagnose.v1", "", "", "z23 ops diagnose",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -33,7 +33,7 @@ ZCL_COMMAND_READY_READ(
     "The known worktree/deploy lanes and each one's role and state, read from "
     "the node's lane view at call time.", 0,
     "lanes,worktree,deploy,dev", "zcl.command.empty_input.v1",
-    "zcl.ops_lanes.v1", "", "", "zclassic23 ops lanes",
+    "zcl.ops_lanes.v1", "", "", "z23 ops lanes",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -48,7 +48,7 @@ ZCL_COMMAND_PLANNED_READ(
     "native job registry; that registry is not built yet, so the leaf fails "
     "closed today.", ZCL_COMMAND_LIST_BUDGET,
     "jobs,list,async", "zcl.command.empty_input.v1", "zcl.jobs.v1", "", "",
-    "zclassic23 ops jobs list",
+    "z23 ops jobs list",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -62,7 +62,7 @@ ZCL_COMMAND_READY_READ(
     "not the full log.", ZCL_COMMAND_LIST_BUDGET,
     "logs,tail,grep,node.log", "zcl.ops_logs.input.v1", "zcl.ops_logs.v1",
     "pattern,since_secs,max_lines,level", "pattern",
-    "zclassic23 ops logs --pattern='blocker'",
+    "z23 ops logs --pattern='blocker'",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -75,7 +75,7 @@ ZCL_COMMAND_READY_READ(
     "first from the node's in-memory event ring; a bounded recent window, not "
     "full history.", ZCL_COMMAND_LIST_BUDGET,
     "timeline,events,history", "zcl.command.empty_input.v1",
-    "zcl.ops_timeline.v1", "", "", "zclassic23 ops timeline",
+    "zcl.ops_timeline.v1", "", "", "z23 ops timeline",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -88,7 +88,7 @@ ZCL_COMMAND_READY_READ(
     "instantaneous values (counters are cumulative since boot), not a "
     "time series.", ZCL_COMMAND_LIST_BUDGET,
     "metrics,counters,gauges", "zcl.command.empty_input.v1",
-    "zcl.ops_metrics.v1", "", "", "zclassic23 ops metrics",
+    "zcl.ops_metrics.v1", "", "", "z23 ops metrics",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -105,7 +105,7 @@ ZCL_COMMAND_READY_READ(
     "state,subsystem,dump,dumpstate,introspect,explain",
     "zcl.ops_state.input.v1",
     "zcl.ops_state.v1", "subsystem,key,explain", "subsystem",
-    "zclassic23 ops state --subsystem=reducer_frontier",
+    "z23 ops state --subsystem=reducer_frontier",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -115,7 +115,7 @@ ZCL_COMMAND_READY_READ(
 /* The discovery half of ops.state. ops.state requires a subsystem name and
  * fails MISSING_SUBSYSTEM without one, so an agent that does not already know
  * the names had no typed way to learn them — only the legacy flat
- * `zclassic23 statecatalog` shim, or reading diagnostics_dumpers.def out of a
+ * `z23 statecatalog` shim, or reading diagnostics_dumpers.def out of a
  * source tree a release binary does not carry. Same catalog, one renderer
  * (diag_rpc_statecatalog); node-free, because the registry is compiled in. */
 ZCL_COMMAND_READY_READ(
@@ -134,7 +134,7 @@ ZCL_COMMAND_READY_READ(
     "statecatalog,subsystems,catalog,dumpstate,discover,state,list",
     "zcl.ops_statecatalog.input.v1", "zcl.ops_statecatalog.v1",
     "subsystem,limit,page", "",
-    "zclassic23 ops statecatalog",
+    "z23 ops statecatalog",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -147,7 +147,7 @@ ZCL_COMMAND_READY_READ(
     "well-formedness defects (pass/fail/skip counts and each failure's path and "
     "reason); complete over every catalog leaf.", 0,
     "selftest,self-test,registry,contract,smoke", "zcl.command.empty_input.v1",
-    "zcl.ops_selftest.v1", "", "", "zclassic23 ops selftest",
+    "zcl.ops_selftest.v1", "", "", "z23 ops selftest",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -157,7 +157,7 @@ ZCL_COMMAND_READY_READ(
 /* Operator-UX diagnostics live under the existing ops.debug branch — a new
  * top-level ops.* branch would push the ops menu over its 1600-byte budget
  * (ZCL_COMMAND_BRANCH_BUDGET; proven by test_branch_menus_shallow). The
- * bare-root aliases (`zclassic23 explain sync`, `zclassic23 profile`) are
+ * bare-root aliases (`z23 explain sync`, `z23 profile`) are
  * the primary invocation surface, so the canonical path barely shows. */
 ZCL_COMMAND_BRANCH("ops.debug", "ops", "Diagnostics",
                    ZCL_COMMAND_LAYER_OPS)
@@ -169,7 +169,7 @@ ZCL_COMMAND_READY_READ(
     "machine schema.", 0,
     "explain,sync,blockers,health,why,diagnose,prose",
     "zcl.ops_explain.input.v1", "zcl.ops_explain.v1", "topic", "topic",
-    "zclassic23 explain sync",
+    "z23 explain sync",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -193,7 +193,7 @@ ZCL_COMMAND_READY_READ(
      * returns the whole table), and positional == handler-required in the
      * generated contract. */
     "subsystem,name,question", "",
-    "zclassic23 meaning --name=pre_handshake_disconnects",
+    "z23 meaning --name=pre_handshake_disconnects",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -208,7 +208,7 @@ ZCL_COMMAND_READY_READ(
     "cumulative.", ZCL_COMMAND_LIST_BUDGET,
     "profile,cpu,threads,bottleneck,perf,wchan,sample",
     "zcl.ops_profile.input.v1", "zcl.ops_profile.v1", "seconds,top_n",
-    "seconds", "zclassic23 profile 3",
+    "seconds", "z23 profile 3",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -224,7 +224,7 @@ ZCL_COMMAND_READY_READ(
     "producer,mint,anchor,receipt,fold,progress,eta",
     "zcl.ops_producer_status.input.v1", "zcl.ops_producer_status.v1",
     "datadir", "datadir",
-    "zclassic23 ops producer status -datadir=/home/you/.zclassic-c23-mint",
+    "z23 ops producer status -datadir=/home/you/.zclassic-c23-mint",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -246,7 +246,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LIST_BUDGET,
     "rom,compile,fold,progress,checkpoint,anchor,layers,ascii,mint",
     "zcl.command.empty_input.v1", "zcl.rom_compile.v1", "", "",
-    "zclassic23 ops rom",
+    "z23 ops rom",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -259,7 +259,7 @@ ZCL_COMMAND_READY_READ(
     "written to, dumped by the running node at call time; a point-in-time "
     "snapshot of all threads.", ZCL_COMMAND_LIST_BUDGET,
     "backtrace,threads,stacks,hang,deadlock,debug", "zcl.command.empty_input.v1",
-    "zcl.ops_debug_backtrace.v1", "", "", "zclassic23 ops debug backtrace",
+    "zcl.ops_debug_backtrace.v1", "", "", "z23 ops debug backtrace",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -275,7 +275,7 @@ ZCL_COMMAND_READY_READ(
     "supervisor detects a stall.", ZCL_COMMAND_LIST_BUDGET,
     "debug,bundle,diagnostics,postmortem,state,capture,stall",
     "zcl.command.empty_input.v1", "zcl.ops_debug_bundle.v1", "", "",
-    "zclassic23 ops debug bundle",
+    "z23 ops debug bundle",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -299,7 +299,7 @@ ZCL_COMMAND_READY_READ(
     "raw result of the corresponding read RPC at call time.",
     ZCL_COMMAND_LIST_BUDGET,
     "kpi,dashboard,pulse,overview,subsystems", "zcl.command.empty_input.v1",
-    "zcl.ops_kpi.v1", "", "", "zclassic23 kpi",
+    "zcl.ops_kpi.v1", "", "", "z23 kpi",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -314,7 +314,7 @@ ZCL_COMMAND_READY_READ(
     "invariants, and the summary projection, forwarded as captured.", 0,
     "operator,snapshot,coherence,invariants,evidence",
     "zcl.command.empty_input.v1",
-    "zcl.operator_snapshot.v3", "", "", "zclassic23 ops snapshot",
+    "zcl.operator_snapshot.v3", "", "", "z23 ops snapshot",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -328,7 +328,7 @@ ZCL_COMMAND_READY_READ(
     "operator snapshot — a one-glance never-optimistic verdict read live at "
     "call time.", 0,
     "operator,summary,verdict,rollup", "zcl.command.empty_input.v1",
-    "zcl.operator_summary.v1", "", "", "zclassic23 ops summary",
+    "zcl.operator_summary.v1", "", "", "z23 ops summary",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -342,7 +342,7 @@ ZCL_COMMAND_READY_READ(
     "systems/goals/subgoals bars and MVP acceptance criteria — computed live "
     "at call time.", 0,
     "milestone,mvp,progress,version,goals", "zcl.command.empty_input.v1",
-    "zcl.milestone.v1", "", "", "zclassic23 milestone",
+    "zcl.milestone.v1", "", "", "z23 milestone",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -352,11 +352,11 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_READ(
     "ops.debug.dash.mirror", "ops.debug.dash", "ops.mirror",
     "zclassicd mirror lockstep",
-    "Canonical zclassic23/zclassicd mirror lockstep status — both heights and "
+    "Canonical z23/zclassicd mirror lockstep status — both heights and "
     "hashes, lag, reachability, running state, and catch-up counters — read "
     "live at call time.", 0,
     "mirror,lockstep,zclassicd,lag,parity", "zcl.command.empty_input.v1",
-    "zcl.mirror_status.v2", "", "", "zclassic23 ops mirror",
+    "zcl.mirror_status.v2", "", "", "z23 ops mirror",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -370,7 +370,7 @@ ZCL_COMMAND_READY_READ(
     "hits/exhaustion, total scanned blocks, and the active scan depth limit — "
     "sampled live at call time.", 0,
     "selfheal,recovery,utxo,scan,counters", "zcl.command.empty_input.v1",
-    "zcl.self_heal_stats.v1", "", "", "zclassic23 ops selfheal",
+    "zcl.self_heal_stats.v1", "", "", "z23 ops selfheal",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -399,7 +399,7 @@ ZCL_COMMAND_READY_READ(
     "time.", 0,
     "rom,seed,policy,bandwidth,generosity,status",
     "zcl.command.empty_input.v1", "zcl.rom_seed_status.v1", "", "",
-    "zclassic23 ops debug rom_seed status",
+    "z23 ops debug rom_seed status",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -413,7 +413,7 @@ ZCL_COMMAND_READY_COMMAND(
     "settled state.", 0,
     "rom,seed,enable,policy",
     "zcl.command.empty_input.v1", "zcl.rom_seed_status.v1", "", "",
-    "zclassic23 ops debug rom_seed enable",
+    "z23 ops debug rom_seed enable",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -431,7 +431,7 @@ ZCL_COMMAND_READY_COMMAND(
     "state.", 0,
     "rom,seed,disable,policy",
     "zcl.command.empty_input.v1", "zcl.rom_seed_status.v1", "", "",
-    "zclassic23 ops debug rom_seed disable",
+    "z23 ops debug rom_seed disable",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -449,7 +449,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LIST_BUDGET,
     "rom,seed,artifacts,ledger,stats",
     "zcl.command.empty_input.v1", "zcl.rom_seed_artifacts.v1", "", "",
-    "zclassic23 ops debug rom_seed artifacts",
+    "z23 ops debug rom_seed artifacts",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -469,7 +469,7 @@ ZCL_COMMAND_READY_COMMAND(
     ZCL_COMMAND_LIST_BUDGET,
     "rom,seed,publish,register,bundle,starter,serve,swarm",
     "zcl.command.empty_input.v1", "zcl.rom_seed_publish.v1", "", "",
-    "zclassic23 ops debug rom_seed publish",
+    "z23 ops debug rom_seed publish",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -498,7 +498,7 @@ ZCL_COMMAND_READY_READ(
     "node's in-process fetch state at call time.", 0,
     "rom,fetch,download,bundle,status",
     "zcl.command.empty_input.v1", "zcl.rom_fetch_status.v1", "", "",
-    "zclassic23 ops debug rom_fetch status",
+    "z23 ops debug rom_fetch status",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_PUBLIC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -519,7 +519,7 @@ ZCL_COMMAND_READY_COMMAND(
     "rom,fetch,download,bundle,verify",
     "zcl.rom_fetch_bundle.input.v1", "zcl.rom_fetch_bundle.result.v1",
     "peer,port,root,whole_sha3,size,filename,out_dir", "",
-    "zclassic23 ops debug rom_fetch bundle --input='{\"peer\":\"203.0.113.7\",\"root\":\"<64hex>\",\"whole_sha3\":\"<64hex>\",\"size\":\"538507264\"}'",
+    "z23 ops debug rom_fetch bundle --input='{\"peer\":\"203.0.113.7\",\"root\":\"<64hex>\",\"whole_sha3\":\"<64hex>\",\"size\":\"538507264\"}'",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -536,7 +536,7 @@ ZCL_COMMAND_READY_READ(
     "node's postmortem store; complete at call time, newest first.",
     ZCL_COMMAND_LIST_BUDGET,
     "postmortem,list,failure,capsule", "zcl.command.empty_input.v1",
-    "zcl.postmortem_list.v1", "", "", "zclassic23 ops postmortem list",
+    "zcl.postmortem_list.v1", "", "", "z23 ops postmortem list",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -550,7 +550,7 @@ ZCL_COMMAND_PLANNED_READ(
     "leaf fails closed today.", 0,
     "postmortem,replay,failure",
     "zcl.ops_postmortem_ref.input.v1", "zcl.postmortem_replay.v1", "id", "id",
-    "zclassic23 ops postmortem replay <id>",
+    "z23 ops postmortem replay <id>",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -565,7 +565,7 @@ ZCL_COMMAND_PLANNED_READ(
     "overrides are merged; a distinct effective-config reader is not built, so "
     "the leaf fails closed today.", 0,
     "config,show,settings", "zcl.command.empty_input.v1", "zcl.ops_config.v1",
-    "", "", "zclassic23 ops config show",
+    "", "", "z23 ops config show",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -576,7 +576,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "Will reload runtime configuration and report which keys changed; the "
     "reload binding is not wired, so the leaf fails closed today.", 0,
     "config,reload", "zcl.command.empty_input.v1", "zcl.ops_config_reload.v1",
-    "", "", "zclassic23 ops config reload",
+    "", "", "z23 ops config reload",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_CORE_RECOVERY, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FAST,
@@ -592,7 +592,7 @@ ZCL_COMMAND_READY_READ(
     "The current refold/recovery cursor and progress read live from the node; "
     "reflects the in-flight rebuild state at call time.", 0,
     "recovery,refold,status,rebuild", "zcl.command.empty_input.v1",
-    "zcl.recovery_status.v1", "", "", "zclassic23 ops recovery status",
+    "zcl.recovery_status.v1", "", "", "z23 ops recovery status",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -606,7 +606,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "today.", 0,
     "recovery,rebuild,recent",
     "zcl.ops_recovery_rebuild.input.v1", "zcl.recovery_rebuild.v1", "depth", "",
-    "zclassic23 ops recovery rebuild --depth=100",
+    "z23 ops recovery rebuild --depth=100",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_DESTRUCTIVE,
     ZCL_COMMAND_RISK_CORE_RECOVERY, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,

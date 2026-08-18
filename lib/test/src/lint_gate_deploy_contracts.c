@@ -276,7 +276,7 @@ int t_dev_lane_deploy_contract(void)
         ASSERT(strstr(script, "ZCL_AGENT_EXPECT_BUILD_SOURCE=deploy-dev") != NULL);
         ASSERT(strstr(script, "ZCL_DEV_DEPLOY_BUILD") != NULL);
         ASSERT(strstr(script, "make fast-rebuild") != NULL);
-        ASSERT(strstr(script, "build/bin/zclassic23-dev") != NULL);
+        ASSERT(strstr(script, "build/bin/z23-dev") != NULL);
         ASSERT(strstr(script, "case \"$DEV_DEPLOY_BUILD\"") != NULL);
         ASSERT(strstr(script, "strict)") != NULL);
         ASSERT(strstr(script,
@@ -577,7 +577,7 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "test_parallel_fast") != NULL);
         ASSERT(strstr(buf, "fast-compile dev-build-only") != NULL);
         ASSERT(strstr(buf, "fast-changed-compile") != NULL);
-        ASSERT(strstr(buf, "dev-bin zclassic23-dev") != NULL);
+        ASSERT(strstr(buf, "dev-bin z23-dev zclassic23-dev") != NULL);
         ASSERT(strstr(buf,
                       "fast-rebuild rebuild-fast dev-rebuild "
                       "hot-rebuild super-rebuild") != NULL);
@@ -693,11 +693,11 @@ int t_agent_fast_ci_contract(void)
         /* The doc leads with the native typed command registry. */
         ASSERT(strstr(arch_doc, "Terminal agents should prefer native "
                                 "commands") != NULL);
-        ASSERT(strstr(arch_doc, "`zclassic23 status`") != NULL);
-        ASSERT(strstr(arch_doc, "zclassic23 dumpstate <subsystem>")
+        ASSERT(strstr(arch_doc, "`z23 status`") != NULL);
+        ASSERT(strstr(arch_doc, "z23 dumpstate <subsystem>")
                != NULL);
-        ASSERT(strstr(arch_doc, "zclassic23 discover help") != NULL);
-        ASSERT(strstr(arch_doc, "zclassic23-dev status") != NULL);
+        ASSERT(strstr(arch_doc, "z23 discover help") != NULL);
+        ASSERT(strstr(arch_doc, "z23-dev status") != NULL);
         ASSERT(strstr(arch_doc, "make agent-dev-status") != NULL);
 
         ASSERT(repo_path(path, sizeof(path), "tools/agent_fast_ci.sh") == 0);
@@ -709,8 +709,8 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "emit_plan_json") != NULL);
         ASSERT(strstr(buf, "recommended_command") != NULL);
         ASSERT(strstr(buf, "native_shortcuts") != NULL);
-        ASSERT(strstr(buf, "zclassic23 <leaf> [--input=json]") != NULL);
-        ASSERT(strstr(buf, "zclassic23-dev <leaf> [--input=json]") != NULL);
+        ASSERT(strstr(buf, "z23 <leaf> [--input=json]") != NULL);
+        ASSERT(strstr(buf, "z23-dev <leaf> [--input=json]") != NULL);
         ASSERT(strstr(buf, "green_input_cache") != NULL);
         ASSERT(strstr(buf, "sccache cc") != NULL);
         ASSERT(strstr(buf, "ccache cc") != NULL);
@@ -768,10 +768,8 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_STRICT_TESTS") != NULL);
         ASSERT(strstr(buf, "make_fast \"$target\"") != NULL);
         ASSERT(strstr(buf, "ZCL_FAST_JOBS") != NULL);
-        ASSERT(strstr(buf, "ZCL_FAST_NODE_BIN") != NULL);
-        ASSERT(strstr(buf, "ZCL_FAST_DEV_NODE_BIN") != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23") != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23-dev") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_NODE_BIN:-build/bin/z23}") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_DEV_NODE_BIN:-build/bin/z23-dev}") != NULL);
         ASSERT(strstr(buf, "run_dev_rebuild") != NULL);
         ASSERT(strstr(buf, "dev-bin link target=$DEV_NODE_BIN") != NULL);
         ASSERT(strstr(buf,
@@ -938,7 +936,7 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "`make dev-bin`") != NULL);
         ASSERT(strstr(buf, "`make ci-reproducible`") != NULL);
         ASSERT(strstr(buf, "build/bin/test-fast/epochs/") != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23-dev") != NULL);
+        ASSERT(strstr(buf, "build/bin/z23-dev") != NULL);
         ASSERT(strstr(buf, "classification hints only") != NULL);
         ASSERT(strstr(buf, "build/dev-obj/epochs/") != NULL);
         ASSERT(strstr(buf, "ZCL_DEV_OPT=-Og") != NULL);
@@ -958,10 +956,10 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "ZCL_FAST_CACHE_DIR") != NULL);
         ASSERT(strstr(buf, ".cache/zcl-agent-fast-ci") != NULL);
         ASSERT(strstr(buf, "fast result cache hit") != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23 agent") != NULL);
+        ASSERT(strstr(buf, "build/bin/z23 agent") != NULL);
         ASSERT(strstr(buf, "There is no external shell-wrapper fallback")
                != NULL);
-        ASSERT(strstr(buf, "zclassic23 agentbuild") != NULL);
+        ASSERT(strstr(buf, "z23 agentbuild") != NULL);
         ASSERT(strstr(buf, "`make immutable-history-canaries`") != NULL);
         ASSERT(strstr(buf, "h=478544") != NULL);
         ASSERT(strstr(buf, "replay-canary-anchor") != NULL);
@@ -985,7 +983,7 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "Public start here") != NULL);
         ASSERT(strstr(buf, "make dev-bin") != NULL);
         ASSERT(strstr(buf, "registered parallel groups") != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23 core sync diagnose")
+        ASSERT(strstr(buf, "build/bin/z23 core sync diagnose")
                != NULL);
         ASSERT(strstr(buf, "| jq") == NULL);
         free(buf);
@@ -999,9 +997,9 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "make -j\"$(nproc)\"") != NULL);
         ASSERT(strstr(buf, "make fast-rebuild") != NULL);
         ASSERT(strstr(buf, "make t-fast ONLY=<group>") != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23 status")
+        ASSERT(strstr(buf, "build/bin/z23 status")
                != NULL);
-        ASSERT(strstr(buf, "build/bin/zclassic23 discover help")
+        ASSERT(strstr(buf, "build/bin/z23 discover help")
                != NULL);
         ASSERT(strstr(buf, "dumpstate reducer_frontier") != NULL);
         ASSERT(strstr(buf, "docs/BOOTSTRAPPING.md") != NULL);

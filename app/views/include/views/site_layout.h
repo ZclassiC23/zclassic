@@ -58,7 +58,7 @@ static inline size_t site_emit_global_nav(char *buf, size_t max,
         "<header class='site-top'>"
         "<a class='brand' href='/'>"
         "<span class='glyph' aria-hidden='true'>Z</span>"
-        "<span>ZClassic23</span></a>"
+        "<span>Z23</span></a>"
         "<nav aria-label='Site'>");
     for (size_t i = 0; i < g_zcl_site_nav_app_count; i++) {
         bool act = active && strcmp(active, g_zcl_site_nav_app[i].id) == 0;
@@ -79,7 +79,7 @@ static inline size_t site_emit_global_nav(char *buf, size_t max,
     "<header class='site-top'>" \
     "<a class='brand' href='/'>" \
     "<span class='glyph' aria-hidden='true'>Z</span>" \
-    "<span>ZClassic23</span></a>" \
+    "<span>Z23</span></a>" \
     "<nav aria-label='Site'>" \
     "<a href='/explorer'>Explorer</a>" \
     "<a href='/names'>Names</a>" \
@@ -105,7 +105,7 @@ static inline size_t site_emit_head(char *buf, size_t max, const char *title,
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
         "<title>%s</title>",
-        (title && title[0]) ? title : "ZClassic23");
+        (title && title[0]) ? title : "Z23");
     if (css)
         SITE_APPEND(off, buf, max, "<style>%s</style>", css);
     else
@@ -125,7 +125,7 @@ static inline size_t site_emit_footer(char *buf, size_t max, const char *text)
     size_t off = 0;
     SITE_APPEND(off, buf, max, "<footer>%s</footer></body></html>",
         (text && text[0]) ? text
-                          : "ZClassic23 &mdash; one binary, one onion, one stack");
+                          : "Z23 &mdash; one binary, one onion, one stack");
     return off;
 }
 

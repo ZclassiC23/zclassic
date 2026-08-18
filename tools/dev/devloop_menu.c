@@ -27,7 +27,7 @@ static size_t emit_unknown_path(const char *path, char *out, size_t out_sz)
                      "{\"schema\":\"zcl.command_menu.v1\","
                      "\"error\":\"unknown_path\",\"path\":\"%s\","
                      "\"agent_next_action\":"
-                     "\"zclassic23-dev dev search <intent>\"}",
+                     "\"z23-dev dev search <intent>\"}",
                      path && path[0] ? path : "dev");
     if (n <= 0 || (size_t)n >= out_sz)
         return 0;

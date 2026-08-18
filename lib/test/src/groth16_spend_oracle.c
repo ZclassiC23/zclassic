@@ -3,7 +3,7 @@
  * Portions interoperate with librustzcash / bellman / sapling-crypto
  * (The Zcash developers / Electric Coin Company), pinned commit
  * 06da3b9ac8f278e5d4ae13088cf0a4c03d2c13f5, MIT / Apache-2.0. The reference
- * bytes are checked in as an inert KAT; ZClassic23 fetches, builds and links
+ * bytes are checked in as an inert KAT; Z23 fetches, builds and links
  * no Rust code.
  *
  * WHAT THIS IS

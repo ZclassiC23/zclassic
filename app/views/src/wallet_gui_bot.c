@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZClassic23 GUI bot driver: drives the real GTK WebKit app, navigates wallet
+ * Z23 GUI bot driver: drives the real GTK WebKit app, navigates wallet
  * pages, executes JS, and asserts DOM text via the g_bot_script scenario.
  * Shares g_webview / g_self_test / g_bot_fail and navigate() with wallet_gui.c
  * through views/wallet_gui_internal.h. */
@@ -276,7 +276,7 @@ static void bot_advance(void)
 gboolean start_self_test(gpointer data)
 {
     (void)data;
-    printf("\n=== ZClassic23 Bot Driver ===\n");
+    printf("\n=== Z23 Bot Driver ===\n");
     printf("Navigating real GTK WebKit app, reading DOM, verifying data.\n\n");
 
     g_signal_connect(g_webview, "load-changed",

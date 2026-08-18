@@ -204,7 +204,7 @@ bool db_onion_directory_truncate(struct node_db *ndb)
     return true;
 }
 
-/* ── `zclassic23 ops state --subsystem=onion_directory` ────────────── */
+/* ── `z23 ops state --subsystem=onion_directory` ────────────── */
 
 static void od_push_row(struct json_value *out,
                         const struct db_onion_directory *r)

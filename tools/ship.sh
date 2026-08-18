@@ -521,12 +521,12 @@ printf '%-22s %-18s %-12s %s\n' HOST SOURCE_ID HEIGHT STATE
 for target in $TARGETS; do
     case "$target" in
         local)
-            s="$(timeout 20 build/bin/zclassic23 status 2>/dev/null || true)"
+            s="$(timeout 20 build/bin/z23 status 2>/dev/null || true)"
             printf '%-22s %-18s %-12s %s\n' "local" "${CAND_SOURCE_ID:0:16}…" \
                 "$(printf '%s' "$s" | grep -oE 'hstar=[0-9]+' | cut -d= -f2)" \
                 "$(printf '%s' "$s" | grep -oE 'sync=[a-z_]+' | cut -d= -f2)" ;;
         remote)
-            s="$(ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" 'timeout 20 ~/bin/zclassic23 status 2>/dev/null' || true)"
+            s="$(ssh "${SSH_OPTS[@]}" "$REMOTE_HOST" 'timeout 20 ~/bin/z23 status 2>/dev/null' || true)"
             printf '%-22s %-18s %-12s %s\n' "$REMOTE_HOST" "${CAND_SOURCE_ID:0:16}…" \
                 "$(printf '%s' "$s" | grep -oE 'hstar=[0-9]+' | cut -d= -f2)" \
                 "$(printf '%s' "$s" | grep -oE 'sync=[a-z_]+' | cut -d= -f2)" ;;

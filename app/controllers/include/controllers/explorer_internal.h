@@ -121,7 +121,7 @@ static inline size_t explorer_emit_nav(char *buf, size_t max, const char *active
     "</form></div></nav>"
 
 #define EXPLORER_FOOTER \
-    "<footer>ZClassic23 Block Explorer &mdash; one binary, one onion, one stack</footer>" \
+    "<footer>Z23 Block Explorer &mdash; one binary, one onion, one stack</footer>" \
     "</body></html>"
 
 /* ── SQLite query helpers (DRY — one definition for all controllers) ──

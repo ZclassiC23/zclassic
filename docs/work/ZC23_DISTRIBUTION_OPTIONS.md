@@ -11,7 +11,7 @@ explicitly promotes — and the issuance promise is already fixed:
 > commons grew, was tested, was independently reproduced, or was preserved.
 
 Owner questions this answers: (a) do we call it Proof of Participation?
-(b) how is ZC23 distributed? (c) can I earn some for putting zclassic23
+(b) how is ZC23 distributed? (c) can I earn some for putting z23
 code on it?
 
 ## 0. What is already fixed (not options)
@@ -47,7 +47,7 @@ identical either way; this is a naming decision, not a protocol one.
 | **B. Fixed genesis + patronage pool** | Mint a fixed supply at genesis to a transparent commons treasury; distribution is commissioning/patronage flows from the pool. | Simple accounting, but genesis mint violates "exists because the commons grew" unless the pool is provably locked to future evidence. |
 | **C. Hybrid** | Small bootstrap pool (option B) for commissioning, with all ongoing emission by evidence (option A). | Pragmatic; needs the pool's lock rules written before any mint. |
 
-## 3. "Can I earn ZC23 for putting zclassic23 code on it?"
+## 3. "Can I earn ZC23 for putting z23 code on it?"
 
 Yes under every option — that is the core case. Concretely, under 2A:
 

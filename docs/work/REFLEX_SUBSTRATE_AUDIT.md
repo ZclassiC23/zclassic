@@ -91,8 +91,8 @@ the former victim were 20/20 green; the full replay then reached 81.36%.
 An agent attaches once:
 
 ```text
-zclassic23-dev dev begin
-zclassic23-dev dev loop events --after=<cursor> --format=jsonl
+z23-dev dev begin
+z23-dev dev loop events --after=<cursor> --format=jsonl
 ```
 
 It can continue thinking after each edit while the stream emits resumable

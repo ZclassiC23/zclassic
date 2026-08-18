@@ -73,7 +73,7 @@ TL_LEAF(catalog, kinds_readable, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
     "no property kind can be projected at all: every kinds[] row of `metaverse "
     "property list` returns unavailable, and this node reports no digital "
     "property whatever it actually holds on disk",
-    "zclassic23 metaverse property list --datadir=<dir> — every kinds[] row "
+    "z23 metaverse property list --datadir=<dir> — every kinds[] row "
     "carries the exact unavailable_reason for its own kind")
 
 TL_LEAF(catalog, kinds_unreadable, TLC_I64, TFU_GAUGE, TLV_NORMAL,
@@ -90,7 +90,7 @@ TL_LEAF(catalog, registry_complete, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     "a kind resolves to no adapter row, or to a row keyed to a different kind: "
     "it drops out of the catalog silently, so property of that kind is "
     "invisible rather than reported unavailable",
-    "zclassic23 metaverse property list --datadir=<dir> and count the kinds[] "
+    "z23 metaverse property list --datadir=<dir> and count the kinds[] "
     "rows against values.catalog.kinds_declared")
 
 TL_LEAF(catalog, reader_content, TLC_BOOL, TFU_BOOL, TLV_NORMAL,

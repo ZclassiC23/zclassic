@@ -2,7 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* Live ZClassic23 peer evidence for bootstrapstatus. This stays separate from
+/* Live Z23 peer evidence for bootstrapstatus. This stays separate from
  * the generic network RPC controller so the first-call bootstrap contract can
  * grow without turning network_controller.c into a peer-reporting dump. */
 

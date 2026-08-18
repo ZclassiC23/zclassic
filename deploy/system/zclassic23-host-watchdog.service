@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Host Watchdog — probes user@<uid>.service liveness + canonical node RPC port from OUTSIDE the systemd --user failure domain
+Description=Z23 Host Watchdog — probes user@<uid>.service liveness + canonical node RPC port from OUTSIDE the systemd --user failure domain
 After=network.target
 
 [Service]

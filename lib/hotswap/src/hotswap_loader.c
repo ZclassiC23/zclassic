@@ -387,7 +387,7 @@ bool hotswap_dump_state_json(struct json_value *out, const char *key)
     json_free(&last);
     pthread_mutex_unlock(&g_lock);
 
-    /* Merge module-ABI telemetry into the same `zclassic23 dumpstate hotswap`
+    /* Merge module-ABI telemetry into the same `z23 dumpstate hotswap`
      * document (takes its own lock). */
     hotswap_activate_dump_json(out);
     return true;

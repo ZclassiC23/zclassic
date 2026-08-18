@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZClassic23 GUI — WebKit browser with Wallet, Explorer, Store.
- * Launches as the default mode when zclassic23 is run with no arguments.
+ * Z23 GUI — WebKit browser with Wallet, Explorer, Store.
+ * Launches as the default mode when z23 is run with no arguments.
  * All routing is in-process C function calls — zero network latency. */
 
 #if defined(HAVE_WEBKIT) && defined(HAVE_GTK)
@@ -427,7 +427,7 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
 
     if (!gtk_init_check(&argc, &argv)) {
         fprintf(stderr, "Cannot open display (DISPLAY=%s).\n"
-                "For headless testing: xvfb-run build/bin/zclassic23 --self-test\n",
+                "For headless testing: xvfb-run build/bin/z23 --self-test\n",
             getenv("DISPLAY") ? getenv("DISPLAY") : "unset");
         return 1;
     }
@@ -457,7 +457,7 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
 
     /* Window */
     GtkWidget *win = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(win), "ZClassic23");
+    gtk_window_set_title(GTK_WINDOW(win), "Z23");
     gtk_window_set_default_size(GTK_WINDOW(win), 1100, 820);
     g_signal_connect(win, "destroy", G_CALLBACK(gtk_main_quit), NULL);
     g_signal_connect(win, "key-press-event", G_CALLBACK(on_key_press), NULL);
@@ -549,9 +549,9 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
     }
     GtkWidget *d = gtk_message_dialog_new(NULL, 0, GTK_MESSAGE_INFO,
         GTK_BUTTONS_OK,
-        "ZClassic23 GUI requires WebKit2GTK.\n"
+        "Z23 GUI requires WebKit2GTK.\n"
         "Install: pacman -S webkit2gtk-4.1\n\n"
-        "Run as node: build/bin/zclassic23 -datadir=~/.zclassic-c23");
+        "Run as node: build/bin/z23 -datadir=~/.zclassic-c23");
     gtk_dialog_run(GTK_DIALOG(d));
     gtk_widget_destroy(d);
     return 1;
@@ -562,7 +562,7 @@ int wallet_gui_main(int argc, char **argv, const char *datadir)
 {
     (void)argc; (void)argv; (void)datadir;
     fprintf(stderr, "GUI not available — built without GTK3 + WebKit2.\n"
-            "Run as node: build/bin/zclassic23 -datadir=~/.zclassic-c23\n");
+            "Run as node: build/bin/z23 -datadir=~/.zclassic-c23\n");
     return 1;
 }
 #endif

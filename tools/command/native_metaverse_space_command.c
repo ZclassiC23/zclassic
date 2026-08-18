@@ -93,14 +93,14 @@ static void mvspace_discovery_state(
                               ? "service_descriptor" : "space_manifest";
   if (state && strcmp(state, "present") == 0 && root)
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 metaverse space show %s", root);
+                   "z23 metaverse space show %s", root);
   else if (retryable && root)
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 metaverse space discover %s --kind=%s",
+                   "z23 metaverse space discover %s --kind=%s",
                    root, kind_name);
   else
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 metaverse space status");
+                   "z23 metaverse space status");
   json_push_kv_str(&reply->data, "next_action", next);
 }
 
@@ -312,7 +312,7 @@ static bool mvspace_manifest(
      * instead of leaving the operator with a bare I/O error. */
     if (strcmp(error, "cannot open DHT identity file") == 0)
       (void)snprintf(error, sizeof(error),
-                     "cannot open DHT identity file — run `zclassic23 zcode "
+                     "cannot open DHT identity file — run `z23 zcode "
                      "network delegate` once to provision it");
     mvspace_blocked(reply, "IDENTITY_UNAVAILABLE",
                     error[0] ? error :
@@ -1068,28 +1068,28 @@ void zcl_native_handle_metaverse_space_status(
   char next[256];
   if (!root)
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 metaverse space status --input="
+                   "z23 metaverse space status --input="
                    "'{\"root\":\"<64hex>\"}'");
   else if (!identity.chain_authorized || !network.enabled)
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 zcode network status");
+                   "z23 zcode network status");
   else if (!store_open)
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 ops state --subsystem=zcode_store");
+                   "z23 ops state --subsystem=zcode_store");
   else if (!policy_all)
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 zcode network policy list");
+                   "z23 zcode network policy list");
   else if (!visibility.visible && ready_to_discover)
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 metaverse space discover %s --kind=%s",
+                   "z23 metaverse space discover %s --kind=%s",
                    root, expected == METAVERSE_SPACE_OBJECT_MANIFEST
                              ? "space_manifest" : "service_descriptor");
   else if (ready_to_publish && (!pointer_records || !provider_records))
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 metaverse space publish %s", root);
+                   "z23 metaverse space publish %s", root);
   else
     (void)snprintf(next, sizeof(next),
-                   "zclassic23 metaverse space show %s", root);
+                   "z23 metaverse space show %s", root);
   json_push_kv_str(&reply->data, "next_safe_command", next);
   json_push_kv_bool(&reply->data, "side_effect_free", true);
 }

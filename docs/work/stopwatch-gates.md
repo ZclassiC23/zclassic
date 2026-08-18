@@ -138,7 +138,7 @@ a supported way to silence this, which is the defect.
 - **Report time** — `make c3-stopwatch-report` /
   `make netdisrupt-stopwatch-report` print one extra `SKIP_STREAK` line on
   stdout and, on a crossing, one `ALARM` line on **stderr**.
-- **Typed interface** — `zclassic23 dumpstate stopwatch_evidence` (key `c3`
+- **Typed interface** — `z23 dumpstate stopwatch_evidence` (key `c3`
   or `netdisrupt`, or empty for both) reports `skip_streak`,
   `no_pass_streak`, `skip_class`, `alarm_threshold`, `alarm`, and a plain
   English `summary`, re-read from the ledger file on every call.

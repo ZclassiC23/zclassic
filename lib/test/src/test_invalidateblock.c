@@ -20,7 +20,7 @@
  * The full disconnect-and-reorg of the *active* chain (which calls the
  * real disconnect_tip against coins/undo + LevelDB via the activation
  * controller) is an integration concern — exercised by test_reorg_safety
- * for the disconnect machinery and by `make deploy` + `zclassic23 status` for the
+ * for the disconnect machinery and by `make deploy` + `z23 status` for the
  * end-to-end lever. Here we prove the mark/clear core + that the
  * canonical selector honors it, which is the consensus-relevant contract.
  *

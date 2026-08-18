@@ -28,7 +28,7 @@
     "ZCL_WALLET_PASSPHRASE set at first boot) so keys are wrapped before " \
     "they hit disk. -allow-plaintext-wallet is refused on the shop lane."
 #define SHOP_STATUS_REMEDY_INIT \
-    "zclassic23 app shop init --input='{\"confirm\":true}'"
+    "z23 app shop init --input='{\"confirm\":true}'"
 #define SHOP_STATUS_REMEDY_TOR \
     "rebuild against the vendored Tor (make tor-full), then boot with -tor"
 #define SHOP_STATUS_REMEDY_PERSIST \

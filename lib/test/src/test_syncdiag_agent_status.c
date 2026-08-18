@@ -131,7 +131,7 @@ int syncdiag_cases_agent_status(void)
         ok = ok && strcmp(json_get_str(json_get(&result, "summary")),
                           "node has an active health blocker") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "next")),
-                          "zclassic23 healthcheck") == 0;
+                          "z23 healthcheck") == 0;
         const struct json_value *readiness = json_get(&result, "readiness");
         ok = ok && readiness && readiness->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(readiness, "schema")),
@@ -179,7 +179,7 @@ int syncdiag_cases_agent_status(void)
                           "window.consistency") != NULL;
         ok = ok && strcmp(json_get_str(json_get(operator_latch,
                                                 "native_state_command")),
-                          "zclassic23 dumpstate condition_engine") == 0;
+                          "z23 dumpstate condition_engine") == 0;
         const struct json_value *condition_summary =
             json_get(&result, "conditions");
         ok = ok && condition_summary && condition_summary->type == JSON_OBJ;
@@ -190,7 +190,7 @@ int syncdiag_cases_agent_status(void)
         ok = ok && json_get(condition_summary, "unresolved_count") != NULL;
         ok = ok && strcmp(json_get_str(json_get(condition_summary,
                                                 "native_state_command")),
-                          "zclassic23 dumpstate condition_engine") == 0;
+                          "z23 dumpstate condition_engine") == 0;
         const struct json_value *mirror_contract =
             json_get(&result, "mirror_contract");
         ok = ok && mirror_contract && mirror_contract->type == JSON_OBJ;
@@ -787,7 +787,7 @@ int syncdiag_cases_agent_status(void)
                           &result, "primary_blocker")),
                           "utxo_apply.anchor_backfill_gap") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result, "next")),
-                          "zclassic23 dumpstate blocker") == 0;
+                          "z23 dumpstate blocker") == 0;
         ok = ok && health &&
              json_get_bool(json_get(health, "hard_typed_blocker"));
         ok = ok && health && strcmp(json_get_str(json_get(

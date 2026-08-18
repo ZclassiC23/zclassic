@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Background Coverage Timer
+Description=Z23 Background Coverage Timer
 
 [Timer]
 # Coverage is slower than fuzz smoke and less useful hourly. Keep one fresh

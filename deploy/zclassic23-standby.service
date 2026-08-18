@@ -1,4 +1,4 @@
-# ZClassic23 warm-standby serving replica.
+# Z23 warm-standby serving replica.
 #
 # Purpose: a second node that follows tip continuously on its OWN datadir and
 # ports, ready to be promoted to the canonical serving identity (8033/18232,
@@ -18,7 +18,7 @@
 #   systemctl --user enable --now zclassic23-standby
 
 [Unit]
-Description=ZClassic23 Warm-Standby Serving Replica (promotable understudy)
+Description=Z23 Warm-Standby Serving Replica (promotable understudy)
 After=network-online.target
 Wants=network-online.target
 # Crash-only, same doctrine as the canonical unit: the binary owns crash-loop

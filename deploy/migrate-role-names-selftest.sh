@@ -70,7 +70,7 @@ echo "marker: this is the operator's real synced state" > "$HOME_DIR/.zclassic-c
 # exactly like a real installed unit would.
 cat > "$HOME_DIR/.config/systemd/user/zcl-serve1.service" <<'UNIT'
 [Unit]
-Description=ZClassic23 Serve1 lane (secondary full node + block explorer)
+Description=Z23 Serve1 lane (secondary full node + block explorer)
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0
@@ -227,7 +227,7 @@ mkdir -p "$REFUSE_HOME/.config/systemd/user"
 # the exact condition under which the old script would silently proceed.
 cat > "$REFUSE_HOME/.config/systemd/user/zcl-serve2.service" <<'UNIT'
 [Unit]
-Description=ZClassic23 Serve2 lane
+Description=Z23 Serve2 lane
 [Service]
 Type=simple
 ExecStart=%h/zclassic23/build/bin/zclassic23 -datadir=%h/.zclassic-c23-serve2 -port=39072

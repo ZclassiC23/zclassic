@@ -1,4 +1,4 @@
-# ZClassic23 Native Command Interface
+# Z23 Native Command Interface
 
 Status: frozen v1 contract; implementation in progress
 Audience: LLM coding agents, application developers, node operators, and UI
@@ -14,10 +14,10 @@ reference of the implemented agent surface (`agentops`, `agentdiagnose`,
 
 ## 1. North star
 
-> **ZClassic23 is a metaverse where people and AI create real things together,
+> **Z23 is a metaverse where people and AI create real things together,
 > and nobody owns the world they build in.**
 
-The primary interface to ZClassic23 is one shallow, searchable command tree
+The primary interface to Z23 is one shallow, searchable command tree
 owned by the C binary. An LLM loads only the branch needed for its current
 task. It never has to ingest a flat catalog of 100+ tools.
 
@@ -40,7 +40,7 @@ For development, the target steady-state interaction is simpler still:
 
 1. The agent edits code.
 2. The persistent native dev loop notices and coalesces the save.
-3. ZClassic23 classifies the change as Core or App.
+3. Z23 classifies the change as Core or App.
 4. It runs the smallest mandatory deterministic proof.
 5. On explicit owner request, `dev.generation.activate` stages, preflights,
    and transactionally publishes one complete isolated-dev generation.
@@ -74,17 +74,17 @@ filesystem, socket, private-key, peer-state, boot, or process capability.
 The canonical form is:
 
 ```text
-zclassic23 [global-options] <branch> [sub-branch ...] [leaf-options]
+z23 [global-options] <branch> [sub-branch ...] [leaf-options]
 ```
 
 Examples:
 
 ```bash
-zclassic23 status
-zclassic23 core chain block get --height=478544
-zclassic23 app invoke names resolve --name=alice
-zclassic23 dev app describe social
-zclassic23 dev search "ABI mismatch"
+z23 status
+z23 core chain block get --height=478544
+z23 app invoke names resolve --name=alice
+z23 dev app describe social
+z23 dev search "ABI mismatch"
 ```
 
 Normative behavior:
@@ -94,7 +94,7 @@ Normative behavior:
 - `help [path]` describes one branch or leaf.
 - `search <text>` returns at most five ranked paths.
 - Stable machine IDs use dots, for example `core.chain.block.get`; CLI paths
-  use spaces. A dotted first token (`zclassic23 core.chain.block.get ...`) is
+  use spaces. A dotted first token (`z23 core.chain.block.get ...`) is
   accepted as the same invocation — the dispatcher splits it into path
   segments before resolution.
 - The parser resolves the longest registered command path. Leaf arguments
@@ -127,7 +127,7 @@ Stable process exit codes are:
 ## 4. Root tree
 
 ```text
-zclassic23
+z23
 ├── status
 ├── core
 │   ├── status
@@ -239,7 +239,7 @@ app
 
 Installed applications are dynamic children from `apps/<id>/app.def`; they
 are not hardcoded forever into the global registry. For example,
-`zclassic23 app invoke social` returns only Social's immediate children:
+`z23 app invoke social` returns only Social's immediate children:
 
 ```text
 social
@@ -681,13 +681,13 @@ rollback are one transaction. A newer save supersedes an older candidate.
 
 ```bash
 # Idempotent session/bootstrap call.
-zclassic23-dev dev loop ensure \
+z23-dev dev loop ensure \
   --input='{"root":"/home/rhett/github/zclassic23"}'
 
 # The LLM now edits any number of C files directly.
 
 # Optional synchronization when it needs the verdict before continuing.
-zclassic23-dev dev loop wait \
+z23-dev dev loop wait \
   --input='{"after_epoch":41,"timeout_ms":30000}' --view=summary
 ```
 
@@ -704,12 +704,12 @@ and malformed receipts always execute. `dev.diagnose.latest` returns the ID and
 one-line summary for the most recently recorded compiler failure; it is not
 current-cycle authority and may remain after an edit or green verdict. Follow
 the current cycle's returned ID with
-`zclassic23-dev dev diagnose show <failure_id>`. The default normal view omits
+`z23-dev dev diagnose show <failure_id>`. The default normal view omits
 the capsule and stays below 2 KiB; `--view=full` adds the bounded capsule and
 retry command within the 6 KiB command budget. The ID binds source identity,
 phase, and normalized first error; first mutation/execution fields describe the
 first observation, and the repeat count includes executed and coalesced
-observations. `zclassic23-dev dev ff` always executes the current checkout's
+observations. `z23-dev dev ff` always executes the current checkout's
 ladder. It is a fresh retry, not an exact historical replay.
 
 Cycle verdicts live under
@@ -895,7 +895,7 @@ described in older revisions of this section. Typed effect/authority/
 availability/schema/execution-mode metadata, the common result envelope, the
 stable exit-code policy, and ranked search are all live. Do not re-propose any
 of that; verify current per-leaf `ready`/`planned`/`compat` status with
-`zclassic23 discover describe <path>` or [`docs/API_REFERENCE.md`](./API_REFERENCE.md)
+`z23 discover describe <path>` or [`docs/API_REFERENCE.md`](./API_REFERENCE.md)
 rather than trusting a hand-maintained gap list here, which goes stale the
 moment a leaf ships.
 
@@ -915,7 +915,7 @@ on the armed dev lane are the gated single-leaf hot-swap
 
 The interface vocabulary is split across native agent contracts, full-profile
 RPC methods, service entries, service operations, and numerous Make or script
-development targets. Enumerate the live counts with `zclassic23 discover
+development targets. Enumerate the live counts with `z23 discover
 help`/`discover search` rather than trusting a pinned number here — this
 baseline describes the inventory shape, not the future public shape.
 
@@ -941,7 +941,7 @@ Unlike the migration plan above, this section describes what the CLI does
 follow — the concrete answer to "98% fewer IO tokens between an operator/AI
 and the node" than the ~15 KB `core.status` JSON.
 
-**Brief line.** `zclassic23 status` prints exactly ONE line, <=200 bytes,
+**Brief line.** `z23 status` prints exactly ONE line, <=200 bytes,
 stable `key=value` pairs separated by single spaces, no JSON braces:
 
 ```
@@ -963,7 +963,7 @@ body; there is no second data path.
 Two further fields appear **when the node exports the typed-blocker-registry
 summary** (omitted, never zero-fabricated, on older nodes): `blockers` (count
 of active typed blockers) and `blocker_head` (the registry's dominant blocker
-id). Both come from the **same authority** as `zclassic23 dumpstate blocker`
+id). Both come from the **same authority** as `z23 dumpstate blocker`
 (`blocker_snapshot_all` + `blocker_select_dominant`), so the compact brief and
 `dumpstate blocker` can never name disjoint blockers even when the headline
 `blocker=` is a higher-priority posture gate.
@@ -978,19 +978,19 @@ from `install_height`), and `capabilities_locked` (a comma-joined subset of
 `mint`, `wallet_spend`, `export_bundle` currently denied by that tier — empty
 when nothing is locked). These come from the `agent` RPC's OPTIONAL
 `trust_tier` sub-object (schema `zcl.trust_tier.v1`) and `security_posture`'s
-own heights, so `zclassic23 status` and `zclassic23 dumpstate sovereignty`
+own heights, so `z23 status` and `z23 dumpstate sovereignty`
 can never disagree on the trust posture.
 
-**Field selector.** `zclassic23 status field=<k1,k2,...>` and
-`zclassic23 dumpstate <subsystem> field=<k1,k2,...>` print ONLY the named
+**Field selector.** `z23 status field=<k1,k2,...>` and
+`z23 dumpstate <subsystem> field=<k1,k2,...>` print ONLY the named
 fields, one `key=value` line each, in the order requested:
 
 ```
-$ zclassic23 status field=gap,primary_blocker
+$ z23 status field=gap,primary_blocker
 gap=0
 primary_blocker=none
 
-$ zclassic23 dumpstate reducer_frontier field=hstar,served_floor
+$ z23 dumpstate reducer_frontier field=hstar,served_floor
 hstar=3176325
 served_floor=3176325
 ```
@@ -1008,24 +1008,24 @@ works as a normal dashed flag (`--field=a,b`) on any native registry leaf.
 
 **Terse by construction.** `status` always uses the compact native body;
 `--format=json` returns that same bounded body in `zcl.result.v1`. The large
-diagnostic document is explicit as `zclassic23 core status --format=json`.
+diagnostic document is explicit as `z23 core status --format=json`.
 `ZCL_BRIEF=1` remains only as a compatibility formatting option for raw
 `dumpstate` output.
 
-**No-arg entry point.** Bare `zclassic23` (zero arguments — the real node
+**No-arg entry point.** Bare `z23` (zero arguments — the real node
 service never invokes the binary this way; `deploy/zclassic23.service`
 always passes `-datadir=`/`-rpcport=`/etc.) prints the brief line plus one
 suggested next command, never a wall of text:
 
 ```
-$ zclassic23
+$ z23
 hstar=3176325 gap=0 peer_best=3176325 sync=synced blocker=none blocker_age=unknown conditions=0 peers=8 rss_mb=512
-next: zclassic23 ops health
+next: z23 ops health
 ```
 
 The next-command hint is deterministic: a named dominant blocker wins
-(`zclassic23 explain blockers`), else a positive gap wins
-(`zclassic23 explain sync`), else `zclassic23 ops health`.
+(`z23 explain blockers`), else a positive gap wins
+(`z23 explain sync`), else `z23 ops health`.
 
 **Unknown-command diagnostic.** An unrecognized top-level command (confirmed
 by the RPC layer, not a version-skew symptom) prints one typed error line
@@ -1034,8 +1034,8 @@ index (`discover search`'s own scoring — no new fuzzy matcher) when the
 index has a hit:
 
 ```
-$ zclassic23 statuss
-error=UNKNOWN_COMMAND detail=no such command 'statuss' try=zclassic23 discover search statuss
+$ z23 statuss
+error=UNKNOWN_COMMAND detail=no such command 'statuss' try=z23 discover search statuss
 did you mean: core.status core.status.brief ops.state
 ```
 
@@ -1082,8 +1082,8 @@ and a readable `.cookie`, uses that datadir, and names it on one loud
 stderr line:
 
 ```
-$ zclassic23 -rpcport=39072 dumpstate reducer_frontier
-zclassic23: -rpcport=39072 given without -datadir — auto-discovered datadir /home/op/.zclassic-c23-work (pass -datadir=DIR to target a different instance)
+$ z23 -rpcport=39072 dumpstate reducer_frontier
+z23: -rpcport=39072 given without -datadir — auto-discovered datadir /home/op/.zclassic-c23-work (pass -datadir=DIR to target a different instance)
 ```
 
 An explicit `-datadir=` always wins — auto-discovery only runs when the
@@ -1100,7 +1100,7 @@ its own exit code, rather than one generic message:
 | TCP connects but the node never answers within 10s | `CONNECT_TIMEOUT` / `RESPONSE_TIMEOUT` | 5 | node busy — retry, or check `ops state --subsystem=supervisor` |
 | TCP connects, HTTP 401 | `AUTH_REJECTED` | 4 | auth cookie mismatch — pass `-datadir=DIR` for the node actually on that port |
 
-**`status` with no live default node.** The bare `zclassic23 status`
+**`status` with no live default node.** The bare `z23 status`
 command, with no `-datadir=` and no cookie at the resolved default datadir,
 prints a `zcl.cli_local_instances.v1` JSON document listing every sibling
 `~/.zclassic-c23*` instance this scan found (datadir, recorded port, and a
@@ -1156,7 +1156,7 @@ reverse.
 
 **Error suggestions.** The `run:` line comes from a small curated
 code → next-action table in `cli_render.c` (e.g. `MISSING_SUBSYSTEM` →
-`run: zclassic23 statecatalog`, `BAD_INPUT` → `discover schema <path>`),
+`run: z23 statecatalog`, `BAD_INPUT` → `discover schema <path>`),
 which is the optional suggestion descriptor: codes absent from the table
 fall back to the envelope's own `next[0]` rendered as an executable shell
 line, then to no hint. `UNKNOWN_COMMAND` always prefers the envelope's

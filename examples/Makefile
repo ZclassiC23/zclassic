@@ -1,4 +1,4 @@
-# examples/Makefile — standalone build for the zclassic23 teaching examples.
+# examples/Makefile — standalone build for the z23 teaching examples.
 #
 # Invoke as `make -C examples <target>` (or `cd examples && make <target>`).
 # This file is intentionally separate from the root ../Makefile — it never
@@ -83,7 +83,7 @@ LIB_OBJS := $(filter-out %/lib/test/src/test_parallel.o %lib/test/src/test_paral
 # entry points without opening README.md first.
 all: $(BINS)
 	@echo
-	@echo "Built $(words $(BINS)) zclassic23 teaching examples into $(BIN_DIR)/."
+	@echo "Built $(words $(BINS)) z23 teaching examples into $(BIN_DIR)/."
 	@echo
 	@echo "  make -C examples run               run all $(words $(BINS)), in order, stop at the first failure"
 	@echo "  make -C examples run-<name>        run just one example, e.g. run-04_zslp_token"

@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Public Explorer Smoke Timer — every 5 minutes
+Description=Z23 Public Explorer Smoke Timer — every 5 minutes
 
 [Timer]
 # OnCalendar (wall-clock), NOT monotonic — see the SLO probe timer's comment

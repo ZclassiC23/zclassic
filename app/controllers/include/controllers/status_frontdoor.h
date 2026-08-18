@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * status_frontdoor — the single-round-trip operator status composition
- * (Program O2). One node-side dumper that composes `zclassic23 status` from
+ * (Program O2). One node-side dumper that composes `z23 status` from
  * lock-free / trylock-guarded in-process snapshot sources: the provable-tip
  * cache and reducer floor (plain atomics), the peer snapshot (trylock+cached,
  * never blocks), and the in-memory blocker registry. Every composed member
@@ -13,7 +13,7 @@
  * the 4-worker RPC pool and racing the fold with a 10s kill-timeout; this
  * composition takes ZERO progress_store_tx_lock and runs no COUNT(*), so it
  * completes under load instead of queueing behind the reducer. The native
- * `zclassic23 status` handler reaches it in ONE dumpstate round-trip; the full
+ * `z23 status` handler reaches it in ONE dumpstate round-trip; the full
  * legacy 12-call document stays available behind `status --full`.
  *
  * Registered as the `status_frontdoor` dumpstate subsystem. Reentrant-safe;

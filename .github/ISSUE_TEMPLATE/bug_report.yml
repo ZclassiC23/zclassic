@@ -6,11 +6,11 @@ body:
     attributes:
       value: |
         Thanks for taking the time. Two of the fields below are specific to this
-        project and do most of the triage work — the `zclassic23 status` output
+        project and do most of the triage work — the `z23 status` output
         and the consensus question. Please don't skip them.
 
         Security vulnerabilities do **not** go here: follow
-        [`.github/SECURITY.md`](https://github.com/ZclassiC23/zclassic/blob/main/.github/SECURITY.md)
+        [`.github/SECURITY.md`](https://github.com/z23c/z23/blob/main/.github/SECURITY.md)
         instead, so the report stays private until there is a fix.
 
   - type: textarea
@@ -39,9 +39,9 @@ body:
   - type: textarea
     id: status
     attributes:
-      label: Output of `zclassic23 status`
+      label: Output of `z23 status`
       description: >
-        Paste the whole thing (`build/bin/zclassic23 status`, or add
+        Paste the whole thing (`build/bin/z23 status`, or add
         `--format=json` for the typed envelope). This one command carries
         height, header height, gap, peer count, sync state, health, and the
         named primary blocker — it usually identifies the failure class before
@@ -57,11 +57,11 @@ body:
     attributes:
       label: Does this change consensus?
       description: >
-        Read this before you spend a weekend on a fix. zclassic23 must stay
+        Read this before you spend a weekend on a fix. z23 must stay
         bit-for-bit consensus-compatible with `zclassicd`. A change to Equihash
         parameters, activation heights, or block/transaction validity is
         **declined on principle** — even if framed as opt-in, miner-signaled, or
-        a "sidegrade" — because a consensus change must never ship to zclassic23
+        a "sidegrade" — because a consensus change must never ship to z23
         first. If you report one anyway we will thank you, credit the idea, and
         decline the change; we may reimplement any non-consensus part of it
         ourselves. Non-consensus reports are judged purely on merit. Full
@@ -82,7 +82,7 @@ body:
       label: Build
       description: >
         Commit or tag you built from, plus OS and compiler
-        (`gcc --version`). `zclassic23 status --format=json` reports the
+        (`gcc --version`). `z23 status --format=json` reports the
         running `build_commit`.
       placeholder: "aba27f574, Ubuntu 24.04, gcc 14.2"
     validations:
@@ -93,8 +93,8 @@ body:
     attributes:
       label: Anything else
       description: >
-        Relevant `node.log` excerpts, `zclassic23 ops logs --pattern='error|warn'`
-        output, `zclassic23 dumpstate reducer_frontier`, or notes on what you
+        Relevant `node.log` excerpts, `z23 ops logs --pattern='error|warn'`
+        output, `z23 dumpstate reducer_frontier`, or notes on what you
         already ruled out.
     validations:
       required: false

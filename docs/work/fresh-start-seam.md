@@ -1,6 +1,6 @@
 # Fresh-start seam — why a genuinely bare boot reaches no state and folds nothing
 
-Scope: one bare `zclassic23` process, an empty datadir, an isolated `$HOME`
+Scope: one bare `z23` process, an empty datadir, an isolated `$HOME`
 (no `~/.zclassic`), no snapshot/bundle/import flags. This file maps, in
 present tense and against code at `HEAD`, every state source such a boot can
 legitimately use, the exact predicate that refuses each one, and the two

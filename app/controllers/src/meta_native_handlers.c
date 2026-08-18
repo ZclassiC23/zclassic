@@ -70,7 +70,7 @@ char *zcl_native_metrics_body(const struct json_value *args,
  * Surfaces the `EV_CONSENSUS_REJECT_TX`/`_BLOCK` ring as a bounded
  * (kind, reason) -> count table plus per-kind totals and overflow
  * buckets. This is the dashboards/alerting view; the per-hash
- * `zclassic23 core consensus reject explain` is the targeted companion. */
+ * `z23 core consensus reject explain` is the targeted companion. */
 char *zcl_native_consensus_report_body(const struct json_value *args,
                                        struct zcl_native_body_err *err)
 {

@@ -346,7 +346,7 @@ void zcl_native_handle_core_epoch_status(
     } else {
         json_push_kv_str(&reply->data, "next",
                          "no zepoch anchor in the current epoch — run "
-                         "`zclassic23 core epoch anchor` to commit the "
+                         "`z23 core epoch anchor` to commit the "
                          "catalog digest on-chain (operator decision; "
                          "spends a fee)");
     }
@@ -784,7 +784,7 @@ void zcl_native_handle_core_epoch_verify(
     } else {
         json_push_kv_str(&reply->data, "next",
                          "no zepoch anchor in the current epoch — run "
-                         "`zclassic23 core epoch anchor` to commit");
+                         "`z23 core epoch anchor` to commit");
     }
     zcl_native_node_db_close_readonly(&db, &ndb);
     reply->status = ZCL_COMMAND_STATUS_PASSED;

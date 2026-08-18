@@ -34,7 +34,7 @@
  *
  * This lane does NOT register a diagnostics dumper or a condition; a
  * later lane wires catalog_completeness_snapshot() into
- * `zclassic23 ops state` / a typed blocker. This module is the engine,
+ * `z23 ops state` / a typed blocker. This module is the engine,
  * not the surface. */
 
 #ifndef STORAGE_CATALOG_COMPLETENESS_H

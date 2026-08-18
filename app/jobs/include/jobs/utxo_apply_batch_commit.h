@@ -11,7 +11,7 @@
  * COMMIT, with the height range folded, the row (block) count, and the
  * measured commit wall time. That turns a silent slowdown into one
  * greppable LOG_INFO line plus rolling stats any operator or agent can read
- * live via the diagnostics registry (`zclassic23 dumpstate batch_commit`).
+ * live via the diagnostics registry (`z23 dumpstate batch_commit`).
  */
 #ifndef ZCL_JOBS_UTXO_APPLY_BATCH_COMMIT_H
 #define ZCL_JOBS_UTXO_APPLY_BATCH_COMMIT_H

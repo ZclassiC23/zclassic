@@ -1,6 +1,6 @@
 # ZClassic Social
 
-Reference application for the public ZClassic23 App ABI. It is a
+Reference application for the public Z23 App ABI. It is a
 permissionless signed-event social network with local, user-owned projections.
 
 The Core owns consensus, wallet keys, sockets, storage durability, Tor, and

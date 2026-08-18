@@ -103,7 +103,7 @@ there is not green.
 Five lines of frame, then the task:
 
 ```
-You are an executor in the zclassic23 repository. Work in <abs worktree path>
+You are an executor in the z23 repository. Work in <abs worktree path>
 on branch lane/<slug>. Follow LANE_CONTRACT v1 (docs/agent/LANE_CONTRACT.md) —
 read it first; it is the doctrine, the build etiquette and the gate definitions.
 Report in the shape of docs/agent/LANE_REPORT.md as your final message.

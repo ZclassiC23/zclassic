@@ -8,11 +8,11 @@ live values and no incident history.
 Everything is reachable from `discover help`:
 
 ```
-zclassic23 discover help ops.telemetry
-zclassic23 discover help ops.telemetry.sync
-zclassic23 discover describe ops.telemetry.sync.stages
-zclassic23 ops telemetry sync stages
-zclassic23 ops telemetry watch --since=<sequence>
+z23 discover help ops.telemetry
+z23 discover help ops.telemetry.sync
+z23 discover describe ops.telemetry.sync.stages
+z23 ops telemetry sync stages
+z23 ops telemetry watch --since=<sequence>
 ```
 
 `ops state` and `ops statecatalog` remain as raw-debug surfaces over the same

@@ -13,7 +13,7 @@
 > [`docs/work/CONSENSUS-STATE-BUNDLE.md`](./work/CONSENSUS-STATE-BUNDLE.md)
 > for its contract. Do not point one loader's drop-in files at the other.
 
-A freshly built `zclassic23` node can use a release-assisted starter pack: a
+A freshly built `z23` node can use a release-assisted starter pack: a
 prebuilt block index plus a digest-verified state snapshot. This is an assisted
 readiness path, not a sovereign or consensus proof.
 
@@ -36,7 +36,7 @@ Sapling/Sprout, or nullifier roots, so they do not prove the payload contents.
 ## The release
 
 Legacy starter packs may exist under `starterpack-<height>` releases on
-`ZclassiC23/zclassic`. Use them only on an isolated/copy lane with explicit
+`z23c/z23`. Use them only on an isolated/copy lane with explicit
 assisted-state posture. Each legacy release contains four files produced by
 `tools/mint_v2_snapshot.c`:
 
@@ -61,7 +61,7 @@ Build the node from `main` (see [`docs/BUILD.md`](./BUILD.md)), then (replace
 # 1. Download the assets into a fresh datadir
 DATADIR="$HOME/.zclassic-c23"          # or any empty directory
 mkdir -p "$DATADIR" && cd "$DATADIR"
-gh release download starterpack-<height> -R ZclassiC23/zclassic
+gh release download starterpack-<height> -R z23c/z23
 # (downloads block_index.bin, utxo-seed-<height>.snapshot, SHA256SUMS, manifest.json)
 
 # 2. Verify integrity — must print "OK" for both payload files
@@ -71,7 +71,7 @@ sha256sum -c SHA256SUMS
 #    bundle (block_index.bin + utxo-seed-<height>.snapshot in the datadir),
 #    SHA3-verifies the snapshot, checks its anchor against the local header
 #    chain, and seeds borrowed state from it.
-build/bin/zclassic23 -datadir="$DATADIR"
+build/bin/z23 -datadir="$DATADIR"
 ```
 
 ### Expected result

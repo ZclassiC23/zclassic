@@ -7,7 +7,7 @@
  * This adapter is the ONLY place that names sqlite for the node-health
  * subsystem. node_health_collect() performs exactly three storage reads;
  * this adapter holds them behind the port with byte-for-byte identical
- * SQL and the same WAL stat() so `zclassic23 status` and metrics
+ * SQL and the same WAL stat() so `z23 status` and metrics
  * surface is unchanged.
  *
  * It wraps two already-open connections opened elsewhere:

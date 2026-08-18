@@ -253,7 +253,7 @@ bool rpc_agent_test(const struct json_value *params, bool help,
         "                           test_group must be a compiled group\n"
         "                           name, scenario must name an existing\n"
         "                           tools/sim/scenarios/<name>.scenario\n"
-        "\nPoll a run with: zclassic23 dumpstate agent_test <kind>-<name>.\n"
+        "\nPoll a run with: z23 dumpstate agent_test <kind>-<name>.\n"
         "This\n"
         "call never blocks for the run duration.\n"
         "\nResult:\n"
@@ -271,7 +271,7 @@ bool rpc_agent_test(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_str(result, "schema", AGENT_TEST_CONTRACT_SCHEMA);
     json_push_kv_str(result, "api_version", "v1");
-    json_push_kv_str(result, "native_command", "zclassic23 agenttest");
+    json_push_kv_str(result, "native_command", "z23 agenttest");
 
     const char *kind_lit = NULL;
     bool at_is_test_group = false;
@@ -415,7 +415,7 @@ bool rpc_agent_test(const struct json_value *params, bool help,
     json_push_kv_str(result, "launch_log", launch_log);
     json_push_kv_bool(result, "registry_precheck_skipped",
                       registry_precheck_skipped);
-    json_push_kv_str(result, "poll_native", "zclassic23 dumpstate agent_test");
+    json_push_kv_str(result, "poll_native", "z23 dumpstate agent_test");
     json_push_kv_str(result, "budget_note",
         "detached background run; does not hold an RPC worker thread. "
         "Poll status_file via dumpstate instead of waiting on "

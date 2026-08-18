@@ -2,7 +2,7 @@
 
 ## What it demonstrates
 
-Every zclassic23 node is a .onion web server, and an "app" is not a
+Every z23 node is a .onion web server, and an "app" is not a
 plugin system or a VM — it is one declarative manifest, one controller,
 and one mount, all plain C, all reviewed like every other file in the
 tree. This recipe walks the whole loop using the two apps that ship in
@@ -127,14 +127,14 @@ and walk the seller → gossip → buyer-accept loop by hand.
 Nothing to compile separately — the apps build into the one binary:
 
 ```bash
-make -j"$(nproc)" && build/bin/zclassic23 -tor
+make -j"$(nproc)" && build/bin/z23 -tor
 # then browse http://<your-node>.onion/yardsale
 ```
 
 ## Expected output sketch
 
 ```
-$ build/bin/zclassic23 dev app list
+$ build/bin/z23 dev app list
 blog       ZClassic Blog       0.1.0
 social     ZClassic Social     0.1.0
 yardsale   ZClassic Yardsale   0.1.0

@@ -158,7 +158,7 @@ static bool rpc_api_index(const struct json_value *params, bool help,
         "api\n"
         "\nReturn the versioned zclassic23 API discovery document. This is the\n"
         "same JSON body served by GET /api and GET /api/v1, without HTTP\n"
-        "headers, so native clients can start with `zclassic23 api` instead\n"
+        "headers, so native clients can start with `z23 api` instead\n"
         "of a shell helper or curl.\n"
         "\nResult:\n"
         "  { \"schema\":\"zcl.rest_index.v2\", \"base_path\":\"/api/v1\", "
@@ -516,13 +516,13 @@ bool rpc_agent_proof_bundle(const struct json_value *params, bool help,
     json_init(&commands);
     json_set_object(&commands);
     json_push_kv_str(&commands, "native",
-                     "zclassic23 proofbundle [anchor_datadir]");
+                     "z23 proofbundle [anchor_datadir]");
     json_push_kv_str(&commands, "save_example",
-                     "build/bin/zclassic23 proofbundle > build/proofs/operator-proof.json");
+                     "build/bin/z23 proofbundle > build/proofs/operator-proof.json");
     json_push_kv_str(&commands, "anchor_status",
-                     "zclassic23 anchorstatus [anchor_datadir]");
-    json_push_kv_str(&commands, "mvp_status", "zclassic23 milestone");
-    json_push_kv_str(&commands, "refold_status", "zclassic23 refold");
+                     "z23 anchorstatus [anchor_datadir]");
+    json_push_kv_str(&commands, "mvp_status", "z23 milestone");
+    json_push_kv_str(&commands, "refold_status", "z23 refold");
     json_push_kv(result, "commands", &commands);
     json_free(&commands);
 

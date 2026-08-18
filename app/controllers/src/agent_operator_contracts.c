@@ -66,7 +66,7 @@ void agent_push_operator_latch_contract_json(
     json_push_kv_int(&obj, "since_unix", view->since_unix);
     json_push_kv_str(&obj, "detail", view->detail);
     json_push_kv_str(&obj, "native_state_command",
-                     "zclassic23 dumpstate condition_engine");
+                     "z23 dumpstate condition_engine");
     json_push_kv_str(&obj, "semantics",
                      "active means EV_OPERATOR_NEEDED is latched; mirror "
                      "classification is advisory and never clears the "
@@ -91,7 +91,7 @@ void agent_push_condition_summary_contract_json(
     json_push_kv_int(&obj, "unresolved_critical_count",
                      view->unresolved_critical_count);
     json_push_kv_str(&obj, "native_state_command",
-                     "zclassic23 dumpstate condition_engine");
+                     "z23 dumpstate condition_engine");
     json_push_kv_str(&obj, "semantics",
                      "summary only; use native_state_command for the registered "
                      "condition list, attempts, thresholds, and detail");

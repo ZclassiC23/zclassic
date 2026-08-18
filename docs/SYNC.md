@@ -1,8 +1,8 @@
-# ZClassic23 Sync Guide
+# Z23 Sync Guide
 
-How a fresh zclassic23 node reaches chain tip, plus the one legacy-bootstrap
+How a fresh z23 node reaches chain tip, plus the one legacy-bootstrap
 path that exists only while the native peer network is still small. Primary =
-zclassic23-native; legacy = pulling data from the old C++ `zclassicd`.
+z23-native; legacy = pulling data from the old C++ `zclassicd`.
 
 ## Canonical Authority Model
 
@@ -30,16 +30,16 @@ source and trust class only. Any `unsafe_overrides_total > 0` is fail-loud.
 
 ## Method 1 (native): P2P Fast Sync (~60 s design target, not yet the proven everyday path)
 
-A fresh node downloads a verified UTXO snapshot from another zclassic23 peer,
+A fresh node downloads a verified UTXO snapshot from another z23 peer,
 then catches up the tail via standard P2P. Activation is automatic — any peer
 advertising service bit `NODE_ZCL23` (`lib/net/include/net/fast_sync.h`)
 becomes a snapshot candidate. The machinery below is built and code-tested;
-a full fresh zclassic23-to-zclassic23 sync-to-tip run has not yet been proven
+a full fresh z23-to-z23 sync-to-tip run has not yet been proven
 end-to-end on a live network (see `docs/HANDOFF.md` C3 status) — today's
 proven cold-start is Method 3 below.
 
 ```bash
-build/bin/zclassic23 -addnode=<zclassic23_peer>
+build/bin/z23 -addnode=<z23_peer>
 ```
 
 What happens:
@@ -83,7 +83,7 @@ and file-service serving.
 Trustless sync from genesis over the standard P2P protocol. No snapshot.
 
 ```bash
-build/bin/zclassic23 -addnode=<any_peer>
+build/bin/z23 -addnode=<any_peer>
 ```
 
 Headers → blocks → connect. Scripts/signatures below deferred proof validation
@@ -108,18 +108,18 @@ away once the native peer network is healthy.
 
 Requirements: a local synced legacy `zclassicd` with `~/.zclassic/` (leave it
 running — on the operator host it is isolated on P2P 8034 / RPC 8232 while
-`zclassic23` owns canonical P2P 8033).
+`z23` owns canonical P2P 8033).
 
 This is the canonical home for the recipe — **two steps, in this order**:
 
 ```bash
 # 1. Headers FIRST — imports ~3.1M headers in ~60-74 s from the legacy datadir.
-build/bin/zclassic23 --importblockindex $HOME/.zclassic
+build/bin/z23 --importblockindex $HOME/.zclassic
 
 # 2. Then a NORMAL boot — legacy import is on by default; it auto-reads/links
 #    ~/.zclassic and follows the legacy import path. Opt out with
 #    -nolegacyimport. Current shielded-history completeness still gates serving.
-build/bin/zclassic23
+build/bin/z23
 ```
 
 Skipping step 1 is a footgun: importing UTXOs without the header import leaves a
@@ -138,8 +138,8 @@ The robust path for a known-good datadir is to copy one onto the target lane.
 
 The deployed path is `-load-snapshot-at-own-height`: it loads a
 digest-verified borrowed UTXO snapshot above coins-best and folds forward.
-Verify current sync state with `zclassic23 status` /
-`zclassic23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
+Verify current sync state with `z23 status` /
+`z23 dumpstate reducer_frontier`; `docs/HANDOFF.md` holds current
 state, never this doc. The snapshot's `anchor_block_hash` must byte-equal
 this node's in-binary PoW header at the seed height or boot FATALs — a
 wrong-chain or missing anchor fails closed (`config/src/boot_refold_staged.c`,
@@ -167,8 +167,8 @@ already has headers *and* on-disk bodies — the two-step
 `<DATADIR>/utxo-anchor.snapshot` file in place:
 
 ```bash
-build/bin/zclassic23 --importblockindex "$HOME/.zclassic"   # headers + legacy body link
-build/bin/zclassic23 -refold-from-anchor                    # or -load-verify-boot to auto-detect
+build/bin/z23 --importblockindex "$HOME/.zclassic"   # headers + legacy body link
+build/bin/z23 -refold-from-anchor                    # or -load-verify-boot to auto-detect
 ```
 
 What happens: the loader re-seeds `coins_kv` from the snapshot and
@@ -205,10 +205,10 @@ Rules:
 - The import flags **only run on an empty datadir** (or one below the legacy
   tip). They refuse if our active tip already meets/exceeds legacy.
 - Legacy data is acceleration only. It must match compiled SHA3 windows,
-  runtime windows, local consensus checks, or zclassic23 quorum before it
+  runtime windows, local consensus checks, or z23 quorum before it
   elevates trust.
 - Force reimport after a first run:
-  `build/bin/zclassic23 -reimport-utxos -datadir=~/.zclassic-c23`
+  `build/bin/z23 -reimport-utxos -datadir=~/.zclassic-c23`
 
 The live/default legacy reference is the `zclassicd` systemd user service (see
 CLAUDE.md "Services"). `zclassicd-peer.service` is only the operator-specific
@@ -285,14 +285,14 @@ centralized in `validation/sync_evidence_policy.h`. `COINBASE_MATURITY=100`
 remains a consensus spend-maturity rule and does not control reorg depth or
 immutable-prefix policy.
 
-Snapshot protocol: zclassic23 peers must speak
+Snapshot protocol: z23 peers must speak
 `FAST_SYNC_PROTOCOL_VERSION=2` and `FAST_SYNC_SNAPSHOT_SCHEMA_VERSION=1`.
 Missing v2 fields, zero chainwork, non-final anchors, missing MMR/MMB roots,
 or stale schemas are rejected. Legacy/non-v2 data may still be used locally
 for bootstrap acceleration, but it is not trusted P2P snapshot sync.
 
-Quorum model: votes are grouped by source class — local zclassic23, local
-zclassicd, remote zclassic23 peers. Remote votes are keyed by unique peer and
+Quorum model: votes are grouped by source class — local z23, local
+zclassicd, remote z23 peers. Remote votes are keyed by unique peer and
 expire by TTL; rolling-anchor commits require a matching source-class quorum when
 multiple classes are available. Splits halt anchor extension and are visible
 through the quorum/oracle dumpstate surface.
@@ -306,9 +306,9 @@ continuity-checked against compiled anchors; failures discard the runtime file.
 
 ## Check sync status
 
-Use `zclassic23 status`, `zclassic23 core sync status`, and
-`zclassic23 core sync validation`. The native RPC fallback is
-`zclassic23 rpc getblockchaininfo`. Status and state
+Use `z23 status`, `z23 core sync status`, and
+`z23 core sync validation`. The native RPC fallback is
+`z23 rpc getblockchaininfo`. Status and state
 surfaces include sync phase, local/header/peer heights, immutable height,
 snapshot anchor, UTXO root, chainwork/quorum verdict, watchdog state, last
 recovery, and active acceleration source where available.
@@ -328,7 +328,7 @@ Method 1 or 2 from its configured peers.
         NATIVE                                   LEGACY BOOTSTRAP
 ┌──────────────────────┬──────────────────┐  ┌────────────────────┐
 │  Method 1: fastsync  │ Method 2: full   │  │ Method 3: from     │
-│  zclassic23 peer     │ P2P from genesis │  │ zclassicd          │
+│  z23 peer     │ P2P from genesis │  │ zclassicd          │
 │  ~60 s design target │ ~7 h             │  │ chainstate → SQLite│
 │  (unproven — see     │                  │  │ ~20 s, dev-only    │
 │  HANDOFF.md C3)      │                  │  │                    │

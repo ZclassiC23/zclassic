@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * zclassic-cli — Native C23 RPC client for zclassic23 node.
+ * zclassic-cli — Native C23 RPC client for the z23 node.
  * No curl, no Python, no external dependencies.
  * Reads cookie auth automatically, sends JSON-RPC over HTTP. */
 

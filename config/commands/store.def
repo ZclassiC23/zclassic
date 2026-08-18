@@ -31,7 +31,7 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LIST_BUDGET,
     "store,catalog,products,buy",
     "zcl.command.empty_input.v1", "zcl.store_catalog.v1", "", "",
-    "zclassic23 app store catalog",
+    "z23 app store catalog",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -49,7 +49,7 @@ ZCL_COMMAND_READY_COMMAND(
     "store,order,buy,purchase",
     "zcl.store_order.input.v1", "zcl.store_order.v1",
     "product_id,customer_address,output_path,payment_kind", "",
-    "zclassic23 app store order --input='{\"product_id\":1,"
+    "z23 app store order --input='{\"product_id\":1,"
     "\"customer_address\":\"t1...\",\"output_path\":\"/tmp/bought.bin\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
@@ -73,7 +73,7 @@ ZCL_COMMAND_READY_COMMAND(
     "store,pay,shielded,purchase",
     "zcl.store_pay.input.v1", "zcl.store_pay.v1",
     "purchase_id,from_address,confirm", "",
-    "zclassic23 app store pay --input='{\"purchase_id\":1,"
+    "z23 app store pay --input='{\"purchase_id\":1,"
     "\"from_address\":\"t1...\",\"confirm\":true}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE,
@@ -97,7 +97,7 @@ ZCL_COMMAND_READY_READ(
     "store,purchases,orders,status",
     "zcl.store_purchases.input.v1", "zcl.store_purchases.v1",
     "purchase_id", "purchase_id",
-    "zclassic23 app store purchases",
+    "z23 app store purchases",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -116,7 +116,7 @@ ZCL_COMMAND_READY_COMMAND(
     "store,collect,download,file",
     "zcl.store_collect.input.v1", "zcl.store_collect.v1",
     "purchase_id,output_path", "purchase_id",
-    "zclassic23 app store collect --input='{\"purchase_id\":1,"
+    "z23 app store collect --input='{\"purchase_id\":1,"
     "\"output_path\":\"/tmp/bought.bin\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
@@ -163,7 +163,7 @@ ZCL_COMMAND_READY_COMMAND(
     "shop,init,store,onion,storefront,directory",
     "zcl.shop_init.input.v1", "zcl.shop_init.v1",
     "confirm,input,datadir", "",
-    "zclassic23 app shop init --input='{\"confirm\":true,\"input\":\"/data/products.json\"}'",
+    "z23 app shop init --input='{\"confirm\":true,\"input\":\"/data/products.json\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -185,7 +185,7 @@ ZCL_COMMAND_READY_READ(
     "shop,status,store,onion,storefront,directory",
     "zcl.command.empty_input.v1", "zcl.shop_status.v1",
     "datadir", "",
-    "zclassic23 app shop status",
+    "z23 app shop status",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -217,7 +217,7 @@ ZCL_COMMAND_READY_READ(
     "shop,reputation,evidence,publisher,reproduction,attestation",
     "zcl.shop_reputation.input.v1", "zcl.shop_reputation.v1",
     "publisher,datadir,now_unix", "publisher",
-    "zclassic23 app shop reputation --input='{\"publisher\":\"02ab...\"}'",
+    "z23 app shop reputation --input='{\"publisher\":\"02ab...\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -252,7 +252,7 @@ ZCL_COMMAND_READY_COMMAND(
     "buyer_secret,amount_zatoshi,criteria,spec_hash,expires_unix,nonce,"
     "issued_unix,now_unix,datadir,confirm",
     "buyer_secret,amount_zatoshi,criteria,expires_unix",
-    "zclassic23 app shop want post --input='{\"buyer_secret\":\"ab01...\","
+    "z23 app shop want post --input='{\"buyer_secret\":\"ab01...\","
     "\"amount_zatoshi\":500000,\"criteria\":\"a CSV of every ZCL block "
     "hash 0..100, sha3-verified\",\"expires_unix\":1780000000,"
     "\"confirm\":true}'",
@@ -280,7 +280,7 @@ ZCL_COMMAND_READY_READ(
     "shop,want,bounty,buyer,demand,list,board,moderation",
     "zcl.shop_want_list.input.v1", "zcl.shop_want_list.v1",
     "datadir,now_unix,profile,all", "",
-    "zclassic23 app shop want list",
+    "z23 app shop want list",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -299,7 +299,7 @@ ZCL_COMMAND_READY_READ(
     "shop,want,bounty,buyer,demand,status",
     "zcl.shop_want_status.input.v1", "zcl.shop_want_status.v1",
     "want_id,datadir,now_unix,profile", "want_id",
-    "zclassic23 app shop want status --input='{\"want_id\":\"ab01...\"}'",
+    "z23 app shop want status --input='{\"want_id\":\"ab01...\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -320,7 +320,7 @@ ZCL_COMMAND_READY_COMMAND(
     "shop,want,bounty,buyer,demand,cancel,withdraw",
     "zcl.shop_want_cancel.input.v1", "zcl.shop_want_cancel.v1",
     "want_id,buyer_secret,datadir,now_unix,confirm", "want_id,buyer_secret",
-    "zclassic23 app shop want cancel --input='{\"want_id\":\"ab01...\","
+    "z23 app shop want cancel --input='{\"want_id\":\"ab01...\","
     "\"buyer_secret\":\"ab01...\",\"confirm\":true}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
@@ -345,7 +345,7 @@ ZCL_COMMAND_READY_COMMAND(
     "shop,want,bounty,buyer,demand,review,moderation,curation",
     "zcl.shop_want_review.input.v1", "zcl.shop_want_review.v1",
     "want_id,review_state,datadir,confirm", "want_id,review_state",
-    "zclassic23 app shop want review --input='{\"want_id\":\"ab01...\","
+    "z23 app shop want review --input='{\"want_id\":\"ab01...\","
     "\"review_state\":\"reviewed_ok\",\"confirm\":true}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
@@ -381,7 +381,7 @@ ZCL_COMMAND_READY_COMMAND(
     "now_unix,datadir,confirm",
     "want_id,seller_secret,artifact_root,content_root,expires_unix,nonce,"
     "issued_unix",
-    "zclassic23 app shop want fulfill post --input='{\"want_id\":\"ab01...\","
+    "z23 app shop want fulfill post --input='{\"want_id\":\"ab01...\","
     "\"seller_secret\":\"cd02...\",\"artifact_root\":\"ef03...\","
     "\"content_root\":\"1204...\",\"expires_unix\":1780003600,"
     "\"nonce\":7,\"issued_unix\":1780000000}'",
@@ -405,7 +405,7 @@ ZCL_COMMAND_READY_READ(
     "shop,want,fulfill,compare,artifact,evidence,receipt,list",
     "zcl.shop_fulfill_list.input.v1", "zcl.shop_fulfill_list.v1",
     "want_id,datadir,now_unix,all,profile", "want_id",
-    "zclassic23 app shop want fulfill list --input='{\"want_id\":\"ab01...\"}'",
+    "z23 app shop want fulfill list --input='{\"want_id\":\"ab01...\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -422,7 +422,7 @@ ZCL_COMMAND_READY_READ(
     "shop,want,fulfill,status,artifact,evidence,receipt,verify",
     "zcl.shop_fulfill_status.input.v1", "zcl.shop_fulfill_status.v1",
     "fulfill_id,datadir,now_unix,profile", "fulfill_id",
-    "zclassic23 app shop want fulfill status --input='{\"fulfill_id\":\"ab01...\"}'",
+    "z23 app shop want fulfill status --input='{\"fulfill_id\":\"ab01...\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -441,7 +441,7 @@ ZCL_COMMAND_READY_COMMAND(
     "zcl.shop_fulfill_withdraw.input.v1", "zcl.shop_fulfill_withdraw.v1",
     "fulfill_id,seller_secret,datadir,now_unix,confirm",
     "fulfill_id,seller_secret",
-    "zclassic23 app shop want fulfill withdraw --input='{\"fulfill_id\":\"ab01...\","
+    "z23 app shop want fulfill withdraw --input='{\"fulfill_id\":\"ab01...\","
     "\"seller_secret\":\"cd02...\",\"confirm\":true}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
@@ -463,7 +463,7 @@ ZCL_COMMAND_READY_COMMAND(
     "zcl.shop_fulfill_review.input.v1", "zcl.shop_fulfill_review.v1",
     "fulfill_id,review_state,datadir,confirm",
     "fulfill_id,review_state",
-    "zclassic23 app shop want fulfill review --input='{\"fulfill_id\":\"ab01...\","
+    "z23 app shop want fulfill review --input='{\"fulfill_id\":\"ab01...\","
     "\"review_state\":\"reviewed_ok\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,

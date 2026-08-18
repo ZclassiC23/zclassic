@@ -164,9 +164,9 @@ no dcrdex source is vendored in this tree.
 
 CONCEPT ATTRIBUTIONS (no code; architectural inspiration only)
 
-zclassic23 adopts architectural concepts from the following projects
+Z23 adopts architectural concepts from the following projects
 without incorporating their source code. The implementations in
-zclassic23 are written in C23 from scratch and do not link against
+Z23 are written in C23 from scratch and do not link against
 the original projects. We credit them here because it is the right
 thing to do. A per-concept breakdown with commit-level cross-references
 is maintained in ATTRIBUTIONS.md.

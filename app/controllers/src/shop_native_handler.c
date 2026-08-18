@@ -370,7 +370,7 @@ static void shop_push_verification(struct json_value *into,
     if (view->shop_url[0])
         (void)json_push_kv_str(into, "shop_url", view->shop_url);
     (void)json_push_kv_str(into, "buyer_next_command",
-                           "zclassic23 app store catalog");
+                           "z23 app store catalog");
     (void)json_push_kv_str(into, "buyer_note",
         "a buyer finds the shop at its onion /store URL, or by fetching "
         "/directory.json from any seed and looking for \"shop\" in the "

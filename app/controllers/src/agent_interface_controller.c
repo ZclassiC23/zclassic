@@ -160,7 +160,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_init(&transports);
     json_set_array(&transports);
     agent_interface_push_transport(&transports, 1, "native_cli",
-        "zclassic23 agent*", "zclassic23 agentinterface", "stdout JSON",
+        "z23 agent*", "z23 agentinterface", "stdout JSON",
         "primary typed AI/operator commands, scripts, and zero-wrapper diagnostics");
     agent_interface_push_transport(&transports, 2, "rest",
         "GET /api/v1/agent", "GET /api/v1/agent", "HTTP JSON",
@@ -218,7 +218,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
 
     json_init(&loop);
     json_set_object(&loop);
-    json_push_kv_str(&loop, "status", "zclassic23 status");
+    json_push_kv_str(&loop, "status", "z23 status");
     agent_push_contract_native_field_json(&loop, "full_compatibility_status",
                                           "agent");
     agent_push_contract_native_field_json(&loop, "discover",
@@ -275,7 +275,7 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     json_push_kv_str(&visual_loop, "result",
                      "bounded display result or exact human decision");
     json_push_kv_str(&visual_loop, "input_discovery",
-                     "zclassic23 discover schema <leaf>");
+                     "z23 discover schema <leaf>");
     json_push_kv_str(&visual_loop, "text_companion",
                      "set output=text for the deterministic companion from the same bounded model; no native window opens");
     json_push_kv_str(&visual_loop, "selection_rule",
@@ -312,9 +312,9 @@ bool rpc_agent_interface(const struct json_value *params, bool help,
     agent_interface_push_str(&avoid,
                              "do not require Python to parse agent API JSON");
     agent_interface_push_str(&avoid,
-                             "do not scrape logs when zclassic23 getnodelog can answer");
+                             "do not scrape logs when z23 getnodelog can answer");
     agent_interface_push_str(&avoid,
-                             "do not scrape node.db when zclassic23 dbquery or a typed command exists");
+                             "do not scrape node.db when z23 dbquery or a typed command exists");
     agent_interface_push_str(&avoid,
                              "do not infer deploy safety from comments or unit names");
     agent_interface_push_str(

@@ -92,11 +92,11 @@ bool rpc_agent_ops(const struct json_value *params, bool help,
     json_init(&ux);
     json_set_object(&ux);
     json_push_kv_str(&ux, "start_here",
-                     "zclassic23 status; then zclassic23 agentops");
+                     "z23 status; then z23 agentops");
     json_push_kv_str(&ux, "change_router",
-                     "zclassic23 agentimpact <files...>");
+                     "z23 agentimpact <files...>");
     json_push_kv_str(&ux, "preferred_drilldowns",
-                     "zclassic23 dumpstate, getnodelog, dbquery, timeline");
+                     "z23 dumpstate, getnodelog, dbquery, timeline");
     json_push_kv_str(&ux, "add_new_api_rule",
                      "try registry-owned primitives first; add bespoke tools only when a repeated decision needs a stable field");
     json_push_kv(result, "api_ux", &ux);

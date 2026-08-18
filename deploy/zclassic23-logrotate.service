@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Log Rotation — size-threshold copytruncate (no external logrotate dependency)
+Description=Z23 Log Rotation — size-threshold copytruncate (no external logrotate dependency)
 
 [Service]
 Type=oneshot

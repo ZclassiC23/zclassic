@@ -6,7 +6,7 @@ development-network primitives into one ordinary C23 development loop.
 
 ## Mission and product promise
 
-> **ZClassic23 is a metaverse where people and AI create real things together,
+> **Z23 is a metaverse where people and AI create real things together,
 > and nobody owns the world they build in.**
 
 For this product, a "real thing" is an exact C23 source change with bounded
@@ -18,15 +18,15 @@ to its own output.
 The ordinary interaction is intentionally small:
 
 ```text
-zclassic23-dev zcode project inspect --input='{"workspace":"."}'
-zclassic23-dev zcode work start --input='{
+z23-dev zcode project inspect --input='{"workspace":"."}'
+z23-dev zcode work start --datadir=/tmp/z23-work --input='{
   "workspace":".",
   "goal":"Make the parser reject overflowing lengths",
   "profile":"standard"
 }'
-zclassic23-dev zcode work run --input='{"work":"latest","adapter":"manual"}'
-zclassic23-dev zcode work status --input='{"work":"latest"}'
-zclassic23-dev zcode work accept --input='{"work":"latest"}'
+z23-dev zcode work run --datadir=/tmp/z23-work --input='{"work":"latest","adapter":"manual"}'
+z23-dev zcode work status --datadir=/tmp/z23-work --input='{"work":"latest"}'
+z23-dev zcode work accept --datadir=/tmp/z23-work --input='{"work":"latest"}'
 ```
 
 The happy path accepts no raw roots, canonical wire hex, timestamps, toolchain

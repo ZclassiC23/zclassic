@@ -94,7 +94,7 @@ static bool render_guide(struct market_purchase_guide_result_v1 *out)
     (void)snprintf(out->static_boundary, sizeof(out->static_boundary), "%s",
         "input parsing, moderation admission, authentication, RPC, wallet, storage, network, payment, retrieval, publication");
     (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
-        "zclassic23 discover schema app.market.purchase.plan");
+        "z23 discover schema app.market.purchase.plan");
     return true;
 }
 

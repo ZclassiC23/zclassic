@@ -57,7 +57,7 @@
  * of the presence plane is that partial truth still gets reported. */
 bool storage_dump_state_fill(struct storage_snapshot *snap);
 
-/* `zclassic23 ops state --subsystem=storage_telemetry` and the RPC behind
+/* `z23 ops state --subsystem=storage_telemetry` and the RPC behind
  * `ops.telemetry.storage.*`: fill, then render at the view `key` names.
  *
  * `key` is passed to telemetry_view_parse: NULL/"" (normal), "summary",

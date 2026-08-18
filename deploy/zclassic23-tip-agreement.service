@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Off-Host Tip-Hash Agreement Recorder (read-only)
+Description=Z23 Off-Host Tip-Hash Agreement Recorder (read-only)
 # Appends one JSON line per run per deployed local instance to
 # ~/.local/state/zclassic23-parity/agreement-ledger.jsonl via
 # tools/scripts/tip_agreement_probe.sh.

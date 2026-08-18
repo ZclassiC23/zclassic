@@ -4,7 +4,7 @@ What it demonstrates: an `OP_RETURN` output is a scriptPubKey whose first
 byte is `OP_RETURN`, which consensus treats as provably unspendable — it is
 never added to the live UTXO set, but the bytes pushed after it are
 permanent inside the mined block. That one primitive (push bytes, pay a
-normal fee, mine it) is the substrate every zclassic23 overlay protocol
+normal fee, mine it) is the substrate every z23 overlay protocol
 (ZNAM name registry, ZSLP tokens) builds on: they are just agreed-upon byte
 layouts inside an OP_RETURN payload, tagged with a 4-byte "Lokad ID"
 (`"ZNAM"` / `"SLP\0"`) so an indexer knows which protocol parsed the rest.

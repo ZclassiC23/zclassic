@@ -1095,7 +1095,7 @@ static size_t plan_json_body(const struct zcl_devloop_plan *plan,
         ? "edit one C23 file"
         : (plan->docs_only
             ? "make lint"
-            : "zclassic23-dev dev begin");
+            : "z23-dev dev begin");
     if (!appendf(out, out_sz, &pos, ",\"live_eligible\":%s,\"why_not_live\":",
                  live_eligible ? "true" : "false") ||
         !append_json_string(out, out_sz, &pos, why_not_live) ||

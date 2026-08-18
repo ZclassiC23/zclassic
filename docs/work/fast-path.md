@@ -66,9 +66,9 @@ symptom as a body gap, and shipping a chain-reset fix that deletes
 | `make fast-changed-compile` | compatibility name for the source-wide dev compile proof; changed paths are classification hints only |
 | `make fast-compile` | fastest no-link dev compile check; resolves every current source under `build/dev-obj/epochs/<compile-epoch>/`, with compiler-cache recovery |
 | `make build-only` | strict release-flag incremental compile-check of the whole node (no link) |
-| `make dev-bin` | incremental non-LTO node executable at `build/bin/zclassic23-dev`; local AI/operator iteration only, not for release/deploy |
+| `make dev-bin` | incremental non-LTO node executable at `build/bin/z23-dev`; local AI/operator iteration only, not for release/deploy |
 | `make agent-doctor` | no-build combined build/dev-lane/recent-test-failure status with one next safe command |
-| `make agent-dev-status` / `zclassic23 agentdevstatus` | no-build read-only dev-lane status: service, RPC/pre-RPC recovery, staged binary, saved deploy state, auto-reindex marker, deploy blocker/reason, stale-marker candidate, next action |
+| `make agent-dev-status` / `z23 agentdevstatus` | no-build read-only dev-lane status: service, RPC/pre-RPC recovery, staged binary, saved deploy state, auto-reindex marker, deploy blocker/reason, stale-marker candidate, next action |
 | `make agent-clear-stale-dev-reindex` | archive a proven-stale dev-lane `auto_reindex_request` after RPC height is at/above the marker anchor; no restart, no canonical/soak mutation |
 | `make agent-stage-dev` | build and atomically stage `~/.local/bin/zclassic23-dev` for the next dev-lane restart without stopping the running service |
 | `make syntax-check` | full no-link syntax check across every TU |
@@ -77,8 +77,8 @@ symptom as a body gap, and shipping a chain-reset fix that deletes
 | `make agent-loop` | one-command agent loop: fast-ci checks by default; `ZCL_AGENT_LOOP_BIN=1` also links the dev binary; `ZCL_AGENT_LOOP_DEPLOY=dev` hot-swaps the dev lane |
 | `make fast-ci` | cache-aware agent loop: `lint-fast` + exact source-wide compile/test proofs + native linger-service probe; identical green inputs skip repeated proven scope |
 | `make immutable-history-canaries` | fast real-chain consensus KATs: h=478544 oversized canonical transaction plus consensus parity pins |
-| `zclassic23 status` / `zclassic23 dumpstate <subsystem>` | native node reads (the native command registry is the sole agent interface) |
-| `zclassic23-dev status` | dev-lane native read against the installed dev binary |
+| `z23 status` / `z23 dumpstate <subsystem>` | native node reads (the native command registry is the sole agent interface) |
+| `z23-dev status` | dev-lane native read against the installed dev binary |
 | `make pre-push-ci` | bounded push gate: cached focused fast-ci for changed files with `ZCL_FAST_COMPILE=strict` |
 | `make install-quality-linger` | install background full-test, fuzz, and coverage user timers |
 | `make quality-linger-status` | show latest background tests/fuzz/coverage JSON verdicts |
@@ -128,8 +128,8 @@ fingerprint logs `fast result cache hit` and skips `lint-fast`, the selected
 compile gate, and source-wide test proof; it still refreshes the live service probe unless
 `ZCL_FAST_LIVE=0` is set. Disable this with `ZCL_FAST_CACHE=0`, reset it with
 `ZCL_FAST_CACHE_RESET=1`, or move it with `ZCL_FAST_CACHE_DIR=...`. The live
-check uses the C binary first (`build/bin/zclassic23 agent` +
-`build/bin/zclassic23 healthcheck`) against the linger service; override the
+check uses the C binary first (`build/bin/z23 agent` +
+`build/bin/z23 healthcheck`) against the linger service; override the
 binary with `ZCL_FAST_NODE_BIN=...` or skip the live check with
 `ZCL_FAST_LIVE=0` for isolated/offline work. The shell gate trusts the native
 `zcl.public_status.v3` status/serving/operator-needed contract rather than
@@ -139,13 +139,13 @@ the native binary JSON interface is unavailable, rebuild
 the binary or skip the live probe explicitly. Unmapped C/header/source-tree
 changes fail closed until you either add a focused-test mapping or pass
 `ZCL_FAST_TESTS=...`. The focused-test map is shared with native
-`zclassic23 agentimpact` in
+`z23 agentimpact` in
 `app/controllers/include/controllers/agent_impact_rules.def`; keep new mappings
 there so the CLI and fast-CI shell lane do not drift.
 
 Use `make dev-bin` when you need to run a changed node/agent CLI locally without
 paying the release build's whole-program LTO pass. It emits
-`make fast-rebuild` builds `build/bin/zclassic23-dev` from cached per-file objects, with default
+`make fast-rebuild` builds `build/bin/z23-dev` from cached per-file objects, with default
 `ZCL_DEV_OPT=-Og`, hot consensus/crypto/script/validation buckets at
 `ZCL_DEV_HOT_OPT=-O2`, no LTO, no strip, and optional fast-linker selection via
 `ZCL_DEV_LINKER` (probes `mold`, then `ld.lld`, then `ld.gold`; expands to
@@ -158,22 +158,22 @@ the right binary for
 local `agentbuild`, `agentimpact`, parser, API, and diagnostics iteration; it is
 not a deploy or release artifact.
 
-The native build contract is discoverable with `build/bin/zclassic23 agentbuild`;
+The native build contract is discoverable with `build/bin/z23 agentbuild`;
 it advertises
 `make agent-plan`, the stage-without-restart path, and the same native command
 shortcuts.
 
 Native commands are the agent interface. In the source tree, prefer
-`build/bin/zclassic23 status` and
-`build/bin/zclassic23 dumpstate supervisor` for fresh-code smoke checks, and
-`build/bin/zclassic23 discover help` to enumerate the command registry. Against
-the dev lane use `build/bin/zclassic23-dev status`. The native command registry
+`build/bin/z23 status` and
+`build/bin/z23 dumpstate supervisor` for fresh-code smoke checks, and
+`build/bin/z23 discover help` to enumerate the command registry. Against
+the dev lane use `build/bin/z23-dev status`. The native command registry
 is the sole agent interface.
 Do not add Python, shell, or helper-binary wrappers for new agent workflows.
 
 Canonical operator APIs, in priority order:
 
-1. `build/bin/zclassic23 agentmap`, `agentlanes`, `agentliveness`, `agentimpact`,
+1. `build/bin/z23 agentmap`, `agentlanes`, `agentliveness`, `agentimpact`,
    `agentbuild`, `agent`, `healthcheck`, and raw RPC methods — native C binary
    client to the running linger service.
 2. REST (`/api/v1/agent`, `/api/v1/openapi`) — public web/API surface.

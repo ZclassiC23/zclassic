@@ -29,9 +29,9 @@
  * (non-blocking + labeled) and the index.
  *
  * Trust-tier sweep: sovereignty_dump_state_json (the dumper behind
- * `zclassic23 status`'s trust-tier surface, event_agent_summary.c ->
+ * `z23 status`'s trust-tier surface, event_agent_summary.c ->
  * agent_summary_posture_cache.c) had the SAME blocking-lock hazard — commit
- * cc4de081a's own message names `zclassic23 status` as a victim of this bug
+ * cc4de081a's own message names `z23 status` as a victim of this bug
  * class. It now trylocks and, when the fold/importer owns the lock, answers
  * from a process-wide last-known-good trust-tier cache (durable_store_status
  * == "busy_stale_cache" once something has been observed, or

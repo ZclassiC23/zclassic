@@ -490,7 +490,7 @@ void supervisor_tick_runner_backdate_hb_for_testing(int64_t age_us);
 void supervisor_tick_runner_monitor_for_testing(void);
 #endif
 
-/* ── `zclassic23 dumpstate supervisor` ────────────────────────────── */
+/* ── `z23 dumpstate supervisor` ────────────────────────────── */
 
 /* ── Tick-runner introspection ─────────────────────────────────────────
  * Age (microseconds) since the tick-runner thread last heartbeat, and its

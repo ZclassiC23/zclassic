@@ -4,7 +4,7 @@
  *
  * WHAT THIS DEMONSTRATES
  * -----------------------
- * zclassic23's deterministic simulator (`lib/sim`) drives the REAL consensus
+ * z23's deterministic simulator (`lib/sim`) drives the REAL consensus
  * validator (`connect_block()`) over an in-RAM UTXO set — no disk, no real
  * proof-of-work, no live funds, no wall clock. Everything you see below
  * exercises the exact same code path a live node uses to accept a block; the
@@ -217,6 +217,6 @@ int main(void)
  *   simnet_coin_exists() /
  *   simnet_coin_value()        -> lib/coins/include/coins/coins_view.h
  *       (coins_view_cache_have_coins() etc.) over the real on-disk coins_kv
- *       table, or `zclassic23 core wallet utxo list` / `getrawtransaction`
+ *       table, or `z23 core wallet utxo list` / `getrawtransaction`
  *       at the RPC layer.
  */

@@ -136,7 +136,7 @@ int test_gap_fill_frontier_window(void)
     free(blocks);
     free(hashes);
 
-    /* Smoke-test the diagnostics dumper (`zclassic23 dumpstate gap_fill`):
+    /* Smoke-test the diagnostics dumper (`z23 dumpstate gap_fill`):
      * the service was never started in this test, so it must still report
      * a well-formed, not-running snapshot instead of crashing. */
     {

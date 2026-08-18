@@ -93,7 +93,7 @@ repo root: `.claude/worktrees/` holds a full checkout per lane and `test-tmp/`
 per-run scratch, both untracked. *Cite:* `CLAUDE.md` §"First five commands";
 `docs/DEVELOPING.md` §Understand fast.
 
-**B2 — Ask the navigator before you grep or read.** `zclassic23 code
+**B2 — Ask the navigator before you grep or read.** `z23 code
 sym|refs|capsule` answers "where is X / who calls X / what breaks if I change it"
 for a fraction of a file read. *Cite:* `docs/DEVELOPING.md` §Understand fast.
 
@@ -107,7 +107,7 @@ using it); every write goes through the ActiveRecord lifecycle, never raw
 `check-log-macro-return-type`, `check-model-ar-lifecycle`.
 
 **B4 — Consensus parity is inviolable.** Never ship a consensus change to
-zclassic23 first, not even opt-in; validate against the real chain, not the
+z23 first, not even opt-in; validate against the real chain, not the
 `zclassicd` source text. *Cite:* `docs/CONSENSUS_PARITY_DOCTRINE.md`; gate
 `check-consensus-parity`.
 

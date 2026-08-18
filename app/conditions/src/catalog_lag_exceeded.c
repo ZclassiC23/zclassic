@@ -268,12 +268,12 @@ void register_catalog_lag_exceeded(void)
     (void)condition_register(&c_catalog_lag_exceeded);
 }
 
-/* ── `zclassic23 dumpstate catalog_coverage` ───────────────────────────
+/* ── `z23 dumpstate catalog_coverage` ───────────────────────────
  *
  * The one place to answer: "this index is empty — does that mean anything?"
  *
  * catalog_completeness.h has said since it landed that "a later lane wires
- * catalog_completeness_snapshot() into `zclassic23 ops state`". That lane
+ * catalog_completeness_snapshot() into `z23 ops state`". That lane
  * never happened, so the only way to see this data was to infer it from a
  * blocker message, one index at a time. Measured on the canonical node
  * 2026-07-28: op_return_index, zslp_ledger and znam_names all read 0 rows,

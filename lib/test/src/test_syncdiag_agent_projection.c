@@ -208,7 +208,7 @@ int syncdiag_cases_agent_projection(void)
                           "catchup_stalled") == 0;
         ok = ok && json_get_bool(json_get(&result, "operator_needed"));
         ok = ok && strcmp(json_get_str(json_get(&result, "next")),
-                          "zclassic23 getsyncdiag") == 0;
+                          "z23 getsyncdiag") == 0;
         ok = ok && json_get_int(json_get(&result, "gap")) == 25;
         ok = ok && download && download->type == JSON_OBJ;
         ok = ok && json_get_bool(json_get(download, "active"));
@@ -335,7 +335,7 @@ int syncdiag_cases_agent_projection(void)
                           "download_dispatch_idle") == 0;
         ok = ok && json_get_bool(json_get(&result, "operator_needed"));
         ok = ok && strcmp(json_get_str(json_get(&result, "next")),
-                          "zclassic23 getsyncdiag") == 0;
+                          "z23 getsyncdiag") == 0;
         ok = ok && json_get_int(json_get(&result, "gap")) == 25;
         ok = ok && download && download->type == JSON_OBJ;
         ok = ok && json_get_bool(json_get(download, "active"));
@@ -693,7 +693,7 @@ int syncdiag_cases_agent_projection(void)
                           "agentdiagnose") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "native_command")),
-                          "zclassic23 agentdiagnose") == 0;
+                          "z23 agentdiagnose") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "contract_source")),
                           "agent_contracts.def") == 0;
@@ -723,7 +723,7 @@ int syncdiag_cases_agent_projection(void)
                           "compact") == 0;
         ok = ok && strcmp(json_get_str(json_get(default_primary_host,
                                                 "full_detail_command")),
-                          "zclassic23 peerincidents") == 0;
+                          "z23 peerincidents") == 0;
         ok = ok && json_get(&result, "peer_primary_host") != NULL;
         ok = ok && json_get(&result,
                             "peer_primary_host_issue_class") != NULL;
@@ -786,7 +786,7 @@ int syncdiag_cases_agent_projection(void)
         ok = ok && default_first_call &&
             strcmp(json_get_str(json_get(default_first_call,
                                          "full_mode_command")),
-                   "zclassic23 agentdiagnose full") == 0;
+                   "z23 agentdiagnose full") == 0;
 
         json_free(&result);
 
@@ -890,7 +890,7 @@ int syncdiag_cases_agent_projection(void)
         ok = ok && brief_first_call &&
             strcmp(json_get_str(json_get(brief_first_call,
                                          "full_mode_command")),
-                   "zclassic23 agentdiagnose full") == 0;
+                   "z23 agentdiagnose full") == 0;
         json_free(&result);
         json_free(&brief_params);
 
@@ -1139,7 +1139,7 @@ int syncdiag_cases_agent_projection(void)
         ok = ok && primary_host_issue &&
             strcmp(json_get_str(json_get(primary_host_issue,
                                          "full_detail_command")),
-                   "zclassic23 peerincidents") == 0;
+                   "z23 peerincidents") == 0;
         ok = ok && primary_host_issue &&
             json_get(primary_host_issue, "current_open_direction") == NULL;
         ok = ok && primary_host_issue &&

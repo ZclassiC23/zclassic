@@ -5,7 +5,7 @@
  * CLAUDE.md "Copy-prove before live"). This controller NEVER reimplements
  * the harness — it validates+quotes agent-supplied parameters, launches
  * the script detached, and lets a caller poll progress through the
- * diagnostics registry (`zclassic23 dumpstate agent_copy_prove`) instead
+ * diagnostics registry (`z23 dumpstate agent_copy_prove`) instead
  * of holding an RPC worker thread for the run duration.
  *
  * Sync-vs-async: a real copy-prove run boots a full node and watches its
@@ -267,7 +267,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
         "  deadline_secs (int, optional, default 180, clamped 1..3600)\n"
         "  full (bool, optional, default false)     --full vs --light\n"
         "  no_run (bool, optional, default false)    --no-run\n"
-        "\nPoll a run with: zclassic23 dumpstate agent_copy_prove <slug>.\n"
+        "\nPoll a run with: z23 dumpstate agent_copy_prove <slug>.\n"
         "This\n"
         "call never blocks for the run duration — see cp_launch above.\n"
         "\nResult:\n"
@@ -290,7 +290,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
     json_set_object(result);
     json_push_kv_str(result, "schema", COPY_PROVE_CONTRACT_SCHEMA);
     json_push_kv_str(result, "api_version", "v1");
-    json_push_kv_str(result, "native_command", "zclassic23 agentcopyprove");
+    json_push_kv_str(result, "native_command", "z23 agentcopyprove");
 
     if (!cp_slug_valid(slug)) {
         json_push_kv_str(result, "status", "error");
@@ -429,7 +429,7 @@ bool rpc_agent_copy_prove(const struct json_value *params, bool help,
     json_push_kv_str(result, "status_file", status_file);
     json_push_kv_str(result, "launch_log", launch_log);
     json_push_kv_str(result, "poll_native",
-                     "zclassic23 dumpstate agent_copy_prove");
+                     "z23 dumpstate agent_copy_prove");
     json_push_kv_int(result, "deadline_secs", deadline_secs);
     json_push_kv_str(result, "budget_note",
         "detached background run; does not hold an RPC worker thread. "

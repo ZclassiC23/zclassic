@@ -50,7 +50,7 @@ bool boot_wallet_mint_recovery_phrase(struct wallet *w, char *phrase_out,
 /* True when this process's stdout is a terminal a person is looking at,
  * rather than a file or a pipe. The whole phrase story turns on it: under
  * the shipped systemd unit stdout is redirected to node.log, and node.log
- * is rotated, copied into backups and read back by `zclassic23 ops logs`,
+ * is rotated, copied into backups and read back by `z23 ops logs`,
  * so a phrase printed there is the wallet's entire spending authority
  * sitting in plaintext in a file nobody treats as a secret. */
 bool boot_wallet_phrase_stdout_is_a_terminal(void);

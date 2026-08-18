@@ -4,7 +4,7 @@
  *
  * THE BUG THIS EXISTS TO CATCH (reproduced live, 2026-07-29):
  *
- *   $ zclassic23 app service access --input='{"service":"reference"}'
+ *   $ z23 app service access --input='{"service":"reference"}'
  *   [boot] sqlite.quick_check ...
  *   db: applied 35 migration(s), now at version 36
  *

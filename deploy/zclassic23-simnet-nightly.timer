@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Nightly Simulator Sweep Timer
+Description=Z23 Nightly Simulator Sweep Timer
 
 [Timer]
 # Wave-2 lane B2: the checked-in tools/sim/scenarios/*.scenario corpus plus

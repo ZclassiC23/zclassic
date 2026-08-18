@@ -629,7 +629,7 @@ static int cas_test_v2transport_is_recognized(void)
             (char *)"-nobgvalidation", (char *)"-v2transport", NULL,
         };
         static const char *const ready_needles[] = {
-            "zclassic23 starting", NULL,
+            "z23 starting", NULL,
         };
         char out[16384] = {0};
         bool started = cas_run_daemon_wait_for(

@@ -23,7 +23,7 @@ ratio/burn-credit design live in
 
 This document turns the long-term product direction into checkable work:
 
-> An LLM edits a small amount of ordinary C23. ZClassic23 derives the
+> An LLM edits a small amount of ordinary C23. Z23 derives the
 > affected interfaces and mandatory proofs, automatically records correlated
 > telemetry, and returns one compact green receipt or one deterministic
 > failure capsule. Third-party Apps and games use the node through bounded
@@ -231,7 +231,7 @@ Use this loop while the later platform items remain incomplete.
    `make lint`, and deterministic App scenarios (`dev app simulate --seed=`);
    record exact seed/source-identity/proof-groups/receipt; never call
    apply/publish/deploy-dev/resident hot-swap as completion evidence.
-5. **Diagnose runtime behavior** — start with `zclassic23 status`/`ops
+5. **Diagnose runtime behavior** — start with `z23 status`/`ops
    health`; use `ops diagnose` for the causal rollup, `ops state
    <subsystem>` for one subsystem, `ops timeline` before raw logs, `ops
    logs --pattern=` only after state/timeline identifies a drilldown; any
@@ -241,7 +241,7 @@ Use this loop while the later platform items remain incomplete.
 
 | Question | First source |
 |---|---|
-| What is live and protected? | `zclassic23 status` + `docs/HANDOFF.md` |
+| What is live and protected? | `z23 status` + `docs/HANDOFF.md` |
 | What should execute next? | `docs/work/FORWARD_PLAN.md` |
 | Why is the code shaped this way? | `docs/FRAMEWORK.md` |
 | How is a feature slice built? | `docs/AGENT_ARCHITECTURE.md` |
@@ -254,7 +254,7 @@ Use this loop while the later platform items remain incomplete.
 
 Detailed contracts: `../NATIVE_COMMAND_INTERFACE.md`,
 `../AGENT_ARCHITECTURE.md`, `../../lib/framework/include/zclassic23/app.h`. Daily
-operating loop: `.claude/skills/zclassic23-dev/SKILL.md`.
+operating loop: `.claude/skills/z23-dev/SKILL.md`.
 
 ## Target compact protocol — extend, do not fork
 

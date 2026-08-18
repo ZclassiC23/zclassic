@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Background Coverage Lane
+Description=Z23 Background Coverage Lane
 
 [Service]
 Type=oneshot

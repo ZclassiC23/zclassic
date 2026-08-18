@@ -4,7 +4,7 @@
  * AGREEMENT ledger written by tools/scripts/tip_agreement_probe.sh, so the
  * one piece of genuinely off-host block-identity evidence this stack holds is
  * visible from the typed interface
- * (`zclassic23 ops state --subsystem=tip_agreement`) instead of existing only
+ * (`z23 ops state --subsystem=tip_agreement`) instead of existing only
  * as a file nobody opened.
  *
  * WHAT IT ANSWERS, in one sentence: at the height last compared, was OUR tip

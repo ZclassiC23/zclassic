@@ -5,7 +5,7 @@ Two chaos tools, for two layers:
 | Tool | Layer | What it kills | Make target |
 |------|-------|---------------|-------------|
 | `zclassic23-chaos` | **Simulation engine** | Nothing real — a deterministic in-process state machine driven by `.scenario` files | `make chaos` |
-| `crash_recovery_test` | **Real process (C7)** | A real `build/bin/zclassic23` binary, via `SIGKILL` to its process group | `make test-crash` / `make test-crash-bootstrap` |
+| `crash_recovery_test` | **Real process (C7)** | A real `build/bin/z23` binary, via `SIGKILL` to its process group | `make test-crash` / `make test-crash-bootstrap` |
 
 Use the **full-binary kill-9 harness** to prove on-disk recovery of a real
 node under `SIGKILL`; use the **sim engine** for fast, hermetic,
@@ -16,7 +16,7 @@ seed-reproducible consensus/boot scenarios.
 ## Full-binary kill-9 (C7)
 
 `crash_recovery_test` (`tools/crash_recovery_test.c`) spawns a **real**
-`build/bin/zclassic23`, drives it briefly, `SIGKILL`s its whole process
+`build/bin/z23`, drives it briefly, `SIGKILL`s its whole process
 group, restarts it, and asserts the recovery invariants. It is the
 end-to-end counterpart to the in-process unit test
 `lib/test/src/test_kill9_recovery.c`.
@@ -434,7 +434,7 @@ make postmortem-to-scenario CAP=<capsule-dir> [OUT=<path>]
 
 `CAP` is an **unpacked** `.cap` directory (`tape.bin` + `manifest.json` +
 `log.txt` + ...) as written by `postmortem_capture_write()` — a live
-capsule directory listed by `zclassic23 ops postmortem list`, or one built by hand for
+capsule directory listed by `z23 ops postmortem list`, or one built by hand for
 testing. `OUT` defaults to `tools/sim/scenarios/repro_<seed_hex>.scenario`.
 The tool (also runnable directly as `build/bin/postmortem_to_scenario
 --cap=DIR [--out=PATH]`) writes a `.scenario` file that:
@@ -462,7 +462,7 @@ emitted `seed` line is the tape's informational xoshiro register snapshot,
 not the original scalar seed — it will not reproduce the capsule's exact RNG
 stream in a fresh run (see the generated file's own comment, and
 `examples/09_seed_replay.c` for the exact-replay path via
-`postmortem_capsule_load_tape()` / `zclassic23 ops postmortem replay`).
+`postmortem_capsule_load_tape()` / `z23 ops postmortem replay`).
 
 ## Reproducing a failure
 

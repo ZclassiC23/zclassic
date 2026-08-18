@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 test-tmp Scratch Reclaimer
+Description=Z23 test-tmp Scratch Reclaimer
 
 [Service]
 Type=oneshot

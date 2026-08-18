@@ -70,7 +70,7 @@ int test_no_hardcoded_home(void)
      * legitimately references via getenv(), so it would match itself. The
      * production binaries below are what operators actually ship. */
     static const char *binaries[] = {
-        "build/bin/zclassic23",
+        "build/bin/z23",
         "build/bin/export_snapshot",
         "build/bin/zcl-nodectl",
         "build/bin/zcl-rpc",

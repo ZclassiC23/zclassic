@@ -144,7 +144,7 @@ void zcl_native_handle_zcode_guide(
     }
     bool ok = json_push_kv_str(
             &reply->data, "mission",
-            "Tell ZClassic23 what you want C23 software on this device to do.") &&
+            "Tell Z23 what you want C23 software on this device to do.") &&
         json_push_kv_str(&reply->data, "next_action",
                          "Describe the behavior you want.") &&
         json_push_kv_str(

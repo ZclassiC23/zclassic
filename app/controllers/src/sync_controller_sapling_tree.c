@@ -745,7 +745,7 @@ static void *sapling_tree_rebuild_deferred_thread(void *arg)
         LOG_WARN("sapling_tree_rebuild",
                 "deferred rebuild: FAILED (rc=%d) — tree left at "
                 "pre-rebuild size=%zu; sapling_tree_rebuild already "
-                "raised a named blocker (see `zclassic23 dumpstate "
+                "raised a named blocker (see `z23 dumpstate "
                 "blocker`)", n, old_size);
     }
     atomic_store(&g_sapling_tree_rebuilding, false);

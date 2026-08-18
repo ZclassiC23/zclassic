@@ -1,6 +1,6 @@
 # ZCODE Arena
 
-The Arena is the smallest complete example of what ZClassic23 is for: someone
+The Arena is the smallest complete example of what Z23 is for: someone
 writes exact C23, any node builds and runs it under bounded authority, and
 every other node can reproduce the result byte-for-byte instead of taking
 anyone's word for it.
@@ -223,7 +223,7 @@ These are named because they are real, not because they are about to be fixed.
 
 ## Where this sits in the project
 
-ZClassic23 is first a public ZClassic full node. The Arena is an application of
+Z23 is first a public ZClassic full node. The Arena is an application of
 the second thing it does: the decentralized C23 Commons, where ordinary nodes
 publish, discover, fetch, verify, build, independently reproduce and serve
 exact C23 packages without GitHub or a central registry. Package activity never

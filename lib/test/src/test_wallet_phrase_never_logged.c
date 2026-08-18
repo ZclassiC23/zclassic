@@ -8,7 +8,7 @@
  * stdout to node.log. So the shipped configuration turned "show the user
  * their words once" into "write the wallet's entire spending authority
  * into a plaintext file" — a file that is rotated, copied into backups,
- * and read back on demand with `zclassic23 ops logs`. Anyone who ever
+ * and read back on demand with `z23 ops logs`. Anyone who ever
  * reads that file owns the money in that wallet, forever, and nothing in
  * the wallet can be changed to take it back.
  *
@@ -427,7 +427,7 @@ static int t_refusal_is_scoped_to_a_spendable_wallet(void)
  * Every assertion above is a negative — nothing printed, nothing leaked. Taken
  * alone they would all pass over a print that had been deleted. This is the
  * positive: on a real pty the twelve words appear, and so does the sentence the
- * owner approved for this surface ("...in ZClassic23 only... will not work in
+ * owner approved for this surface ("...in Z23 only... will not work in
  * Electrum..."). That sentence has to be READABLE on both surfaces; the other
  * surface is core.wallet.recovery.restore's help text, held by
  * tools/lint/check_describe_budget.sh + the catalog test group.
@@ -490,9 +490,9 @@ static int t_a_real_terminal_gets_the_words_and_the_warning(void)
               ran && strstr(seen, "ONLY TIME THEY WILL EVER BE SHOWN") != NULL);
     /* The owner's approved wording, on the creation surface. Matched in
      * single-line fragments because a pty rewrites the line endings. */
-    WPL_CHECK("and is told the words restore money in ZClassic23 ONLY",
+    WPL_CHECK("and is told the words restore money in Z23 ONLY",
               ran && strstr(seen,
-                  "These words restore your money in ZClassic23 only.") != NULL);
+                  "These words restore your money in Z23 only.") != NULL);
     WPL_CHECK("and that they will not work in other wallet software",
               ran && strstr(seen, "not work in Electrum") != NULL &&
               strstr(seen, "wallet software") != NULL);

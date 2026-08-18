@@ -187,7 +187,7 @@ static void agent_liveness_push_availability_compact(
     agent_liveness_copy_keys(&obj, full, keys, sizeof(keys) / sizeof(keys[0]));
     json_push_kv_str(&obj, "object_completeness", "compact");
     json_push_kv_str(&obj, "full_detail_command",
-                     "zclassic23 agentliveness full");
+                     "z23 agentliveness full");
     json_push_kv(out, "runtime_availability", &obj);
     json_free(&obj);
 }
@@ -210,7 +210,7 @@ static void agent_liveness_push_quality_compact(
     agent_liveness_copy_keys(&obj, full, keys, sizeof(keys) / sizeof(keys[0]));
     json_push_kv_str(&obj, "object_completeness", "compact");
     json_push_kv_str(&obj, "full_detail_command",
-                     "zclassic23 agentliveness full");
+                     "z23 agentliveness full");
     json_push_kv(out, "background_quality_status", &obj);
     json_free(&obj);
 }
@@ -236,7 +236,7 @@ static void agent_liveness_push_supervisor_compact(
     json_push_kv_int(&obj, "restart_count_total",
                      counts ? counts->restart_count_total : 0);
     json_push_kv_str(&obj, "full_detail_command",
-                     "zclassic23 agentliveness full");
+                     "z23 agentliveness full");
     json_push_kv(out, "supervisor_state", &obj);
     json_free(&obj);
 }
@@ -249,12 +249,12 @@ static void agent_liveness_push_drilldowns(struct json_value *out,
     json_set_array(&arr);
     agent_push_contract_native_command_json(&arr, "agent");
     agent_push_contract_native_command_json(&arr, "agentlanes");
-    agent_liveness_push_str(&arr, "zclassic23 dumpstate supervisor");
+    agent_liveness_push_str(&arr, "z23 dumpstate supervisor");
     agent_push_contract_native_command_json(&arr, "agentbuild");
     agent_liveness_push_str(&arr, "make quality-linger-status");
     if (attention_needed) {
         agent_liveness_push_str(&arr,
-            "zclassic23 getnodelog 'stall|stale|fail|restart|quality'");
+            "z23 getnodelog 'stall|stale|fail|restart|quality'");
     }
     json_push_kv(out, "recommended_drilldowns", &arr);
     json_free(&arr);
@@ -417,7 +417,7 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
     json_push_kv_str(result, "semantics",
                      "read-only composition of current_runtime_lane, runtime_services, supervisor_state, and background_quality_status");
     json_push_kv_str(result, "full_mode_command",
-                     "zclassic23 agentliveness full");
+                     "z23 agentliveness full");
     json_push_kv_str(result, "full_mode_params", "{\"mode\":\"full\"}");
 
     agent_push_operator_lane_json(&fragments, "current_runtime_lane");
@@ -490,7 +490,7 @@ bool rpc_agent_liveness(const struct json_value *params, bool help,
         brief_mode ? "brief_mode_omits_embedded_drilldowns" :
         quality_skipped_for_budget
             ? "first_call_budget_exhausted_before_quality_scan" : "",
-        brief_mode ? "zclassic23 agentliveness full" : "");
+        brief_mode ? "z23 agentliveness full" : "");
 
     json_free(&quality_status);
     json_free(&supervisor_state);

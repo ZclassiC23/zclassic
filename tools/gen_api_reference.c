@@ -732,7 +732,7 @@ static void block_counts(FILE *f)
             compat);
     fprintf(f, "| … `planned` (fail-closed BLOCKED, exit 3) | %zu |\n",
             planned);
-    fprintf(f, "| … dev-gated 🔧 (`ready` only in `zclassic23-dev`) | %zu |\n",
+    fprintf(f, "| … dev-gated 🔧 (`ready` only in `z23-dev`) | %zu |\n",
             dev_gated);
     fprintf(f, "| Leaves with `effect=mutate` | %zu |\n", mutating);
     fprintf(f, "| Leaves with `effect=destructive` | %zu |\n", destructive);

@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Test Instance (Onion Bootstrap)
+Description=Z23 Test Instance (Onion Bootstrap)
 After=network-online.target
 Wants=network-online.target
 

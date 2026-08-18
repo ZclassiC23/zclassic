@@ -62,7 +62,7 @@
  * — deliberately NOT a new top-level dumper (see CLAUDE.md "Adding state
  * introspection" — don't bump the dumper count for a signal that fits an
  * existing surface). Also surfaced as a cheap "binary_stale" bool in both
- * the bounded and full paths of `zclassic23 healthcheck` (see
+ * the bounded and full paths of `z23 healthcheck` (see
  * event_healthcheck_controller.c).
  *
  * Thread safety

@@ -30,7 +30,7 @@
  *
  * When the launcher falls back it passes ZCL_BINARY_FALLBACK_ACTIVE=1; the
  * node raises the `binary.fallback_active` typed blocker at boot so
- * `zclassic23 status` shows the degraded-but-alive state (OWNER remedy: an
+ * `z23 status` shows the degraded-but-alive state (OWNER remedy: an
  * operator must deploy a good binary and clear the streak).
  *
  * The pure seams below take explicit paths/flags (no env, no exec) so the

@@ -99,7 +99,7 @@ struct ibd_throttle_status {
 void ibd_throttle_status_snapshot(struct ibd_throttle_status *out);
 
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe.
- * Wired into `zclassic23 dumpstate ibd_throttle`. */
+ * Wired into `z23 dumpstate ibd_throttle`. */
 struct json_value;
 bool ibd_throttle_dump_state_json(struct json_value *out, const char *key);
 

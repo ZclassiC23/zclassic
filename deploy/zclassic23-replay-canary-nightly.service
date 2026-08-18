@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Replay Canary — nightly from-anchor
+Description=Z23 Replay Canary — nightly from-anchor
 # Independent of the live node: the canary spawns its OWN isolated /tmp
 # mainnet node and only READS the co-located zclassicd (RPC 8232) for the
 # cross-node coarse-stats assert. NO Requires=zclassic23.service.

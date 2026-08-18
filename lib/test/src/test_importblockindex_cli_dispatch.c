@@ -182,7 +182,7 @@ static int icd_test_flaglike_target_refused(const char *src_dir)
         char out[16384] = {0};
         int rc = icd_run(argv, out, sizeof(out));
         ASSERT(rc == 1);
-        ASSERT(icd_contains(out, "usage: zclassic23 --importblockindex"));
+        ASSERT(icd_contains(out, "usage: z23 --importblockindex"));
         PASS();
     } _test_next:;
     return failures;

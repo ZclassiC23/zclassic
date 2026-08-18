@@ -1,6 +1,6 @@
 # Security and Integrity Model
 
-ZClassic23's security model is built around operator ownership: one local
+Z23's security model is built around operator ownership: one local
 full-node binary, explicit network listeners, private wallet state, an
 onion-hosted explorer, and a typed local native command operator surface. Tor support
 publishes the operator's own service, wallet/key code stays inside the
@@ -10,7 +10,7 @@ properties auditable.
 
 ## Current status
 
-- ZClassic23 is pre-v1 and in active stabilization. It is not production-ready
+- Z23 is pre-v1 and in active stabilization. It is not production-ready
   and has no supported release line yet.
 - The v1 bar is [`MVP.md`](./MVP.md). The project does not claim v1 until all
   eight operator acceptance criteria pass at the documented bar.
@@ -44,7 +44,7 @@ isolated fixtures, or consenting peers.
 | P2P networking and peer scoring | Implement the public ZClassic node protocol | Peer policy protects consensus and network health |
 | Wallet and key code | Local transparent/Sapling wallet operation | Diagnostics must not return private key material |
 | Native commands | Local typed operator API for AI-assisted node operation | Destructive commands are explicit and privilege-gated |
-| `zclassic23 dbquery` | Incident-response inspection of local `node.db` | SELECT-only, semicolon-rejected, limited, and rate-gated |
+| `z23 dbquery` | Incident-response inspection of local `node.db` | SELECT-only, semicolon-rejected, limited, and rate-gated |
 | Fuzzers, chaos, kill-9 harnesses | Find crashes and recovery bugs in this codebase | Isolated datadirs and ports; no live-node mutation |
 | Atomic swap and market code | Application protocol scaffolding | Settlement gaps are documented; scaffolding is not claimed complete |
 
@@ -198,7 +198,7 @@ item, not a claimed property.
 The node binary is byte-for-byte reproducible across two independent builders.
 `make repro-verify` (`tools/scripts/repro-verify.sh`) is the standing proof: it
 snapshots the current working tree into two isolated build directories whose
-absolute paths differ in both value and length, builds `build/bin/zclassic23` in
+absolute paths differ in both value and length, builds `build/bin/z23` in
 each, and SHA3-256- plus `cmp`-compares the two shipped (stripped) artifacts. It
 prints one `PASS`/`FAIL` line. It is opt-in (two full whole-program LTO links,
 ~2x a normal build) and is intentionally NOT on the `make lint` / `make ci`
@@ -214,7 +214,7 @@ identity, not human acceptance of a signer: acceptance authority must already
 have been resolved from the signed task/candidate/proof/lane chain.
 
 **Proven now (full byte identity):** two builders in different absolute
-directories produce an identical `build/bin/zclassic23` — identical SHA3-256,
+directories produce an identical `build/bin/z23` — identical SHA3-256,
 identical `.note.gnu.build-id`, identical bytes. `.text`/`.rodata`/`.data` were
 already identical because the shipped binary is stripped (`strip -s`); the only
 divergences an empirical two-directory build exposed were the absolute build

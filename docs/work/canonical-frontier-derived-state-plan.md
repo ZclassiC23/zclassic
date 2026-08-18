@@ -1,4 +1,4 @@
-> Verify the live H* via `zclassic23 status` / `zclassic23 dumpstate
+> Verify the live H* via `z23 status` / `z23 dumpstate
 > reducer_frontier` before trusting this note. This derive-state/
 > delete-heal-ladder design remains historical input, not an open plan;
 > current gates are in `SOVEREIGN-NETWORK-ROADMAP.md`.
@@ -57,7 +57,7 @@ killing the two-name drift) is **landed**
 3. **service-restart / supervisor** — `chain_tip_watchdog` (300/600/1200s, bounded 3) —
    now fires only on genuine peer/network stalls.
 4. **external / systemd + native command** — after the bounded budget, emit
-   `EV_OPERATOR_NEEDED`, leave node up degraded; `zclassic23 ops state
+   `EV_OPERATOR_NEEDED`, leave node up degraded; `z23 ops state
    --subsystem=chain_tip_watchdog` surfaces it. No silent halt.
 
 ## Real-data proof (copies only, never live)

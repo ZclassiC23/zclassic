@@ -505,12 +505,12 @@ static int test_watcher_publication_containment(void)
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           false, false, false,
                           ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
-                      "zclassic23-dev dev begin")
+                      "z23-dev dev begin")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           true, false, false,
                           ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
-                      "zclassic23-dev dev loop status") == 0);
+                      "z23-dev dev loop status") == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           true, true, true,
                           ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),
@@ -518,7 +518,7 @@ static int test_watcher_publication_containment(void)
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           true, true, false, ZCL_DEVLOOP_PUBLISH_APPLY),
-                      "start or wait for the isolated dev node on RPC 18252, then rerun zclassic23-dev dev loop status")
+                      "start or wait for the isolated dev node on RPC 18252, then rerun z23-dev dev loop status")
                == 0);
         ASSERT(strcmp(zcl_devloop_watcher_next_action(
                           true, true, true, ZCL_DEVLOOP_PUBLISH_APPLY),
@@ -534,14 +534,14 @@ static int test_watcher_publication_containment(void)
         ASSERT(strcmp(why_not_live,
                       "cannot read RPC auth cookie at /tmp/dev/.cookie") == 0);
         ASSERT(strcmp(next_command,
-                      "zclassic23-dev dev generation current") == 0);
+                      "z23-dev dev generation current") == 0);
         zcl_devloop_hotswap_guidance(
             "rejected", "compile", "candidate did not compile",
             why_not_live, sizeof(why_not_live),
             next_command, sizeof(next_command));
         ASSERT(strcmp(why_not_live, "candidate did not compile") == 0);
         ASSERT(strcmp(next_command,
-                      "zclassic23-dev dev diagnose latest") == 0);
+                      "z23-dev dev diagnose latest") == 0);
         zcl_devloop_hotswap_guidance(
             "rejected", "resident_probe",
             "service ABI changed; select DEV_RESTART",

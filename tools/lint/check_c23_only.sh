@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Enforce the owner invariant that ZClassic23 has no Rust build or link path.
+# Enforce the owner invariant that Z23 has no Rust build or link path.
 
 set -euo pipefail
 
@@ -31,7 +31,7 @@ ref_hits="$(git grep -n -E "$ref_pattern" -- \
     ':!tools/lint/check_c23_only.sh' || true)"
 
 if [[ -n "$path_hits" || -n "$ref_hits" ]]; then
-    printf 'check_c23_only: FAIL — ZClassic23 must have no Rust dependency\n' >&2
+    printf 'check_c23_only: FAIL — Z23 must have no Rust dependency\n' >&2
     [[ -z "$path_hits" ]] || printf '%s\n' "$path_hits" >&2
     [[ -z "$ref_hits" ]] || printf '%s\n' "$ref_hits" >&2
     exit 1

@@ -1,6 +1,6 @@
 # ZVCS — the in-binary version-control system
 
-ZVCS is zclassic23's own content-addressed version-control system,
+ZVCS is z23's own content-addressed version-control system,
 implemented in `lib/vcs/` (Apache-2.0, `Copyright 2026 Rhett Creighton`). It
 is not a git wrapper and does not shell out to git: `git` stays outside the
 binary entirely as an external GitHub publish/trace bridge (source-tree

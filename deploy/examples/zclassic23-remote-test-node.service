@@ -5,7 +5,7 @@
 # ~/.config/zclassic23/remote-test.env so this unit stays reusable.
 
 [Unit]
-Description=ZClassic23 remote test node
+Description=Z23 remote test node
 After=network-online.target
 Wants=network-online.target
 StartLimitIntervalSec=0

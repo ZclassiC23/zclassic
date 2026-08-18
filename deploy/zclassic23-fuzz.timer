@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Background Fuzz Timer
+Description=Z23 Background Fuzz Timer
 
 [Timer]
 # Four fuzzers * 15 minutes each. If a prior run is still active, systemd keeps

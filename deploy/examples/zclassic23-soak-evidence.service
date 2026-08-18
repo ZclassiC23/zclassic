@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Soak Evidence Collector — hourly MVP-C6 sample (read-only)
+Description=Z23 Soak Evidence Collector — hourly MVP-C6 sample (read-only)
 # Appends ONE JSON line per run (soak height, zclassicd height, gap,
 # systemd NRestarts, ActiveEnterTimestamp, VmRSS, ok) to
 # ~/.local/state/zclassic23-soak-evidence/evidence.jsonl. READ-ONLY

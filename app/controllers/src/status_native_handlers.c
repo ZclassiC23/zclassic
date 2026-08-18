@@ -356,7 +356,7 @@ static char *status_frontdoor_body(struct zcl_native_body_err *err)
     return out;
 }
 
-/* `zclassic23 status` (core.status) front door. Default = the single
+/* `z23 status` (core.status) front door. Default = the single
  * round-trip snapshot composition; `--full` = the legacy 12-call document. */
 char *zcl_native_status_body(const struct json_value *args,
                              struct zcl_native_body_err *err)

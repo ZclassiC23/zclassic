@@ -560,7 +560,7 @@ static int commons_mission_api_test(void)
         zcl_native_handle_zcode_guide(&request, &reply);
         ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "mission")),
-            "Tell ZClassic23 what you want C23 software on this device to "
+            "Tell Z23 what you want C23 software on this device to "
             "do.") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "next_action")),
                       "Describe the behavior you want.") == 0);

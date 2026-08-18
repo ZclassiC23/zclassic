@@ -134,6 +134,42 @@ build/bin/z23
 
 ---
 
+## One journey: intent to working software
+
+Tell the node what you want C23 software on this device to do. It reuses
+existing C23 parts first, creates only what is missing, builds and tests the
+result in confinement, shows you the real behavior, lets another node
+reproduce it, and only then asks you to accept the exact version. Ask the node
+for the journey rather than trusting this page:
+
+```bash
+build/bin/z23 zcode guide
+```
+
+| Step | One command |
+| --- | --- |
+| Describe the behavior you want | `z23 zcode guide` |
+| Reuse existing C23 first, create only what is missing | `z23 zcode work start --datadir=/tmp/z23-work --input='{"workspace":".","goal":"<desired behavior>"}'` |
+| Build and test it, contained | `z23 zcode work run --datadir=/tmp/z23-work --input='{"work":"latest","adapter":"manual"}'` |
+| See the real consequence | `z23 zcode work show --input='{"work":"latest"}'` |
+| Reproduce it on another node | `z23 zcode package source reproduce --datadir=/tmp/z23-commons` |
+| Accept the exact version | `z23 zcode work accept --datadir=/tmp/z23-work --input='{"work":"latest"}'` |
+| Use it in a real application | `z23 zcode use --datadir=/tmp/z23-commons` |
+
+Every step returns the next safe command, so the journey never depends on
+remembering this table. The scratch datadirs above keep an experiment off your
+live node; drop them once you mean to act on the real one. Fetching never authorizes building; building never
+authorizes installing, linking, executing, or deploying; acceptance is a human
+decision about one exact version, made on your node under your policy. The
+full walkthrough with inputs and failure paths is
+[`docs/C23_COMMONS_QUICKSTART.md`](docs/C23_COMMONS_QUICKSTART.md).
+
+The result stays usable when the original agent, vendor, registry, or company
+disappears: the source is content-addressed, the recipe is declarative, the
+evidence is local, and any node can rebuild the exact bytes.
+
+---
+
 ## What you can do with it
 
 Every command below runs against your own node, on your own machine.

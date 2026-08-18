@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Off-Host Tip-Hash Agreement Timer — every 10 minutes
+Description=Z23 Off-Host Tip-Hash Agreement Timer — every 10 minutes
 
 [Timer]
 # 10 minutes, not 60 seconds. Each sample costs three bounded table scans on

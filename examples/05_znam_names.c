@@ -49,7 +49,7 @@
  *    checking is simulated, but the address-derivation-from-prevout
  *    mechanism is the real one, byte for byte.
  * 4. `db_znam_find` / `db_znam_text_get` are the READ side: the same
- *    functions behind `zclassic23 app names resolve` and the ZNAM RPC
+ *    functions behind `z23 app names resolve` and the ZNAM RPC
  *    handlers use in production.
  *
  * NOTE ON TEST-ONLY HELPERS: this file reimplements the small OP_RETURN /

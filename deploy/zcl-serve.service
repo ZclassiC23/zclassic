@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Serve lane (secondary full node + block explorer)
+Description=Z23 Serve lane (secondary full node + block explorer)
 After=network-online.target
 Wants=network-online.target
 # The serve role is a secondary node instance: same binary/consensus code as

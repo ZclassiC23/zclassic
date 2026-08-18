@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Log Rotation Timer — daily ~03:00
+Description=Z23 Log Rotation Timer — daily ~03:00
 
 [Timer]
 # 03:00 nightly with up to 10 min jitter. Off-peak; sits at the front of

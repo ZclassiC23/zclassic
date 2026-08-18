@@ -8,7 +8,7 @@ workflow, explorer projection, or operator API. The short version:
 explicit validations, explicit relationships, service-owned workflows, typed
 native calls.**
 
-ZClassic23 borrows the useful Rails ideas: resources, ActiveRecord lifecycle,
+Z23 borrows the useful Rails ideas: resources, ActiveRecord lifecycle,
 validations, relationships, migrations, strong parameters, and thin
 controllers. It does not borrow reflection, hidden allocation, exceptions, or
 runtime magic. Everything must be visible to C, grep, gdb, lint, and tests.
@@ -77,13 +77,13 @@ Build each feature in this order.
    Native operator commands live in the agent contract registry when they are
    first-class commands. The native typed command registry is the only agent
    interface. Terminal agents should prefer native commands —
-   `zclassic23 status`, `zclassic23 dumpstate <subsystem>`,
-   `zclassic23 discover help` / `discover search <q>`, and
-   `zclassic23-dev status` for the installed dev lane. The agent contract still
+   `z23 status`, `z23 dumpstate <subsystem>`,
+   `z23 discover help` / `discover search <q>`, and
+   `z23-dev status` for the installed dev lane. The agent contract still
    carries the native command path and schema metadata used by discovery and
    typed invocation.
    Do not add separate helper binaries. Before restarting or hot-swapping the
-   dev lane, run `make agent-dev-status` or native `zclassic23 agentdevstatus`
+   dev lane, run `make agent-dev-status` or native `z23 agentdevstatus`
    and use its next-action hint.
 
 10. **Test the slice.**

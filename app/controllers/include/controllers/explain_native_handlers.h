@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * `zclassic23 explain <topic>` — the operator/AI-readable composition surface.
+ * `z23 explain <topic>` — the operator/AI-readable composition surface.
  *
  * `explain` assembles, IN C, what an operator otherwise stitches together from
  * four separate diagnostic surfaces (reducer frontier, the typed blocker

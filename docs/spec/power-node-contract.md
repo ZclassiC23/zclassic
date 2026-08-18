@@ -1,6 +1,6 @@
 # Power-Node Architecture Contract
 
-The stable architecture and observability contract for a ZClassic23 power
+The stable architecture and observability contract for a Z23 power
 node: one C23 process serving chain state, application services, onion-hosted
 surfaces, ZClassicDNS name resolution, and typed native commands. A contract, not an
 implementation plan.
@@ -60,7 +60,7 @@ Invariants:
 - Service startup must be idempotent. Registering or initializing the same
   service twice must leave one coherent owner, not duplicate workers.
 - Services that run background work must expose a bounded status snapshot for
-  `zclassic23 status`, `zclassic23 ops health`, or domain-specific native commands.
+  `z23 status`, `z23 ops health`, or domain-specific native commands.
 - Service failures must be observable through events and/or health status.
   Silent loops are contract violations.
 - Service APIs must state thread ownership for mutable state and must avoid
@@ -83,7 +83,7 @@ Invariants:
 - Onion ingress must call the same controller/business logic as local HTTP or
   internal routes. It must not fork a second app implementation.
 - Onion status must be visible through health/status surfaces, especially
-  `zclassic23 core status` and node UI status views.
+  `z23 core status` and node UI status views.
 - Onion request handling must preserve normal authentication, permission, and
   destructive-action rules.
 - Directory publishing must expose only intended discovery metadata: onion
@@ -134,9 +134,9 @@ Invariants:
   services. On failure they must set a structured error body and log context.
 - Destructive tools must be explicit and gated by middleware policy. Read-only
   diagnostics must remain safe to call during incident response.
-- Command calls must record path, result code, and latency so `zclassic23 ops
-  timeline` and `zclassic23 ops metrics` can explain agent activity.
-- The `zclassic23 rpc` escape hatch is not the contract for new features. New
+- Command calls must record path, result code, and latency so `z23 ops
+  timeline` and `z23 ops metrics` can explain agent activity.
+- The `z23 rpc` escape hatch is not the contract for new features. New
   stable functionality should get a typed command.
 
 Concrete files: `lib/kernel/include/kernel/command_registry.h`,
@@ -184,7 +184,7 @@ Invariants:
 - State-machine transitions must emit typed events with old state, new state,
   and reason where applicable.
 - Rejections and recoverable failures must emit events with enough context to
-  debug from `zclassic23 eventlog` and `zclassic23 getnodelog` without attaching a debugger.
+  debug from `z23 eventlog` and `z23 getnodelog` without attaching a debugger.
 - Long-running services must emit progress or status events at bounded
   intervals and completion/failure events at terminal states.
 - Native dispatch must retain bounded request evidence; crash handlers must

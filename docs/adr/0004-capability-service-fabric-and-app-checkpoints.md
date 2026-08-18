@@ -23,7 +23,7 @@
 
 The one-binary promise has two meanings that must not be confused:
 
-1. zclassic23 Core is one immutable, independently identifiable executable.
+1. z23 Core is one immutable, independently identifiable executable.
 2. The running personal-sovereignty stack may use host-kernel process
    isolation to keep public networking, keys, Apps, and compilers from sharing
    ambient authority.
@@ -66,7 +66,7 @@ The target supervised tree is:
 
 ```text
 systemd / future rc.d
-└── zclassic23 --role=init
+└── z23 --role=init
     ├── --role=core       consensus, reducers, chain P2P, progress.kv
     ├── --role=edge       HTTPS, onion, App relay, package swarm
     ├── --role=wallet     keys, signing, proving; no public sockets

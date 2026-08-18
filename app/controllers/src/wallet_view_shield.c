@@ -32,7 +32,7 @@ size_t serve_shield(uint8_t *r, size_t max, const char *query) {
 
     if (amount <= 0) {
         /* No amount specified — show amount input form (or nothing-to-shield) */
-        size_t off = wv_emit_header(r, max, "Shield — ZClassic23", "/wallet/shield");
+        size_t off = wv_emit_header(r, max, "Shield — Z23", "/wallet/shield");
         int64_t avail = 0;
         {
             sqlite3 *sdb = wv_open_db();
@@ -68,7 +68,7 @@ size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     double fee = FEE_ZCL;
     double total_cost = amount + fee;
 
-    size_t off = wv_emit_header(r, max, "Shield — ZClassic23", "/wallet/shield");
+    size_t off = wv_emit_header(r, max, "Shield — Z23", "/wallet/shield");
 
     /* Render shield confirmation using template */
     char amt_s[32], fee_s[32], tot_s[32];
@@ -101,7 +101,7 @@ size_t serve_shield_confirm(uint8_t *r, size_t max,
     if (amount_str[0])
         amount = strtod(amount_str, NULL);
 
-    size_t off = wv_emit_header(r, max, "Shield — ZClassic23", "/wallet/shield");
+    size_t off = wv_emit_header(r, max, "Shield — Z23", "/wallet/shield");
 
     if (amount <= 0) {
         off += template_render(TMPL_SHIELD_INVALID, NULL, 0,

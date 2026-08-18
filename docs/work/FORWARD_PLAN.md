@@ -1,4 +1,4 @@
-# ZClassic23 current forward plan
+# Z23 current forward plan
 
 This file is the current ordered development mission. Durable product direction
 and agent authority live in [`../../AGENTS.md`](../../AGENTS.md); public-node
@@ -8,6 +8,17 @@ hosted node lives only in [`../HANDOFF.md`](../HANDOFF.md).
 Do not copy live heights, process state, or dated benchmark anecdotes here.
 Derive them from the named commands and evidence ledgers. Earlier detailed
 plans and incident narratives remain available through Git history.
+
+## Near-term proof
+
+One person creates or improves a real C23 application from reusable parts,
+sees the consequence, reproduces it elsewhere, accepts the exact version, and
+uses it. Everything below is ordered to make that one journey work end to end:
+`z23 zcode guide` -> `zcode work start` -> `zcode work run` -> `zcode work
+show` -> `zcode create` -> `zcode package fetch` -> `zcode package source
+reproduce` -> `zcode work accept` -> `zcode use`. A change that does not make
+some step of that journey work, or make it smaller, faster, safer, or easier
+to reproduce, is not the current mission.
 
 ## Product priority order
 

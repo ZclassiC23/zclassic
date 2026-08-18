@@ -1,6 +1,6 @@
-# UX program — beautiful end-to-end UX for ZClassic23 (2026-07-27)
+# UX program — beautiful end-to-end UX for Z23 (2026-07-27)
 
-Owner directive: build a beautiful UX into zclassic23 end to end, agent-built.
+Owner directive: build a beautiful UX into z23 end to end, agent-built.
 
 Two lanes, one design language:
 

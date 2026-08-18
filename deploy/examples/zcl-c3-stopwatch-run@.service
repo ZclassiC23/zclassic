@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 C3 Wall-Clock Stopwatch Run (%i) — genuinely-wiped cold-start-to-tip evidence
+Description=Z23 C3 Wall-Clock Stopwatch Run (%i) — genuinely-wiped cold-start-to-tip evidence
 # Templated so multiple named configurations (e.g. distinct candidate
 # binaries or peers under test) can run under distinct instance names
 # without duplicating this unit. %i's EnvironmentFile is optional (leading

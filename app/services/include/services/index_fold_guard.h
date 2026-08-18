@@ -8,7 +8,7 @@
  * snapshot-seed floor where block bodies are structurally absent.
  *
  * Both rails surface a NAMED typed blocker (util/blocker.h) so a stall is an
- * operator-visible entry in `zclassic23 dumpstate blocker`, never a silent
+ * operator-visible entry in `z23 dumpstate blocker`, never a silent
  * refuse. Neither ever blocks tip-follow: the caller holds only a bounded batch
  * of the progress-store trylock and yields immediately (see
  * address_index_service.c / txindex_projection_service.c). */

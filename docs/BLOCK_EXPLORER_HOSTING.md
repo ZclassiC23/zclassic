@@ -1,6 +1,6 @@
-# Hosting the zclassic23 Block Explorer over HTTPS on your own domain
+# Hosting the z23 Block Explorer over HTTPS on your own domain
 
-zclassic23 **is its own web server** — the explorer, REST API, and onion service are
+z23 **is its own web server** — the explorer, REST API, and onion service are
 all served by the single binary's built-in HTTPS server (`lib/net/src/https_server.c`).
 **There is no nginx / Caddy / reverse proxy, and you should never add one.** One C
 binary is the entire serving surface.
@@ -248,7 +248,7 @@ the node skipped. Symptom: `/explorer/tokens` returns `200` but lists nothing;
 - **Public canonical explorer** (e.g. a domain you publish) → it must serve the
   full history, so run it as a **full-history node**. Either let it P2P-sync
   bodies from genesis, or on a box that already has a `zclassicd` archive use the
-  two-step legacy import (`build/bin/zclassic23 --importblockindex $HOME/.zclassic`
+  two-step legacy import (`build/bin/z23 --importblockindex $HOME/.zclassic`
   then a normal boot — see `docs/HANDOFF.md`), which gives the fold every body so
   it rebuilds `zslp_tokens` and the address/tx indexes. Do **not** point an
   explorer-serving node at the `-load-snapshot-at-own-height` loader if you need

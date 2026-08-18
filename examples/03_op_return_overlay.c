@@ -15,7 +15,7 @@
  * without ever bloating the spendable-coin working set.
  *
  * That one primitive — "push bytes after OP_RETURN, pay a normal fee, mine
- * it" — is the ENTIRE substrate zclassic23's overlay protocols are built on:
+ * it" — is the ENTIRE substrate z23's overlay protocols are built on:
  *   - ZNAM (on-chain name registry, lib/znam/) tags its payload with the
  *     4-byte Lokad ID "ZNAM" (znam.h: ZNAM_LOKAD_BYTES) followed by a
  *     command byte and command-specific fields.

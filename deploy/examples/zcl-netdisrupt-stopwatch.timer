@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Network-Disruption Recovery Stopwatch Timer — every 6h, offset 30m from the C3 stopwatch
+Description=Z23 Network-Disruption Recovery Stopwatch Timer — every 6h, offset 30m from the C3 stopwatch
 
 [Timer]
 # Same 6h cadence as zcl-c3-stopwatch.timer, offset by 30 minutes so the

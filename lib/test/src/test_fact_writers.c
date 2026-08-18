@@ -20,7 +20,7 @@
  *
  * What is NOT asserted, on purpose: any count of multi-writer slots in the real
  * tree. That number is a finding, and pinning a finding in a test is the second
- * ledger the census exists to find. Read it with `zclassic23 code facts`.
+ * ledger the census exists to find. Read it with `z23 code facts`.
  */
 
 #include "test/test_core.h"

@@ -1,4 +1,4 @@
-/* ZClassic23 Social — reference permissionless application.
+/* Z23 Social — reference permissionless application.
  *
  * This declarative file will generate the conventional C resource slice and
  * zcl_app_manifest_v1. It is data, not authority: the Core host grants only

@@ -1784,11 +1784,11 @@ bool peer_lifecycle_incidents_json(struct json_value *out)
     struct json_value drilldowns = {0};
     json_set_array(&drilldowns);
     struct json_value d = {0};
-    json_set_str(&d, "zclassic23 dumpstate peer_lifecycle");
+    json_set_str(&d, "z23 dumpstate peer_lifecycle");
     json_push_back(&drilldowns, &d);
-    json_set_str(&d, "zclassic23 timeline '{\"category\":\"peer\",\"count\":50,\"since_secs\":3600}'");
+    json_set_str(&d, "z23 timeline '{\"category\":\"peer\",\"count\":50,\"since_secs\":3600}'");
     json_push_back(&drilldowns, &d);
-    json_set_str(&d, "zclassic23 dumpstate chain_advance_coordinator");
+    json_set_str(&d, "z23 dumpstate chain_advance_coordinator");
     json_push_back(&drilldowns, &d);
     json_free(&d);
     json_push_kv(out, "recommended_drilldowns", &drilldowns);

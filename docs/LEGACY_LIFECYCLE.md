@@ -4,7 +4,7 @@ Modules and CLI flags prefixed `legacy_` interact with a sibling
 `zclassicd` (C++ ZClassic) install on the same host. They exist for two
 distinct reasons that must not be confused:
 
-1. **Bootstrap** — cold-start a fresh `zclassic23` faster than full IBD
+1. **Bootstrap** — cold-start a fresh `z23` faster than full IBD
    by reading headers / block-index / chainstate / block bodies from a
    sibling `zclassicd` datadir.
 2. **Drift detection** — at runtime, periodically compare our chain
@@ -23,7 +23,7 @@ Cross-references: `CLAUDE.md` (top-level architecture),
 
 ## CLI flag map
 
-The cold-start path is `build/bin/zclassic23 --importblockindex <datadir>`
+The cold-start path is `build/bin/z23 --importblockindex <datadir>`
 (headers from a sibling `zclassicd` datadir) followed by a normal boot,
 which auto-reads/links `~/.zclassic` unless `-nolegacyimport` is passed.
 
@@ -71,8 +71,8 @@ that reaches each module.
 
 The mirror observer never applies blocks — it only compares our tip
 against a sibling `zclassicd` and surfaces lag / divergence via
-`EV_MIRROR_*` events. It powers `zclassic23 ops mirror` and
-`zclassic23 dumpstate legacy_mirror`, and its lag/parity SLOs feed live
+`EV_MIRROR_*` events. It powers `z23 ops mirror` and
+`z23 dumpstate legacy_mirror`, and its lag/parity SLOs feed live
 monitoring; do not remove it.
 
 | File | Role | Callers |

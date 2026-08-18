@@ -30,7 +30,7 @@
  * height with ok=0 — i.e. the first row holding the pipeline back. Reads the
  * status + first_failure_* columns persisted by step_validate and composes
  * the full typed reason (e.g. "prevout_unresolved tx=<hex> vin=<n>"), so
- * `zclassic23 dumpstate script_validate` answers why the pipeline is stuck.
+ * `z23 dumpstate script_validate` answers why the pipeline is stuck.
  * No-op (emits blocking_height=-1) when nothing is blocking. The caller holds
  * the (recursive) progress-store lock — acquired non-blocking at the dump entry
  * — for the whole db section, so this helper does not lock itself. */

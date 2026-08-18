@@ -16,7 +16,7 @@
 
 ## Context
 
-ZClassic23's positioning is one self-contained C23 binary that is its own
+Z23's positioning is one self-contained C23 binary that is its own
 node, wallet, explorer, and operator surface (`docs/adr/0001`). Two questions
 recur whenever the node's sync rate or its runtime safety comes up: (1) is
 the observed fold-rate ceiling actually a *scheduling* problem — one thread,
@@ -30,7 +30,7 @@ first-principles OS-design instinct.
 
 ## Decision
 
-**zclassic23 adopts no operating system and builds no central scheduler.**
+**z23 adopts no operating system and builds no central scheduler.**
 Where the node is missing an OS-grade "organ," it is built in-tree,
 evidence-first — porting from FreeBSD (BSD-2-Clause) or OpenBSD (ISC) where
 their code fits, under the repo's existing attribution mechanism (a
@@ -112,7 +112,7 @@ fairly." The organs that contract actually needs are built:
 
 A direct grep of the tree (excluding `vendor/`) for `seccomp`, `landlock`,
 `capsicum`, `pledge(`, `setrlimit` returns **zero** matches. There is no
-runtime confinement anywhere in zclassic23 today. Concretely:
+runtime confinement anywhere in z23 today. Concretely:
 
 - The `ZCL_DEV_BUILD` hot-swap loader (`lib/hotswap/src/hotswap_loader.c:696`,
   `dlopen(pinned_path, RTLD_NOW | RTLD_LOCAL)`) runs a manifest-gated `.so`

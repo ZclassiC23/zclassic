@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Network-Disruption Recovery Stopwatch Run (%i) — PROOF B: SIGSTOP/SIGCONT upstream, time client H* recovery
+Description=Z23 Network-Disruption Recovery Stopwatch Run (%i) — PROOF B: SIGSTOP/SIGCONT upstream, time client H* recovery
 # Templated the same way as zcl-c3-stopwatch-run@.service — %i names an
 # optional EnvironmentFile (leading '-') carrying ZCL_ND_CLIENT_RPCPORT /
 # ZCL_ND_CLIENT_DATADIR / ZCL_ND_UPSTREAM_PID_FILE (or a bare

@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 continuous verification watcher for checkout %i (verify-only; builds and tests nothing else)
+Description=Z23 continuous verification watcher for checkout %i (verify-only; builds and tests nothing else)
 # One instance per checkout. The instance name is the directory name under
 # %h/github, so the lane in %h/github/zcl-w5-devd is:
 #

@@ -5,8 +5,8 @@ static-library package without GitHub or a central registry. Start with the
 live guide; it states the currently proven target and any missing authority:
 
 ```bash
-zclassic23 zcode guide
-zclassic23 zcode package guide
+z23 zcode guide
+z23 zcode package guide
 ```
 
 The rule throughout is **verify, don't trust**. A name and semantic version
@@ -15,10 +15,32 @@ only who made one release statement; a provider record says only where bytes
 are claimed to be available; a build receipt says only what one exact build
 observed. None proves general safety, usefulness, or human acceptance.
 
-The copyable package-store commands below use `/tmp/zclassic23-commons` so an
+The copyable package-store commands below use `/tmp/z23-commons` so an
 experiment cannot fall back to the operator's live node datadir. Keep an
 isolated datadir, or deliberately replace it with the intended package-host
 datadir after completing the preflight.
+
+## The journey
+
+This quickstart is one pass through the whole Z23 journey. Each step below is
+a real command; each command returns the next safe one, so you never have to
+remember the table.
+
+| Step | Command | Section |
+| --- | --- | --- |
+| Describe the behavior you want | `z23 zcode guide` | above |
+| Reuse existing C23 first, create only what is missing | `z23 zcode work start --datadir=/tmp/z23-work` | [`work walkthrough`](work/ZCODE_DEVELOPMENT_WALKTHROUGH.md) |
+| Build and test it, contained | `z23 zcode work run --datadir=/tmp/z23-work` | [`work walkthrough`](work/ZCODE_DEVELOPMENT_WALKTHROUGH.md) |
+| See the real consequence | `z23 zcode work show` | [`work walkthrough`](work/ZCODE_DEVELOPMENT_WALKTHROUGH.md) |
+| Publish the exact source and release | `z23 zcode create --datadir=/tmp/z23-commons` | [Author](#author) |
+| Fetch inert bytes on another node | `z23 zcode package fetch --datadir=/tmp/z23-commons` | [Consumer](#consumer) |
+| Reproduce it independently | `z23 zcode package source reproduce --datadir=/tmp/z23-commons` | [Reproducer](#reproducer) |
+| Accept and use that exact version | `z23 zcode use --datadir=/tmp/z23-commons` | [Consumer](#consumer) |
+
+Acceptance is a human decision about one exact version, taken on your node
+under your policy. Nothing in this path requires GitHub, a central registry, or
+a particular AI vendor, and the result stays usable when any of them
+disappears.
 
 ## One-time node preflight
 
@@ -26,7 +48,7 @@ The network path requires a running full node started with `-packagehost=1`.
 Inspect its live state first:
 
 ```bash
-zclassic23 zcode network status --datadir=/tmp/zclassic23-commons
+z23 zcode network status --datadir=/tmp/z23-commons
 ```
 
 If the DHT is disabled, `zcode network delegate` names the required active,
@@ -36,17 +58,17 @@ and inspect this once, commit the exact returned token, then restart so the
 running DHT loads the policy:
 
 ```bash
-zclassic23 zcode network policy mutate --datadir=/tmp/zclassic23-commons \
+z23 zcode network policy mutate --datadir=/tmp/z23-commons \
   --input='{"mode":"plan","operation":"add","source":"local","effect":"allow","scope":"service_type","action_mask":63,"value":"zclassic23.package"}'
-zclassic23 zcode network policy mutate --datadir=/tmp/zclassic23-commons \
+z23 zcode network policy mutate --datadir=/tmp/z23-commons \
   --input='{"mode":"commit","operation":"add","source":"local","effect":"allow","scope":"service_type","action_mask":63,"value":"zclassic23.package","plan_token":"<returned token>"}'
 ```
 
 ## Author
 
 Put `zcode-package.json`, `LICENSE`, public headers, C sources, and tests in a
-directory outside ZClassic23. Declare every dependency by its exact
-`package_root`. Discover any input spelling with `zclassic23 discover schema
+directory outside Z23. Declare every dependency by its exact
+`package_root`. Discover any input spelling with `z23 discover schema
 <leaf>`.
 
 1. Create a package-only key. It is not a wallet or node identity:
@@ -59,7 +81,7 @@ directory outside ZClassic23. Declare every dependency by its exact
    without writing to the node:
 
    ```bash
-   zclassic23 zcode package dev prepare --datadir=/tmp/zclassic23-commons \
+   z23 zcode package dev prepare --datadir=/tmp/z23-commons \
      --input='{"dir":"/absolute/path/to/package","publisher_pubkey":"<66hex>","publisher_sequence":1}'
    ```
 
@@ -71,7 +93,7 @@ directory outside ZClassic23. Declare every dependency by its exact
    zclassic23-package-sign --sign-digest <64hex-digest> --key-fd 7
    exec 7<&-
 
-   zclassic23 zcode package dev seal --datadir=/tmp/zclassic23-commons \
+   z23 zcode package dev seal --datadir=/tmp/z23-commons \
      --input='{"release_body_hex":"<prepare value>","signature_hex":"<128hex signature>"}'
    ```
 
@@ -81,8 +103,8 @@ directory outside ZClassic23. Declare every dependency by its exact
    `package_root` and transport `transport_root`.
 
    ```bash
-   zclassic23 zcode create --input='{"mode":"plan","release_hex":"<hex>","manifest_hex":"<hex>","recipe_hex":"<hex>","dir":"/absolute/path/to/package","datadir":"/tmp/zclassic23-commons"}'
-   zclassic23 zcode create --input='{"mode":"commit","release_hex":"<same>","manifest_hex":"<same>","recipe_hex":"<same>","dir":"/absolute/path/to/package","datadir":"/tmp/zclassic23-commons"}'
+   z23 zcode create --input='{"mode":"plan","release_hex":"<hex>","manifest_hex":"<hex>","recipe_hex":"<hex>","dir":"/absolute/path/to/package","datadir":"/tmp/z23-commons"}'
+   z23 zcode create --input='{"mode":"commit","release_hex":"<same>","manifest_hex":"<same>","recipe_hex":"<same>","dir":"/absolute/path/to/package","datadir":"/tmp/z23-commons"}'
    ```
 
 5. On the running package-hosting node, publish a POINTER binding
@@ -92,14 +114,14 @@ directory outside ZClassic23. Declare every dependency by its exact
    signed availability evidence, not correctness evidence.
 
    ```bash
-   zclassic23 zcode network publish --datadir=/tmp/zclassic23-commons \
+   z23 zcode network publish --datadir=/tmp/z23-commons \
      --input='{"mode":"plan","kind":"pointer","namespace":"zclassic23.package","semantic_root":"<package_root>","transport_root":"<transport_root>","sequence":1,"not_before":<unix>,"expiry":<unix>}'
-   zclassic23 zcode network publish --datadir=/tmp/zclassic23-commons \
+   z23 zcode network publish --datadir=/tmp/z23-commons \
      --input='{"mode":"commit","kind":"pointer","namespace":"zclassic23.package","semantic_root":"<same package_root>","transport_root":"<same transport_root>","sequence":1,"not_before":<same>,"expiry":<same>,"plan_token":"<returned token>"}'
 
-   zclassic23 zcode network publish --datadir=/tmp/zclassic23-commons \
+   z23 zcode network publish --datadir=/tmp/z23-commons \
      --input='{"mode":"plan","kind":"provider","namespace":"zclassic23.package","transport_root":"<transport_root>","sequence":1,"not_before":<unix>,"expiry":<unix>}'
-   zclassic23 zcode network publish --datadir=/tmp/zclassic23-commons \
+   z23 zcode network publish --datadir=/tmp/z23-commons \
      --input='{"mode":"commit","kind":"provider","namespace":"zclassic23.package","transport_root":"<same transport_root>","sequence":1,"not_before":<same>,"expiry":<same>,"plan_token":"<returned token>"}'
    ```
 
@@ -115,10 +137,10 @@ central technical truth.
    execute downloaded code.
 
    ```bash
-   zclassic23 zcode network records --datadir=/tmp/zclassic23-commons \
+   z23 zcode network records --datadir=/tmp/z23-commons \
      --input='{"kind":"pointer","namespace":"zclassic23.package","semantic_root":"<package_root>","include_evidence_wires":true}'
 
-   zclassic23 zcode package fetch --datadir=/tmp/zclassic23-commons \
+   z23 zcode package fetch --datadir=/tmp/z23-commons \
      --input='{"root":"<transport_root>","namespace":"zclassic23.package","maximum_bytes":268435456}'
    ```
 
@@ -129,7 +151,7 @@ central technical truth.
 2. Inspect the imported release and its exact dependencies:
 
    ```bash
-   zclassic23 zcode package show --datadir=/tmp/zclassic23-commons \
+   z23 zcode package show --datadir=/tmp/z23-commons \
      --input='{"root":"<package_root>"}'
    ```
 
@@ -137,11 +159,11 @@ central technical truth.
    build order, then commit the returned `plan_id`:
 
    ```bash
-   zclassic23 zcode use --input='{"name_or_root":"<package_root>","datadir":"/tmp/zclassic23-commons"}'
-   zclassic23 zcode use --input='{"plan_id":"<plan_id>","datadir":"/tmp/zclassic23-commons"}'
+   z23 zcode use --input='{"name_or_root":"<package_root>","datadir":"/tmp/z23-commons"}'
+   z23 zcode use --input='{"plan_id":"<plan_id>","datadir":"/tmp/z23-commons"}'
    ```
 
-The installed result is public headers plus a static archive. ZClassic23 does
+The installed result is public headers plus a static archive. Z23 does
 not load it into the node. Linking an application against it remains an
 explicit local action.
 
@@ -153,7 +175,7 @@ target/profile, build receipt, and every artifact root. Then inspect locally
 filed observations:
 
 ```bash
-zclassic23 zcode package verify --input='{"root":"<package_root>","datadir":"/tmp/zclassic23-commons"}'
+z23 zcode package verify --input='{"root":"<package_root>","datadir":"/tmp/z23-commons"}'
 ```
 
 A mismatch is evidence and must remain visible; never pick one result because
@@ -170,7 +192,7 @@ bind their compiler, toolchain evidence, and the exact flags that establish
 the target. The currently proven package target is `linux-x86_64`: package
 objects force the original AMD64/SSE2 baseline with generic tuning, so AVX,
 AVX2, FMA, and BMI are not requirements. Other architectures must produce
-their own exact receipts and are not yet claimed. ZClassic23 itself has the
+their own exact receipts and are not yet claimed. Z23 itself has the
 same original-x86-64 CPU floor in its portable release path, built with
 ordinary GCC/Clang against a glibc 2.31 sysroot. Zig is not required.
 

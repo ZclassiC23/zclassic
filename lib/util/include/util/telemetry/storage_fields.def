@@ -52,7 +52,7 @@ TL_LEAF(database, progress_store_open, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     "the reducer cannot record that it advanced, so chain progress stops "
     "being durable even while blocks are still being folded; on restart the "
     "node resumes from the last cursor that DID land",
-    "zclassic23 ops state --subsystem=progress")
+    "z23 ops state --subsystem=progress")
 
 TL_LEAF(database, stage_cursor_rows, TLC_I64, TFU_GAUGE, TLV_NORMAL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -69,7 +69,7 @@ TL_LEAF(database, projection_store_open, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
     "projection reads fall back to the kernel's handle or fail outright, and "
     "every projection query then contends with the reducer's write "
     "transaction",
-    "zclassic23 ops state --subsystem=projection_store")
+    "z23 ops state --subsystem=projection_store")
 
 TL_LEAF(database, projection_handle_independent, TLC_BOOL, TFU_BOOL,
     TLV_NORMAL, TFR_EXPECT_TRUE, TL_NONE, 0, TFS_WARN,
@@ -79,7 +79,7 @@ TL_LEAF(database, projection_handle_independent, TLC_BOOL, TFU_BOOL,
     "the split has collapsed back to one connection, so a projection read on "
     "the RPC thread can be queued behind the reducer's open write transaction "
     "— the RPC-dark-under-load failure the split exists to prevent",
-    "zclassic23 ops state --subsystem=projection_store")
+    "z23 ops state --subsystem=projection_store")
 
 TL_LEAF(database, block_index_degraded, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     TFR_EXPECT_FALSE, TL_NONE, 0, TFS_CRITICAL,
@@ -89,7 +89,7 @@ TL_LEAF(database, block_index_degraded, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     "no header, no projection and no peer carries them — so a degraded index "
     "means those heights may be unrecoverable from this datadir alone. Do not "
     "prune, do not reseal, and copy the datadir before any repair",
-    "zclassic23 ops state --subsystem=block_index_integrity")
+    "z23 ops state --subsystem=block_index_integrity")
 
 TL_LEAF(database, block_index_unsafe_override, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
     TFR_EXPECT_FALSE, TL_NONE, 0, TFS_CRITICAL,
@@ -98,7 +98,7 @@ TL_LEAF(database, block_index_unsafe_override, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
     "the integrity gate was answered by an environment variable rather than "
     "by the sidecar, so every downstream claim about below-seed heights rests "
     "on an operator override instead of a digest",
-    "zclassic23 ops state --subsystem=block_index_integrity")
+    "z23 ops state --subsystem=block_index_integrity")
 
 TL_LEAF(database, block_index_verdict, TLC_TEXT, TFU_ENUM, TLV_NORMAL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -160,7 +160,7 @@ TL_LEAF(disk, free_bytes, TLC_I64, TFU_BYTES, TLV_SUMMARY,
     "below_refuse_threshold fire before this row does",
     "a node that runs out of disk stops: SQLite starts returning I/O errors "
     "mid-transaction, and the write may land in a half-applied fold",
-    "zclassic23 ops state --subsystem=disk_monitor")
+    "z23 ops state --subsystem=disk_monitor")
 
 TL_LEAF(disk, below_refuse_threshold, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     TFR_EXPECT_FALSE, TL_NONE, 0, TFS_CRITICAL,
@@ -171,7 +171,7 @@ TL_LEAF(disk, below_refuse_threshold, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     "write-heavy paths — mempool admission, the block processor, db_txn — are "
     "already refusing new work; the node is not making progress and will not "
     "until space is freed",
-    "zclassic23 ops state --subsystem=disk_monitor")
+    "z23 ops state --subsystem=disk_monitor")
 
 TL_LEAF(disk, below_warn_threshold, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     TFR_EXPECT_FALSE, TL_NONE, 0, TFS_WARN,
@@ -181,7 +181,7 @@ TL_LEAF(disk, below_warn_threshold, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     "there is still headroom, but the node is on the path to refusing writes; "
     "this is the last point at which freeing space is routine rather than an "
     "incident",
-    "zclassic23 ops state --subsystem=disk_monitor")
+    "z23 ops state --subsystem=disk_monitor")
 
 TL_LEAF(disk, warn_free_bytes, TLC_I64, TFU_BYTES, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -202,7 +202,7 @@ TL_LEAF(disk, monitor_running, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
     "nothing is watching free space: free_bytes stops advancing and the "
     "refuse flag can never flip, so the node would run the disk to zero "
     "without ever refusing a write",
-    "zclassic23 ops state --subsystem=supervisor")
+    "z23 ops state --subsystem=supervisor")
 
 TL_LEAF(disk, last_poll_unix, TLC_I64, TFU_UNIX_TIME, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -218,7 +218,7 @@ TL_LEAF(disk, poll_age_seconds, TLC_I64, TFU_SECONDS, TLV_NORMAL,
     "poll_seconds should read this against that value instead",
     "the poll loop is wedged even though the thread is registered, so "
     "free_bytes is a stale number being presented as current",
-    "zclassic23 ops state --subsystem=disk_monitor")
+    "z23 ops state --subsystem=disk_monitor")
 
 TL_LEAF(disk, maintenance_worker_running, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
     TFR_EXPECT_TRUE, TL_NONE, 0, TFS_WARN,
@@ -226,7 +226,7 @@ TL_LEAF(disk, maintenance_worker_running, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
     "the write-ahead log is never truncated and the query planner's "
     "statistics go stale, so the datadir grows without bound and reads get "
     "slower with no other symptom",
-    "zclassic23 ops state --subsystem=db_maintenance")
+    "z23 ops state --subsystem=db_maintenance")
 
 TL_LEAF(disk, maintenance_failures_total, TLC_I64, TFU_COUNT_TOTAL,
     TLV_SUMMARY, TFR_EXPECT_ZERO, TL_NONE, 0, TFS_WARN,
@@ -235,7 +235,7 @@ TL_LEAF(disk, maintenance_failures_total, TLC_I64, TFU_COUNT_TOTAL,
     "a checkpoint, ANALYZE or VACUUM is failing; reclamation is not happening "
     "and the reason is in the worker's last_error, which this table does not "
     "carry because it is free-form prose",
-    "zclassic23 ops state --subsystem=db_maintenance")
+    "z23 ops state --subsystem=db_maintenance")
 
 TL_LEAF(disk, maintenance_runs_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,

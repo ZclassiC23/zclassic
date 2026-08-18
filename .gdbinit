@@ -1,4 +1,4 @@
-# zclassic23 gdb init — load with `gdb -x .gdbinit build/bin/zclassic23`
+# z23 gdb init — load with `gdb -x .gdbinit build/bin/z23`
 # (or run gdb from the repo root with .gdbinit auto-load permitted).
 #
 # The node names its threads via pthread_setname_np() in

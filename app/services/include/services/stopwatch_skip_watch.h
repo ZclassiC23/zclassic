@@ -4,7 +4,7 @@
  * evidence ledgers written by tools/scripts/c3_stopwatch_run_and_record.sh
  * and tools/scripts/netdisrupt_stopwatch_run_and_record.sh, so a run of
  * skipped proofs is visible from the typed interface
- * (`zclassic23 ops state --subsystem=stopwatch_evidence`) instead of only
+ * (`z23 ops state --subsystem=stopwatch_evidence`) instead of only
  * existing as an absence nobody looked at.
  *
  * WHAT THIS IS FOR. A stopwatch harness exits 2 (SKIP) when it could not run

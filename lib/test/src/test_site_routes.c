@@ -114,7 +114,7 @@ static const char k_onion_nav_html[] =
     "<header class='site-top'>"
     "<a class='brand' href='/'>"
     "<span class='glyph' aria-hidden='true'>Z</span>"
-    "<span>ZClassic23</span></a>"
+    "<span>Z23</span></a>"
     "<nav aria-label='Site'>"
     "<a href='/explorer'>Explorer</a>"
     "<a href='/names'>Names</a>"

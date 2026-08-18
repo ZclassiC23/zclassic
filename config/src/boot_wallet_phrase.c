@@ -106,7 +106,7 @@ static void boot_wallet_refuse_non_terminal(void)
         "This output is NOT going to a terminal. It is going to a file or\n"
         "a pipe — under the shipped service that file is node.log, which\n"
         "is rotated, copied into backups, and readable with\n"
-        "'zclassic23 ops logs'. Printing the words there would hand your\n"
+        "'z23 ops logs'. Printing the words there would hand your\n"
         "money to everything that ever reads that file.\n"
         "\n"
         "So nothing was created. There is no half-made wallet and no\n"
@@ -155,7 +155,7 @@ static void boot_wallet_warn_no_phrase_backup(const char *why)
         "\n"
         "What this means: if this datadir ever holds coins, its only\n"
         "backup is the wallet backup FILE:\n"
-        "  zclassic23 core wallet backup now\n"
+        "  z23 core wallet backup now\n"
         "Lose the disk and that file and the money is gone.\n"
         "\n"
         "To get a wallet WITH twelve words instead, create it from a\n"
@@ -217,7 +217,7 @@ void boot_wallet_show_recovery_phrase_once(const char *phrase)
      * implementation: under the shipped systemd unit stdout IS node.log.
      * A phrase printed there is the wallet's whole spending authority in a
      * plaintext file that gets rotated, copied into backups, and read back
-     * by `zclassic23 ops logs`. boot_wallet_create_new refuses long before
+     * by `z23 ops logs`. boot_wallet_create_new refuses long before
      * a phrase exists; this check is here so no future caller can reach
      * the print without it. */
     if (!boot_wallet_phrase_stdout_is_a_terminal()) {
@@ -250,14 +250,14 @@ void boot_wallet_show_recovery_phrase_once(const char *phrase)
      * person can read it on, and it must be on both. Say it plainly and do not
      * soften it: someone who assumes these words work in Electrum will find
      * out otherwise on the worst day. */
-    printf("These words restore your money in ZClassic23 only. They will\n");
+    printf("These words restore your money in Z23 only. They will\n");
     printf("not work in Electrum, on a hardware wallet, or in any other\n");
     printf("wallet software. Keep them with a note saying they belong to\n");
     printf("zclassic23. Typing somebody else's words in here would not\n");
     printf("fail either — it would quietly open a different, empty wallet.\n");
     printf("\n");
     printf("To get this wallet back on a new machine:\n");
-    printf("  zclassic23 core wallet recovery restore \\\n");
+    printf("  z23 core wallet recovery restore \\\n");
     printf("      --input='{\"phrase\":\"<your 12 words>\",\n");
     printf("                \"datadir\":\"/path/to/empty/datadir\",\n");
     printf("                \"confirm\":true}'\n");

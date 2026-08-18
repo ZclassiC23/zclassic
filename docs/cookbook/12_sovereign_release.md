@@ -8,7 +8,7 @@ network. Depth lives in `docs/spec/sovereign-identity-layer.md`; this page
 is the fast path.
 
 Conventions: commands are one-shot native commands
-(`build/bin/zclassic23 <command>`). Every command here either works
+(`build/bin/z23 <command>`). Every command here either works
 read-only or prints exactly what to do next.
 
 ## Step 0 — verify a release (read-only, always succeeds)
@@ -18,7 +18,7 @@ A release record is a `zid_doc`: an ed25519 signature over
 master key. Verifying needs no wallet, no network, no chain — just the doc:
 
 ```bash
-build/bin/zclassic23 zcode release verify --file=<release.zid>
+build/bin/z23 zcode release verify --file=<release.zid>
 ```
 
 Expected output sketch:
@@ -54,7 +54,7 @@ never logged, echoed, or written anywhere but your file.
 ## Step 2 — sign your first release
 
 ```bash
-build/bin/zclassic23 zcode release sign \
+build/bin/z23 zcode release sign \
     --name=my-lib --version=0.1.0 \
     --root=<64-hex sha3 of your release tarball> \
     --seed-file=~/.zcl-release-seed
@@ -67,8 +67,8 @@ publisher identity), and the path of the saved
 Now anchor that key on-chain, so nobody has to take your word for it:
 
 ```bash
-build/bin/zclassic23 core identity anchor --pubkey=<your master_pubkey>
-build/bin/zclassic23 core identity resolve --pubkey=<your master_pubkey>
+build/bin/z23 core identity anchor --pubkey=<your master_pubkey>
+build/bin/z23 core identity resolve --pubkey=<your master_pubkey>
 ```
 
 `anchor` broadcasts through the node wallet when one is loaded; with no
@@ -91,11 +91,11 @@ ever seen (every ZNAM name, ZSLP transfer, ZANC anchor) into one rolling
 digest. Anchoring it publishes that commitment on-chain:
 
 ```bash
-build/bin/zclassic23 core epoch status     # tip, catalog digest, anchored?
-build/bin/zclassic23 core epoch anchor     # with wallet: broadcasts; without:
+build/bin/z23 core epoch status     # tip, catalog digest, anchored?
+build/bin/z23 core epoch anchor     # with wallet: broadcasts; without:
                                            # returns op_return_hex to include
                                            # in any tx you make yourself
-build/bin/zclassic23 core epoch verify     # recompute + match against chain
+build/bin/z23 core epoch verify     # recompute + match against chain
 ```
 
 One ~40-byte OP_RETURN commits the whole overlay state. Every honest node
@@ -108,7 +108,7 @@ confirmation, disagreement is a named, visible problem.
 Hand them one thing: the `.zid` file. Their own node answers the rest:
 
 ```bash
-build/bin/zclassic23 zcode release verify --file=<release.zid> --anchored
+build/bin/z23 zcode release verify --file=<release.zid> --anchored
 ```
 
 `--anchored` resolves the doc's `master_pubkey` against the identity

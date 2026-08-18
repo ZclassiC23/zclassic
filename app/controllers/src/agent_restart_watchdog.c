@@ -138,7 +138,7 @@ void agent_push_restart_watchdog_json(
     json_push_kv_int(&obj, "fires_operator_needed",
                      (int64_t)snapshot->fires_operator_needed);
     json_push_kv_str(&obj, "deep_state",
-                     "zclassic23 dumpstate chain_tip_watchdog");
+                     "z23 dumpstate chain_tip_watchdog");
     json_push_kv_str(&obj, "source", "chain_tip_watchdog");
     json_push_kv(out, key && key[0] ? key : "restart_watchdog", &obj);
     json_free(&obj);

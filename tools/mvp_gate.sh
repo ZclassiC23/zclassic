@@ -452,7 +452,7 @@ if [[ "$JSON_OUT" == 1 ]]; then
     printf '}\n'
 else
     echo "════════════════════════════════════════════════════════════════════"
-    echo " ZClassic23 MVP live-node gate  (READ-ONLY probe; docs/MVP.md)"
+    echo " Z23 MVP live-node gate  (READ-ONLY probe; docs/MVP.md)"
     echo "════════════════════════════════════════════════════════════════════"
     if [[ "$NODE_UP" == 1 ]]; then
         echo " live node: UP  datadir=$LIVE_DATADIR  rpcport=$LIVE_RPCPORT  height=$HEIGHT  reftip=$REFTIP  gap=${GAP:-?}  at_tip=$AT_TIP  chain=$CHAIN"

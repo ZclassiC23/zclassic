@@ -4,7 +4,7 @@
  *
  * Turns docs/MVP.md's eight operator acceptance criteria (v1 = MRS 8/8) from a
  * human reading docs against the node into a typed, evidence-derived query:
- * `zclassic23 ops state --subsystem=mvp`.
+ * `z23 ops state --subsystem=mvp`.
  *
  * HONESTY CONTRACT — this is a REPORTER, never a gate. It derives
  * met=true|false|unknown STRICTLY from durable/runtime evidence the node

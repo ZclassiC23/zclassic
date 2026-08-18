@@ -15,7 +15,7 @@
  * All registered in the `chain` domain (g_chain_sup), in this order. A
  * stage whose _init fails (e.g. progress_store didn't open) is still
  * registered as a disabled child with stall_reason=child_reported, so
- * `zclassic23 dumpstate supervisor` and tests can see the missing core child
+ * `z23 dumpstate supervisor` and tests can see the missing core child
  * without running it. */
 
 #ifndef ZCL_STAGED_SYNC_SUPERVISOR_H

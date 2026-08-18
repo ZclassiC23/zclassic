@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 72h Hold Certifier — records the hold judge's verdict to hold-ledger.jsonl (read-only)
+Description=Z23 72h Hold Certifier — records the hold judge's verdict to hold-ledger.jsonl (read-only)
 # Runs tools/scripts/slo_hold_judge.sh --record: judges the trailing-72h hold
 # bar for the CANONICAL instance from the external prober's ledger
 # (~/.local/state/zclassic23-slo/uptime-ledger.jsonl + pages.jsonl) and

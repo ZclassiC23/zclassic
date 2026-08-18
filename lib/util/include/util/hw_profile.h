@@ -163,7 +163,7 @@ int hw_profile_drain_batch_effective(int baseline);
  * fatal. */
 bool hw_profile_pin_reducer_thread(pthread_t thread);
 
-/* ── `zclassic23 dumpstate hw_profile` ───────────────────────────────── */
+/* ── `z23 dumpstate hw_profile` ───────────────────────────────── */
 
 bool hw_profile_dump_state_json(struct json_value *out, const char *key);
 

@@ -74,5 +74,5 @@ void zcl_native_handle_dev_publication_mirror_record(
     (void)json_push_kv_bool(&reply->data, "git_called", false);
     (void)json_push_kv_bool(&reply->data, "network_called", false);
     (void)json_push_kv_str(&reply->data, "next_command",
-                           "zclassic23-dev dev drive");
+                           "z23-dev dev drive");
 }

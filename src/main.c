@@ -2,21 +2,21 @@
  * ZClassic full node — pure C23 implementation.
  *
  * One binary, three operator modes:
- *   zclassic23 [node options]         — run as full node / linger service
- *   zclassic23 api                    — API discovery from running node
- *   zclassic23 appprotocols           — application protocol catalog
- *   zclassic23 servicecatalog         — sovereign service UX catalog
- *   zclassic23 serviceoperations      — sovereign operation UX catalog
- *   zclassic23 <command> [--input=…]  — typed native command call
- *   zclassic23 status                 — compact native status + next action
- *   zclassic23 proofbundle            — single read-only proof artifact
- *   zclassic23 statecatalog           — diagnostics subsystem catalog
- *   zclassic23 agentlanes             — canonical/soak/dev lane topology
- *   zclassic23 agentliveness          — unified liveness rollup
- *   zclassic23 agentinterface         — preferred AI/operator interface
- *   zclassic23 milestone              — ASCII milestone status from node
- *   zclassic23 refold                 — UTXO anchor rebuild readiness
- *   zclassic23 <method> [params...]   — RPC client to running node */
+ *   z23 [node options]                — run as full node / linger service
+ *   z23 api                           — API discovery from running node
+ *   z23 appprotocols                  — application protocol catalog
+ *   z23 servicecatalog                — sovereign service UX catalog
+ *   z23 serviceoperations             — sovereign operation UX catalog
+ *   z23 <command> [--input=…]         — typed native command call
+ *   z23 status                        — compact native status + next action
+ *   z23 proofbundle                   — single read-only proof artifact
+ *   z23 statecatalog                  — diagnostics subsystem catalog
+ *   z23 agentlanes                    — canonical/soak/dev lane topology
+ *   z23 agentliveness                 — unified liveness rollup
+ *   z23 agentinterface                — preferred AI/operator interface
+ *   z23 milestone                     — ASCII milestone status from node
+ *   z23 refold                        — UTXO anchor rebuild readiness
+ *   z23 <method> [params...]          — RPC client to running node */
 
 #include "config/boot.h"
 #include "config/boot_cold_start.h"     /* -cold-start staged driver */
@@ -123,9 +123,9 @@ static void report_app_init_failed(const struct app_context *ctx)
     char bootstatus[1100];
     char rerun[1100];
     (void)snprintf(bootstatus, sizeof(bootstatus),
-                   "zclassic23 core node bootstatus -datadir=%s", datadir);
+                   "z23 core node bootstatus -datadir=%s", datadir);
     (void)snprintf(rerun, sizeof(rerun),
-                   "zclassic23 -datadir=%s -loglevel=debug", datadir);
+                   "z23 -datadir=%s -loglevel=debug", datadir);
     const struct boot_error_next next[] = {
         { bootstatus,
           "read the on-disk boot beacon (<datadir>/boot_status.json). It needs "
@@ -211,7 +211,7 @@ int main(int argc, char **argv)
      * brief + one suggested next command instead of silently booting a
      * default-config node underfoot. Delegates to cli_main with a synthetic
      * argv so datadir/rpcport resolution (cookie lookup, service exec-arg
-     * fallback) is the exact same code path `zclassic23 status --next`
+     * fallback) is the exact same code path `z23 status --next`
      * already uses — no duplicated logic. */
     if (argc == 1) {
         char *synthetic[] = {
@@ -237,7 +237,7 @@ int main(int argc, char **argv)
     if (argc >= 2 && strcmp(argv[1], "--legacy-utxo-commitment") == 0)
         return legacy_utxo_commitment_mode(argc, argv);
 
-    /* CLI mode: zclassic23 getblockcount */
+    /* CLI mode: z23 getblockcount */
     if (argc > 1 && is_cli_mode(argc, argv))
         return cli_main(argc, argv);
 
@@ -294,8 +294,8 @@ int main(int argc, char **argv)
     /* Default boot is the headless node (north star: AI-as-interface, no GUI).
      * The WebKit wallet GUI is opt-in via -gui; a plain `zclassic23`
      * and -datadir both run the node, never wallet_gui_main.
-     *   build/bin/zclassic23          → headless node
-     *   build/bin/zclassic23 -gui     → wallet GUI (needs a display)
+     *   build/bin/z23          → headless node
+     *   build/bin/z23 -gui     → wallet GUI (needs a display)
      * --self-test is the GUI bot harness (runs the GUI under xvfb), so it
      * is itself an explicit GUI launch; --gui is kept as a back-compat
      * spelling of -gui. */
@@ -463,7 +463,7 @@ int main(int argc, char **argv)
         g_connect_only = true;
     }
 
-    printf("zclassic23 starting (datadir=%s)...\n", ctx.datadir);
+    printf("z23 starting (datadir=%s)...\n", ctx.datadir);
     rpc_agent_set_boot_context(app_operator_lane_name(ctx.operator_lane),
                                app_runtime_profile_name(ctx.runtime_profile),
                                ctx.datadir, ctx.rpc_port, ctx.p2p_port,

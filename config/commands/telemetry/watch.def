@@ -51,7 +51,7 @@ ZCL_COMMAND_READY_COMMAND(
     "telemetry,watch,stream,changes,since,resume,cursor,epoch,gap",
     "zcl.telemetry.watch.input.v1", "zcl.telemetry.change.v1",
     "since,since_epoch,limit", "since",
-    "zclassic23 ops telemetry watch --since=41",
+    "z23 ops telemetry watch --since=41",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_EFFECT_READ, ZCL_COMMAND_RISK_READ,
     ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_MODE_STREAM, ZCL_COMMAND_LATENCY_FAST,

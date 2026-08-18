@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Copyright 2026 Rhett Creighton - Apache License 2.0
 #
-# doctor-build.sh — build-host accelerator health for the ZClassic23 inner
+# doctor-build.sh — build-host accelerator health for the Z23 inner
 # loop (`make doctor-build`). One command that answers: "which accelerators
 # does this host have, and what does each missing one COST me per iteration?"
 # Read-only and advisory: always exits 0 (missing tools are reported, never
@@ -35,7 +35,7 @@ absent() {
     missing=$((missing + 1))
 }
 
-echo "doctor-build: accelerator health for the ZClassic23 inner loop"
+echo "doctor-build: accelerator health for the Z23 inner loop"
 echo "  host: $(nproc 2>/dev/null || getconf _NPROCESSORS_ONLN 2>/dev/null || echo '?') online CPUs — width for \`make -j\` build-only / test-fast per-TU compiles"
 echo ""
 

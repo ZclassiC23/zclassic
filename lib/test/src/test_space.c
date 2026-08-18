@@ -474,7 +474,7 @@ static int test_space_native_plan_commit_show(void)
     ASSERT(json_size(json_get(&reply.data, "blockers")) > 0);
     const char *next = json_get_str(json_get(&reply.data,
                                              "next_safe_command"));
-    ASSERT(next && strncmp(next, "zclassic23 ", 11) == 0);
+    ASSERT(next && strncmp(next, "z23 ", 4) == 0);
     char status_wire[16384];
     size_t status_bytes = json_write(&reply.data, status_wire,
                                      sizeof(status_wire));

@@ -1,4 +1,4 @@
-# zclassic23 — Metaverse MVP target
+# z23 — Metaverse MVP target
 
 **Metaverse MVP = "a stranger can build the node, take the five-command
 metaverse tour, publish and verify a package in the commons, see their
@@ -8,7 +8,7 @@ each with a mechanical verification target. The Metaverse Readiness Score is
 `make metaverse-score` (0–100); the MVP is achieved at 100/100 with every
 criterion ✅.
 
-Mission context: *"ZClassic23 is a metaverse where people and AI create real
+Mission context: *"Z23 is a metaverse where people and AI create real
 things together, and nobody owns the world they build in."* The full program
 specs are the four maintainer documents under `docs/work/`
 (`ZCODE_PLAN.md`, `ZCODE_DEVELOPMENT_NETWORK.md`,

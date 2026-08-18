@@ -2,7 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* ZClassic23-specific bootstrap UX contract. The generic bootstrap status
+/* Z23-specific bootstrap UX contract. The generic bootstrap status
  * controller owns live P2P measurements; this module owns the fresh-node
  * route plan agents consume from REST/RPC/native. */
 

@@ -527,13 +527,13 @@ build_candidate() {
     if [ "${ZCL_DEV_USE_PREBUILT:-0}" = "1" ]; then
         if [ -z "$BUILD_ARTIFACT" ]; then
             case "$DEV_DEPLOY_BUILD" in
-                fast) BUILD_ARTIFACT="$REPO/build/bin/zclassic23-dev" ;;
-                strict) BUILD_ARTIFACT="$REPO/build/bin/zclassic23" ;;
+                fast) BUILD_ARTIFACT="$REPO/build/bin/z23-dev" ;;
+                strict) BUILD_ARTIFACT="$REPO/build/bin/z23" ;;
                 *) echo "[dev-lane] FATAL: prebuilt mode requires fast or strict build type" >&2; exit 2 ;;
             esac
         fi
         case "$(readlink -m "$BUILD_ARTIFACT")" in
-            "$REPO/build/bin/zclassic23-dev"|"$REPO/build/bin/zclassic23") ;;
+            "$REPO/build/bin/z23-dev"|"$REPO/build/bin/z23") ;;
             *) echo "[dev-lane] FATAL: trusted prebuilt artifact must be an in-tree build/bin node binary" >&2; exit 2 ;;
         esac
         [ -x "$BUILD_ARTIFACT" ] || {
@@ -548,12 +548,12 @@ build_candidate() {
         fast)
             echo "[dev-lane] building fast dev binary (source = $BUILD_SOURCE_ID)..."
             make fast-rebuild >/dev/null
-            BUILD_ARTIFACT="$REPO/build/bin/zclassic23-dev"
+            BUILD_ARTIFACT="$REPO/build/bin/z23-dev"
             ;;
         strict)
             echo "[dev-lane] building strict node binary (source = $BUILD_SOURCE_ID)..."
-            make build/bin/zclassic23 -j"$(nproc)" >/dev/null
-            BUILD_ARTIFACT="$REPO/build/bin/zclassic23"
+            make build/bin/z23 -j"$(nproc)" >/dev/null
+            BUILD_ARTIFACT="$REPO/build/bin/z23"
             ;;
         *)
             echo "[dev-lane] FATAL: unknown ZCL_DEV_DEPLOY_BUILD=$DEV_DEPLOY_BUILD (want fast or strict)" >&2

@@ -14,7 +14,7 @@ in [`ZC23_LIVING_COMMONS.md`](./ZC23_LIVING_COMMONS.md).
 
 ## Mission and truth boundary
 
-> **ZClassic23 is a metaverse where people and AI create real things together,
+> **Z23 is a metaverse where people and AI create real things together,
 > and nobody owns the world they build in.**
 
 The scientific surface is one factual part of that shared world. Humans and AI

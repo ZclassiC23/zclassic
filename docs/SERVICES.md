@@ -13,11 +13,11 @@ cannot drift:
 |---|---|
 | What can a service declare? | `lib/kernel/include/kernel/service_binding.h` |
 | How do I add one? | the header comment of `config/services/bindings.def` |
-| What services are declared here? | `zclassic23 app service list` |
-| What does one declare exactly? | `zclassic23 app service inspect <name>` |
+| What services are declared here? | `z23 app service list` |
+| What does one declare exactly? | `z23 app service inspect <name>` |
 | What commands does the branch expose? | `docs/API_REFERENCE.md` — generated from `config/commands`, drift-gated |
-| Does a holder qualify? | `zclassic23 app service access <name>` |
-| What state is each service in? | `zclassic23 app service status` |
+| Does a holder qualify? | `z23 app service access <name>` |
+| What state is each service in? | `z23 app service status` |
 
 ## Why a binding rather than a new registry
 

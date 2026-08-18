@@ -60,7 +60,7 @@ int main(int argc, char *argv[])
     gtk_init(&argc, &argv);
 
     GtkWidget *window = gtk_window_new(GTK_WINDOW_TOPLEVEL);
-    gtk_window_set_title(GTK_WINDOW(window), "ZClassic23 Blog");
+    gtk_window_set_title(GTK_WINDOW(window), "Z23 Blog");
     gtk_window_set_default_size(GTK_WINDOW(window), 960, 720);
     g_signal_connect(window, "delete-event", G_CALLBACK(on_close), NULL);
 

@@ -324,7 +324,7 @@ static void push_domain(struct json_value *out, struct profile_domain *p)
  * measuring an interval does not need: only fields this domain has actually
  * observed, and only the cumulative (monotonic) side, which is the side two
  * samples can be differenced. The unkeyed view is unchanged.
- *   zclassic23 ops state --subsystem=reducer_stage_profile --key=proof_validate
+ *   z23 ops state --subsystem=reducer_stage_profile --key=proof_validate
  * An unknown key is named rather than silently answered with everything. */
 static bool dump_one_domain(struct json_value *out, int domain)
 {

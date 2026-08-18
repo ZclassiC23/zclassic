@@ -10,7 +10,7 @@
 size_t serve_coins(uint8_t *r, size_t max) {
     sqlite3 *db = wv_open_db();
     if (!db) {
-        size_t off = wv_emit_header(r, max, "Coins — ZClassic23", "/wallet/coins");
+        size_t off = wv_emit_header(r, max, "Coins — Z23", "/wallet/coins");
         off += template_render(TMPL_LOADING, NULL, 0,
             (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
@@ -18,7 +18,7 @@ size_t serve_coins(uint8_t *r, size_t max) {
     }
 
     int tip = wv_effective_tip(db);
-    size_t off = wv_emit_header(r, max, "Coins — ZClassic23", "/wallet/coins");
+    size_t off = wv_emit_header(r, max, "Coins — Z23", "/wallet/coins");
 
     /* Pre-render UTXO rows into buffer (fetch via port, render via view) */
     char utxo_rows[16384];

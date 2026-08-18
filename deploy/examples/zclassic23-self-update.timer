@@ -1,5 +1,5 @@
 [Unit]
-Description=Daily ZClassic23 read-only remote source/service status
+Description=Daily Z23 read-only remote source/service status
 
 [Timer]
 OnCalendar=daily

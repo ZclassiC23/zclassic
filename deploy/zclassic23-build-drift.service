@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Build Drift Probe — is the running binary still the binary we think is running (read-only)
+Description=Z23 Build Drift Probe — is the running binary still the binary we think is running (read-only)
 # Appends one JSON line per run to
 # ~/.local/state/zclassic23-drift/build-drift-ledger.jsonl via
 # tools/scripts/build_drift_probe.sh.

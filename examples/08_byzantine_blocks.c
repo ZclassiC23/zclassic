@@ -148,7 +148,7 @@ int main(void)
      * any byzantine case runs (idempotent — safe even if a host process
      * already called it). Every rejection below turns into a typed,
      * observable BLOCKER_PERMANENT record here, exactly as it would on a
-     * live node (see `zclassic23 dumpstate blocker` / `zclassic23 blockers`). */
+     * live node (see `z23 dumpstate blocker` / `z23 blockers`). */
     blocker_module_init();
 
     int passed = 0;
@@ -196,5 +196,5 @@ int main(void)
  *       — turns a production reject into a durable, typed record (class,
  *         reason, owner subsystem) instead of a log line that scrolls
  *         away; introspect live via `core sync blockers` or
- *         `zclassic23 dumpstate blocker`.
+ *         `z23 dumpstate blocker`.
  */

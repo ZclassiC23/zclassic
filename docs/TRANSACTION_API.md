@@ -1,4 +1,4 @@
-# ZClassic23 transaction API
+# Z23 transaction API
 
 This is the map from a human intention (pay, shield, register a name, anchor a
 release, settle a swap) to the exact typed command that can create the
@@ -53,13 +53,13 @@ create a vault session, approve a plan, or broadcast a transaction.
 Use the native interface when operating the node:
 
 ```bash
-zclassic23 app transaction-types list
-zclassic23 app transaction-types wire
-zclassic23 app transaction-types show --type=znam_register
-zclassic23 app transaction-types guide --type=znam_register
-zclassic23 app transaction-types command core.wallet.transaction.send
-zclassic23 discover describe app.names.register
-zclassic23 discover schema app.names.register
+z23 app transaction-types list
+z23 app transaction-types wire
+z23 app transaction-types show --type=znam_register
+z23 app transaction-types guide --type=znam_register
+z23 app transaction-types command core.wallet.transaction.send
+z23 discover describe app.names.register
+z23 discover schema app.names.register
 ```
 
 Public read-only clients may use the REST mirror:
@@ -130,9 +130,9 @@ Sometimes an agent starts with a command instead of an intention. Use the
 reverse lookup before invoking an unfamiliar mutation:
 
 ```bash
-zclassic23 app transaction-types command core.wallet.transaction.send
-zclassic23 app transaction-types command vault.send-shielded
-zclassic23 app transaction-types command core.wallet.address.new
+z23 app transaction-types command core.wallet.transaction.send
+z23 app transaction-types command vault.send-shielded
+z23 app transaction-types command core.wallet.address.new
 ```
 
 The `zcl.transaction_command.v1` response joins the exact live command leaf to
@@ -199,7 +199,7 @@ this binary. The structural side is what prevents that list from becoming a
 false claim that every future application is enumerable. Run:
 
 ```bash
-zclassic23 app transaction-types wire
+z23 app transaction-types wire
 ```
 
 The `zcl.transaction_wire_catalog.v1` response derives four wire families from
@@ -325,13 +325,13 @@ vault.intent.submit ---- immediate reply: operation_status=queued
 Use the exact plan ID returned by `vault.intent.plan`:
 
 ```bash
-zclassic23 vault intent submit --input='{
+z23 vault intent submit --input='{
   "wallet_scope":"dev",
   "plan_id":"<64hex>",
   "confirm":true
 }'
 
-zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'
+z23 vault intent status --input='{"plan_id":"<64hex>"}'
 ```
 
 `vault.intent.submit` returns the same plan ID as `operation_id`, persists the
@@ -417,7 +417,7 @@ explicitly scoped wallet already has enough independent, reservation-eligible
 transparent UTXOs for the intended concurrency:
 
 ```bash
-zclassic23 metaverse agent liquidity --input='{
+z23 metaverse agent liquidity --input='{
   "dir":"/private/broker",
   "wallet_scope":"dev",
   "recipient_value_zat":1000,
@@ -442,7 +442,7 @@ address or outpoint, create the outputs, or rebalance automatically. The owner
 can prepare the private destinations and exact reservation in one call:
 
 ```bash
-zclassic23 vault intent fanout-plan --input='{
+z23 vault intent fanout-plan --input='{
   "wallet_scope":"dev",
   "recipient_value_zat":1000,
   "maximum_fee_zat":10000,
@@ -488,16 +488,16 @@ address, then spend that output with the threshold signatures. Start with the
 AI-ready contract rather than memorizing these steps:
 
 ```bash
-zclassic23 app transaction-types guide --type=transparent_p2sh_multisig_spend
+z23 app transaction-types guide --type=transparent_p2sh_multisig_spend
 ```
 
 Resolve each freshly created wallet address to its resident public key without
 exporting a private key, then compose a 2-of-3 policy from those public keys:
 
 ```bash
-zclassic23 core wallet address public-key --address=<wallet-owned-address>
+z23 core wallet address public-key --address=<wallet-owned-address>
 
-zclassic23 core wallet transaction multisig compose --input='{
+z23 core wallet transaction multisig compose --input='{
   "required_signatures":2,
   "public_keys":["02...","03...","02..."]
 }'
@@ -599,10 +599,10 @@ sensitive effects document goes through stdin:
 
 ```bash
 printf '%s' '{"wallet_scope":"dev","route":"transparent","idempotency_key":"payment-001","effects":[{"asset":"ZCL","to":"t1...","amount":"0.00100000"},{"asset":"ZCL","to":"t1...","amount":"0.00200000"}]}' |
-  zclassic23 vault intent plan --input=-
+  z23 vault intent plan --input=-
 
-zclassic23 vault intent commit --input='{"wallet_scope":"dev","plan_id":"<64hex-from-plan>","confirm":true}'
-zclassic23 vault intent status --plan_id=<64hex-from-plan>
+z23 vault intent commit --input='{"wallet_scope":"dev","plan_id":"<64hex-from-plan>","confirm":true}'
+z23 vault intent status --plan_id=<64hex-from-plan>
 ```
 
 The required idempotency key makes a retry return the same plan; reusing that
@@ -629,7 +629,7 @@ both are present. For example:
 
 ```bash
 printf '%s' '{"wallet_scope":"dev","route":"mixed","from":"t1...","idempotency_key":"lab-payment-1","effects":[{"asset":"ZCL","to":"zs1...","amount":"0.00030000","memo":"private note"},{"asset":"ZCL","to":"t1...","amount":"0.00010000"}]}' |
-  zclassic23 vault intent plan --input=-
+  z23 vault intent plan --input=-
 ```
 
 Planning performs a non-broadcast prover/source preflight and persists the
@@ -652,7 +652,7 @@ The ZPAY sequence deliberately keeps composition separate from custody:
 ```bash
 # Exact field widths: nonce/request_id are 32 hex characters;
 # invoice_digest/amount_commitment are 64. Times are explicit Unix seconds.
-zclassic23 app payments zpay compose --input='{
+z23 app payments zpay compose --input='{
   "network":"regtest",
   "message_type":"payment",
   "created_at":1700000000,
@@ -666,10 +666,10 @@ zclassic23 app payments zpay compose --input='{
 
 # Copy the returned memo_hex into the existing owner-only command after
 # discovering its current schema. That command alone plans/commits value.
-zclassic23 discover schema core.wallet.shielded.send
+z23 discover schema core.wallet.shielded.send
 
 # A recipient checks exact bytes against an explicit network and clock.
-zclassic23 app payments zpay inspect --input='{
+z23 app payments zpay inspect --input='{
   "memo_hex":"<1024-hex>",
   "network":"regtest",
   "now_unix":1700000100
@@ -682,18 +682,18 @@ workflow:
 
 ```bash
 # 1. Compose and inspect exact public chain bytes; neither call reads a wallet.
-zclassic23 core anchor compose --input='{
+z23 core anchor compose --input='{
   "digest":"<64-hex-sha2-or-sha3>",
   "hash_type":"sha3",
   "label":"release@1"
 }'
-zclassic23 core anchor inspect '<returned-op_return_hex>'
+z23 core anchor inspect '<returned-op_return_hex>'
 
 # 2. Discover the owner-only funding/signing/plan-commit contracts. The
 # composer output's next_input_fragment supplies op_return_hex verbatim.
-zclassic23 discover schema core.wallet.transaction.raw.create
-zclassic23 discover schema core.wallet.transaction.raw.sign
-zclassic23 discover schema core.wallet.transaction.raw.broadcast
+z23 discover schema core.wallet.transaction.raw.create
+z23 discover schema core.wallet.transaction.raw.sign
+z23 discover schema core.wallet.transaction.raw.broadcast
 
 # 3. Create with explicit inputs/change plus op_return_hex, sign, then call
 # raw.broadcast first without confirm. Only the owner-authorized second call
@@ -715,16 +715,16 @@ The safe ZBLG sequence is:
 
 ```bash
 # Inspect the exact keys before constructing a request.
-zclassic23 discover schema app.blog.anchor
+z23 discover schema app.blog.anchor
 
 # Create a durable plan for an event already stored and ZNAM-owner-verified.
 # This prepares exact signed bytes and reserves only the maximum fee; it does
 # not broadcast. Keep the returned plan_id.
-zclassic23 app blog anchor --input='{"wallet_scope":"dev","name":"alice","event_id":"<64-hex>","idempotency_key":"alice-post-1"}'
+z23 app blog anchor --input='{"wallet_scope":"dev","name":"alice","event_id":"<64-hex>","idempotency_key":"alice-post-1"}'
 
 # Owner-authorized commit uses only the explicit scope and durable plan ID.
 # The event-signing operation is a separate contained capability.
-zclassic23 app blog anchor --input='{"wallet_scope":"dev","plan_id":"<64-hex>","confirm":true}'
+z23 app blog anchor --input='{"wallet_scope":"dev","plan_id":"<64-hex>","confirm":true}'
 ```
 
 The returned `commit_input` is the exact second-call document. Never rebuild it

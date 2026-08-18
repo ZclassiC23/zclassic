@@ -100,7 +100,7 @@ size_t zcl_site_onion_nav_emit(char *buf, size_t max)
         "<header class='site-top'>"
         "<a class='brand' href='/'>"
         "<span class='glyph' aria-hidden='true'>Z</span>"
-        "<span>ZClassic23</span></a>"
+        "<span>Z23</span></a>"
         "<nav aria-label='Site'>");
     if (n > 0)
         off = (size_t)n < max ? (size_t)n : max;

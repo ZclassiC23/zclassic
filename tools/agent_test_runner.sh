@@ -7,7 +7,7 @@
 # script + docs/CODEBASE_MAP.md "copy-prove").
 #
 # Runs ONE bounded, already-allowlisted test surface in the background and
-# writes a JSON status file the caller polls via `zclassic23 dumpstate
+# writes a JSON status file the caller polls via `z23 dumpstate
 # subsystem=agent_test key=<kind>_<name>` instead of holding an RPC thread:
 #   - kind=test_group: build/bin/test_parallel --only=<name>
 #   - kind=scenario:   build/bin/zclassic23-chaos --scenario=tools/sim/scenarios/<name>.scenario

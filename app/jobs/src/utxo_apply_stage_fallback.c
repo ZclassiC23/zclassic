@@ -41,7 +41,7 @@ static struct { int64_t h; int64_t reason; uint64_t reps; }
  * off the blocker registry never armed and only the generic 60 s
  * reducer_drive_watchdog fired, naming nothing specific. The anomaly class now
  * names THIS blocker so blocker_stall_meta_detector's safety net and
- * `zclassic23 core sync blockers` both see the exact reason. TRANSIENT (mirror
+ * `z23 core sync blockers` both see the exact reason. TRANSIENT (mirror
  * stage_body_read_hold): the candidate can become resolvable as the window /
  * repair table catches up. */
 #define UA_APPLY_ANOMALY_BLOCKER_ID "utxo_apply.apply_candidate_anomaly"

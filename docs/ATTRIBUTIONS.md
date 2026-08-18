@@ -1,12 +1,12 @@
 # Attributions
 
-zclassic23 is licensed under the **Apache License, Version 2.0** (see
+z23 is licensed under the **Apache License, Version 2.0** (see
 [`LICENSE`](../LICENSE)). Upstream copyright notices from inherited code
 and vendored dependencies are preserved in [`NOTICE`](../NOTICE) as
 required by Apache 2.0 §4(d).
 
 This file documents **concepts and architectural patterns** (not
-verbatim source code) that zclassic23 has adopted from other
+verbatim source code) that z23 has adopted from other
 projects. We credit them here because it is the right thing to do —
 all ideas listed below are re-implemented in C23 from scratch and do
 not link against the original code. Apache 2.0 is compatible with
@@ -26,7 +26,7 @@ naming you here, open a PR or ping the maintainers and we'll add you.
 
 Concepts we've adopted:
 
-| zclassic23 feature | Erigon source referenced | Notes |
+| z23 feature | Erigon source referenced | Notes |
 |---|---|---|
 | `struct zcl_stage` + staged sync runner | [`execution/stagedsync/stage.go`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/stage.go), [`sync.go`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/sync.go) | Forward/Unwind/Prune triad per stage |
 | Stage pipeline ordering | [`default_stages.go`](https://github.com/erigontech/erigon/blob/main/execution/stagedsync/default_stages.go) | Explicit forward vs unwind order |
@@ -69,7 +69,7 @@ shielded-pool accounting rules.
 **License:** MIT
 
 Chain history, checkpoint schedule, network magic, and the reference
-behavior used by the zclassic23 parity-diff service.
+behavior used by the z23 parity-diff service.
 
 ## dcrdex — Blue Oak Model License 1.0.0 (concept reference)
 
@@ -96,7 +96,7 @@ index (with CRC), and application state.
 **Vendored path:** `vendor/rgfw/`
 **Attribution:** Copyright © 2022-2025 Riley Mabb (@ColleagueRiley)
 
-The private software-window backend for `lib/presentation`. ZClassic23 exposes
+The private software-window backend for `lib/presentation`. Z23 exposes
 its own bounded bitmap ABI; no RGFW type crosses the public boundary.
 
 ## X.Org client headers — X.Org MIT License
@@ -155,7 +155,7 @@ https://github.com/0xdevalias/some-notes-on-ai-rule-files
 
 Emerging 2026 convention for AI coding agents: `AGENTS.md` at repo
 root is the portable successor to per-tool files (`.cursorrules`,
-`CLAUDE.md`, etc.). zclassic23 adopts the convention with a dual-link
+`CLAUDE.md`, etc.). z23 adopts the convention with a dual-link
 to `CLAUDE.md` for Claude Code compatibility.
 
 ## Codified Context Infrastructure (arxiv 2602.20478)

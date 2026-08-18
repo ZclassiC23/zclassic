@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * test_tip_agreement_watch — hermetic tests for the in-node reader behind
- * `zclassic23 ops state --subsystem=tip_agreement`, the typed surface over the
+ * `z23 ops state --subsystem=tip_agreement`, the typed surface over the
  * OFF-HOST tip-hash agreement ledger.
  *
  * THE DEFECT UNDER REGRESSION is not a crash, it is a false green. Every

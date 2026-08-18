@@ -117,7 +117,7 @@ void state_auditor_set_datadir(const char *datadir);
  * cadence). Idempotent. */
 void state_auditor_register(void);
 
-/* `zclassic23 dumpstate state_auditor`. See CLAUDE.md "Adding state
+/* `z23 dumpstate state_auditor`. See CLAUDE.md "Adding state
  * introspection". Reentrant-safe. */
 struct json_value;
 bool state_auditor_dump_state_json(struct json_value *out, const char *key);

@@ -6,7 +6,7 @@ ZCL_COMMAND_READY_READ(
     "the local dev-state store at call time; reports status=unavailable "
     "if no cycle has run yet.", 0,
     "dev,status,cycle,verdict", "zcl.command.empty_input.v1",
-    "zcl.dev_cycle.v1", "", "", "zclassic23 dev status",
+    "zcl.dev_cycle.v1", "", "", "z23 dev status",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -22,7 +22,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "network, storage, transaction, publication or deployment authority.", 0,
     "dev,begin,warm,watcher,verify,proof",
     "zcl.dev_begin_input.v1", "zcl.dev_begin.v1", "root,mode", "",
-    "zclassic23-dev dev begin", ZCL_COMMAND_EFFECT_MUTATE,
+    "z23-dev dev begin", ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
@@ -31,7 +31,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_begin,
     "warm watcher ownership requires the dev-only executor",
-    "zclassic23-dev dev begin")
+    "z23-dev dev begin")
 
 ZCL_COMMAND_DEV_READ(
     "dev.drive", "dev", "", "Wait for feedback and return one compact next action",
@@ -45,14 +45,14 @@ ZCL_COMMAND_DEV_READ(
     "dev,drive,feedback,proof,zvcs,publication,next",
     "zcl.dev_drive_input.v1", "zcl.dev_drive.v1",
     "after_epoch,timeout_ms,wait_for_edit", "",
-    "zclassic23-dev dev drive", ZCL_COMMAND_SCOPE_LOCAL,
+    "z23-dev dev drive", ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
     ZCL_COMMAND_CAP_DEV_STATE_READ,
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_drive,
     "bounded warm-service driving requires the dev binary",
-    "zclassic23-dev dev drive")
+    "z23-dev dev drive")
 
 ZCL_COMMAND_READY_READ(
     "dev.ff", "dev", "", "Fail-fast ladder: compile, test, lint",
@@ -60,7 +60,7 @@ ZCL_COMMAND_READY_READ(
     "ladder run synchronously against the current checkout via `make ff`; "
     "not cached, dev build only.", 0,
     "dev,ff,ladder,fast,verify", "zcl.command.empty_input.v1",
-    "zcl.dev_ff.v1", "", "", "zclassic23 dev ff",
+    "zcl.dev_ff.v1", "", "", "z23 dev ff",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -87,7 +87,7 @@ ZCL_COMMAND_READY_READ(
     "dev,publication,status,zvcs,proof,queue",
     "zcl.dev_publication_status_input.v1",
     "zcl.dev_publication_status.v1", "job_root", "job_root",
-    "zclassic23-dev dev publication status --input='"
+    "z23-dev dev publication status --input='"
     "{\"job_root\":\"<64-lowercase-hex>\"}'",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
@@ -117,7 +117,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "zcl.dev_publication_advance_input.v1",
     "zcl.dev_publication_advance.v1",
     "job_root,datadir,workspace,action_id,details", "job_root",
-    "zclassic23-dev dev publication advance --input='"
+    "z23-dev dev publication advance --input='"
     "{\"job_root\":\"<64-lowercase-hex>\"}'",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
@@ -127,7 +127,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_publication_advance,
     "publication scheduling receipts require a dev checkout",
-    "zclassic23-dev dev publication status")
+    "z23-dev dev publication status")
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.publication.collect", "dev.publication", "",
@@ -146,7 +146,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "dev,publication,storage-ack,reproduction,p2p,collect,evidence",
     "zcl.dev_publication_status_input.v1",
     "zcl.dev_publication_collect.v1", "job_root", "job_root",
-    "zclassic23-dev dev publication collect --input='"
+    "z23-dev dev publication collect --input='"
     "{\"job_root\":\"<64-lowercase-hex>\"}'",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
@@ -158,7 +158,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_publication_collect,
     "publication evidence collection requires the dev-only ZVCS receipt writer",
-    "zclassic23-dev dev publication status")
+    "z23-dev dev publication status")
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.publication.mirror.record", "dev.publication.mirror", "",
@@ -172,7 +172,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "dev,publication,mirror,github,receipt,optional",
     "zcl.dev_publication_mirror_record_input.v1",
     "zcl.dev_publication_mirror_record.v1", "job_root,git_oid", "job_root",
-    "zclassic23-dev dev publication mirror record --input='"
+    "z23-dev dev publication mirror record --input='"
     "{\"job_root\":\"<64-lowercase-hex>\","
     "\"git_oid\":\"<optional-40-or-64-lowercase-hex>\"}'",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
@@ -183,7 +183,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_publication_mirror_record,
     "optional mirror receipts require a dev checkout",
-    "zclassic23-dev dev publication mirror record")
+    "z23-dev dev publication mirror record")
 
 ZCL_COMMAND_DEV_READ(
     "dev.verify-change", "dev", "",
@@ -195,7 +195,7 @@ ZCL_COMMAND_DEV_READ(
     "capsule.", 0,
     "dev,verify,change,affected,focused,concise", "zcl.command.empty_input.v1",
     "zcl.dev_verify_change.v1", "", "",
-    "zclassic23-dev dev verify-change", ZCL_COMMAND_SCOPE_LOCAL,
+    "z23-dev dev verify-change", ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
     ZCL_COMMAND_LANE_LOCAL,
@@ -203,7 +203,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_verify_change,
     "changed-scope verification requires the dev-only process executor",
-    "make dev-bin, then zclassic23-dev dev verify-change")
+    "make dev-bin, then z23-dev dev verify-change")
 
 ZCL_COMMAND_BRANCH("dev.core", "dev", "Core boundary and proof lanes",
                    ZCL_COMMAND_LAYER_DEV)
@@ -227,7 +227,7 @@ ZCL_COMMAND_READY_READ(
     "derived from live code.", 0,
     "core,app,boundary,consensus,capabilities",
     "zcl.command.empty_input.v1", "zcl.core_app_boundary.v1", "", "",
-    "zclassic23 dev core boundary",
+    "z23 dev core boundary",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
@@ -241,7 +241,7 @@ ZCL_COMMAND_PLANNED_READ(
     "the current checkout; today the handler is NULL and every call fails "
     "closed with exit 3.", 0,
     "core,consensus,parity,history,replay", "zcl.dev_core_proof_input.v1",
-    "zcl.dev_core_proof.v1", "files", "", "zclassic23 dev core proof",
+    "zcl.dev_core_proof.v1", "files", "", "z23 dev core proof",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_LATENCY_BACKGROUND,
     ZCL_COMMAND_COST_HIGH, ZCL_COMMAND_LANE_LOCAL,
@@ -254,7 +254,7 @@ ZCL_COMMAND_READY_READ(
     "time; a complete, unpaged, static list unaffected by checkout edits "
     "until rebuild.", ZCL_COMMAND_LIST_BUDGET,
     "apps,manifest,checkout", "zcl.command.empty_input.v1",
-    "zcl.dev_app_index.v1", "", "", "zclassic23 dev app list",
+    "zcl.dev_app_index.v1", "", "", "z23 dev app list",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -270,7 +270,7 @@ ZCL_COMMAND_READY_READ(
     "compiled or resident state.", 0,
     "app,manifest,capabilities,simulations", "zcl.dev_app_ref_input.v1",
     "zcl.dev_app.v1", "app_id", "app_id",
-    "zclassic23 dev app describe social",
+    "z23 dev app describe social",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -286,7 +286,7 @@ ZCL_COMMAND_READY_READ(
     "no disk itself.", 0,
     "app,resource,rails,plan", "zcl.dev_app_resource_input.v1",
     "zcl.dev_app_plan.v1", "app_id,resource", "app_id,resource",
-    "zclassic23 dev app plan social posts",
+    "z23 dev app plan social posts",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
@@ -302,7 +302,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "closed with exit 3.", 0,
     "app,resource,rails,scaffold", "zcl.dev_app_resource_input.v1",
     "zcl.dev_app_scaffold.v1", "app_id,resource", "app_id,resource",
-    "zclassic23 dev app scaffold social posts", ZCL_COMMAND_LAYER_DEV,
+    "z23 dev app scaffold social posts", ZCL_COMMAND_LAYER_DEV,
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,
@@ -319,7 +319,7 @@ ZCL_COMMAND_READY_READ(
     "app,simulation,censorship,partition,replay,signature",
     "zcl.dev_app_sim_input.v1", "zcl.dev_app_sim.v1",
     "app_id,scenario,seed", "app_id",
-    "zclassic23 dev app simulate social --seed=0x534f4349414c0001",
+    "z23 dev app simulate social --seed=0x534f4349414c0001",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
     ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_LANE_LOCAL,
@@ -335,7 +335,7 @@ ZCL_COMMAND_PLANNED_READ(
     "call fails closed with exit 3.", 0,
     "app,generation,state,leases", "zcl.dev_app_ref_input.v1",
     "zcl.dev_app_inspect.v1", "app_id", "app_id",
-    "zclassic23 dev app inspect social", ZCL_COMMAND_LAYER_DEV,
+    "z23 dev app inspect social", ZCL_COMMAND_LAYER_DEV,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
@@ -348,7 +348,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "and every call fails closed with exit 3.", 0,
     "app,publish,hotswap,generation,quiescence", "zcl.dev_app_publish_input.v1",
     "zcl.dev_app_publish.v1", "app_id,idempotency_key", "app_id",
-    "zclassic23 dev app publish social --idempotency-key=<key>",
+    "z23 dev app publish social --idempotency-key=<key>",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
@@ -365,7 +365,7 @@ ZCL_COMMAND_READY_READ(
     "smallest sufficient proof lane, unioning static path rules with the "
     "bounded source-index closure when available.", ZCL_COMMAND_LIST_BUDGET,
     "change,impact,classify,proof,hotswap,reload", "zcl.dev_change_input.v1",
-    "zcl.dev_plan.v1", "files", "", "zclassic23 dev change plan --input='{\"files\":[\"apps/social/app.def\"]}'",
+    "zcl.dev_plan.v1", "files", "", "z23 dev change plan --input='{\"files\":[\"apps/social/app.def\"]}'",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
@@ -381,7 +381,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "every call today; the transactional build+test+publish body past the "
     "gate is unreachable code. Use dev.change.plan for real output.", 0,
     "change,apply,build,hotswap,reload,rollback", "zcl.dev_change_input.v1",
-    "zcl.dev_cycle.v1", "files", "", "zclassic23 dev change apply --input='{\"files\":[\"apps/social/app.def\"]}'",
+    "zcl.dev_cycle.v1", "files", "", "z23 dev change apply --input='{\"files\":[\"apps/social/app.def\"]}'",
     ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_JOB,
@@ -391,7 +391,7 @@ ZCL_COMMAND_DEV_COMMAND(
         ZCL_COMMAND_CAP_COMPILER | ZCL_COMMAND_CAP_DEV_ACTIVATE,
     ZCL_COMMAND_TRAIT_DEV_ONLY, zcl_native_handle_dev_change_apply,
     "change application requires the dev-only process/activation executor",
-    "zclassic23-dev dev change cycle")
+    "z23-dev dev change cycle")
 
 ZCL_COMMAND_BRANCH("dev.vcs", "dev", "One-command source+binary revert",
                    ZCL_COMMAND_LAYER_DEV)
@@ -404,7 +404,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "relinking is always refused today.", 0,
     "vcs,revert,rollback,generation,relink", "zcl.dev_vcs_revert_input.v1",
     "zcl.dev_vcs_revert.v1", "to,relink_generation", "to",
-    "zclassic23 dev vcs revert --input='{\"to\":\"<64-hex commit id>\","
+    "z23 dev vcs revert --input='{\"to\":\"<64-hex commit id>\","
     "\"relink_generation\":true}'",
     ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
@@ -416,7 +416,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_REVERSIBLE,
     zcl_native_handle_dev_vcs_revert,
     "one-command source+binary revert requires a dev build",
-    "zclassic23-dev dev vcs revert <to> [--relink-generation]")
+    "z23-dev dev vcs revert <to> [--relink-generation]")
 
 ZCL_COMMAND_BRANCH("dev.vcs.seal", "dev.vcs",
                    "Owner-run ZVCS unseal-token ritual", ZCL_COMMAND_LAYER_DEV)
@@ -430,7 +430,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "CURRENT worktree's sealed content.", 0,
     "vcs,seal,unseal,grant,owner,token", "zcl.dev_vcs_seal_grant_input.v1",
     "zcl.dev_vcs_seal_grant.v1", "reason,confirm", "reason",
-    "zclassic23 dev vcs seal grant --input='{\"reason\":\"post-baseline "
+    "z23 dev vcs seal grant --input='{\"reason\":\"post-baseline "
     "app/jobs edits reviewed\",\"confirm\":true}'",
     ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
@@ -441,7 +441,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_vcs_seal_grant,
     "granting a ZVCS unseal token requires a dev build",
-    "zclassic23-dev dev vcs seal grant --input='{\"reason\":\"...\","
+    "z23-dev dev vcs seal grant --input='{\"reason\":\"...\","
     "\"confirm\":true}'")
 
 ZCL_COMMAND_BRANCH("dev.hotswap", "dev",
@@ -457,7 +457,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "CLI process; a real swap needs both activation flags set.", 0,
     "hotswap,apply,leaves,generation,relink", "zcl.dev_hotswap_input.v1",
     "zcl.dev_hotswap.v1", "so_path,probe_leaf", "so_path",
-    "zclassic23-dev dev hotswap apply --input='{\"so_path\":\"/tmp/gen.so\","
+    "z23-dev dev hotswap apply --input='{\"so_path\":\"/tmp/gen.so\","
     "\"probe_leaf\":\"core.status\"}'",
     ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_DEV_LANE,
@@ -467,7 +467,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_CAP_HOTSWAP | ZCL_COMMAND_CAP_DEV_ACTIVATE,
     ZCL_COMMAND_TRAIT_DEV_ONLY, zcl_native_handle_dev_hotswap_apply,
     "in-process hot-swap requires a dev build",
-    "zclassic23-dev dev hotswap apply --input='{\"so_path\":\"...\","
+    "z23-dev dev hotswap apply --input='{\"so_path\":\"...\","
     "\"probe_leaf\":\"...\"}'")
 
 ZCL_COMMAND_DEV_READ(
@@ -478,7 +478,7 @@ ZCL_COMMAND_DEV_READ(
     "commits nothing to the resident node.", 0,
     "hotswap,probe,precommit,leaves,generation", "zcl.dev_hotswap_input.v1",
     "zcl.dev_hotswap.v1", "so_path,probe_leaf", "so_path",
-    "zclassic23-dev dev hotswap probe --input='{\"so_path\":\"/tmp/gen.so\","
+    "z23-dev dev hotswap probe --input='{\"so_path\":\"/tmp/gen.so\","
     "\"probe_leaf\":\"core.status\"}'",
     ZCL_COMMAND_SCOPE_DEV_LANE, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_DEV,
@@ -486,7 +486,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_DRY_RUN,
     zcl_native_handle_dev_hotswap_probe,
     "resident hot-swap probing requires a dev build",
-    "zclassic23-dev dev hotswap probe --input='{\"so_path\":\"...\","
+    "z23-dev dev hotswap probe --input='{\"so_path\":\"...\","
     "\"probe_leaf\":\"...\"}'")
 
 ZCL_COMMAND_DEV_COMMAND(
@@ -498,7 +498,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "verify-only path.", 0,
     "loop,ensure,watcher,inotify,verify,auto,hotswap,island",
     "zcl.dev_loop_ensure_input.v1", "zcl.dev_loop_status.v1",
-    "root,mode", "", "zclassic23 dev loop ensure --input='{\"root\":\".\",\"mode\":\"verify\"}'",
+    "root,mode", "", "z23 dev loop ensure --input='{\"root\":\".\",\"mode\":\"verify\"}'",
     ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_DEV_MUTATION, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_MODE_SYNC,
@@ -508,7 +508,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_IDEMPOTENT,
     zcl_native_handle_dev_loop_ensure,
     "watcher ownership requires the dev-only executor",
-    "zclassic23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
+    "z23-dev dev loop ensure --input='{\"mode\":\"auto\"}'")
 
 ZCL_COMMAND_DEV_READ(
     "dev.loop.status", "dev.loop", "dev.loop.heartbeat",
@@ -518,7 +518,7 @@ ZCL_COMMAND_DEV_READ(
     "is current only while that singleton lock is held; when absent, the "
     "same idempotent ensure command is the one exact next action.", 0,
     "loop,status,heartbeat,epoch", "zcl.command.empty_input.v1",
-    "zcl.dev_loop_status.v1", "", "", "zclassic23 dev loop status",
+    "zcl.dev_loop_status.v1", "", "", "z23 dev loop status",
     ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -526,7 +526,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_loop_status,
     "watcher state is available through the dev binary",
-    "zclassic23-dev dev loop heartbeat")
+    "z23-dev dev loop heartbeat")
 
 ZCL_COMMAND_DEV_READ(
     "dev.loop.wait", "dev.loop", "", "Wait for one verdict after a cycle epoch",
@@ -535,7 +535,7 @@ ZCL_COMMAND_DEV_READ(
     "instead of stale data.", ZCL_COMMAND_LIST_BUDGET,
     "loop,wait,epoch,verdict", "zcl.dev_loop_wait_input.v1",
     "zcl.dev_cycle.v1", "after_epoch,timeout_ms", "",
-    "zclassic23 dev loop wait --input='{\"after_epoch\":41}'",
+    "z23 dev loop wait --input='{\"after_epoch\":41}'",
     ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -543,7 +543,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_loop_wait,
     "bounded verdict waiting is available through the dev binary",
-    "zclassic23-dev dev loop wait")
+    "z23-dev dev loop wait")
 
 ZCL_COMMAND_DEV_READ(
     "dev.loop.events", "dev.loop", "", "Stream resumable source and cycle events",
@@ -555,7 +555,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_LIST_BUDGET,
     "loop,events,jsonl,cursor,epoch", "zcl.dev_loop_events_input.v1",
     "zcl.dev_loop_event.v1", "after,heartbeat_ms", "",
-    "zclassic23-dev dev loop events --after=41 --format=jsonl",
+    "z23-dev dev loop events --after=41 --format=jsonl",
     ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_PERSISTENT,
     ZCL_COMMAND_COST_STREAM, ZCL_COMMAND_LANE_LOCAL,
@@ -563,7 +563,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_loop_events,
     "resumable event subscription is available through the dev binary",
-    "zclassic23-dev dev loop events --format=jsonl")
+    "z23-dev dev loop events --format=jsonl")
 
 ZCL_COMMAND_DEV_COMMAND(
     "dev.loop.stop", "dev.loop", "", "Stop one identified native watcher",
@@ -572,7 +572,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "snapshot; the watcher_id must match exactly.", 0,
     "loop,stop,watcher", "zcl.dev_loop_stop_input.v1",
     "zcl.dev_loop_status.v1", "watcher_id", "watcher_id",
-    "zclassic23 dev loop stop <watcher-id>",
+    "z23 dev loop stop <watcher-id>",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FAST,
@@ -580,7 +580,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_WRITE,
     ZCL_COMMAND_TRAIT_DEV_ONLY, zcl_native_handle_dev_loop_stop,
     "watcher shutdown requires the dev-only executor",
-    "zclassic23-dev dev loop stop")
+    "z23-dev dev loop stop")
 
 ZCL_COMMAND_READY_READ(
     "dev.test.plan", "dev.test", "", "Map changed files to mandatory proof groups",
@@ -590,7 +590,7 @@ ZCL_COMMAND_READY_READ(
     "and the file that pulled it in, and the reply states per dimension "
     "whether that dimension's answer was complete.", ZCL_COMMAND_LIST_BUDGET,
     "test,plan,impact,groups", "zcl.dev_change_input.v1",
-    "zcl.dev_test_plan.v1", "files", "", "zclassic23 dev test plan --input='{\"files\":[]}'",
+    "zcl.dev_test_plan.v1", "files", "", "z23 dev test plan --input='{\"files\":[]}'",
     ZCL_COMMAND_LAYER_DEV, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_TINY, ZCL_COMMAND_LANE_LOCAL,
@@ -607,7 +607,7 @@ ZCL_COMMAND_DEV_READ(
     "`make test_parallel_fast` to have built it first.", 0,
     "test,focused,group",
     "zcl.dev_test_run_input.v1", "zcl.dev_focused_test.v1", "group", "group",
-    "zclassic23 dev test run hotswap_simnet", ZCL_COMMAND_SCOPE_LOCAL,
+    "z23 dev test run hotswap_simnet", ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_LATENCY_BACKGROUND, ZCL_COMMAND_COST_HIGH,
     ZCL_COMMAND_LANE_LOCAL,
@@ -615,7 +615,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_test_run,
     "focused tests require the dev-only process executor",
-    "zclassic23-dev dev test focused")
+    "z23-dev dev test focused")
 
 ZCL_COMMAND_DEV_READ(
     "dev.test.story", "dev.test", "",
@@ -627,7 +627,7 @@ ZCL_COMMAND_DEV_READ(
     "test,story,shadow,owner,fail-fast",
     "zcl.dev_test_story_input.v1", "zcl.vault_intent_decision_story.v1",
     "owner", "owner",
-    "zclassic23-dev dev test story --input='{\"owner\":\"transaction_intent\"}'",
+    "z23-dev dev test story --input='{\"owner\":\"transaction_intent\"}'",
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_TEST_RUN,
@@ -635,7 +635,7 @@ ZCL_COMMAND_DEV_READ(
         ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_test_story,
     "behavior stories require the dev-only frozen fixture registry",
-    "zclassic23-dev dev test story")
+    "z23-dev dev test story")
 
 ZCL_COMMAND_DEV_READ(
     "dev.test.sim", "dev.test", "", "Run the generic hot-swap network proof",
@@ -643,7 +643,7 @@ ZCL_COMMAND_DEV_READ(
     "in-process at call time; identical every run for the same checkout "
     "state.", 0,
     "test,simulation,hotswap,network", "zcl.dev_test_sim_input.v1",
-    "zcl.dev_sim.v1", "app_id", "", "zclassic23 dev test sim",
+    "zcl.dev_sim.v1", "app_id", "", "z23 dev test sim",
     ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OWNER, ZCL_COMMAND_LATENCY_FAST,
     ZCL_COMMAND_COST_MODERATE, ZCL_COMMAND_LANE_LOCAL,
@@ -651,7 +651,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_test_sim,
     "the simulation runner requires the dev-only process executor",
-    "zclassic23-dev dev test sim")
+    "z23-dev dev test sim")
 
 ZCL_COMMAND_PLANNED_READ(
     "dev.test.replay", "dev.test", "", "Replay one deterministic failure seed",
@@ -659,7 +659,7 @@ ZCL_COMMAND_PLANNED_READ(
     "today the handler is NULL and every call fails closed with exit 3.", 0,
     "test,replay,seed,deterministic", "zcl.dev_test_replay_input.v1",
     "zcl.dev_test_replay.v1", "seed,scenario", "seed",
-    "zclassic23 dev test replay 1234", ZCL_COMMAND_LAYER_DEV,
+    "z23 dev test replay 1234", ZCL_COMMAND_LAYER_DEV,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_LATENCY_FOREGROUND, ZCL_COMMAND_COST_MODERATE,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_APP_SIMULATE,
@@ -674,7 +674,7 @@ ZCL_COMMAND_PLANNED_READ(
     "today the handler is NULL and every call fails closed with exit 3.", 0,
     "test,background,quality,freshness", "zcl.command.empty_input.v1",
     "zcl.dev_background_quality.v1", "", "",
-    "zclassic23 dev test background status", ZCL_COMMAND_LAYER_DEV,
+    "z23 dev test background status", ZCL_COMMAND_LAYER_DEV,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
@@ -686,7 +686,7 @@ ZCL_COMMAND_DEV_READ(
     "live from the local dev generation root directory on disk at call "
     "time.", 0,
     "generation,current,last-good,hotswap", "zcl.command.empty_input.v1",
-    "zcl.dev_generation_status.v1", "", "", "zclassic23 dev generation current",
+    "zcl.dev_generation_status.v1", "", "", "z23 dev generation current",
     ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -694,7 +694,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_generation_current,
     "generation state is available through the dev binary",
-    "zclassic23-dev dev generation current")
+    "z23-dev dev generation current")
 ZCL_COMMAND_DEV_READ(
     "dev.generation.history", "dev.generation", "", "Page accepted and rejected generations",
     "A paginated, disk-scanned list of accepted and rejected generation "
@@ -702,14 +702,14 @@ ZCL_COMMAND_DEV_READ(
     "capped at 100 rows per page.", ZCL_COMMAND_LIST_BUDGET,
     "generation,history,rejected,quarantine", "zcl.page_input.v1",
     "zcl.dev_generation_history.v1", "cursor,max_items", "",
-    "zclassic23 dev generation history", ZCL_COMMAND_SCOPE_LOCAL,
+    "z23 dev generation history", ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_generation_history,
     "generation history is available through the dev binary",
-    "zclassic23-dev dev generation history")
+    "z23-dev dev generation history")
 ZCL_COMMAND_DEV_COMMAND(
     "dev.generation.activate", "dev.generation", "",
     "Stage, preflight, and activate one exact dev generation",
@@ -723,7 +723,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "zcl.dev_generation_activate_input.v1",
     "zcl.dev_generation_activate.v1",
     "idempotency_key,expires_in_seconds,intent_id,effect_digest,candidate_sha256,source_id_sha256,source_mutation_sha256,source_cas_sha3,expected_current_generation,expires_unix,confirm",
-    "", "zclassic23-dev dev generation activate "
+    "", "z23-dev dev generation activate "
     "--input='{\"idempotency_key\":\"upgrade-001\"}'",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_DEV_LANE, ZCL_COMMAND_AUTH_OWNER,
@@ -733,7 +733,7 @@ ZCL_COMMAND_DEV_COMMAND(
     ZCL_COMMAND_TRAIT_DEV_ONLY | ZCL_COMMAND_TRAIT_REVERSIBLE,
     zcl_native_handle_dev_generation_activate,
     "generation activation requires the dev-only process executor",
-    "make dev-bin, then zclassic23-dev dev generation activate")
+    "make dev-bin, then z23-dev dev generation activate")
 ZCL_COMMAND_PLANNED_COMMAND(
     "dev.generation.rollback", "dev.generation", "", "Restore verified last-good in the dev lane",
     "Will report the restored last-good generation after an "
@@ -741,7 +741,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "call fails closed with exit 3.", 0,
     "generation,rollback,last-good,recovery", "zcl.dev_generation_rollback_input.v1",
     "zcl.dev_generation_rollback.v1", "intent_id,effect_digest", "",
-    "zclassic23 dev generation rollback --input='<intent>'", ZCL_COMMAND_LAYER_DEV,
+    "z23 dev generation rollback --input='<intent>'", ZCL_COMMAND_LAYER_DEV,
     ZCL_COMMAND_EFFECT_DESTRUCTIVE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_DEV_LANE, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_JOB, ZCL_COMMAND_LATENCY_FOREGROUND,
@@ -756,7 +756,7 @@ ZCL_COMMAND_PLANNED_COMMAND(
     "with exit 3.", 0,
     "generation,compact,leases,retention", "zcl.dev_generation_compact_input.v1",
     "zcl.dev_generation_compact.v1", "intent_id,effect_digest", "",
-    "zclassic23 dev generation compact --input='<intent>'", ZCL_COMMAND_LAYER_DEV,
+    "z23 dev generation compact --input='<intent>'", ZCL_COMMAND_LAYER_DEV,
     ZCL_COMMAND_EFFECT_DESTRUCTIVE, ZCL_COMMAND_RISK_DEV_MUTATION,
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_JOB, ZCL_COMMAND_LATENCY_FOREGROUND,
@@ -774,7 +774,7 @@ ZCL_COMMAND_DEV_READ(
     "authority.", 2048,
     "diagnose,failure,capsule,latest", "zcl.command.empty_input.v1",
     "zcl.dev_failure_latest_result.v1", "", "",
-    "zclassic23 dev diagnose latest",
+    "z23 dev diagnose latest",
     ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_INSTANT,
     ZCL_COMMAND_COST_LOW, ZCL_COMMAND_LANE_LOCAL,
@@ -782,7 +782,7 @@ ZCL_COMMAND_DEV_READ(
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_diagnose_latest,
     "failure capsules are available through the dev binary",
-    "zclassic23-dev dev diagnose latest")
+    "z23-dev dev diagnose latest")
 ZCL_COMMAND_DEV_READ(
     "dev.diagnose.show", "dev.diagnose", "", "Show one compiler failure record",
     "Reads one workspace-scoped immutable first-observation record by its "
@@ -793,11 +793,11 @@ ZCL_COMMAND_DEV_READ(
     "executes the retry.", 6144,
     "diagnose,failure,artifact", "zcl.dev_failure_ref_input.v1",
     "zcl.dev_failure_show.v1", "failure_id", "failure_id",
-    "zclassic23-dev dev diagnose show <failure-id>",
+    "z23-dev dev diagnose show <failure-id>",
     ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_DEV_STATE_READ,
     ZCL_COMMAND_TRAIT_IDEMPOTENT | ZCL_COMMAND_TRAIT_DEV_ONLY,
     zcl_native_handle_dev_diagnose_show,
     "durable failure artifacts are available through the dev binary",
-    "zclassic23-dev dev diagnose show <failure-id>")
+    "z23-dev dev diagnose show <failure-id>")

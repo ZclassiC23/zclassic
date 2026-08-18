@@ -374,7 +374,7 @@ static void diagnose_push_primary_host_issue_compact(
     for (size_t i = 0; i < sizeof(bool_fields) / sizeof(bool_fields[0]); i++)
         json_push_kv_bool(&obj, bool_fields[i],
                           diagnose_peer_host_bool(primary, bool_fields[i]));
-    json_push_kv_str(&obj, "full_detail_command", "zclassic23 peerincidents");
+    json_push_kv_str(&obj, "full_detail_command", "z23 peerincidents");
     json_push_kv(out, "peer_primary_host_issue", &obj);
     json_free(&obj);
 }
@@ -409,7 +409,7 @@ static const char *diagnose_peer_next_action(int64_t peer_count,
     if (bootstrap_blocker)
         return "inspect_peer_lifecycle_bootstrap_readiness";
     if (material_signals > 0)
-        return "zclassic23 peerincidents";
+        return "z23 peerincidents";
     if (fast_sync_blocker)
         return "prefer_zclassic23_fast_sync_peer";
     if (peer_incidents > 0)
@@ -740,7 +740,7 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     agent_push_contract_native_command_json(&commands, "agentliveness");
     agent_push_contract_native_command_json(&commands, "peerincidents");
     agent_push_contract_native_command_json(&commands, "timeline");
-    diagnose_push_str(&commands, "zclassic23 healthcheck full");
+    diagnose_push_str(&commands, "z23 healthcheck full");
     json_push_kv(result, "recommended_commands", &commands);
     json_free(&commands);
 
@@ -752,7 +752,7 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
     if (brief_mode) {
         diagnose_push_brief_omissions(result);
         json_push_kv_str(result, "full_diagnose_command",
-                         "zclassic23 agentdiagnose full");
+                         "z23 agentdiagnose full");
     } else if (agent_ok) {
         json_push_kv(result, "agent", &agent);
     } else {
@@ -781,8 +781,8 @@ bool rpc_agent_diagnose(const struct json_value *params, bool help,
         brief_mode ? "brief_mode_omits_embedded_drilldowns" :
         partial ? "lower_priority_sections_skipped_by_budget"
                 : "bounded_diagnosis_not_full_forensics",
-        brief_mode ? "zclassic23 agentdiagnose full"
-                   : "zclassic23 healthcheck full");
+        brief_mode ? "z23 agentdiagnose full"
+                   : "z23 healthcheck full");
 
     json_free(&timeline);
     json_free(&timeline_params);

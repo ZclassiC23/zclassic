@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Consensus-State Bundle Export — scheduled backup primitive
+Description=Z23 Consensus-State Bundle Export — scheduled backup primitive
 # READ-ONLY exporter, never restarts/stops/writes to a live node. See
 # deploy/zclassic23-bundle-export.sh header for the full contract (wraps the
 # TERMINAL -export-consensus-bundle verb, self-verifies, retains, copies

@@ -18,7 +18,7 @@ state.** Every claim below is verified against current HEAD code, not docs.
 ## 1. THE STICKINESS INVARIANTS (concrete, testable)
 
 - **S1 — Bounded unattended recovery from ANY on-disk state.** From any datadir state
-  (fresh/empty, foreign, crash-torn, wedged, forked), a plain `zclassic23` restart with NO
+  (fresh/empty, foreign, crash-torn, wedged, forked), a plain `z23` restart with NO
   flags reaches H* = network tip within a bounded time, with no human and no legacy datadir.
 - **S2 — Every stall reaches a TERMINATING remedy.** No detected liveness-blocking condition
   may permanently give up. The remedy ladder always terminates in recovery given any honest

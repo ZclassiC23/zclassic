@@ -551,7 +551,7 @@ bool telemetry_ontology_annotate(const char *subsystem,
         json_push_kv_bool(out, "covered", false);
         json_push_kv_str(out, "hint",
                          "no field ontology for this subsystem yet; "
-                         "zclassic23 ops meaning lists the covered set");
+                         "z23 ops meaning lists the covered set");
         LOG_FAIL("telemetry_ontology",
                  "annotate: subsystem '%s' has no field ontology yet",
                  subsystem);

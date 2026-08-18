@@ -246,7 +246,7 @@ static job_result_t block_apply_failure(struct stage_step_ctx *c, int height,
  * PERMANENT blocker is re-derived from the same torn store on the first tick
  * of every boot (before the watchdog's restart threshold), so the stall is
  * immediately classified "permanent_blocker_active" and the node stays up
- * degraded with a named halt visible via `zclassic23 core sync blockers`
+ * degraded with a named halt visible via `z23 core sync blockers`
  * instead of crash-looping. blocker_set's token bucket dedups each re-fire.
  * Transient conditions are NOT routed here — they stay JOB_IDLE/JOB_BLOCKED. */
 static void ua_fatal_permanent_blocker(int height, const char *reason_tail)

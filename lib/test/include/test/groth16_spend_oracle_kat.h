@@ -15,7 +15,7 @@
  *   nf   — section 27/28 (nullifier = blake2s("Zcash_nf", nk_repr || rho_repr))
  *
  * The parity lane (H4) diffs the C23 circuit's per-wire witness assignment for
- * these quantities against this vector. ZClassic23 has no Rust build or link
+ * these quantities against this vector. Z23 has no Rust build or link
  * path. Any proposed byte change therefore requires independently produced
  * external evidence and explicit review; it cannot be regenerated in-tree.
  */

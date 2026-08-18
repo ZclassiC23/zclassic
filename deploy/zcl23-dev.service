@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 DEV lane (fresh-build binary, isolated datadir+ports)
+Description=Z23 DEV lane (fresh-build binary, isolated datadir+ports)
 After=network-online.target
 Wants=network-online.target
 # The DEV lane: every commit I work on gets built and deployed HERE so the

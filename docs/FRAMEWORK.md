@@ -1,4 +1,4 @@
-# The zclassic23 Framework
+# The z23 Framework
 
 > **One binary. One chain. One way to do each thing — and the compiler
 > knows what that way is.**
@@ -31,7 +31,7 @@ best *valid* chain — or name, precisely, the one input it is missing.**
 Everything else — wallet, explorer, market, ZNAM, messaging, swaps — is a
 *read-model* over that one fact.
 
-That boundary is intentional: Zclassic consensus is the base layer. zclassic23
+That boundary is intentional: Zclassic consensus is the base layer. z23
 can act like an L2-style application/service layer over that base — ZSLP,
 ZNAM, file market, messaging, script-contract workflows, wallet flows, and
 CRUD REST resources may interpret, index, and construct transactions anchored

@@ -127,9 +127,9 @@ When all tasks pass:
    change touches sync, validation, header/block admit, a cutover, or anything
    on the chain-advance path, live forward progress is a required gate:
    ```bash
-   build/bin/zclassic23 agent
-   build/bin/zclassic23 dumpstate chain_advance_coordinator
-   build/bin/zclassic23 -bench-kill9       # benchmark rows
+   build/bin/z23 agent
+   build/bin/z23 dumpstate chain_advance_coordinator
+   build/bin/z23 -bench-kill9       # benchmark rows
    ```
    If you can't show the live tip advancing past your change, it is NOT done —
    report it, don't ship it.

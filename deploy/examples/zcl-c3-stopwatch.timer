@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 C3 Stopwatch Timer — every 6h
+Description=Z23 C3 Stopwatch Timer — every 6h
 
 [Timer]
 # Every 6h (00/06/12/18) with jitter — cheap enough (a wiped /tmp datadir

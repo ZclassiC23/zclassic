@@ -574,7 +574,7 @@ void zcl_native_handle_zcode_release_sign(
                          "the doc under <datadir>/zcode/releases/");
     json_push_kv_str(&reply->data, "next",
                      "distribute doc_hex to verifiers; anyone can check it "
-                     "with `zclassic23 zcode release verify --doc=<hex>`");
+                     "with `z23 zcode release verify --doc=<hex>`");
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }
@@ -1445,7 +1445,7 @@ void zcl_native_handle_zcode_release_prove(
                      "this domain has no stored leaf set yet — run `zcode "
                      "release anchor` to record it and commit domain_root "
                      "on-chain, then anyone can confirm inclusion with "
-                     "`zclassic23 zcode release verify --doc=<hex> "
+                     "`z23 zcode release verify --doc=<hex> "
                      "--proof=<proof> --root=<domain_root>`");
 }
 
@@ -1615,7 +1615,7 @@ void zcl_native_handle_zcode_domain_status(
                            "zcode release prove --input='{\"name\":\"<n>\","
                            "\"version\":\"<v>\"}'`"
                          : "this domain's root is not on-chain yet — commit "
-                           "it with `zclassic23 zcode release anchor`");
+                           "it with `z23 zcode release anchor`");
     reply->status = ZCL_COMMAND_STATUS_PASSED;
     reply->exit_code = ZCL_COMMAND_EXIT_OK;
 }

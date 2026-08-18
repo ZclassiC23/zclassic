@@ -1,11 +1,11 @@
-# Getting Started With ZClassic23
+# Getting Started With Z23
 
 This is the generic, fresh-machine setup guide: build the binary, then run it
 either as a **production** full node + block explorer, or as an isolated
 **development** instance. [`README.md`](../README.md) is the project overview;
 [`docs/BUILD.md`](BUILD.md) is the focused build reference (vendored-library
 sources/versions, fast dev-compile targets, sanitizer profiles); the
-[`zclassic23-dev`](../.claude/skills/zclassic23-dev/SKILL.md) skill is the deep
+[`z23-dev`](../.claude/skills/z23-dev/SKILL.md) skill is the deep
 developer workflow (code navigator, hot-swap tiers, push traps).
 [`docs/HANDOFF.md`](HANDOFF.md) is maintainer-only live state for the
 project's own hosted node — skip it unless you're operating that host.
@@ -33,12 +33,12 @@ and libc.
 **Get the source and build:**
 
 ```bash
-git clone https://github.com/ZclassiC23/zclassic.git
-cd zclassic
-make -j"$(nproc)"     # builds zclassic23, zclassic-cli, zcl-rpc
+git clone https://github.com/z23c/z23.git
+cd z23
+make -j"$(nproc)"     # builds z23, zclassic-cli, zcl-rpc
 ```
 
-For the smallest server-only build, use `make -j"$(nproc)" zclassic23`. The
+For the smallest server-only build, use `make -j"$(nproc)" z23`. The
 published node is a C23 executable with pinned project dependencies linked
 statically; it does not inherit GTK/WebKit or the C++ LevelDB runtime from the
 build host. The build fails closed if the ELF dependency audit finds one.
@@ -77,14 +77,14 @@ compiles before a full build):
 make -j"$(nproc)" build-only
 ```
 
-**Where the binaries land:** `build/bin/zclassic23` (the node),
+**Where the binaries land:** `build/bin/z23` (the node),
 `build/bin/zclassic-cli` (RPC client), `build/bin/zcl-rpc` (RPC helper).
 
 **Sanity check:**
 
 ```bash
-build/bin/zclassic23 --version
-build/bin/zclassic23 status        # runs against a running node; see below
+build/bin/z23 --version
+build/bin/z23 status        # runs against a running node; see below
 ```
 
 **Run the test suite and lint gates** before relying on a build:
@@ -94,6 +94,25 @@ make -j"$(nproc)" test-parallel   # the canonical test runner — do not invoke 
 make lint            # defensive-coding + doc-accuracy gates
 ```
 
+### Your one obvious next action
+
+You have a working binary. There are two useful things to do with it: run the
+public node (below), or tell it what you want C23 software on this device to
+do. The second is the shorter path from intent to working software — it reuses
+existing C23 first, creates only what is missing, builds and tests in
+confinement, shows the real behavior, and ends in your explicit acceptance of
+one exact version:
+
+```bash
+build/bin/z23 zcode guide
+```
+
+It answers with the current start command and the plain step order; every step
+after it returns the next safe command. The full journey, including publishing,
+fetching on a second node, and independent reproduction, is
+[`C23_COMMONS_QUICKSTART.md`](C23_COMMONS_QUICKSTART.md); the developer-loop
+detail is [`work/ZCODE_DEVELOPMENT_WALKTHROUGH.md`](work/ZCODE_DEVELOPMENT_WALKTHROUGH.md).
+
 ---
 
 ## Run in production
@@ -102,14 +121,14 @@ Start a full node with the default datadir (`~/.zclassic-c23`) and default
 ports (P2P `8033`, RPC `18232`):
 
 ```bash
-build/bin/zclassic23
+build/bin/z23
 ```
 
 A fresh datadir starts honestly empty (`getblockcount` returns `0`) and syncs
 from peers — there is no phantom tip. Check health at any time with:
 
 ```bash
-build/bin/zclassic23 status
+build/bin/z23 status
 ```
 
 ### Syncing to the chain tip
@@ -133,8 +152,8 @@ up."
    hole and the node pins:
 
    ```bash
-   build/bin/zclassic23 --importblockindex "$HOME/.zclassic"   # headers first, ~1 min
-   build/bin/zclassic23                                        # then a normal boot
+   build/bin/z23 --importblockindex "$HOME/.zclassic"   # headers first, ~1 min
+   build/bin/z23                                        # then a normal boot
    ```
 
    This still folds every real block body forward from your `zclassicd`
@@ -160,7 +179,7 @@ The node **is its own web server** — no nginx/reverse proxy. The explorer
 
 - **Over the onion service** — build the real Tor fork (above) and run
   `-tor`; the explorer is served on the node's `.onion`, visible via
-  `zclassic23 status`. No certificate needed.
+  `z23 status`. No certificate needed.
 - **Over HTTPS on clearnet** — drop a TLS certificate/key at
   `<datadir>/ssl/fullchain.pem` and `<datadir>/ssl/privkey.pem`; the HTTPS
   explorer starts on port `8443` once the node is near tip. Without a cert
@@ -180,11 +199,11 @@ scratch datadir/workspace with zero commitment (empty listings are the honest
 answer until you or your peers publish something):
 
 ```bash
-build/bin/zclassic23 zcode guide                       # the creator's map: find, inspect, fetch, create, improve
-build/bin/zclassic23 discover search metaverse         # orient in the live command tree
-build/bin/zclassic23 zcode package search --input='{"datadir":"/tmp/zcl23-tour"}'
-build/bin/zclassic23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'
-build/bin/zclassic23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'
+build/bin/z23 zcode guide                       # the creator's map: find, inspect, fetch, create, improve
+build/bin/z23 discover search metaverse         # orient in the live command tree
+build/bin/z23 zcode package search --input='{"datadir":"/tmp/zcl23-tour"}'
+build/bin/z23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'
+build/bin/z23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'
 ```
 
 For the exact installed-node author, consumer, and independent-reproducer
@@ -229,11 +248,11 @@ A minimal from-scratch example, if you'd rather not use the tracked unit
 
 ```ini
 [Unit]
-Description=ZClassic23 Full Node
+Description=Z23 Full Node
 After=network-online.target
 
 [Service]
-ExecStart=/path/to/zclassic23/build/bin/zclassic23 \
+ExecStart=/path/to/z23/build/bin/z23 \
     -datadir=%h/.zclassic-c23 -port=8033 -rpcport=18232 -listen -txindex
 Restart=always
 RestartSec=5
@@ -244,15 +263,15 @@ WantedBy=default.target
 
 ### Key operational commands
 
-The typed native command registry (`zclassic23 <command>`) is the primary
+The typed native command registry (`z23 <command>`) is the primary
 operator/agent interface — no separate RPC client or log-scraping required:
 
 ```bash
-build/bin/zclassic23 status                              # one-line health + next action
-build/bin/zclassic23 discover help                        # enumerate the full command catalog
-build/bin/zclassic23 ops state --subsystem=<name>          # generic subsystem state dump
-build/bin/zclassic23 ops logs --pattern='error|warn'        # server-side log tail, no download
-build/bin/zclassic23 core storage query --sql='SELECT ...'  # SELECT-only SQL over node tables
+build/bin/z23 status                              # one-line health + next action
+build/bin/z23 discover help                        # enumerate the full command catalog
+build/bin/z23 ops state --subsystem=<name>          # generic subsystem state dump
+build/bin/z23 ops logs --pattern='error|warn'        # server-side log tail, no download
+build/bin/z23 core storage query --sql='SELECT ...'  # SELECT-only SQL over node tables
 ```
 
 Full reference: [`docs/NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md).
@@ -265,7 +284,7 @@ Use a **separate datadir and non-default ports** so a dev instance never
 collides with anything running in production on the same machine:
 
 ```bash
-build/bin/zclassic23 -datadir="$HOME/.zclassic-c23-dev" -port=8035 -rpcport=18234
+build/bin/z23 -datadir="$HOME/.zclassic-c23-dev" -port=8035 -rpcport=18234
 ```
 
 (The repo's own [`deploy/zclassic23-test.service`](../deploy/zclassic23-test.service)
@@ -282,7 +301,7 @@ step:
 ```bash
 make dev-watch                 # start the watcher once (verify-only mode)
 # ... edit a .c file in your editor ...
-build/bin/zclassic23-dev status   # read the latest cycle verdict
+build/bin/z23-dev status   # read the latest cycle verdict
 ```
 
 Faster manual loops when you don't want the watcher running:
@@ -296,7 +315,7 @@ make -j"$(nproc)" t-fast ONLY=<group>  # one focused test group, fastest iterati
 These are the `make fast-rebuild` and `make t-fast ONLY=<group>` targets; the
 parallel invocations above are the documented developer forms.
 
-The dev binary lives at `build/bin/zclassic23-dev` — a fast non-LTO local
+The dev binary lives at `build/bin/z23-dev` — a fast non-LTO local
 build, for iteration only; never use it for production/release.
 
 ### Running the full test suite and lint
@@ -311,9 +330,9 @@ make ci              # local gate: lint + build + tests
 
 ### Going deeper
 
-The [`zclassic23-dev` skill](../.claude/skills/zclassic23-dev/SKILL.md) is the
+The [`z23-dev` skill](../.claude/skills/z23-dev/SKILL.md) is the
 full developer operating manual: the source-code navigator
-(`zclassic23 code sym|refs|find`, cheaper than grepping), the hot-swap tiers
+(`z23 code sym|refs|find`, cheaper than grepping), the hot-swap tiers
 for the fastest live-data loop on a small set of read-only leaves, the eight
 code shapes and where new code goes, the defensive-coding rules enforced by
 `make lint`, and the push-time traps (focused-test mapping, the pre-push
@@ -326,7 +345,7 @@ SIGPIPE false-block). Read it before making any code change.
 **No peers** (`peer_count` stays at `0`):
 
 ```bash
-build/bin/zclassic23 status
+build/bin/z23 status
 build/bin/zclassic-cli getnetworkinfo
 build/bin/zclassic-cli addnode "IP:PORT" "onetry"
 ```
@@ -338,15 +357,15 @@ Add custom onion seeds (one `.onion` per line, `#` comments allowed) at
 always a growing gap or a named blocker.
 
 ```bash
-build/bin/zclassic23 status
-build/bin/zclassic23 core sync diagnose
-build/bin/zclassic23 dumpstate reducer_frontier
+build/bin/z23 status
+build/bin/z23 core sync diagnose
+build/bin/z23 dumpstate reducer_frontier
 ```
 
 **Reading logs:**
 
 ```bash
-build/bin/zclassic23 ops logs --pattern='error|warn'
+build/bin/z23 ops logs --pattern='error|warn'
 tail -f ~/.zclassic-c23/node.log
 ```
 
@@ -362,7 +381,7 @@ declined on principle no matter how they are framed. Consensus parity with
 
 To report a bug or propose a feature, use the forms in
 [`.github/ISSUE_TEMPLATE/`](../.github/ISSUE_TEMPLATE/); they ask for
-`zclassic23 status` output and the consensus question up front.
+`z23 status` output and the consensus question up front.
 
 Next: [`HOW_THE_NODE_WORKS.md`](HOW_THE_NODE_WORKS.md) for the mental model,
 and [`AGENT_TRAPS.md`](AGENT_TRAPS.md) for the list of things that look broken

@@ -24,7 +24,7 @@
  * silently skipped (tolerant/incremental adoption — 5 subsystems seed it
  * today: reducer_frontier, blocker, legacy_mirror, chain_advance_coordinator,
  * tip_finalize). Only the unhealthy ones (_health.ok == false) are
- * collected, so `zclassic23 dumpstate unhealthy` stays small and cheap to
+ * collected, so `z23 dumpstate unhealthy` stays small and cheap to
  * read even as adoption grows.
  *
  * Reentrant-safe: no shared state of its own, no allocation beyond the

@@ -1,6 +1,6 @@
 # Two-laptop market test — buyer and seller over Tor
 
-The goal: two real machines, each running one zclassic23 node, find each
+The goal: two real machines, each running one z23 node, find each
 other and trade one file — the seller announces a paid offer, the buyer
 pays, the bytes arrive and re-derive the content root. Neither machine
 needs open ports; the nodes rendezvous over Tor.
@@ -22,10 +22,10 @@ than signing a guess.
 ## 1. Build (both machines)
 
 ```bash
-git clone https://github.com/ZclassiC23/zclassic && cd zclassic
+git clone https://github.com/z23c/z23 && cd z23
 make setup          # vendored deps + git hooks (first run needs network)
 make tor-full       # REAL Tor — without this, -tor runs the stub (no onion)
-make -j"$(nproc)"   # build/bin/zclassic23
+make -j"$(nproc)"   # build/bin/z23
 ```
 
 ## 2. Boot both nodes with Tor
@@ -40,7 +40,7 @@ printf '%s\n' 'pick-a-test-passphrase' > $HOME/.zcl-market-cred/wallet-passphras
 chmod 600 $HOME/.zcl-market-cred/wallet-passphrase
 
 env CREDENTIALS_DIRECTORY=$HOME/.zcl-market-cred \
-  build/bin/zclassic23 -tor -datadir=$HOME/.zcl-market-test
+  build/bin/z23 -tor -datadir=$HOME/.zcl-market-test
 ```
 
 Gotcha: the passphrase is the file's exact bytes **including the
@@ -51,7 +51,7 @@ correct unlock reloads it.
 The onion address appears in:
 
 ```bash
-build/bin/zclassic23 ops state --subsystem=explorer   # → data.state.onion_address
+build/bin/z23 ops state --subsystem=explorer   # → data.state.onion_address
 ```
 
 (`core status` does not carry the onion address; the explorer dump does.)
@@ -76,7 +76,7 @@ resolves the host with getaddrinfo, which cannot resolve `.onion`
 use the `/directory.json` seed mechanism instead; for a first run use
 A's clearnet IP (the trade bytes still ride Tor — see step 7).
 
-Confirm on B: `build/bin/zclassic23 core network peers` lists A.
+Confirm on B: `build/bin/z23 core network peers` lists A.
 
 ## 4. Free coins for the test (regtest variant)
 
@@ -87,9 +87,9 @@ B in chunks of 5 (regtest mining is CPU-instant; a single big call can
 return an empty batch):
 
 ```bash
-ADDR=$(ZCL_DATADIR=$HOME/.zcl-market-test build/bin/zclassic23 getnewaddress)
+ADDR=$(ZCL_DATADIR=$HOME/.zcl-market-test build/bin/z23 getnewaddress)
 n=101; while [ $n -gt 0 ]; do c=5; [ $n -lt 5 ] && c=$n
-  ZCL_DATADIR=$HOME/.zcl-market-test build/bin/zclassic23 generatetoaddress $c "$ADDR"
+  ZCL_DATADIR=$HOME/.zcl-market-test build/bin/z23 generatetoaddress $c "$ADDR"
   n=$((n-c)); sleep 1; done
 ```
 
@@ -101,7 +101,7 @@ an explicit `confirm:true` commit.
 
 ```bash
 printf '%s' '{"filepath":"/home/alice/demo.bin","price_per_mb_zat":1000,"confirm":true}' \
-  | build/bin/zclassic23 app market offer --input=-
+  | build/bin/z23 app market offer --input=-
 ```
 
 This builds the content manifest, signs the self-authenticating offer
@@ -118,7 +118,7 @@ non-mutating plan (root hash, size, exact total) plus the commit input.
 ## 6. Buyer: find it, pay for it, download it (machine B)
 
 ```bash
-build/bin/zclassic23 app market list        # → offers; note offer_id + price
+build/bin/z23 app market list        # → offers; note offer_id + price
 ```
 
 Heads-up (community content moderation): every node boots on the
@@ -133,19 +133,19 @@ the same gossip (see §10).
 
 ```bash
 printf '%s' '{"wallet_scope":"dev","offer_id":"<64hex>","source_address":"<B-owned-address>","chunk_start":0,"chunks_paid":<num_chunks>,"idempotency_key":"laptop-test-001"}' \
-  | build/bin/zclassic23 app market purchase plan --input=-
+  | build/bin/z23 app market purchase plan --input=-
 # → fee preview + plan_id; nothing has moved
 
 printf '%s' '{"wallet_scope":"dev","plan_id":"<64hex>","confirm":true}' \
-  | build/bin/zclassic23 app market purchase commit --input=-
+  | build/bin/z23 app market purchase commit --input=-
 # → shielded payment tx broadcast; seller notified (zfilepay)
 
 printf '%s' '{"plan_id":"<64hex>"}' \
-  | build/bin/zclassic23 app market purchase status --input=-
+  | build/bin/z23 app market purchase status --input=-
 # → payment reconciliation (PENDING → CONFIRMED)
 
 printf '%s' '{"plan_id":"<64hex>","destination_path":"/home/bob/demo.bin"}' \
-  | build/bin/zclassic23 app market purchase retrieve --input=-
+  | build/bin/z23 app market purchase retrieve --input=-
 # → per-chunk signed requests, each authorized against the confirmed
 #   payment before the seller reads a byte; full-file root re-derived
 ```

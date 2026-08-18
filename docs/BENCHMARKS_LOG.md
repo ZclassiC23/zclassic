@@ -7,13 +7,13 @@ measurement. This is the source for the "now" column and the bars on the board
 
 ## How to add a measurement (from Claude Code)
 
-1. Pull live gauges: `zclassic23 core status` (RSS, height, peers, uptime) and
-   `zclassic23 ops metrics`.
+1. Pull live gauges: `z23 core status` (RSS, height, peers, uptime) and
+   `z23 ops metrics`.
 2. For timing benchmarks, run the harness (only meaningful on a *healthy* node):
-   - `#1 cold`  → `build/bin/zclassic23 -bench-coldstart`
-   - `#2 warm`  → `build/bin/zclassic23 -bench-warmstart`
-   - `#4 thru`  → `zclassic23 core sync validation` `blocks_per_sec` during bg-verify
-   - `#6 kill-9`→ `build/bin/zclassic23 -bench-kill9`
+   - `#1 cold`  → `build/bin/z23 -bench-coldstart`
+   - `#2 warm`  → `build/bin/z23 -bench-warmstart`
+   - `#4 thru`  → `z23 core sync validation` `blocks_per_sec` during bg-verify
+   - `#6 kill-9`→ `build/bin/z23 -bench-kill9`
 3. Append rows below with today's date + `git rev-parse --short HEAD`.
 4. Leave a metric out rather than guess. `—` = not measured this run.
 5. Commit. Trend for any metric: `grep "RSS" docs/BENCHMARKS_LOG.md`.
@@ -25,7 +25,7 @@ Format: `date | commit | benchmark | value | how measured / notes`
 | date | commit | benchmark | value | how / notes |
 |---|---|---|---|---|
 | 2026-05-24 | be5e90b05 | #9 binary size | **14.6 MB** | `ls` of built binary (target stay small) | <!-- stale-ok: dated benchmark measurement, not a present-tense claim -->
-| 2026-05-24 | 6e0f6a82c | #1 cold import identity | serial 48.9s / default-workers 57.3s | `ZCL_COLD_IMPORT_DEBUG_WINDOW=3028 build/bin/zclassic23 -datadir=/tmp/zcl-cold -cold-import=~/.zclassic -nofilesync -nobgvalidation` (serial adds `ZCL_BLOCK_SCAN_WORKERS=1`). Both: `utxo_sha3=981b7bbceb522f816e29e4adccf7f80fdcab75cd392ee7b438b55787385031f1`, `coins_best_block=acad56115a58a82ff18395591263a7ec881bd13603ec31e1e72adb12ea010000`, `utxos=1345066` (min_h=1, max_h=3123726, sum_value=1038775293114532). Cold-import bulk-copies the legacy block index and **bypasses `scan_block_files_mark_data`** — the 101s `blk*.dat` marking baseline is a normal/file-sync boot cost, not this path. |
+| 2026-05-24 | 6e0f6a82c | #1 cold import identity | serial 48.9s / default-workers 57.3s | `ZCL_COLD_IMPORT_DEBUG_WINDOW=3028 build/bin/z23 -datadir=/tmp/zcl-cold -cold-import=~/.zclassic -nofilesync -nobgvalidation` (serial adds `ZCL_BLOCK_SCAN_WORKERS=1`). Both: `utxo_sha3=981b7bbceb522f816e29e4adccf7f80fdcab75cd392ee7b438b55787385031f1`, `coins_best_block=acad56115a58a82ff18395591263a7ec881bd13603ec31e1e72adb12ea010000`, `utxos=1345066` (min_h=1, max_h=3123726, sum_value=1038775293114532). Cold-import bulk-copies the legacy block index and **bypasses `scan_block_files_mark_data`** — the 101s `blk*.dat` marking baseline is a normal/file-sync boot cost, not this path. |
 | 2026-05-24 | 078667266 | #1 cold sync PR-3 serial-vs-parallel | serial 194.9s; parallel 295.3s | `tools/bench_cold_import_equivalence.sh` vs `/tmp/zcl-legacy-snapshot`; both h=3,123,688, tip `00000f027587b4eeb3f4890f77659c7057f9ea0512f761295c294d1000f9d462`, `utxo_sha3=3160565aba65ef205ba54886a57d39fccd1dade2ec709de1eff9c1d1307ffc48`, `utxos=1,345,067`. **⚠ parallel SLOWER (+100s) — scanner integration regressed cold-import.** |
 | 2026-05-24 | e4b5528ea | #2 warm restart | **37.7s** | `systemctl stop`→`start` to first `getblockcount` at tip 3,123,688 (poll @0.25s). Target 10s. Wall-clock incl. systemd + Tor bootstrap, not the `-bench-warmstart` harness. |
 | 2026-05-24 | e4b5528ea | #4 throughput | **~107 blk/s** | `validationstatus.blocks_per_sec` during bg-verify (97–112). Full re-verify of 3.12M blocks ≈ 8h. |
@@ -207,7 +207,7 @@ time is unrecorded. These are the before-numbers for the inner-loop work.
 | `make -j32 build-only`, one .c edited | 9.0s |
 | `make -j32 test_parallel`, no change | 10.7s |
 | `make -j32 test_parallel`, one .c edited | 31.6s |
-| `make -j32 zclassic23`, one .c edited | 67.0s (whole-program LTO, uncacheable by design) |
+| `make -j32 z23`, one .c edited | 67.0s (whole-program LTO, uncacheable by design) |
 | `make lint`, 103 gates, 8 jobs | 16.6s |
 | full suite, cold, 32 workers | ~157s |
 
@@ -260,7 +260,7 @@ CPU per edit (user+sys): ~35s → ~7s. Remaining wall floor is parse-time source
 capture + session acquire (~6s no-change), not compilation.
 
 Identity freshness proof: one-line `addrman.c` edit → `make fast-rebuild` →
-`strings build/bin/zclassic23-dev` contains the NEW `capture-record` source id
+`strings build/bin/z23-dev` contains the NEW `capture-record` source id
 (2 hits), old id 0 hits — identity TU rebuilt and binary relinked inside the
 STABLE epoch dir.
 

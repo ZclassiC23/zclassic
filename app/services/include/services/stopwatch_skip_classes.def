@@ -14,7 +14,7 @@
  *
  * TWO consumers read this file. Neither keeps a private copy:
  *   - C     app/services/src/stopwatch_skip_watch.c #includes it. That is the
- *           typed surface: `zclassic23 ops state --subsystem=stopwatch_evidence`.
+ *           typed surface: `z23 ops state --subsystem=stopwatch_evidence`.
  *   - shell tools/scripts/stopwatch_skip_class.sh parses it with sed, and is
  *           sourced by the collector (c3_stopwatch_run_and_record.sh) and by
  *           the judge (stopwatch_evidence_judge.sh).

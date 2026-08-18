@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Background Full Test Suite Lane
+Description=Z23 Background Full Test Suite Lane
 
 [Service]
 Type=oneshot

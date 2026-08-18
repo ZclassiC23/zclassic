@@ -36,6 +36,6 @@ bool peer_incidents_from_dumpstate_result_json(const struct json_value *result,
                          ? reason
                          : "target_peerincidents_method_not_found");
     json_push_kv_str(out, "fallback_native_command",
-                     "zclassic23 dumpstate peer_lifecycle incidents");
+                     "z23 dumpstate peer_lifecycle incidents");
     return true;
 }

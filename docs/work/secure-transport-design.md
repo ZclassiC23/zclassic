@@ -1,4 +1,4 @@
-# Secure P2P Transport for zclassic23 — protocol reference
+# Secure P2P Transport for z23 — protocol reference
 
 This is the protocol contract for the Noise-encrypted v2 transport
 (`lib/net/src/v2_transport.c`, `lib/noise/src/noise_handshake.c`), which is
@@ -9,12 +9,12 @@ parity firewall below is the invariant that keeps it that way.
 
 ## 1. Overview & goals
 
-zclassic23 P2P links are today plaintext, unauthenticated TCP. The v1 message
+z23 P2P links are today plaintext, unauthenticated TCP. The v1 message
 checksum (`nChecksum` in `struct msg_header`, first 4 bytes of double-SHA256 of
 the payload, `lib/net/include/net/protocol.h`) detects corruption, not tampering
 — it is unkeyed and forgeable by anyone on-path. This document specifies an
 opt-in, authenticated, forward-secret transport ("v2") that wraps the byte
-stream between two consenting zclassic23 peers while leaving message semantics,
+stream between two consenting z23 peers while leaving message semantics,
 the v1 wire format, and consensus behavior byte-for-byte unchanged.
 
 Goals:
@@ -89,7 +89,7 @@ to already hold the responder's static, so it fails cold dial — **kept as an
 opt-in fast-reconnect** once a peer's static is TOFU-pinned in addrman
 (saves 0.5 RTT; needs an anti-replay window on msg1). Noise_XK has the same
 cold-dial problem. BIP324's unauthenticated AKE fits Bitcoin's lack of peer
-identity; zclassic23 defines a persistent static identity, so discarding
+identity; z23 defines a persistent static identity, so discarding
 auth would be strictly worse — we borrow BIP324's transport ideas (length
 obfuscation, dropping redundant magic+checksum, garbage-tolerant detection)
 on top of an authenticated Noise core, but only in later phases.

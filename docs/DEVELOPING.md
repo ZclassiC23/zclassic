@@ -1,11 +1,11 @@
-# Developing ZClassic23
+# Developing Z23
 
 This is the detailed developer procedure. The durable mission and authority
 contract are in [`../AGENTS.md`](../AGENTS.md); current priorities are in
 [`work/FORWARD_PLAN.md`](work/FORWARD_PLAN.md). Current state of the
 maintainer's hosted node belongs only in [`HANDOFF.md`](HANDOFF.md).
 
-ZClassic23 is first a public ZClassic full node and second an optional
+Z23 is first a public ZClassic full node and second an optional
 decentralized C23 software commons. Consensus, custody, synchronization, peer
 health, and public-node reliability always outrank package computation and
 development convenience.
@@ -60,11 +60,11 @@ integration blackboard.
 Use the in-tree source navigator before broad text search:
 
 ```bash
-build/bin/zclassic23 code map
-build/bin/zclassic23 code sym --input='{"name":"<symbol>"}'
-build/bin/zclassic23 code refs --input='{"name":"<symbol>"}'
-build/bin/zclassic23 code capsule --input='{"name":"<symbol>"}'
-build/bin/zclassic23 code find --input='{"text":"<needle>","limit":20}'
+build/bin/z23 code map
+build/bin/z23 code sym --input='{"name":"<symbol>"}'
+build/bin/z23 code refs --input='{"name":"<symbol>"}'
+build/bin/z23 code capsule --input='{"name":"<symbol>"}'
+build/bin/z23 code find --input='{"text":"<needle>","limit":20}'
 ```
 
 `code capsule` combines identity, definition, direct callers/callees, includes,
@@ -83,12 +83,12 @@ outside the compilation database.
 Inspect and operate a running node through typed native commands:
 
 ```bash
-build/bin/zclassic23 status
-build/bin/zclassic23 ops state --subsystem=<name>
-build/bin/zclassic23 ops logs --pattern='<regex>'
-build/bin/zclassic23 core storage query --sql='SELECT ...'
-build/bin/zclassic23 discover help
-build/bin/zclassic23 discover search <query>
+build/bin/z23 status
+build/bin/z23 ops state --subsystem=<name>
+build/bin/z23 ops logs --pattern='<regex>'
+build/bin/z23 core storage query --sql='SELECT ...'
+build/bin/z23 discover help
+build/bin/z23 discover search <query>
 ```
 
 Normal source-development tools—Git, compiler, linker, `make`, and bounded
@@ -144,9 +144,9 @@ source edit, emits resumable events, and runs an exact affected proof without
 making the developer wait for deeper work.
 
 ```bash
-zclassic23-dev dev begin
-zclassic23-dev dev loop events --after=<cursor> --format=jsonl
-zclassic23-dev dev status
+z23-dev dev begin
+z23-dev dev loop events --after=<cursor> --format=jsonl
+z23-dev dev status
 ```
 
 Humans may use the bounded `dev drive` or `dev loop wait` command returned by
@@ -164,7 +164,7 @@ files to influence a verdict.
 `failure_id` is authoritative; inspect it with:
 
 ```bash
-zclassic23-dev dev diagnose show <failure_id>
+z23-dev dev diagnose show <failure_id>
 ```
 
 Use `--view=full` only when the bounded capsule is insufficient. A changed

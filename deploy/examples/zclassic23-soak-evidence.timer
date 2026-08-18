@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Soak Evidence Timer — hourly MVP-C6 sample
+Description=Z23 Soak Evidence Timer — hourly MVP-C6 sample
 
 [Timer]
 # Hourly cadence with small jitter. The judge tolerates one missed tick

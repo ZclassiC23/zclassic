@@ -1,6 +1,6 @@
-# The ZClassic23 Metaverse
+# The Z23 Metaverse
 
-**ZClassic23 is a metaverse where people and AI create real things together,
+**Z23 is a metaverse where people and AI create real things together,
 and nobody owns the world they build in.** The metaverse is not one app or one
 server — it is the shared, permissionless creation environment formed by the
 ZCODE package library, the development network, the proof-of-contribution
@@ -16,11 +16,11 @@ will be empty until you or your peers publish something, and that is the
 honest answer, not a bug:
 
 ```bash
-build/bin/zclassic23 zcode guide                            # the creator's map: find, inspect, fetch, create, improve
-build/bin/zclassic23 discover search metaverse              # orient in the live command tree
-build/bin/zclassic23 zcode package search --input='{"datadir":"/tmp/zcl23-tour"}'   # browse the local commons
-build/bin/zclassic23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'   # holdings, with evidence grades
-build/bin/zclassic23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'   # the ZC23 Living Commons projection
+build/bin/z23 zcode guide                            # the creator's map: find, inspect, fetch, create, improve
+build/bin/z23 discover search metaverse              # orient in the live command tree
+build/bin/z23 zcode package search --input='{"datadir":"/tmp/zcl23-tour"}'   # browse the local commons
+build/bin/z23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'   # holdings, with evidence grades
+build/bin/z23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'   # the ZC23 Living Commons projection
 ```
 
 To see a real committed space instead of an empty listing, create one:

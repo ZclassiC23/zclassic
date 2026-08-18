@@ -74,7 +74,7 @@ static void write_index(int count) {
     fprintf(f,
         "<!DOCTYPE html><html><head><meta charset='utf-8'>\n"
         "<meta name='viewport' content='width=device-width'>\n"
-        "<title>ZClassic23 Wallet Simulator</title>\n"
+        "<title>Z23 Wallet Simulator</title>\n"
         "<style>\n"
         "body{font-family:Inter,system-ui,sans-serif;background:#0c0c0c;"
         "color:#e2e2e2;max-width:800px;margin:40px auto;padding:0 20px}\n"
@@ -88,7 +88,7 @@ static void write_index(int count) {
         ".desc{color:#888;font-size:13px;margin-left:8px}\n"
         ".meta{color:#555;font-size:12px;margin-top:20px}\n"
         "</style></head><body>\n"
-        "<h1>ZClassic23 Wallet Simulator</h1>\n"
+        "<h1>Z23 Wallet Simulator</h1>\n"
         "<p style='color:#888'>%d pages rendered with live data from "
         "zclassicd. Click any page to see exactly what the user sees.</p>\n",
         count);

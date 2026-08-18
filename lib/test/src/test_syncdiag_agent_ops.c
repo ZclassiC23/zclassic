@@ -53,7 +53,7 @@ int syncdiag_cases_agent_ops(void)
                           "agentops") == 0;
         ok = ok && json_get_bool(json_get(&ops, "no_jq_required"));
         ok = ok && strcmp(json_get_str(json_get(&ops, "native_command")),
-                          "zclassic23 agentops") == 0;
+                          "z23 agentops") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops, "contract_source")),
                           "agent_contracts.def") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops, "api_style")),
@@ -62,38 +62,38 @@ int syncdiag_cases_agent_ops(void)
                           "agent_contracts.def + agent_contract_registry.c") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "diagnostics_catalog_command")),
-                          "zclassic23 statecatalog") == 0;
+                          "z23 statecatalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "diagnose_command")),
-                          "zclassic23 agentdiagnose") == 0;
+                          "z23 agentdiagnose") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "anchor_status_command")),
-                          "zclassic23 anchorstatus [-datadir=<anchor-datadir>]")
+                          "z23 anchorstatus [-datadir=<anchor-datadir>]")
             == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "proof_bundle_command")),
-                          "zclassic23 proofbundle [anchor_datadir]") == 0;
+                          "z23 proofbundle [anchor_datadir]") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "peer_incidents_command")),
-                          "zclassic23 peerincidents") == 0;
+                          "z23 peerincidents") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "service_catalog_command")),
-                          "zclassic23 servicecatalog") == 0;
+                          "z23 servicecatalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "service_operations_command")),
-                          "zclassic23 serviceoperations [operation_id|key=value...]") == 0;
+                          "z23 serviceoperations [operation_id|key=value...]") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "dev_status_command")),
-                          "zclassic23 agentdevstatus") == 0;
+                          "z23 agentdevstatus") == 0;
         ok = ok && strcmp(json_get_str(json_get(&ops,
                                                 "deploy_guard_command")),
-                          "zclassic23 agentdeployguard [action]") == 0;
+                          "z23 agentdeployguard [action]") == 0;
         ok = ok && ops_direct_agentops &&
             strcmp(json_get_str(json_get(ops_direct_agentops, "schema")),
                    "zcl.agent_ops.v2") == 0;
         ok = ok && ops_direct_agentops &&
             strcmp(json_get_str(json_get(ops_direct_agentops, "native")),
-                   "zclassic23 agentops") == 0;
+                   "z23 agentops") == 0;
         const struct json_value *ops_direct_diagnose =
             find_object_with_str(ops_direct_commands, "method",
                                  "agentdiagnose");
@@ -131,25 +131,25 @@ int syncdiag_cases_agent_ops(void)
                    "zcl.service_operations.index.v2") == 0;
         ok = ok && ops_direct_dumpstate &&
             strcmp(json_get_str(json_get(ops_direct_dumpstate, "native")),
-                   "zclassic23 dumpstate <subsystem> [key]") == 0;
+                   "z23 dumpstate <subsystem> [key]") == 0;
         ok = ok && ops_direct_getnodelog &&
             strcmp(json_get_str(json_get(ops_direct_getnodelog, "native")),
-                   "zclassic23 getnodelog <pattern>") == 0;
+                   "z23 getnodelog <pattern>") == 0;
         ok = ok && ops_direct_peerincidents &&
             strcmp(json_get_str(json_get(ops_direct_peerincidents, "native")),
-                   "zclassic23 peerincidents") == 0;
+                   "z23 peerincidents") == 0;
         ok = ok && ops_direct_dev_status &&
             strcmp(json_get_str(json_get(ops_direct_dev_status, "schema")),
                    "zcl.agent_dev_status.v2") == 0;
         ok = ok && ops_direct_dev_status &&
             strcmp(json_get_str(json_get(ops_direct_dev_status, "native")),
-                   "zclassic23 agentdevstatus") == 0;
+                   "z23 agentdevstatus") == 0;
         ok = ok && ops_direct_proof_bundle &&
             strcmp(json_get_str(json_get(ops_direct_proof_bundle, "schema")),
                    "zcl.operator_proof_bundle.v2") == 0;
         ok = ok && ops_direct_proof_bundle &&
             strcmp(json_get_str(json_get(ops_direct_proof_bundle, "native")),
-                   "zclassic23 proofbundle [anchor_datadir]") == 0;
+                   "z23 proofbundle [anchor_datadir]") == 0;
         ok = ok && strstr(json_get_str(json_get(&ops,
                                                 "refold_plain_english")),
                           "borrowed snapshot seed") != NULL;
@@ -187,10 +187,10 @@ int syncdiag_cases_agent_ops(void)
                           "native_cli") == 0;
         ok = ok && ops_api_ux &&
             strstr(json_get_str(json_get(ops_api_ux, "preferred_drilldowns")),
-                   "zclassic23 dumpstate") != NULL;
+                   "z23 dumpstate") != NULL;
         ok = ok && ops_api_ux &&
             strstr(json_get_str(json_get(ops_api_ux, "start_here")),
-                   "zclassic23 status") != NULL;
+                   "z23 status") != NULL;
         ok = ok && ops_api_ux &&
             strstr(json_get_str(json_get(ops_api_ux, "add_new_api_rule")),
                    "registry-owned primitives") != NULL;
@@ -254,7 +254,7 @@ int syncdiag_cases_agent_ops(void)
         ok = ok && json_get_bool(json_get(&diagnose, "no_jq_required"));
         ok = ok && strcmp(json_get_str(json_get(&diagnose,
                                                 "native_command")),
-                          "zclassic23 agentdiagnose") == 0;
+                          "z23 agentdiagnose") == 0;
         ok = ok && strcmp(json_get_str(json_get(&diagnose,
                                                 "contract_source")),
                           "agent_contracts.def") == 0;
@@ -270,7 +270,7 @@ int syncdiag_cases_agent_ops(void)
                           "peerincidents") == 0;
         ok = ok && strcmp(json_get_str(json_get(diagnose_peers,
                                                 "native_command")),
-                          "zclassic23 peerincidents") == 0;
+                          "z23 peerincidents") == 0;
         ok = ok && strcmp(json_get_str(json_get(diagnose_peers,
                                                 "contract_source")),
                           "agent_contracts.def") == 0;
@@ -561,7 +561,7 @@ int syncdiag_cases_agent_ops(void)
                                   "test_block_index_integrity.c");
         ok = ok && block_index_cat &&
             json_array_has_substr(json_get(block_index_cat, "drilldowns"),
-                                  "zclassic23 dumpstate block_index");
+                                  "z23 dumpstate block_index");
         ok = ok && frontier_cat &&
             strcmp(json_get_str(json_get(frontier_cat, "state_class")),
                    "reducer_stage") == 0;
@@ -579,7 +579,7 @@ int syncdiag_cases_agent_ops(void)
             false;
         ok = ok && frontier_cat &&
             json_array_has_substr(json_get(frontier_cat, "drilldowns"),
-                                  "zclassic23 dumpstate reducer_frontier");
+                                  "z23 dumpstate reducer_frontier");
 
         struct json_value lanes;
         json_init(&lanes);
@@ -620,7 +620,7 @@ int syncdiag_cases_agent_ops(void)
                    "agent") == 0;
         ok = ok && lane_status_cmd &&
             strcmp(json_get_str(json_get(lane_status_cmd, "native")),
-                   "zclassic23 agent") == 0;
+                   "z23 agent") == 0;
         ok = ok && lane_status_cmd &&
             strcmp(json_get_str(json_get(lane_status_cmd, "schema")),
                    "zcl.public_status.v3") == 0;
@@ -632,7 +632,7 @@ int syncdiag_cases_agent_ops(void)
                    "agentdeployguard") == 0;
         ok = ok && deploy_guard_cmd &&
             strcmp(json_get_str(json_get(deploy_guard_cmd, "native")),
-                   "zclassic23 agentdeployguard [action]") == 0;
+                   "z23 agentdeployguard [action]") == 0;
         ok = ok && lane_health_cmd &&
             strcmp(json_get_str(json_get(lane_health_cmd, "native")),
                    "tools/scripts/lane_health.sh --json") == 0;
@@ -789,7 +789,7 @@ int syncdiag_cases_agent_ops(void)
                           "make agent-dev-status") == 0;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "native_dev_lane_status")),
-                          "zclassic23 agentdevstatus") == 0;
+                          "z23 agentdevstatus") == 0;
         ok = ok && strcmp(json_get_str(json_get(loop,
                            "stage_dev_binary_no_restart")),
                           "make agent-stage-dev") == 0;
@@ -832,7 +832,7 @@ int syncdiag_cases_agent_ops(void)
         ok = ok && dev_binary && json_get_bool(json_get(dev_binary,
                                                         "enabled"));
         ok = ok && strcmp(json_get_str(json_get(dev_binary, "binary")),
-                          "build/bin/zclassic23-dev") == 0;
+                          "build/bin/z23-dev") == 0;
         ok = ok && indexing &&
             strcmp(json_get_str(json_get(indexing, "schema")),
                    "zcl.agent_index_runtime.v1") == 0;
@@ -882,7 +882,7 @@ int syncdiag_cases_agent_ops(void)
                                          "dev_loop_benchmark") != NULL;
         ok = ok && strcmp(json_get_str(json_get(dev_binary,
                                                 "native_status_command")),
-                          "zclassic23 agentdevstatus") == 0;
+                          "z23 agentdevstatus") == 0;
         ok = ok && strcmp(json_get_str(json_get(dev_binary,
                                                 "agent_loop_stage_no_restart")),
                           "ZCL_AGENT_LOOP_DEPLOY=stage make agent-loop") == 0;
@@ -1106,7 +1106,7 @@ int syncdiag_cases_agent_ops(void)
                           "ok") == 0;
         ok = ok && strcmp(json_get_str(json_get(&dev_status,
                                                 "native_command")),
-                          "zclassic23 agentdevstatus") == 0;
+                          "z23 agentdevstatus") == 0;
         ok = ok && strcmp(json_get_str(json_get(&dev_status,
                                                 "next_action")),
                           "unit-test") == 0;
@@ -1155,7 +1155,7 @@ int syncdiag_cases_agent_ops(void)
                           "agentliveness") == 0;
         ok = ok && strcmp(json_get_str(json_get(&liveness,
                                                 "native_command")),
-                          "zclassic23 agentliveness") == 0;
+                          "z23 agentliveness") == 0;
         ok = ok && strcmp(json_get_str(json_get(&liveness,
                                                 "contract_source")),
                           "agent_contracts.def") == 0;
@@ -1165,7 +1165,7 @@ int syncdiag_cases_agent_ops(void)
                                            "embedded_drilldowns"));
         ok = ok && strcmp(json_get_str(json_get(&liveness,
                                                 "full_mode_command")),
-                          "zclassic23 agentliveness full") == 0;
+                          "z23 agentliveness full") == 0;
         ok = ok && live_first_call && live_first_call->type == JSON_OBJ;
         ok = ok && strcmp(json_get_str(json_get(live_first_call, "schema")),
                           "zcl.first_call_contract.v1") == 0;
@@ -1183,7 +1183,7 @@ int syncdiag_cases_agent_ops(void)
                           "brief_mode_omits_embedded_drilldowns") == 0;
         ok = ok && strcmp(json_get_str(json_get(live_first_call,
                                                 "full_mode_command")),
-                          "zclassic23 agentliveness full") == 0;
+                          "z23 agentliveness full") == 0;
         ok = ok && json_get_int(json_get(live_first_call,
                                          "budget_ms")) == 750;
         ok = ok && json_get(live_first_call, "elapsed_ms") != NULL;
@@ -1260,7 +1260,7 @@ int syncdiag_cases_agent_ops(void)
             json_get(live_supervisor, "domains") == NULL;
         ok = ok && live_drilldowns &&
             json_array_has_substr(live_drilldowns,
-                                  "zclassic23 dumpstate supervisor");
+                                  "z23 dumpstate supervisor");
 
         struct json_value liveness_full_params, full_mode, liveness_full;
         json_init(&liveness_full_params);

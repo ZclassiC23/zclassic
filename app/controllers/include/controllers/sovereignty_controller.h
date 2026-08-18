@@ -26,7 +26,7 @@ struct json_value;
 #define SOVEREIGNTY_T_READY_KEY     "sovereignty.t_ready"
 #define SOVEREIGNTY_T_SOVEREIGN_KEY "sovereignty.t_sovereign"
 
-/* `zclassic23 dumpstate sovereignty` — also folded into `zclassic23 status`'s
+/* `z23 dumpstate sovereignty` — also folded into `z23 status`'s
  * trust-tier surface (event_agent_summary.c -> agent_summary_posture_cache.c).
  * Reports coins_kv_proven_authority, self_folded_marker, coins_applied_height,
  * hstar, self_derived_tip_static_checks (the G-SOV parts 2+3 predicate),

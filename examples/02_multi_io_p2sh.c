@@ -4,7 +4,7 @@
  *
  * WHAT THIS DEMONSTRATES
  * -----------------------
- * zclassic23's `simnet` harness (lib/sim/) builds real transactions, feeds
+ * z23's `simnet` harness (lib/sim/) builds real transactions, feeds
  * them through the REAL consensus function `connect_block()`, and inspects
  * the resulting in-RAM UTXO set — no disk, no real PoW, no real funds, but
  * genuine consensus validation. This example builds two transaction SHAPES
@@ -281,7 +281,7 @@ int main(void)
  *
  *   - Multi-input/multi-output send:
  *       wallet_create_transaction()   in lib/wallet/include/wallet/wallet.h
- *       (invoked by `zclassic23 core wallet transaction send` or the
+ *       (invoked by `z23 core wallet transaction send` or the
  *        `sendtoaddress` RPC path via
  *        app/controllers/src/wallet_controller.c and
  *        app/controllers/src/transaction_controller.c)

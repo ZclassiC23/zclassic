@@ -83,9 +83,9 @@ ZCL_PORTABLE_FRONTDOOR_ONLY := $(if $(strip $(MAKECMDGOALS)),$(if $(strip \
 # whose `vendor-ready` prerequisite may repair stale archives.
 NODE_VENDOR_ARCHIVES = libsecp256k1.a libcrypto.a libssl.a libevent.a \
 	libevent_openssl.a libevent_pthreads.a libsqlite3.a libz.a libtor_stub.a
-# A focused `make zclassic23` needs no C++ toolchain. Test/dev builds retain
-# LevelDB strictly as a differential oracle.
-ZCL_NODE_ONLY_BUILD := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out zclassic23,$(MAKECMDGOALS))),,1),)
+# A focused `make z23` (or legacy `make zclassic23`) needs no C++ toolchain.
+# Test/dev builds retain LevelDB strictly as a differential oracle.
+ZCL_NODE_ONLY_BUILD := $(if $(strip $(MAKECMDGOALS)),$(if $(strip $(filter-out z23 zclassic23,$(MAKECMDGOALS))),,1),)
 VENDOR_ARCHIVES = $(NODE_VENDOR_ARCHIVES) \
 	$(if $(ZCL_NODE_ONLY_BUILD),,libleveldb.a)
 VENDOR_LIBS = $(addprefix vendor/lib/,$(VENDOR_ARCHIVES))
@@ -184,7 +184,7 @@ ifneq ($(filter build-only,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := build-only
 else ifneq ($(filter fast-compile dev-build-only,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev
-else ifneq ($(filter dev-bin zclassic23-dev,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter dev-bin z23-dev zclassic23-dev,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev test-fast
 else ifneq ($(filter dev-package-verifier,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev
@@ -194,11 +194,11 @@ else ifneq ($(filter t test test_parallel test-parallel test-parallel-active tes
 ZCL_EPOCH_PROFILES := test-strict
 else ifneq ($(filter t-asan test-asan asan-ci zcode-package-asan,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-asan
-else ifneq ($(filter dev-asan zclassic23-dev-asan,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter dev-asan z23-dev-asan zclassic23-dev-asan,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev-asan
 else ifneq ($(filter t-tsan test-tsan tsan-ci,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := test-tsan
-else ifneq ($(filter dev-tsan zclassic23-dev-tsan,$(ZCL_EPOCH_SINGLE_GOAL)),)
+else ifneq ($(filter dev-tsan z23-dev-tsan zclassic23-dev-tsan,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_EPOCH_SINGLE_GOAL)),)
 ZCL_EPOCH_PROFILES := coverage
@@ -295,8 +295,14 @@ $(BUILD_IDENTITY_STAMP): $(BUILD_MUTATION_STAMP) tools/dev/source-identity.sh
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
 
-ZCLASSIC23_BIN = $(BIN_DIR)/zclassic23
-ZCLASSIC23_DEV_BIN = $(BIN_DIR)/zclassic23-dev
+# Preferred binary names are z23/z23-dev (product rename from ZClassic23).
+# The ZCLASSIC23_* variable names stay (build-internal), and the old
+# build/bin/zclassic23* names remain as temporary symlink aliases so existing
+# bots and scripts get an obvious migration path.
+ZCLASSIC23_BIN = $(BIN_DIR)/z23
+ZCLASSIC23_DEV_BIN = $(BIN_DIR)/z23-dev
+ZCLASSIC23_BIN_ALIAS = $(BIN_DIR)/zclassic23
+ZCLASSIC23_DEV_BIN_ALIAS = $(BIN_DIR)/zclassic23-dev
 DEV_RESTART_PLAN = $(BUILD_DIR)/dev-loop/restart.env
 TEST_ZCL_BIN = $(BIN_DIR)/test_zcl
 TEST_PARALLEL_BIN = $(BIN_DIR)/test_parallel
@@ -886,7 +892,8 @@ DEV_ASAN_OBJ_DIR = $(DEV_ASAN_OBJ_ROOT)/epochs/$(DEV_ASAN_COMPILE_EPOCH)
 DEV_ASAN_OBJS = $(patsubst %.c,$(DEV_ASAN_OBJ_DIR)/%.o,$(DEV_SRCS))
 DEV_ASAN_LINK_RSP = $(DEV_ASAN_OBJ_DIR)/link-inputs.rsp
 DEV_ASAN_CANDIDATE_BIN = $(BIN_DIR)/dev-asan/epochs/$(DEV_ASAN_COMPILE_EPOCH)/zclassic23-dev-asan
-DEV_ASAN_BIN = $(BIN_DIR)/zclassic23-dev-asan
+DEV_ASAN_BIN = $(BIN_DIR)/z23-dev-asan
+DEV_ASAN_BIN_ALIAS = $(BIN_DIR)/zclassic23-dev-asan
 DEV_ASAN_PROFILE = dev-asan-v2
 DEV_ASAN_SESSION = $(DEV_ASAN_OBJ_DIR)/.build-session
 DEV_ASAN_LEASE = $(DEV_ASAN_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
@@ -910,7 +917,8 @@ DEV_TSAN_OBJ_DIR = $(DEV_TSAN_OBJ_ROOT)/epochs/$(DEV_TSAN_COMPILE_EPOCH)
 DEV_TSAN_OBJS = $(patsubst %.c,$(DEV_TSAN_OBJ_DIR)/%.o,$(DEV_SRCS))
 DEV_TSAN_LINK_RSP = $(DEV_TSAN_OBJ_DIR)/link-inputs.rsp
 DEV_TSAN_CANDIDATE_BIN = $(BIN_DIR)/dev-tsan/epochs/$(DEV_TSAN_COMPILE_EPOCH)/zclassic23-dev-tsan
-DEV_TSAN_BIN = $(BIN_DIR)/zclassic23-dev-tsan
+DEV_TSAN_BIN = $(BIN_DIR)/z23-dev-tsan
+DEV_TSAN_BIN_ALIAS = $(BIN_DIR)/zclassic23-dev-tsan
 DEV_TSAN_PROFILE = dev-tsan-v2
 DEV_TSAN_SESSION = $(DEV_TSAN_OBJ_DIR)/.build-session
 DEV_TSAN_LEASE = $(DEV_TSAN_OBJ_DIR)/.leases/$(BUILD_INVOCATION_ID)
@@ -976,7 +984,7 @@ ifneq ($(filter build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := build-only
 else ifneq ($(filter fast-compile dev-build-only,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev
-else ifneq ($(filter dev-bin zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter dev-bin z23-dev zclassic23-dev,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev test-fast
 else ifneq ($(filter t-fast t-fast-exact test_parallel_fast test-parallel-fast-active test-parallel-fast-active-locked t-fast-locked t-fast-exact-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-fast
@@ -984,11 +992,11 @@ else ifneq ($(filter t test test_parallel test-parallel test-parallel-active tes
 ZCL_DEPFILE_PROFILES := test-strict
 else ifneq ($(filter t-asan test-asan asan-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-asan
-else ifneq ($(filter dev-asan zclassic23-dev-asan,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter dev-asan z23-dev-asan zclassic23-dev-asan,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev-asan
 else ifneq ($(filter t-tsan test-tsan tsan-ci,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := test-tsan
-else ifneq ($(filter dev-tsan zclassic23-dev-tsan,$(ZCL_DEPFILE_SINGLE_GOAL)),)
+else ifneq ($(filter dev-tsan z23-dev-tsan zclassic23-dev-tsan,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := dev-tsan
 else ifneq ($(filter coverage coverage-locked,$(ZCL_DEPFILE_SINGLE_GOAL)),)
 ZCL_DEPFILE_PROFILES := coverage
@@ -1919,7 +1927,7 @@ test-parallel-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-verifier-ensure
 # the default `all`), so running build/bin/test_parallel directly after editing a test
 # can false-green an old binary or report "matched no groups" for a new test.
 # `make t ONLY=<group>` always rebuilds the harness first, closing that trap.
-.PHONY: t t-fast t-fast-exact t-asan asan-ci t-tsan tsan-ci t-changed ff verify-change watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin dev-asan zclassic23-dev-asan dev-tsan zclassic23-dev-tsan zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index compdb dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor doctor-build stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
+.PHONY: t t-fast t-fast-exact t-asan asan-ci t-tsan tsan-ci t-changed ff verify-change watcher-safety-gates syntax-check build-only fast-compile fast-changed-compile dev-build-only dev-bin dev-asan z23-dev-asan zclassic23-dev-asan dev-tsan z23-dev-tsan zclassic23-dev-tsan z23-dev zclassic23-dev fast-rebuild rebuild-fast dev-rebuild hot-rebuild super-rebuild lint-fast fast-ci agent-fast-ci dev-ci agent-plan agent-loop agent-dev-loop dev-watch dev-watch-once dev-watch-selftest dev-activation-selftest dev-loop-selftest native-dev-loop-wait-selftest native-dev-failure-selftest agent-index compdb dev-loop-bench dev-loop-bench-selftest hotswap-sim immutable-history-canaries historical-canaries agent-dev-status agent-dev-recover dev-recovery-selftest agent-clear-stale-dev-reindex agent-doctor doctor-build stage-dev-bin agent-stage-dev deploy-dev-fast agent-deploy-fast
 
 # ── ONLY= is validated BEFORE anything compiles ──────────────────────────
 # Every focused target below carried its ONLY= check in the RECIPE. Make builds
@@ -2745,12 +2753,18 @@ verify-change:
 
 # Fast local node executable for AI/operator development. `fast-rebuild` first
 # runs the changed-file dev compile gate, then links the non-LTO dev binary.
-# This deliberately does not replace `zclassic23`, `make deploy`, or release
+# This deliberately does not replace `z23`, `make deploy`, or release
 # artifacts.
 HOTSWAP_ACTION_PLAN = $(BUILD_DIR)/hotswap/fast/flags.env
-dev-bin zclassic23-dev: $(ZCLASSIC23_DEV_BIN) $(DEV_RESTART_PLAN) \
+dev-bin z23-dev zclassic23-dev: $(ZCLASSIC23_DEV_BIN) $(ZCLASSIC23_DEV_BIN_ALIAS) \
+	$(DEV_RESTART_PLAN) \
 	$(HOTSWAP_ACTION_PLAN) dev-package-verifier \
 	zclassic23-zcode-adapter-runner
+
+# Temporary migration alias: build/bin/zclassic23-dev keeps resolving to
+# z23-dev while bots/scripts migrate.
+$(ZCLASSIC23_DEV_BIN_ALIAS): $(ZCLASSIC23_DEV_BIN)
+	@ln -sfn z23-dev "$@"
 # Checkout-locked (see CHECKOUT_LOCK above) — the watcher invokes this same
 # target via run_rebuild_command, so it defers instead of racing a foreground
 # rebuild in the same checkout.
@@ -2884,11 +2898,15 @@ $(DEV_RESTART_PLAN): $(DEV_OBJ_COMPLETE) $(DEV_LINK_RSP) \
 $(DEV_CANDIDATE_BIN): $(DEV_LINK_RSP)
 
 # dev-asan: ASan/UBSan dev node for local memory/UB debugging. Same source
-# set as zclassic23-dev, own epoch-keyed object tree (build/dev-asan-obj);
+# set as z23-dev, own epoch-keyed object tree (build/dev-asan-obj);
 # -Og, non-LTO, no hot-path split (sanitizer fidelity over optimizer
 # coverage). Never a release/deploy artifact. Boot it on a scratch datadir
 # with ASAN_OPTIONS=detect_leaks=0 until leak triage is done (follow-up).
-dev-asan zclassic23-dev-asan: $(DEV_ASAN_BIN)
+dev-asan z23-dev-asan zclassic23-dev-asan: $(DEV_ASAN_BIN) $(DEV_ASAN_BIN_ALIAS)
+
+# Temporary migration alias: build/bin/zclassic23-dev-asan -> z23-dev-asan.
+$(DEV_ASAN_BIN_ALIAS): $(DEV_ASAN_BIN)
+	@ln -sfn z23-dev-asan "$@"
 
 $(DEV_ASAN_BIN): $(DEV_ASAN_CANDIDATE_BIN) FORCE
 	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(DEV_ASAN_CANDIDATE_BIN)" "$@" "$(DEV_ASAN_SESSION)" \
@@ -2915,12 +2933,16 @@ $(DEV_ASAN_LINK_RSP): $(DEV_ASAN_OBJS)
 	@$(if $(ZCL_MAKE_NO_EXEC),,$(file >$@,$(DEV_ASAN_OBJS))) test -s "$@"
 
 # dev-tsan: TSan dev node for local data-race debugging. Same source set as
-# zclassic23-dev, own epoch-keyed object tree (build/dev-tsan-obj); -Og,
+# z23-dev, own epoch-keyed object tree (build/dev-tsan-obj); -Og,
 # non-LTO, no hot-path split (sanitizer fidelity over optimizer coverage).
 # Never a release/deploy artifact. Boot it on a scratch datadir; race
 # reports go to stderr — triage before suppressing anything (see
 # docs/BUILD.md "ThreadSanitizer profiles").
-dev-tsan zclassic23-dev-tsan: $(DEV_TSAN_BIN)
+dev-tsan z23-dev-tsan zclassic23-dev-tsan: $(DEV_TSAN_BIN) $(DEV_TSAN_BIN_ALIAS)
+
+# Temporary migration alias: build/bin/zclassic23-dev-tsan -> z23-dev-tsan.
+$(DEV_TSAN_BIN_ALIAS): $(DEV_TSAN_BIN)
+	@ln -sfn z23-dev-tsan "$@"
 
 $(DEV_TSAN_BIN): $(DEV_TSAN_CANDIDATE_BIN) FORCE
 	@$(BUILD_EPOCH_PUBLISH_TOOL) "$(DEV_TSAN_CANDIDATE_BIN)" "$@" "$(DEV_TSAN_SESSION)" \
@@ -3636,9 +3658,16 @@ check-wallet: wallet_check
 spec: spec_zcl
 	ulimit -s unlimited && $(BIN_DIR)/spec_zcl
 
-.PHONY: zclassic23 portable c23-portable-toolchain c23-portable-release \
+.PHONY: z23 zclassic23 portable c23-portable-toolchain c23-portable-release \
 	c23-portable-install
-zclassic23: $(ZCLASSIC23_BIN)
+z23: $(ZCLASSIC23_BIN) $(ZCLASSIC23_BIN_ALIAS)
+
+# Temporary migration alias: `make zclassic23` and build/bin/zclassic23 keep
+# working while bots/scripts move to z23.
+zclassic23: z23
+
+$(ZCLASSIC23_BIN_ALIAS): $(ZCLASSIC23_BIN)
+	@ln -sfn z23 "$@"
 
 # Release portability is an explicit, reproducible build input rather than an
 # accidental property of the maintainer's workstation. This path downloads a
@@ -6412,7 +6441,8 @@ DEPLOY_VERIFY_STAGE ?= stable
 define INSTALL_C23_PRODUCTS
 set -eu; \
 install -d "$(DESTDIR)$(PREFIX)/bin"; \
-install -m 755 $(ZCLASSIC23_BIN) "$(DESTDIR)$(PREFIX)/bin/zclassic23"; \
+install -m 755 $(ZCLASSIC23_BIN) "$(DESTDIR)$(PREFIX)/bin/z23"; \
+ln -sfn z23 "$(DESTDIR)$(PREFIX)/bin/zclassic23"; \
 install -m 755 $(ZCL_RPC_BIN) "$(DESTDIR)$(PREFIX)/bin/zcl-rpc"; \
 install -m 755 $(BIN_DIR)/zclassic23-package-verify \
 	"$(DESTDIR)$(PREFIX)/bin/zclassic23-package-verify"; \

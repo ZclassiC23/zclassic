@@ -20,7 +20,7 @@ patronage boundary are separately authoritative in
 
 ## Mission
 
-> **ZClassic23 is a metaverse where people and AI create real things together,
+> **Z23 is a metaverse where people and AI create real things together,
 > and nobody owns the world they build in.**
 
 ZCODE is a free, requester-coordinated P2P C23 development network: immutable

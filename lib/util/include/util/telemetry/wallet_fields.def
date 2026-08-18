@@ -58,7 +58,7 @@ TL_LEAF(projection, view_projection_open, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     "whether the wallet view projection is attached in the process serving "
     "this reply. It is opened by node boot, so false is expected in a "
     "one-shot CLI process and is a real finding only in the node process; "
-    "compare against `zclassic23 ops state --subsystem=wallet_projection` "
+    "compare against `z23 ops state --subsystem=wallet_projection` "
     "run against the node",
     "", "")
 
@@ -110,7 +110,7 @@ TL_LEAF(projection, utxo_mirror_last_error_unix, TLC_I64, TFU_UNIX_TIME,
     "stale against the folded coins_kv frontier: wallet UTXO listings and the "
     "explorer may under-report spendable outputs until a pass succeeds. "
     "Consensus, the chain and the on-disk coins_kv are unaffected",
-    "zclassic23 ops state --subsystem=utxo_mirror_sync")
+    "z23 ops state --subsystem=utxo_mirror_sync")
 
 TL_GROUP_END(projection)
 
@@ -174,7 +174,7 @@ TL_LEAF(security, sapling_checkpoint_write_fails, TLC_I64, TFU_COUNT_TOTAL,
     "instead of resuming from it. Nothing shielded is lost and no consensus "
     "rule is affected - the cost is restart time and the usual cause is a "
     "full or unwritable datadir",
-    "zclassic23 ops state --subsystem=sapling_checkpoint")
+    "z23 ops state --subsystem=sapling_checkpoint")
 
 TL_GROUP_END(security)
 
@@ -207,7 +207,7 @@ TL_LEAF(backup, backup_failures_total, TLC_I64, TFU_COUNT_TOTAL, TLV_SUMMARY,
     "be, and a restore would lose everything written since the last "
     "SUCCESSFUL run. The wallet itself is not damaged - this is about the "
     "copy, not the original",
-    "zclassic23 ops state --subsystem=wallet_backup")
+    "z23 ops state --subsystem=wallet_backup")
 
 TL_LEAF(backup, backup_age_seconds, TLC_I64, TFU_SECONDS, TLV_SUMMARY,
     TFR_INFO, TL_NONE, 0, TFS_INFO,

@@ -75,7 +75,7 @@ TL_LEAF(frontier, hstar_published, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     "reporting 0 and every external consumer of the height — getblockcount, "
     "the P2P version.start_height, the explorer tip — is serving 0 or the "
     "durable served-tip fallback instead of the real height",
-    "zclassic23 ops state --subsystem=reducer_frontier")
+    "z23 ops state --subsystem=reducer_frontier")
 
 TL_LEAF(frontier, finality_floor, TLC_I64, TFU_HEIGHT, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -175,7 +175,7 @@ TL_LEAF(headers, validate_headers_cursor, TLC_I64, TFU_HEIGHT, TLV_NORMAL,
     "state from an interrupted batch, or a rewind that clamped one stage and "
     "not the other. The heights between the two are unproven and may sit on a "
     "losing fork, so neither cursor may be read as a better height than H*",
-    "zclassic23 ops state --subsystem=reducer_frontier")
+    "z23 ops state --subsystem=reducer_frontier")
 
 TL_LEAF(headers, validate_headers_passed_total, TLC_I64, TFU_COUNT_TOTAL,
     TLV_NORMAL,
@@ -218,7 +218,7 @@ TL_LEAF(bodies, body_fetch_cursor, TLC_I64, TFU_HEIGHT, TLV_NORMAL,
     "body_fetch has consumed heights whose headers were never validated, so a "
     "body may be recorded against a header this node has not proven — torn "
     "cursor state from an interrupted batch or a partial rewind",
-    "zclassic23 ops state --subsystem=reducer_frontier")
+    "z23 ops state --subsystem=reducer_frontier")
 
 TL_LEAF(bodies, body_fetch_observed_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -250,7 +250,7 @@ TL_LEAF(bodies, body_persist_cursor, TLC_I64, TFU_HEIGHT, TLV_NORMAL,
     "so a height may be marked verified against a body the ladder never "
     "recorded — torn cursor state from an interrupted batch or a partial "
     "rewind",
-    "zclassic23 ops state --subsystem=reducer_frontier")
+    "z23 ops state --subsystem=reducer_frontier")
 
 TL_LEAF(bodies, body_persist_verified_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -268,7 +268,7 @@ TL_LEAF(bodies, body_persist_read_failed_total, TLC_I64, TFU_COUNT_TOTAL,
     "so the fold cannot pass them until the body is re-fetched or the file is "
     "repaired; a value that keeps climbing at a fixed height is a body the "
     "node will never obtain from its current peers",
-    "zclassic23 ops state --subsystem=body_persist")
+    "z23 ops state --subsystem=body_persist")
 
 TL_LEAF(bodies, body_persist_header_mismatch_total, TLC_I64, TFU_COUNT_TOTAL,
     TLV_NORMAL,
@@ -278,7 +278,7 @@ TL_LEAF(bodies, body_persist_header_mismatch_total, TLC_I64, TFU_COUNT_TOTAL,
     "a peer served the body of a different block, or the on-disk bytes changed "
     "after they were written. The height is re-fetched rather than applied, so "
     "the fold stalls there until a matching body arrives",
-    "zclassic23 ops state --subsystem=body_persist")
+    "z23 ops state --subsystem=body_persist")
 
 TL_LEAF(bodies, body_persist_merkle_mismatch_total, TLC_I64, TFU_COUNT_TOTAL,
     TLV_NORMAL,
@@ -288,7 +288,7 @@ TL_LEAF(bodies, body_persist_merkle_mismatch_total, TLC_I64, TFU_COUNT_TOTAL,
     "the body's transaction list is not the one its header commits to — a "
     "truncated or tampered serve, or corrupted on-disk bytes. The height is "
     "re-fetched rather than applied, so the fold stalls there",
-    "zclassic23 ops state --subsystem=body_persist")
+    "z23 ops state --subsystem=body_persist")
 
 TL_LEAF(bodies, body_persist_step_us_ewma, TLC_I64, TFU_MICROSECONDS, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -312,7 +312,7 @@ TL_LEAF(apply, utxo_apply_cursor, TLC_I64, TFU_HEIGHT, TLV_NORMAL,
     "the coin-set fold has consumed heights whose bodies were never verified, "
     "so coins may have been applied from a body the ladder never proved — torn "
     "cursor state from an interrupted batch or a partial rewind",
-    "zclassic23 ops state --subsystem=reducer_frontier")
+    "z23 ops state --subsystem=reducer_frontier")
 
 TL_LEAF(apply, utxo_apply_verified_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -343,7 +343,7 @@ TL_LEAF(apply, utxo_apply_internal_error_total, TLC_I64, TFU_COUNT_TOTAL,
     "the fold cannot pass that height for a reason belonging to this node, not "
     "to the block. The stage keeps retrying and H* stops climbing, so a tip "
     "gap will open and keep growing until it is cleared",
-    "zclassic23 ops logs --pattern=utxo_apply --level=error")
+    "z23 ops logs --pattern=utxo_apply --level=error")
 
 TL_LEAF(apply, utxo_apply_select_idle_height, TLC_I64, TFU_HEIGHT, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -372,7 +372,7 @@ TL_LEAF(apply, tip_finalize_cursor, TLC_I64, TFU_HEIGHT, TLV_SUMMARY,
     "the served tip has been committed past heights the coin set never "
     "applied, so this node would advertise a tip it cannot prove state for — "
     "torn cursor state from an interrupted batch or a partial rewind",
-    "zclassic23 ops state --subsystem=reducer_frontier")
+    "z23 ops state --subsystem=reducer_frontier")
 
 TL_LEAF(apply, tip_finalize_finalized_total, TLC_I64, TFU_COUNT_TOTAL,
     TLV_NORMAL,
@@ -402,7 +402,7 @@ TL_LEAF(apply, tip_finalize_utxo_count_diverged_total, TLC_I64,
     "disagree: the state it would advertise is not the state it derived. "
     "tip_finalize refuses the height rather than serving it, so the tip stops "
     "here until the divergence is located",
-    "zclassic23 ops state --subsystem=utxo_parity")
+    "z23 ops state --subsystem=utxo_parity")
 
 TL_LEAF(apply, tip_finalize_successor_pending_total, TLC_I64, TFU_COUNT_TOTAL,
     TLV_FULL,

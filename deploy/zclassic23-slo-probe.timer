@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 External SLO Prober Timer — every 60s
+Description=Z23 External SLO Prober Timer — every 60s
 
 [Timer]
 # The scoreboard cadence: 60s, matching the "staying synced" SLO this

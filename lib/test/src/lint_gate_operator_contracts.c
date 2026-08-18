@@ -84,7 +84,7 @@ int t_native_operator_docs_contract(void)
 
         ASSERT(repo_path(path, sizeof(path), "README.md") == 0);
         ASSERT(read_entire_file(path, &readme) == 0);
-        ASSERT(strstr(readme, "build/bin/zclassic23 status") != NULL);
+        ASSERT(strstr(readme, "build/bin/z23 status") != NULL);
         ASSERT(strstr(readme, "core sync diagnose") != NULL);
         ASSERT(strstr(readme, "ops logs") != NULL);
         ASSERT(strstr(readme, "native command registry") != NULL);
@@ -96,8 +96,8 @@ int t_native_operator_docs_contract(void)
 
         ASSERT(repo_path(path, sizeof(path), "docs/BUILD.md") == 0);
         ASSERT(read_entire_file(path, &build_doc) == 0);
-        ASSERT(strstr(build_doc, "zclassic23 ops selftest") != NULL);
-        ASSERT(strstr(build_doc, "zclassic23 dumpstate hotswap") != NULL);
+        ASSERT(strstr(build_doc, "z23 ops selftest") != NULL);
+        ASSERT(strstr(build_doc, "z23 dumpstate hotswap") != NULL);
         PASS();
     } _test_next:;
     free(readme);

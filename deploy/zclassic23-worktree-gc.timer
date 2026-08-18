@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Worktree + Merged-Branch Garbage Collector Timer
+Description=Z23 Worktree + Merged-Branch Garbage Collector Timer
 
 [Timer]
 # Daily 03:35 — after zclassic23-logrotate.timer (03:00) and

@@ -85,7 +85,7 @@ So, once, deliberately:
 
 ```bash
 # 1. A key whose ONLY job is signing promotion evidence. Not a login/push key.
-ssh-keygen -t ed25519 -C 'zclassic23 promotion receipts' \
+ssh-keygen -t ed25519 -C 'z23 promotion receipts' \
     -f ~/.ssh/zcl-promotion-receipt
 
 # 2. Publish its PUBLIC half as the evidence authority.

@@ -184,7 +184,7 @@ int main(void)
 
     printf("\n");
     printf("================================================================\n");
-    printf("  ZClassic23 Cold-Start Benchmark\n");
+    printf("  Z23 Cold-Start Benchmark\n");
     printf("  FlyClient + MMB + SHA3 Snapshot -> Block Explorer\n");
     printf("================================================================\n\n");
     printf("Binary:  %s\n", binary);

@@ -80,7 +80,7 @@ struct json_value;
 int32_t reducer_frontier_floor(void);
 
 /* The PROVABLE TIP cache (H*), served to EXTERNAL consumers (getblockcount,
- * P2P version.start_height, `zclassic23 status`, explorer tip, getblock
+ * P2P version.start_height, `z23 status`, explorer tip, getblock
  * confirmations). It is a single cached atomic refreshed ONCE per finalized
  * advance and ONCE per reorg rewind — never per RPC (compute_hstar is O(n)).
  *
@@ -450,7 +450,7 @@ void reducer_frontier_body_read_note_reset_for_testing(void);
 int  reducer_frontier_body_read_note_count_for_testing(void);
 #endif
 
-/* `zclassic23 dumpstate reducer_frontier`: read-only snapshot of the L0
+/* `z23 dumpstate reducer_frontier`: read-only snapshot of the L0
  * reducer authority. Reports H*, served_floor, raw stage cursors,
  * success-checked log frontiers, coins_applied_height, and first
  * validate_headers failure. Never writes progress.kv. */

@@ -21,7 +21,7 @@
 
 ## Context
 
-A network of zclassic23 full nodes, each synced to the same PoW chain, has
+A network of z23 full nodes, each synced to the same PoW chain, has
 three assets no single-server system has together: a shared immutable
 settlement layer (the chain), a deterministic execution environment (the
 sandboxed node), and a way to prove two nodes run identical code (ZANC

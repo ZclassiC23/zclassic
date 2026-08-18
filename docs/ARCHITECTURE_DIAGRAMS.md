@@ -1,4 +1,4 @@
-# ZClassic23 Architecture Diagrams
+# Z23 Architecture Diagrams
 
 > **Note:** For the canonical architecture (the Prime Directive, the Ten Laws of Beauty, the eight shapes, and current-vs-target status) see [`FRAMEWORK.md`](./FRAMEWORK.md). The diagrams below remain useful references for the **current** boot sequence and subsystem topology. See also [`adr/0001-personal-sovereignty-stack.md`](./adr/0001-personal-sovereignty-stack.md) for the pivot rationale.
 
@@ -10,7 +10,7 @@ Mermaid diagrams for the core subsystems. Render with any Mermaid-compatible vie
 
 ```mermaid
 flowchart TD
-    START([zclassic23 start]) --> PARSE[Parse CLI flags<br/>-datadir, -port, -tor, etc.]
+    START([z23 start]) --> PARSE[Parse CLI flags<br/>-datadir, -port, -tor, etc.]
     PARSE --> ACTIVATION[Activation Controller<br/>state = BOOT_PENDING]
 
     ACTIVATION --> DB_OPEN[Open SQLite databases<br/>node.db, coins.db]
@@ -193,7 +193,7 @@ flowchart TD
 ```mermaid
 flowchart TD
     subgraph Create["Transaction Creation"]
-        USER[User: zclassic23 rpc z_sendmany<br/>from, to, amount] --> SELECT[Coin selection<br/>BnB / knapsack]
+        USER[User: z23 rpc z_sendmany<br/>from, to, amount] --> SELECT[Coin selection<br/>BnB / knapsack]
         SELECT --> TRANSPARENT{Shielded<br/>output?}
         TRANSPARENT -->|t-addr to t-addr| BUILD_T[Build transparent tx<br/>inputs, outputs, change]
         TRANSPARENT -->|involves z-addr| BUILD_S[Build Sapling tx<br/>spend proofs, output proofs]
@@ -229,8 +229,8 @@ flowchart TD
     end
 
     subgraph Query["Balance Query"]
-        CONF_N --> BALANCE[zclassic23 core wallet balance<br/>transparent + shielded]
-        CONF_N --> LIST[zclassic23 core wallet transaction list<br/>history with confirmations]
+        CONF_N --> BALANCE[z23 core wallet balance<br/>transparent + shielded]
+        CONF_N --> LIST[z23 core wallet transaction list<br/>history with confirmations]
     end
 ```
 

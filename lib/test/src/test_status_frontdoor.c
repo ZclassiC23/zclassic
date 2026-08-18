@@ -2,7 +2,7 @@
  *
  * test_status_frontdoor — Program O2 proof.
  *
- * The old `zclassic23 status` front door made TWELVE sequential RPC calls, some
+ * The old `z23 status` front door made TWELVE sequential RPC calls, some
  * of which recomputed H* under progress_store_tx_lock — so a `status` issued
  * while the reducer owned that lock queued behind the fold and the whole
  * observability front door went dark exactly when the node was busiest.

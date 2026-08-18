@@ -43,7 +43,7 @@ ZCL_COMMAND_READY_READ(
     "reason token and is judged unknown, never healthy and never broken.", 0,
     "telemetry,metaverse,properties,catalog,kinds,adapters,readers",
     "zcl.command.empty_input.v1", "zcl.telemetry.metaverse.properties.v1", "", "",
-    "zclassic23 ops telemetry metaverse properties",
+    "z23 ops telemetry metaverse properties",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_LOCAL, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_INSTANT, ZCL_COMMAND_COST_TINY,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -63,7 +63,7 @@ ZCL_COMMAND_PLANNED_READ(
     "and reports that rather than an empty result set.", 0,
     "telemetry,metaverse,market,listings,bids",
     "zcl.command.empty_input.v1", "zcl.telemetry.metaverse.market.v1", "", "",
-    "zclassic23 ops telemetry metaverse market",
+    "z23 ops telemetry metaverse market",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
@@ -72,7 +72,7 @@ ZCL_COMMAND_PLANNED_READ(
 
 /* `services` stays PLANNED, and the reason is structural rather than a
  * missing provider. The confined agent broker runs as its OWN process
- * (`zclassic23 --metaverse-broker --broker-dir=DIR`); everything it records —
+ * (`z23 --metaverse-broker --broker-dir=DIR`); everything it records —
  * pids, the accepted SO_PEERCRED identity, the grant fingerprint, the
  * achieved confinement posture, the receipt chain — lives in that directory,
  * not in this process. A telemetry leaf takes no path, and the two honest
@@ -94,7 +94,7 @@ ZCL_COMMAND_PLANNED_READ(
     "empty fields.", 0,
     "telemetry,metaverse,services,broker,confined,agent",
     "zcl.command.empty_input.v1", "zcl.telemetry.metaverse.services.v1", "", "",
-    "zclassic23 ops telemetry metaverse services",
+    "z23 ops telemetry metaverse services",
     ZCL_COMMAND_LAYER_OPS, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,

@@ -18,7 +18,7 @@
 #     is exactly the symptom. It can only be found by reading the source, which
 #     is what this gate does.
 #
-# (2) A "READ" COMMAND THAT WROTE TO THE LIVE DATADIR. `zclassic23 app service
+# (2) A "READ" COMMAND THAT WROTE TO THE LIVE DATADIR. `z23 app service
 #     access --input='{"service":"reference"}'` is declared READ / PUBLIC /
 #     IDEMPOTENT and its handler called node_db_open() — the boot ceremony:
 #     OPEN_CREATE, quick_check with a rename-aside on failure, create_schema,
@@ -26,7 +26,7 @@
 #     when the caller passes none, so a bare invocation did all of that to the
 #     operator's live node.db. Six leaves had it. An auditor tripped it while
 #     being deliberately careful, because THE DOCUMENTED EXAMPLE OMITS THE
-#     DATADIR — docs/SERVICES.md still says `zclassic23 app service access
+#     DATADIR — docs/SERVICES.md still says `z23 app service access
 #     <name>`. The property is enforced at runtime by
 #     test_read_leaf_no_datadir_write; what nothing enforced is that the
 #     examples an agent copies name a throwaway datadir.
@@ -246,7 +246,7 @@ ZCL_COMMAND_READY_READ(
     "sand.thing.peek", "sand.thing", "", "Peek",
     "Semantics.", 0,
     "tag", "zcl.in.v1", "zcl.out.v1", "datadir", "",
-    "zclassic23 sand thing peek --input='{\"datadir\":\"/tmp/x\"}'",
+    "z23 sand thing peek --input='{\"datadir\":\"/tmp/x\"}'",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_CHAIN_READ,
@@ -255,7 +255,7 @@ ZCL_COMMAND_READY_READ(
     "sand.other.poke", "sand.other", "", "Poke",
     "Semantics.", 0,
     "tag", "zcl.in.v1", "zcl.out.v1", "service", "",
-    "zclassic23 sand other poke",
+    "z23 sand other poke",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
     ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
     ZCL_COMMAND_LANE_LOCAL, ZCL_COMMAND_CAP_CHAIN_READ,
@@ -286,12 +286,12 @@ int t(void) {
 }'
     clean_doc='Run it like this:
 
-    zclassic23 sand thing peek --datadir=/tmp/fixture
-    zclassic23 sand other poke
+    z23 sand thing peek --datadir=/tmp/fixture
+    z23 sand other poke
 '
     c_doc='Run it like this:
 
-    zclassic23 sand thing peek
+    z23 sand thing peek
 '
 
     # ── fixture hollowness guards ────────────────────────────────────────
@@ -433,7 +433,12 @@ mapfile -t b_violations < <(prong_b_scan "${test_files[@]}")
 # One fixed-string needle per leaf: the CLI spelling (dots -> spaces).
 declare -A C_COUNT=()
 c_hits=()
-needles="$(printf '%s\n' "${dd_leaves[@]}" | tr '.' ' ' | sed 's/^/zclassic23 /' | sort -u)"
+# Both binary spellings: the product name is z23 (z23-dev in the dev lane), and
+# `zclassic23` remains a migration alias, so a copyable example under either
+# spelling still points a reader at the live node.
+needles="$(printf '%s\n' "${dd_leaves[@]}" | tr '.' ' ' \
+    | sed -e 's/^/z23 /' -e 'p' -e 's/^z23 /z23-dev /' -e 'p' -e 's/^z23-dev /zclassic23 /' \
+    | sort -u)"
 
 # Shortlist first. 69 needles x 422 files of bash-level substring testing cost
 # 14 s; one fixed-string multi-pattern grep narrows it to the handful of files

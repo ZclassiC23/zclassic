@@ -87,7 +87,7 @@ bool consensus_state_producer_receipt_current_binary_epoch(uint8_t out[32]);
 /* Read-only producer status. Opens <datadir>/progress.kv READONLY (no writes,
  * no migrations — safe against a running producer over WAL) and reports the
  * fold session/receipt lifecycle, reducer stage cursors, and a bounded
- * successful-apply rate window for the `zclassic23 ops producer status`
+ * successful-apply rate window for the `z23 ops producer status`
  * command. NEVER mutates state; human log text is not rate authority. */
 struct producer_status_read {
     bool    progress_kv_present;   /* <datadir>/progress.kv exists and opened */

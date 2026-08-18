@@ -84,7 +84,7 @@ static bool status_schema_known_family_mismatch(const struct json_value *obj,
 }
 
 /* Front-door deadline for core.status.brief's one RPC ("agent"): the whole
- * point of a flagless `zclassic23 status` is to answer almost immediately,
+ * point of a flagless `z23 status` is to answer almost immediately,
  * even against a busy/wedged node — never ride the generic 10s
  * (ZCL_RPC_DEADLINE_MS) ceiling every other command tolerates. Overridable
  * for tests; clamped to a sane floor/ceiling like every other RPC deadline

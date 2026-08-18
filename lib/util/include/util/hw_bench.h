@@ -137,7 +137,7 @@ int hw_bench_batch_size(int normal_batch);
  * the fast-storage baseline. */
 int hw_bench_verify_workers(int normal_workers);
 
-/* ── `zclassic23 dumpstate hw_bench` ─────────────────────────────────── */
+/* ── `z23 dumpstate hw_bench` ─────────────────────────────────── */
 
 bool hw_bench_dump_state_json(struct json_value *out, const char *key);
 

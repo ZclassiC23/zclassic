@@ -694,7 +694,7 @@ const char *watchdog_recovery_type_name(enum watchdog_recovery_type type)
     return "UNKNOWN";
 }
 
-/* `zclassic23 dumpstate sync_monitor` — sync watchdog recovery counters
+/* `z23 dumpstate sync_monitor` — sync watchdog recovery counters
  * plus the local-recovery (header-refill) sub-state. See CLAUDE.md "Adding
  * state introspection". Reentrant-safe (both accessors snapshot internally). */
 bool sync_monitor_dump_state_json(struct json_value *out, const char *key)

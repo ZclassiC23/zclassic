@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Soak Evidence failure notifier
+Description=Z23 Soak Evidence failure notifier
 # OnFailure= arm for the hourly evidence collector (same pattern as
 # zclassic23-replay-canary-onfailure@.service). It fires ONLY when the
 # collector could not APPEND its sample — an unreachable node is NOT a

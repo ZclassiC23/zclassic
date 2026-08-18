@@ -95,7 +95,7 @@ ZCL_BLOCKER_DECISION(*.partial_coverage,
     "it. Cost: pre-seed history is unqueryable through this index, and any "
     "anchor published from this digest commits to the declared range only. "
     "OPTION B - buy the history: backfill the pre-seed block bodies from peers, "
-    "then rebuild the index from genesis (`zclassic23 app oprindex rebuild`). "
+    "then rebuild the index from genesis (`z23 app oprindex rebuild`). "
     "The base returns to 0 and this declaration retires. Cost: a full "
     "historical body download, several GB of disk and hours of bandwidth "
     "competing with tip sync. "

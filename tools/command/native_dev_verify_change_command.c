@@ -50,7 +50,7 @@ void zcl_native_handle_dev_verify_change(
         reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
         "DEV_BUILD_REQUIRED", "dispatch", false, false,
         "changed-scope verification requires a dev build",
-        "make dev-bin, then zclassic23-dev dev verify-change");
+        "make dev-bin, then z23-dev dev verify-change");
 #else
     char root[PATH_MAX];
     const char *source_root = verify_source_root(request);

@@ -253,7 +253,7 @@ Open decisions that are the owner's, not this document's:
    intent was correct, drop that line. It cannot be both.
 2. **`WatchdogSec`** — 0 or 120, stated once, with a date.
 3. **binary path** — `%h/.local/bin/zclassic23-live` (what runs) vs
-   `%h/zclassic23/build/bin/zclassic23` (tracked). The pin record and drift
+   `%h/zclassic23/build/bin/z23` (tracked). The pin record and drift
    probe currently follow the former.
 
 Suggested apply order, owner-run, node stays up until the last step:

@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Full Node + Block Explorer
+Description=Z23 Full Node + Block Explorer
 After=network-online.target
 Wants=network-online.target
 # Crash-only (2026-06-11): no start limit, ever. The 2026-06-11 outage
@@ -97,7 +97,7 @@ ExecStart=%h/zclassic23/deploy/zclassic23-launch.sh %h/zclassic23/build/bin/zcla
     $ZCL_EXTERNALIP_FLAG \
     $ZCL_ADDNODE_FLAGS \
     -showmetrics=0
-# Local operator port contract: zclassic23 owns the canonical ZClassic23 P2P
+# Local operator port contract: zclassic23 owns the canonical Z23 P2P
 # listener on 8033. A sibling legacy zclassicd oracle must be moved off the
 # canonical listener (the operator host uses 8034) and added through
 # ZCL_ADDNODE_FLAGS when needed.

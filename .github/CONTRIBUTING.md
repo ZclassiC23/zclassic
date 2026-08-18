@@ -1,4 +1,25 @@
-# Contributing to ZClassic23
+# Contributing to Z23
+
+## What a good change does here
+
+Z23 exists to make useful software abundant without taking control away from
+the user — software made for you, not imposed on you. The product is one
+journey: describe desired behavior, reuse existing C23 first, create only the
+missing code, build fast, show the real consequence, reproduce it on another
+node, accept the exact version, use it in a real application.
+
+Every change should improve at least one of these:
+
+- reuse useful C23 code;
+- shorten the path from intent to working software;
+- make the result smaller, faster, safer, or easier to customize;
+- remove duplication or a central dependency;
+- improve exact reproduction and long-term preservation.
+
+Prefer deletion, reuse, and composition over new abstractions. Keep the
+blockchain small and sovereign, and the large software corpus off-chain and
+content-addressed. The durable statement of this is
+[`AGENTS.md`](../AGENTS.md#north-star).
 
 ## Prerequisites
 
@@ -30,10 +51,10 @@ push, you just find out about a lint or test failure after the fact.
 ## Build and test
 
 ```bash
-make -j"$(nproc)"        # test_zcl + zclassic23 + zclassic-cli
+make -j"$(nproc)"        # test_zcl + z23 + zclassic-cli
 make vendor              # build missing vendor/lib archives from pinned sources
 make -j"$(nproc)" build-only          # compile check, no final link
-make -j"$(nproc)" dev-bin             # fast non-LTO local node binary: build/bin/zclassic23-dev
+make -j"$(nproc)" dev-bin             # fast non-LTO local node binary: build/bin/z23-dev
 make -j"$(nproc)" t-fast ONLY=<group> # one fast test group, e.g. make -j"$(nproc)" t-fast ONLY=service_state_driver
 make fast-ci             # cache-aware lint/build/focused-test agent loop
 make -j"$(nproc)" test                # full test suite
@@ -139,16 +160,16 @@ reject an unprovable claim rather than trust the author's word for it. See
 [`docs/AI_SAFETY_GATES.md`](../docs/AI_SAFETY_GATES.md).
 
 Not ready to send a patch? Open an issue first — the forms in
-[`.github/ISSUE_TEMPLATE/`](ISSUE_TEMPLATE/) ask for `zclassic23 status` output
+[`.github/ISSUE_TEMPLATE/`](ISSUE_TEMPLATE/) ask for `z23 status` output
 and whether the change touches consensus, which is usually enough to tell you
 whether the work is worth starting.
 
 ## Consensus parity is inviolable
 
-zclassic23 stays bit-for-bit consensus-compatible with `zclassicd`. A PR that
+z23 stays bit-for-bit consensus-compatible with `zclassicd`. A PR that
 changes consensus (Equihash params, activation heights, block/tx validity) is
 **declined on principle** — even if framed as opt-in, miner-signaled, or a
-"sidegrade" — because a consensus change must never ship to zclassic23 first. We
+"sidegrade" — because a consensus change must never ship to z23 first. We
 will thank you, credit the idea, and decline the change (we may reimplement the
 *non-consensus* part ourselves). Non-consensus PRs are judged purely on merit.
 Enforced by the `check-consensus-parity` lint gate + the `test_consensus_parity`
@@ -168,7 +189,7 @@ the rest of this repository is built to prevent, in social form.
 
 ## Licensing of contributions
 
-ZClassic23 is licensed under the **Apache License 2.0**
+Z23 is licensed under the **Apache License 2.0**
 ([`LICENSE`](../LICENSE)), and contributions are accepted on
 **inbound = outbound** terms:
 

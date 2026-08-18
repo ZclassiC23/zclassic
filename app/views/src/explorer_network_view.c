@@ -23,7 +23,7 @@ size_t explorer_view_network(const char *datadir, uint8_t *r, size_t max)
     size_t off = 0;
     char *response = (char *)r;
 
-    APPEND(off, response, max, EXPLORER_HEADER("Network — ZClassic23"));
+    APPEND(off, response, max, EXPLORER_HEADER("Network — Z23"));
     off += explorer_emit_nav(response + off, max - off, "network");
 
     APPEND(off, response, max,

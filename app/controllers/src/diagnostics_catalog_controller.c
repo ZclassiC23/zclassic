@@ -72,7 +72,7 @@ static void diagnostics_catalog_push_drilldowns(struct json_value *obj,
     if (e && e->include_supervisor_drilldown) {
         char supervisor[224];
         snprintf(supervisor, sizeof(supervisor),
-                 "zclassic23 dumpstate supervisor.%s", e->name);
+                 "z23 dumpstate supervisor.%s", e->name);
         diagnostics_catalog_push_str(&drilldowns, supervisor);
     }
     json_push_kv(obj, "drilldowns", &drilldowns);
@@ -93,8 +93,8 @@ static void diagnostics_catalog_push_entry(
     json_init(&obj);
     json_set_object(&obj);
     snprintf(native, sizeof(native), accepts_key
-        ? "zclassic23 dumpstate %s <key>"
-        : "zclassic23 dumpstate %s", e->name);
+        ? "z23 dumpstate %s <key>"
+        : "z23 dumpstate %s", e->name);
     json_push_kv_str(&obj, "name", e->name);
     json_push_kv_str(&obj, "subsystem", e->name);
     json_push_kv_str(&obj, "description", e->desc);
@@ -135,9 +135,9 @@ bool diag_rpc_statecatalog(const struct json_value *params, bool help,
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "source", "diagnostics_registry.g_dumpers");
     json_push_kv_str(result, "default_native_command",
-                     "zclassic23 dumpstate <subsystem> [key]");
+                     "z23 dumpstate <subsystem> [key]");
     json_push_kv_str(result, "catalog_native_command",
-                     "zclassic23 statecatalog");
+                     "z23 statecatalog");
     json_push_kv_int(result, "count",
                      (int64_t)diagnostics_dumper_count());
 

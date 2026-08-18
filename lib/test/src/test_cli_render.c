@@ -242,7 +242,7 @@ static int test_menu_render(void)
         ASSERT(strstr(out, "PATH") != NULL);
         ASSERT(strstr(out, "SUMMARY") != NULL);
         ASSERT(strstr(out, "ops.child0") != NULL);
-        ASSERT(strstr(out, "next: zclassic23 discover describe ops.child0")
+        ASSERT(strstr(out, "next: z23 discover describe ops.child0")
                != NULL);
         ASSERT(!cr_has_esc(out));
         ASSERT(cr_max_line_width(out) <= 80);
@@ -320,7 +320,7 @@ static int test_error_render(void)
         /* The curated table wins over the envelope's discover.describe
          * next — the registry's suggestion is the generic contract link,
          * the table's is the actionable one (statecatalog). */
-        ASSERT(strstr(out, "run: zclassic23 statecatalog") != NULL);
+        ASSERT(strstr(out, "run: z23 statecatalog") != NULL);
         ASSERT(!cr_has_esc(out));
         PASS();
     } _test_next:;
@@ -344,7 +344,7 @@ static int test_error_unknown_command_uses_envelope_query(void)
         size_t n = zcl_cli_render_doc(doc, strlen(doc), "ops.stat", &e,
                                       out, sizeof(out));
         ASSERT(n > 0);
-        ASSERT(strstr(out, "run: zclassic23 discover search stat") != NULL);
+        ASSERT(strstr(out, "run: z23 discover search stat") != NULL);
         PASS();
     } _test_next:;
     return failures;
@@ -600,7 +600,7 @@ static int test_e2e_forced_human(const char *home)
         ASSERT(rc == 0);
         ASSERT(out[0] != '{');             /* not the JSON document */
         ASSERT(strstr(out, "PATH") != NULL);
-        ASSERT(strstr(out, "next: zclassic23 discover describe") != NULL);
+        ASSERT(strstr(out, "next: z23 discover describe") != NULL);
         ASSERT(!cr_has_esc(out));          /* NO_COLOR honored */
 
         /* ANSI appears when the terminal allows it. */
@@ -617,7 +617,7 @@ static int test_e2e_forced_human(const char *home)
         ASSERT(rc == 2);
         ASSERT(strstr(out, "error:") != NULL);
         ASSERT(strstr(out, "MISSING_QUERY") != NULL);
-        ASSERT(strstr(out, "run: zclassic23 discover search") != NULL);
+        ASSERT(strstr(out, "run: z23 discover search") != NULL);
         PASS();
     } _test_next:;
     return failures;

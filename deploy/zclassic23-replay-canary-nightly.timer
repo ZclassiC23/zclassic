@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Replay Canary Timer — nightly from-anchor
+Description=Z23 Replay Canary Timer — nightly from-anchor
 
 [Timer]
 # 04:30 nightly with up to 30 min jitter. Chosen OFF-PEAK and DISJOINT

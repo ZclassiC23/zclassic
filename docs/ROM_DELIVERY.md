@@ -1,6 +1,6 @@
 # ROM delivery — free-tier P2P distribution of the sync artifacts
 
-zclassic23 is a P2P file delivery system, and the files it delivers fastest
+z23 is a P2P file delivery system, and the files it delivers fastest
 and most generously are its own bootstrap ("ROM") artifacts: the consensus-
 state bundle (`zcl.consensus_state_bundle.v1`, see
 [`docs/work/CONSENSUS-STATE-BUNDLE.md`](./work/CONSENSUS-STATE-BUNDLE.md)) and
@@ -155,10 +155,10 @@ the top-level `ops` menu is already at its listing-budget ceiling
 `ops.debug.dash` in `config/commands/ops.def`:
 
 ```bash
-zclassic23 ops debug rom_seed status      # policy + live counters + ledger availability
-zclassic23 ops debug rom_seed enable      # owner-mutating: turn seeding on
-zclassic23 ops debug rom_seed disable     # owner-mutating: turn seeding off
-zclassic23 ops debug rom_seed artifacts   # every artifact served + per-artifact seed stats
+z23 ops debug rom_seed status      # policy + live counters + ledger availability
+z23 ops debug rom_seed enable      # owner-mutating: turn seeding on
+z23 ops debug rom_seed disable     # owner-mutating: turn seeding off
+z23 ops debug rom_seed artifacts   # every artifact served + per-artifact seed stats
 ```
 
 `status` and `artifacts` are public reads; `enable`/`disable` are

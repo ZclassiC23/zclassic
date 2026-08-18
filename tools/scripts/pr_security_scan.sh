@@ -24,7 +24,7 @@
 set -uo pipefail
 cd "$(dirname "$0")/../.."
 
-REPO="${PR_SCAN_REPO:-ZclassiC23/zclassic}"
+REPO="${PR_SCAN_REPO:-z23c/z23}"
 FIX=0
 BASE=""; HEAD=""
 PR=""

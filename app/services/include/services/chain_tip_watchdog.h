@@ -131,7 +131,7 @@ bool chain_tip_watchdog_respawn_requested(void);
  * Idempotent; race-safe. */
 void chain_tip_watchdog_request_respawn(void);
 
-/* `zclassic23 dumpstate chain_tip_watchdog` dumper. `out` is an
+/* `z23 dumpstate chain_tip_watchdog` dumper. `out` is an
  * already-initialized json object; `key` is ignored. */
 bool chain_tip_watchdog_dump_state_json(struct json_value *out, const char *key);
 

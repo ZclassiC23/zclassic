@@ -26,7 +26,7 @@ body:
       label: What you propose
       description: >
         If it touches the operator surface, say which typed command or flag it
-        would add or change (`zclassic23 discover help` lists what exists).
+        would add or change (`z23 discover help` lists what exists).
     validations:
       required: true
 
@@ -35,11 +35,11 @@ body:
     attributes:
       label: Does this change consensus?
       description: >
-        zclassic23 must stay bit-for-bit consensus-compatible with `zclassicd`.
+        z23 must stay bit-for-bit consensus-compatible with `zclassicd`.
         A change to Equihash parameters, activation heights, or block/transaction
         validity is **declined on principle** — even if framed as opt-in,
         miner-signaled, or a "sidegrade" — because a consensus change must never
-        ship to zclassic23 first. We will thank you, credit the idea, and decline
+        ship to z23 first. We will thank you, credit the idea, and decline
         the change; we may reimplement any non-consensus part of it ourselves.
         Non-consensus proposals are judged purely on merit. Full policy:
         `docs/CONSENSUS_PARITY_DOCTRINE.md`.

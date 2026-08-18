@@ -14,7 +14,7 @@
 # It reads its class table from
 # app/services/include/services/stopwatch_skip_classes.def — the SAME file
 # app/services/src/stopwatch_skip_watch.c #includes for the typed
-# `zclassic23 ops state --subsystem=stopwatch_evidence` surface. One table,
+# `z23 ops state --subsystem=stopwatch_evidence` surface. One table,
 # two consumers, no private copy to drift.
 #
 # ⛔ THIS FILE REPORTS. IT NEVER GRADES.

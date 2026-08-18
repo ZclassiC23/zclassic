@@ -779,7 +779,7 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
             out, out_sz, &pos,
 #ifdef ZCL_DEV_BUILD
             g_cycle_failure.failure_id[0]
-                ? "zclassic23-dev dev diagnose show <failure_id>"
+                ? "z23-dev dev diagnose show <failure_id>"
                 :
 #endif
             strcmp(status, "passed") != 0
@@ -877,7 +877,7 @@ static size_t cycle_json(const struct zcl_devloop_plan *plan,
             char next_command[256];
             int next_len = snprintf(
                 next_command, sizeof(next_command),
-                "zclassic23-dev dev publication status --input='"
+                "z23-dev dev publication status --input='"
                 "{\"job_root\":\"%s\"}'",
                 vcs->publication_job_hex);
             if (next_len <= 0 || (size_t)next_len >= sizeof(next_command) ||
@@ -1163,12 +1163,12 @@ const char *zcl_devloop_watcher_next_action(
     enum zcl_devloop_publish_mode publish_mode)
 {
     if (!active)
-        return "zclassic23-dev dev begin";
+        return "z23-dev dev begin";
     if (!source_ready)
-        return "zclassic23-dev dev loop status";
+        return "z23-dev dev loop status";
     if (zcl_devloop_publish_mode_applies(publish_mode) && !runtime_ready)
         return "start or wait for the isolated dev node on RPC 18252, then "
-               "rerun zclassic23-dev dev loop status";
+               "rerun z23-dev dev loop status";
     return "edit one C23 file";
 }
 

@@ -263,8 +263,8 @@ int main(void)
  *     node's SIGSEGV/SIGABRT handler calls `postmortem_capture_write()`
  *     automatically — the exact function this example calls by hand.
  *   - An operator (or Claude via native commands) lists and loads capsules
- *     with `zclassic23 ops postmortem list` /
- *     `zclassic23 ops postmortem replay <id>`
+ *     with `z23 ops postmortem list` /
+ *     `z23 ops postmortem replay <id>`
  *     (native controllers, backed by `postmortem_capsule_list()` /
  *     `postmortem_capsule_load_tape()` — the same two calls this example
  *     uses) to get the exact deterministic replay of what the node's RNG

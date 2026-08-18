@@ -2,7 +2,7 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* Machine-readable UX contract for agents and clients that compose ZClassic23
+/* Machine-readable UX contract for agents and clients that compose Z23
  * services on top of the legacy-compatible ZCL base layer. */
 
 #include "api_controller_internal.h"

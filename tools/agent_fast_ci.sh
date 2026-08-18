@@ -29,8 +29,8 @@ COMPILE_PLAN_KIND=""
 COMPILE_PLAN_TARGET=""
 COMPILE_PLAN_DETAIL=""
 COMPILE_PLAN_FALLBACK_REASON=""
-NODE_BIN="${ZCL_FAST_NODE_BIN:-build/bin/zclassic23}"
-DEV_NODE_BIN="${ZCL_FAST_DEV_NODE_BIN:-build/bin/zclassic23-dev}"
+NODE_BIN="${ZCL_FAST_NODE_BIN:-build/bin/z23}"
+DEV_NODE_BIN="${ZCL_FAST_DEV_NODE_BIN:-build/bin/z23-dev}"
 FAST_JOBS="${ZCL_FAST_JOBS:-}"
 IMPACT_RULES_FILE="${ZCL_FAST_IMPACT_RULES_FILE:-app/controllers/include/controllers/agent_impact_rules.def}"
 FROZEN_SOURCE_RECORD="${ZCL_FAST_BUILD_SOURCE_RECORD:-}"
@@ -476,7 +476,7 @@ cache_authority_selftest() {
     git -C "$ROOT" commit -qm baseline
     cd "$ROOT"
     CACHE_ROOT="$ROOT/.cache/zcl-agent-fast-ci"
-    NODE_BIN="build/bin/zclassic23"
+    NODE_BIN="build/bin/z23"
     IMPACT_RULES_FILE="app/controllers/include/controllers/agent_impact_rules.def"
     FAST_CC=cc
     CACHE_TOOL=none
@@ -789,9 +789,9 @@ emit_plan_json() {
     printf '    "root": "%s"\n' "$(json_escape "$CACHE_ROOT")"
     printf '  },\n'
     printf '  "native_shortcuts": {\n'
-    printf '    "fresh_source_tree": "zclassic23 <leaf> [--input=json]",\n'
-    printf '    "dev_linger_lane": "zclassic23-dev <leaf> [--input=json]",\n'
-    printf '    "discover": "zclassic23 discover help | zclassic23 discover search <q>",\n'
+    printf '    "fresh_source_tree": "z23 <leaf> [--input=json]",\n'
+    printf '    "dev_linger_lane": "z23-dev <leaf> [--input=json]",\n'
+    printf '    "discover": "z23 discover help | z23 discover search <q>",\n'
     printf '    "dev_hotswap_probe": "contained_before_dlopen_use_build_test_sim"\n'
     printf '  },\n'
     printf '  "dev_lane": {\n'

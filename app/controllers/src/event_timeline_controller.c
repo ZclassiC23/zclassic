@@ -113,10 +113,10 @@ static void timeline_push_log_references(struct json_value *out,
 
     char cmd[256];
     snprintf(cmd, sizeof(cmd),
-             "zclassic23 getnodelog '%s'", pattern);
+             "z23 getnodelog '%s'", pattern);
     timeline_push_str(&refs, cmd);
     timeline_push_str(&refs,
-        "zclassic23 eventlog <scan_count> for the raw retained ring view");
+        "z23 eventlog <scan_count> for the raw retained ring view");
     timeline_push_str(&refs,
         "event seq cursors are in events[].seq and head_seq");
     json_push_kv(out, "log_references", &refs);
@@ -297,49 +297,49 @@ static void timeline_push_drilldowns(struct json_value *out,
     json_init(&arr);
     json_set_array(&arr);
     if (strcmp(name, "sync") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate reducer_frontier");
-        timeline_push_str(&arr, "zclassic23 dumpstate chain_advance_coordinator");
-        timeline_push_str(&arr, "zclassic23 dumpstate supervisor sync.watchdog");
-        timeline_push_str(&arr, "zclassic23 getnodelog 'sync|stale|lag|blocker'");
+        timeline_push_str(&arr, "z23 dumpstate reducer_frontier");
+        timeline_push_str(&arr, "z23 dumpstate chain_advance_coordinator");
+        timeline_push_str(&arr, "z23 dumpstate supervisor sync.watchdog");
+        timeline_push_str(&arr, "z23 getnodelog 'sync|stale|lag|blocker'");
     } else if (strcmp(name, "peer") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate peer_lifecycle");
-        timeline_push_str(&arr, "zclassic23 dumpstate peers_projection");
-        timeline_push_str(&arr, "zclassic23 getnodelog 'peer|handshake|disconnect'");
+        timeline_push_str(&arr, "z23 dumpstate peer_lifecycle");
+        timeline_push_str(&arr, "z23 dumpstate peers_projection");
+        timeline_push_str(&arr, "z23 getnodelog 'peer|handshake|disconnect'");
     } else if (strcmp(name, "chain") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate chain_evidence");
-        timeline_push_str(&arr, "zclassic23 dumpstate chain_advance_coordinator");
-        timeline_push_str(&arr, "zclassic23 dumpstate reducer_frontier");
+        timeline_push_str(&arr, "z23 dumpstate chain_evidence");
+        timeline_push_str(&arr, "z23 dumpstate chain_advance_coordinator");
+        timeline_push_str(&arr, "z23 dumpstate reducer_frontier");
     } else if (strcmp(name, "validation") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate validation_pack");
-        timeline_push_str(&arr, "zclassic23 dumpstate reducer_frontier");
-        timeline_push_str(&arr, "zclassic23 dumpstate block_index");
+        timeline_push_str(&arr, "z23 dumpstate validation_pack");
+        timeline_push_str(&arr, "z23 dumpstate reducer_frontier");
+        timeline_push_str(&arr, "z23 dumpstate block_index");
     } else if (strcmp(name, "condition") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate condition_engine");
-        timeline_push_str(&arr, "zclassic23 dumpstate blocker");
-        timeline_push_str(&arr, "zclassic23 dumpstate supervisor");
+        timeline_push_str(&arr, "z23 dumpstate condition_engine");
+        timeline_push_str(&arr, "z23 dumpstate blocker");
+        timeline_push_str(&arr, "z23 dumpstate supervisor");
     } else if (strcmp(name, "oracle") == 0 || strcmp(name, "mirror") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate oracle");
-        timeline_push_str(&arr, "zclassic23 dumpstate legacy_mirror");
-        timeline_push_str(&arr, "zclassic23 dumpstate quorum_oracle");
+        timeline_push_str(&arr, "z23 dumpstate oracle");
+        timeline_push_str(&arr, "z23 dumpstate legacy_mirror");
+        timeline_push_str(&arr, "z23 dumpstate quorum_oracle");
     } else if (strcmp(name, "boot") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate boot");
-        timeline_push_str(&arr, "zclassic23 dumpstate service_state");
-        timeline_push_str(&arr, "zclassic23 dumpstate block_index");
+        timeline_push_str(&arr, "z23 dumpstate boot");
+        timeline_push_str(&arr, "z23 dumpstate service_state");
+        timeline_push_str(&arr, "z23 dumpstate block_index");
     } else if (strcmp(name, "db") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate db_maintenance");
-        timeline_push_str(&arr, "zclassic23 dumpstate progress");
-        timeline_push_str(&arr, "zclassic23 dumpstate disk_monitor");
+        timeline_push_str(&arr, "z23 dumpstate db_maintenance");
+        timeline_push_str(&arr, "z23 dumpstate progress");
+        timeline_push_str(&arr, "z23 dumpstate disk_monitor");
     } else if (strcmp(name, "wallet") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate wallet_projection");
+        timeline_push_str(&arr, "z23 dumpstate wallet_projection");
     } else if (strcmp(name, "disk") == 0) {
-        timeline_push_str(&arr, "zclassic23 dumpstate disk_monitor");
+        timeline_push_str(&arr, "z23 dumpstate disk_monitor");
     } else {
         agent_push_contract_native_command_json(&arr, "statecatalog");
-        timeline_push_str(&arr, "zclassic23 timeline sync 50");
-        timeline_push_str(&arr, "zclassic23 timeline peer 50");
+        timeline_push_str(&arr, "z23 timeline sync 50");
+        timeline_push_str(&arr, "z23 timeline peer 50");
     }
     if (problem_count > 0)
-        timeline_push_str(&arr, "zclassic23 getnodelog 'fail|reject|stale|breach|panic|halt|timeout|corrupt'");
+        timeline_push_str(&arr, "z23 getnodelog 'fail|reject|stale|breach|panic|halt|timeout|corrupt'");
     json_push_kv(out, "recommended_drilldowns", &arr);
     json_free(&arr);
 }
@@ -432,7 +432,7 @@ bool rpc_timeline(const struct json_value *params, bool help,
     json_push_kv_int(result, "retention_events", EVENT_LOG_SIZE);
     json_push_kv_str(result, "cursor_field", "events[].seq");
     json_push_kv_str(result, "native_command",
-                     "zclassic23 timeline <category> <count> or timeline '{\"category\":\"sync\",\"since_secs\":3600}'");
+                     "z23 timeline <category> <count> or timeline '{\"category\":\"sync\",\"since_secs\":3600}'");
     json_push_kv_str(result, "filter_model",
                      "bounded_server_side_scan_then_filter");
 

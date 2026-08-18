@@ -186,7 +186,7 @@ void syncsvc_note_valid_block(struct sync_block_acceptance *result,
     /* This is the at-tip edge that actually fires on a live node:
      * msg_blocks.c turns it into sync_set_state(SYNC_AT_TIP, "caught up to
      * peer") on every accepted block, and sync_get_state() is what
-     * `zclassic23 status` prints as sync=at_tip. Gating only the timer-driven
+     * `z23 status` prints as sync=at_tip. Gating only the timer-driven
      * evaluator in syncsvc_plan_periodic_tip_state would leave the claim
      * exactly as sayable as it was before this whole census existed.
      *

@@ -26,7 +26,7 @@ TL_GROUP_END(meta)
  * and a fixed-offset table has nowhere to put a variable-length list, so this
  * group models the AGGREGATE only — counts by state, the direction split, the
  * outbound floor, the connection-age extremes and the dial funnel. Per-peer
- * enumeration stays where it already is: `zclassic23 ops state
+ * enumeration stays where it already is: `z23 ops state
  * --subsystem=connman` and `--subsystem=transport`.
  *
  * WHERE THE THRESHOLDS COME FROM. Every judged row below reuses a rule this
@@ -54,7 +54,7 @@ TL_LEAF(peers, outbound_healthy, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
     "peers this node can actually fetch headers and blocks from",
     "zero means no usable outbound peer exists, so download cannot start "
     "whatever any height field reports",
-    "zclassic23 ops state --subsystem=peer_lifecycle --explain")
+    "z23 ops state --subsystem=peer_lifecycle --explain")
 
 TL_LEAF(peers, outbound_floor_target, TLC_I64, TFU_GAUGE, TLV_NORMAL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -69,7 +69,7 @@ TL_LEAF(peers, outbound_floor_satisfied, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     "need not compare two leaves",
     "below the floor the node still syncs but has no redundancy: one peer "
     "leaving can stall it",
-    "zclassic23 ops state --subsystem=connman --explain")
+    "z23 ops state --subsystem=connman --explain")
 
 TL_LEAF(peers, outbound_total, TLC_I64, TFU_GAUGE, TLV_NORMAL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -103,7 +103,7 @@ TL_LEAF(peers, healthy_group_count, TLC_I64, TFU_GAUGE, TLV_NORMAL,
     "diversity that counts, since only those peers serve data",
     "1 or 0 means every usable peer sits behind one network group, so a "
     "single operator or route can eclipse this node",
-    "zclassic23 ops state --subsystem=network_census")
+    "z23 ops state --subsystem=network_census")
 
 TL_LEAF(peers, oldest_connection_age_secs, TLC_I64, TFU_SECONDS, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -129,7 +129,7 @@ TL_LEAF(peers, handshakes_completed_total, TLC_I64, TFU_COUNT_TOTAL, TLV_NORMAL,
     "connections that finished the full VERSION/VERACK exchange since boot",
     "zero is terminal: no peer was ever usable, so height cannot move and "
     "every other sync symptom is downstream of this one",
-    "zclassic23 ops state --subsystem=peer_lifecycle --explain")
+    "z23 ops state --subsystem=peer_lifecycle --explain")
 
 TL_LEAF(peers, pre_handshake_disconnects_total, TLC_I64, TFU_COUNT_TOTAL,
     TLV_NORMAL,
@@ -139,7 +139,7 @@ TL_LEAF(peers, pre_handshake_disconnects_total, TLC_I64, TFU_COUNT_TOTAL,
     "exchanged",
     "a high share of attempts means the far side hangs up at accept: a "
     "per-IP cap, a ban, or a network-magic mismatch",
-    "zclassic23 ops state --subsystem=peer_lifecycle --key=incidents")
+    "z23 ops state --subsystem=peer_lifecycle --key=incidents")
 
 TL_LEAF(peers, dial_timeouts_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
     TFR_MAX_RATIO_OF, TL_REF(peers, dial_attempts_total), 800, TFS_WARN,
@@ -147,7 +147,7 @@ TL_LEAF(peers, dial_timeouts_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
     "side",
     "near the attempt count means the address pool is dead or egress is "
     "blocked — a different failure from being actively hung up on",
-    "zclassic23 ops state --subsystem=addrman --explain")
+    "z23 ops state --subsystem=addrman --explain")
 
 TL_LEAF(peers, rejected_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
     TFR_EXPECT_ZERO, TL_NONE, 0, TFS_WARN,
@@ -155,7 +155,7 @@ TL_LEAF(peers, rejected_total, TLC_I64, TFU_COUNT_TOTAL, TLV_FULL,
     "address, misbehaviour score, or a full slot",
     "nonzero means we are the side saying no, so peer-side theories are the "
     "wrong branch to chase",
-    "zclassic23 ops state --subsystem=connman --explain")
+    "z23 ops state --subsystem=connman --explain")
 
 TL_GROUP_END(peers)
 

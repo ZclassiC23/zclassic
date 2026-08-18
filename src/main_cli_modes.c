@@ -187,9 +187,9 @@ static bool bench_history_ensure(const char *path)
         fprintf(stderr, "bench: cannot create %s\n", path);
         return false;
     }
-    fputs("# zclassic23 benchmark history.\n", f);
+    fputs("# z23 benchmark history.\n", f);
     fputs("# Columns: date, commit, bench, value, unit, notes.\n", f);
-    fputs("# Numeric value rows are regression-gated by build/bin/zclassic23 -bench-regress.\n", f);
+    fputs("# Numeric value rows are regression-gated by build/bin/z23 -bench-regress.\n", f);
     fputs("# Empty value rows are pending/skipped measurements and are ignored by the gate.\n", f);
     fputs("# Bench names follow docs/USER_BENCHMARKS.md primaries #1..#5.\n", f);
     fputs("# Append-only: do not rewrite old rows; add a correction row instead.\n", f);
@@ -404,7 +404,7 @@ static int bench_run_all(void)
     const char *dir = getenv("ZCL_BENCH_DIR");
     if (!dir || !*dir) dir = "/tmp/zcl23-bench";
 
-    printf("zclassic23 benchmark harness (C)\n");
+    printf("z23 benchmark harness (C)\n");
     printf("  commit:        %s\n", bench_commit());
     printf("  history:       %s\n", path);
     printf("  bench datadir: %s\n", dir);
@@ -622,7 +622,7 @@ static int bench_crypto_verify(void)
     }
     double budget_ns = budget_ms * 1e6;
 
-    printf("zclassic23 consensus-verify microbenchmark (C)\n");
+    printf("z23 consensus-verify microbenchmark (C)\n");
     printf("  commit:   %s\n", bench_commit());
     printf("  history:  %s\n", path);
     printf("  budget:   %.0f ms/primitive\n", budget_ms);
@@ -954,7 +954,7 @@ static int bench_crypto_vs_rust(void)
     if (sp && *sp) { long v = strtol(sp, NULL, 10); if (v >= 1 && v <= 15) samples = (int)v; }
     double budget_ns = budget_ms * 1e6;
 
-    printf("zclassic23 crypto-vs-rust microbenchmark (pure C23)\n");
+    printf("z23 crypto-vs-rust microbenchmark (pure C23)\n");
     printf("  commit:   %s\n", bench_commit());
     printf("  history:  %s\n", path);
     printf("  budget:   %.0f ms/sample, median of %d samples\n", budget_ms, samples);
@@ -1628,7 +1628,7 @@ static int cli_print_local_instances_status_fallback(const char *default_datadir
                         "buffer\n");
         return ZCL_COMMAND_EXIT_INTERNAL;
     }
-    fprintf(stderr, "zclassic23: no node running at the default datadir "
+    fprintf(stderr, "z23: no node running at the default datadir "
                     "(%s) — listing every local instance this host has "
                     "recorded\n", default_datadir ? default_datadir : "");
     printf("%s\n", out);
@@ -2190,7 +2190,7 @@ static void cli_print_unknown_command_diagnostic(const char *method)
         fputs(buf, stderr);
     else
         fprintf(stderr, "error=UNKNOWN_COMMAND detail=no such command '%s' "
-                        "try=zclassic23 discover search %s\n",
+                        "try=z23 discover search %s\n",
                method ? method : "", method ? method : "");
 }
 
@@ -2364,7 +2364,7 @@ int cli_main(int argc, char **argv)
         fprintf(stderr, "Ignoring unknown ZCL_OPERATOR_LANE=%s\n", env_lane);
     }
     /* Operator target flags are accepted before or after the method so
-     * `zclassic23 agent -datadir=... -rpcport=...` cannot accidentally query
+     * `z23 agent -datadir=... -rpcport=...` cannot accidentally query
      * the default service while an agent is trying to inspect a lane. */
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "-datadir=", 9) == 0) {
@@ -2477,7 +2477,7 @@ int cli_main(int argc, char **argv)
             snprintf(datadir, sizeof(datadir), "%s", discovered);
             datadir_set = true;
             fprintf(stderr,
-                   "zclassic23: -rpcport=%d given without -datadir — "
+                   "z23: -rpcport=%d given without -datadir — "
                    "auto-discovered datadir %s (pass -datadir=DIR to "
                    "target a different instance)\n",
                    cli_port, datadir);
@@ -2586,7 +2586,7 @@ int cli_main(int argc, char **argv)
         return ZCL_COMMAND_EXIT_BLOCKED;
     }
 
-    /* CLI UX contract: `zclassic23 dumpstate <subsystem> field=a,b` (and, in
+    /* CLI UX contract: `z23 dumpstate <subsystem> field=a,b` (and, in
      * principle, any other raw RPC method) — pull a bare `field=` token out
      * of the forwarded RPC params before the call, then select just those
      * names out of the response afterward. `dumpstate`'s result nests the
@@ -2796,7 +2796,7 @@ static int cli_refuse_malformed_target_flag(const char *arg,
                                             const char *suggest)
 {
     const char *why = (kind == CLI_FLAG_DOUBLE_DASH_TYPO)
-        ? "zclassic23 flags use a single dash, not a double dash"
+        ? "z23 flags use a single dash, not a double dash"
         : "this flag needs its value joined with '=' (e.g. -rpcport=PORT), "
           "not a bare flag or a space-separated value";
     fprintf(stderr,
@@ -2843,7 +2843,7 @@ static int cli_validate_client_argv(int argc, char **argv)
  * canonical UTXO sidecar ready for runtime mmap+SHA3-verify+
  * bulk-INSERT in phase 2.
  *
- * Usage: zclassic23 --gen-utxo-snapshot <legacy_datadir> <out_path>
+ * Usage: z23 --gen-utxo-snapshot <legacy_datadir> <out_path>
  *
  * Output format (104-byte header + records, all little-endian):
  *   magic[8]="ZCLUTXO\0", version u32=1, reserved u32, height u32,
@@ -3161,7 +3161,7 @@ int legacy_utxo_commitment_mode(int argc, char **argv)
  * additive nullifier set from containing future spends. The target must have
  * booted once first so its coins authority and shielded cursors exist.
  *
- * Usage: zclassic23 -datadir=<TARGET-COPY>
+ * Usage: z23 -datadir=<TARGET-COPY>
  *        -import-complete-shielded=<zclassicd-datadir> */
 static bool import_shielded_is_live_datadir(const char *target)
 {
@@ -3509,14 +3509,14 @@ int import_complete_shielded_mode(int argc, char **argv)
  * so bodies fetch lazily). Pair with --importchainstate (or the boot UTXO
  * auto-import) so an imported UTXO anchor immediately becomes the tip
  * instead of waiting on P2P header sync.
- * Usage: zclassic23 [<other-args>...] --importblockindex /path/to/datadir
+ * Usage: z23 [<other-args>...] --importblockindex /path/to/datadir
  *          [dbpath] [<other-args>...]
  *   where /path/to/datadir is the PARENT of blocks/index (e.g. ~/.zclassic
  *   for a running zclassicd — the on-disk format is shared).
  *
  * `ibi_idx` is the argv index of the literal "--importblockindex" token —
  * the caller scans for it ANYWHERE in argv (not just argv[1]) so an
- * invocation like `zclassic23 -datadir=X --importblockindex Y` dispatches
+ * invocation like `z23 -datadir=X --importblockindex Y` dispatches
  * the import instead of silently falling through to a normal boot (the
  * historical footgun: the verb only worked as argv[1], every other position
  * was ignored by the old argv[1]-only strcmp and the node quietly booted
@@ -3529,7 +3529,7 @@ int importblockindex_cli_mode(int argc, char **argv, int ibi_idx)
 {
     if (ibi_idx + 1 >= argc) {
         fprintf(stderr,
-                "usage: zclassic23 --importblockindex <source-datadir>"
+                "usage: z23 --importblockindex <source-datadir>"
                 " [<target-node.db-path>]\n"
                 "       (missing <source-datadir> — refusing to fall through"
                 " to a normal boot)\n");
@@ -3568,7 +3568,7 @@ int importblockindex_cli_mode(int argc, char **argv, int ibi_idx)
          * unrelated node flag to skip over here. */
         if (argv[ibi_idx + 2][0] == '-') {
             fprintf(stderr,
-                    "usage: zclassic23 --importblockindex <source-datadir>"
+                    "usage: z23 --importblockindex <source-datadir>"
                     " [<target-node.db-path>]\n"
                     "       (got flag-like target '%s'; pass the node.db"
                     " PATH, e.g. ~/.zclassic-c23/node.db)\n",
@@ -4001,7 +4001,7 @@ int importchainstate_mode(int argc, char **argv)
          * cp/rm commands). */
         if (argv[3][0] == '-') {
             fprintf(stderr,
-                    "usage: zclassic23 --importchainstate <chainstate-dir>"
+                    "usage: z23 --importchainstate <chainstate-dir>"
                     " [<target-node.db-path>]\n"
                     "       (got flag-like target '%s'; pass the node.db"
                     " PATH, e.g. ~/.zclassic-c23/node.db)\n", argv[3]);

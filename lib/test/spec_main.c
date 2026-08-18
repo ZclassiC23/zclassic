@@ -22,7 +22,7 @@ int main(void)
     ecc_start();
     ecc_verify_init();
 
-    printf("=== ZClassic23 User Story Specs ===\n");
+    printf("=== Z23 User Story Specs ===\n");
     printf("Kathy Sierra principle: test the USER, not the APP.\n\n");
 
     failures += spec_wallet_dashboard();

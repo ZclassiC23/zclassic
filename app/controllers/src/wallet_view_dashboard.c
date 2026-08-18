@@ -12,7 +12,7 @@
 size_t serve_dashboard(uint8_t *r, size_t max) {
     sqlite3 *db = wv_open_db();
     if (!db) {
-        size_t off = wv_emit_header(r, max, "ZClassic23 Wallet", "/wallet");
+        size_t off = wv_emit_header(r, max, "Z23 Wallet", "/wallet");
         off += template_render(TMPL_LOADING, NULL, 0,
             (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
@@ -30,7 +30,7 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
 
     db = wv_open_db();
     if (!db) {
-        size_t off = wv_emit_header(r, max, "ZClassic23 Wallet", "/wallet");
+        size_t off = wv_emit_header(r, max, "Z23 Wallet", "/wallet");
         off += template_render(TMPL_LOADING, NULL, 0,
             (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
@@ -231,7 +231,7 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
     }
 
     /* Render full dashboard via TMPL_DASHBOARD */
-    size_t off = wv_emit_header(r, max, "ZClassic23 Wallet", "/wallet");
+    size_t off = wv_emit_header(r, max, "Z23 Wallet", "/wallet");
 
     /* Only show "Details" link when there's something to shield */
     const char *details_link = (transparent > (int64_t)(FEE_ZCL * ZATOSHI_PER_ZCL + 1))

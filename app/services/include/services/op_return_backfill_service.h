@@ -36,7 +36,7 @@
  *                                               recovery_coordinator_set_datadir)
  *   op_return_backfill_register()            — arm the supervisor child
  *   op_return_backfill_run_once()            — one bounded batch (tests + on_tick)
- *   op_return_index_dump_state_json — `zclassic23 dumpstate op_return_index`
+ *   op_return_index_dump_state_json — `z23 dumpstate op_return_index`
  */
 
 #ifndef ZCL_SERVICES_OP_RETURN_BACKFILL_SERVICE_H
@@ -67,7 +67,7 @@ void op_return_backfill_reset_for_test(void);
 
 struct json_value;
 bool op_return_index_dump_state_json(struct json_value *out, const char *key);
-/* `zclassic23 dumpstate zepoch` — epoch-anchor status snapshot (catalog
+/* `z23 dumpstate zepoch` — epoch-anchor status snapshot (catalog
  * cursor + digest, current epoch, anchored bool). */
 bool zepoch_status_dump_state_json(struct json_value *out, const char *key);
 

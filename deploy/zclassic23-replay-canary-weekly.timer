@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Replay Canary Timer — weekly from-genesis
+Description=Z23 Replay Canary Timer — weekly from-genesis
 
 [Timer]
 # Sunday 05:30 with up to 60 min jitter. OFF-PEAK, past the nightly canary

@@ -140,7 +140,7 @@ int main(int argc, char **argv)
     ecc_verify_init();
 
     printf("═══════════════════════════════════════════════════\n");
-    printf("  ZClassic23 Bot Driver (headless, pure C)\n");
+    printf("  Z23 Bot Driver (headless, pure C)\n");
     printf("  datadir: %s\n", datadir ? datadir : "(none)");
     printf("═══════════════════════════════════════════════════\n");
 

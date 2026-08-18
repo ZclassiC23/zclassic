@@ -575,7 +575,7 @@ static void api_openapi_json(struct json_value *root)
     struct json_value info;
     json_init(&info);
     json_set_object(&info);
-    json_push_kv_str(&info, "title", "ZClassic23 REST API");
+    json_push_kv_str(&info, "title", "Z23 REST API");
     json_push_kv_str(&info, "version", ZCL_REST_API_VERSION);
     json_push_kv(root, "info", &info);
     json_free(&info);

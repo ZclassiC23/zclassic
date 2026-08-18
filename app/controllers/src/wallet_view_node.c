@@ -98,7 +98,7 @@ size_t serve_node(uint8_t *r, size_t max) {
         wv_render_peer_table(peer_table, sizeof(peer_table), peers, n_peers);
     }
 
-    size_t off = wv_emit_header(r, max, "Node — ZClassic23", "/wallet/node");
+    size_t off = wv_emit_header(r, max, "Node — Z23", "/wallet/node");
 
     struct template_var vars[] = {
         { "height",      height_s },

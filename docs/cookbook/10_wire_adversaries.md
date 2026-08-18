@@ -70,7 +70,7 @@ step or invariant does not hold.
 - Real no-silent-halt / partitioned-peer detection on a live node:
   `app/services/src/sync_monitor.c` and the supervisor liveness tree
   (`lib/util/src/supervisor.c`; see `CLAUDE.md` "Adding state introspection"
-  and `zclassic23 dumpstate supervisor`), surfaced via `zclassic23 dumpstate
+  and `z23 dumpstate supervisor`), surfaced via `z23 dumpstate
   subsystem=blocker` instead of this example's direct
   `simnet_wire_get_stats()` polling.
 

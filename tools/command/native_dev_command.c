@@ -261,7 +261,7 @@ void zcl_native_handle_dev_ff(const struct zcl_command_request *request,
         reply, ZCL_COMMAND_STATUS_BLOCKED, ZCL_COMMAND_EXIT_BLOCKED,
         "DEV_BUILD_REQUIRED", "dispatch", false, false,
         "the fail-fast ladder requires a dev build",
-        "make dev-bin, or zclassic23-dev dev ff");
+        "make dev-bin, or z23-dev dev ff");
 #else
     char root[PATH_MAX];
     const char *src_root = dev_source_root(request);
@@ -354,7 +354,7 @@ void zcl_native_handle_dev_ff(const struct zcl_command_request *request,
                 char next_command[256];
                 (void)snprintf(
                     next_command, sizeof(next_command),
-                    "zclassic23-dev dev publication status --input='"
+                    "z23-dev dev publication status --input='"
                     "{\"job_root\":\"%s\"}'",
                     hex);
                 (void)json_push_kv_str(
@@ -624,12 +624,12 @@ void zcl_native_handle_dev_publication_status(
     char hex[65], next_command[256], collect_command[256];
     int next_len = snprintf(
         next_command, sizeof(next_command),
-        "zclassic23-dev dev publication advance --input='"
+        "z23-dev dev publication advance --input='"
         "{\"job_root\":\"%s\"}'",
         job_hex);
     int collect_len = snprintf(
         collect_command, sizeof(collect_command),
-        "zclassic23-dev dev publication collect --input='"
+        "z23-dev dev publication collect --input='"
         "{\"job_root\":\"%s\"}'",
         job_hex);
     if (next_len <= 0 || (size_t)next_len >= sizeof(next_command) ||
@@ -761,15 +761,15 @@ void zcl_native_handle_dev_publication_status(
         provider_announced ?
             collect_command :
         workspace_published ?
-            "zclassic23 discover search provider" :
+            "z23 discover search provider" :
         passport_published ?
-            "zclassic23 discover schema zcode.workspace.manifest.plan" :
+            "z23 discover schema zcode.workspace.manifest.plan" :
         release_published ?
-            "zclassic23 discover schema zcode.passport.plan" :
+            "z23 discover schema zcode.passport.plan" :
         mapping_ready ?
-            "zclassic23 discover schema zcode.package.dev.publish.plan" :
+            "z23 discover schema zcode.package.dev.publish.plan" :
         accepted ? next_command :
-        advanced ? "zclassic23 zcode guide" : queued ? next_command : "dev ff");
+        advanced ? "z23 zcode guide" : queued ? next_command : "dev ff");
     vcs_package_mapping_set_free(&mapping);
 }
 
@@ -1091,11 +1091,11 @@ void zcl_native_handle_dev_publication_advance(
     char retry_command[256], collect_command[256];
     int retry_len = snprintf(
         retry_command, sizeof(retry_command),
-        "zclassic23-dev dev publication advance --input='"
+        "z23-dev dev publication advance --input='"
         "{\"job_root\":\"%s\"}'", job_hex);
     int collect_len = snprintf(
         collect_command, sizeof(collect_command),
-        "zclassic23-dev dev publication collect --input='"
+        "z23-dev dev publication collect --input='"
         "{\"job_root\":\"%s\"}'",
         job_hex);
     if (retry_len <= 0 || (size_t)retry_len >= sizeof(retry_command) ||
@@ -1292,21 +1292,21 @@ void zcl_native_handle_dev_publication_advance(
     if (details) (void)json_push_kv_str(
         &reply->data, "next_command",
         lane_bound && !acceptance_verified
-            ? "zclassic23 discover schema dev.publication.advance" :
+            ? "z23 discover schema dev.publication.advance" :
         source_reproduced ? retry_command :
         storage_acknowledged ? collect_command :
         provider_announced ?
             collect_command :
         workspace_published ?
-            "zclassic23 discover search provider" :
+            "z23 discover search provider" :
         passport_published ?
-            "zclassic23 discover schema zcode.workspace.manifest.plan" :
+            "z23 discover schema zcode.workspace.manifest.plan" :
         release_published ?
-            "zclassic23 discover schema zcode.passport.plan" :
+            "z23 discover schema zcode.passport.plan" :
         mapping_ready ?
-            "zclassic23 discover schema zcode.package.dev.publish.plan" :
+            "z23 discover schema zcode.package.dev.publish.plan" :
         lane_bound ? retry_command :
-            "zclassic23 zcode guide");
+            "z23 zcode guide");
 }
 
 void zcl_native_handle_dev_publication_collect(
@@ -1464,7 +1464,7 @@ void zcl_native_handle_dev_publication_collect(
         char next[256];
         int n = snprintf(
             next, sizeof(next),
-            "zclassic23-dev dev publication collect --input='"
+            "z23-dev dev publication collect --input='"
             "{\"job_root\":\"%s\"}'", job_hex);
         if (collecting_reproduction && n > 0 &&
             (size_t)n < sizeof(next))
@@ -1474,7 +1474,7 @@ void zcl_native_handle_dev_publication_collect(
             char reproduce[384];
             int rn = snprintf(
                 reproduce, sizeof(reproduce),
-                "zclassic23 zcode package source reproduce --input='"
+                "z23 zcode package source reproduce --input='"
                 "{\"mode\":\"plan\",\"root\":\"%s\","
                 "\"namespace\":\"%s\"}'",
                 transport_hex, target.namespace_name);
@@ -1542,7 +1542,7 @@ void zcl_native_handle_dev_publication_collect(
         char reproduce[384];
         int rn = snprintf(
             reproduce, sizeof(reproduce),
-            "zclassic23 zcode package source reproduce --input='"
+            "z23 zcode package source reproduce --input='"
             "{\"mode\":\"plan\",\"root\":\"%s\","
             "\"namespace\":\"%s\"}'",
             transport_hex, target.namespace_name);
@@ -1918,7 +1918,7 @@ static void dev_drive_merge_publication(
                 ? status_reply.error.code : "publication_receipt_invalid");
         int n = snprintf(
             next, sizeof(next),
-            "zclassic23-dev dev publication status --input='"
+            "z23-dev dev publication status --input='"
             "{\"job_root\":\"%s\"}'", job_root);
         if (n > 0 && (size_t)n < sizeof(next))
             (void)json_push_kv_str(out, "next_command", next);
@@ -1994,13 +1994,13 @@ void zcl_native_handle_dev_drive(
         if (reactor_pending || proof_pending)
             (void)snprintf(
                 next, sizeof(next),
-                "zclassic23-dev dev drive --input='{\"after_epoch\":%lld}'",
+                "z23-dev dev drive --input='{\"after_epoch\":%lld}'",
                 (long long)epoch);
         else
             (void)snprintf(
                 next, sizeof(next), "%s",
-                passed ? "zclassic23-dev dev ff"
-                       : "zclassic23-dev dev diagnose latest");
+                passed ? "z23-dev dev ff"
+                       : "z23-dev dev diagnose latest");
         (void)json_push_kv_str(&compact, "next_command", next);
     }
     json_free(&reply->data);
@@ -2628,17 +2628,17 @@ void zcl_native_handle_dev_begin(
         json_get_str(json_get(&reply->data, "agent_next_action"));
     if (action && action[0])
         (void)json_push_kv_str(&reply->data, "next_action", action);
-    char next[192] = "zclassic23-dev dev drive";
+    char next[192] = "z23-dev dev drive";
     const struct json_value *epoch_v = json_get(&reply->data, "epoch");
     if (epoch_v && epoch_v->type == JSON_INT) {
         int n = snprintf(
             next, sizeof(next),
-            "edit source, then run zclassic23-dev dev drive --input='"
+            "edit source, then run z23-dev dev drive --input='"
             "{\"after_epoch\":%lld,\"wait_for_edit\":true}'",
             (long long)json_get_int(epoch_v));
         if (n <= 0 || (size_t)n >= sizeof(next))
             (void)snprintf(next, sizeof(next), "%s",
-                           "zclassic23-dev dev drive");
+                           "z23-dev dev drive");
     }
     (void)json_push_kv_str(&reply->data, "next_command", next);
 }

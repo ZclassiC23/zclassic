@@ -12,7 +12,7 @@
  * health heartbeat's own periodic tick, but rpc_agent_summary ("agent", and
  * its "status"/"summary"/"operatorsummary" aliases) is on the per-request
  * path event_agent_summary.c's header promises to keep cheap. Repeated
- * calls -- an operator polling `zclassic23 status`, or a monitoring script
+ * calls -- an operator polling `z23 status`, or a monitoring script
  * -- would otherwise redo the full read set every time, and each read is
  * subject to the shared node.db connection's multi-second busy_timeout, so
  * a request landing while that connection is merely contended (not flagged
@@ -116,7 +116,7 @@ void agent_summary_posture_collect_bounded(struct agent_security_posture *out)
  * progress_store_tx_lock, see sovereignty_controller.c) so this wrapper is
  * NOT standing between a caller and a lock the way agent_summary_posture_
  * collect_bounded's cache-miss fallthrough is; it exists purely to coalesce
- * a polling burst (an operator running `zclassic23 status` in a loop, or a
+ * a polling burst (an operator running `z23 status` in a loop, or a
  * monitoring script) into one dumper call plus one small JSON-tree walk
  * instead of repeating both on every request. Same TTL, same shape,
  * disabled under ZCL_TESTING for the identical override-visibility reason

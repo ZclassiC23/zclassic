@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Nightly Simulator Sweep Lane
+Description=Z23 Nightly Simulator Sweep Lane
 
 [Service]
 Type=oneshot

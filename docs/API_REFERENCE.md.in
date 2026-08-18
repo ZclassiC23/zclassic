@@ -17,7 +17,7 @@ or ownership authority. The ZCODE creation path and its free-access guarantees
 are defined in
 [`docs/work/ZC23_LIVING_COMMONS.md`](./work/ZC23_LIVING_COMMONS.md).
 
-For the shortest executable route, run `zclassic23 zcode guide`. It points to
+For the shortest executable route, run `z23 zcode guide`. It points to
 the ready leaves for finding, inspecting, creating, improving, evidencing,
 accepting, publishing and verifying work. Commands that inspect pre-genesis
 Living Commons state require an explicit isolated scratch workspace; `.` and
@@ -58,10 +58,10 @@ failure, not a silent lie.
 To confirm any row against a running binary:
 
 ```bash
-zclassic23 discover help [path]        # branch menu — immediate children only
-zclassic23 discover describe <path>    # one leaf's full spec
-zclassic23 discover search <text>      # ≤5 ranked matches
-zclassic23 discover schema <path> --side=input|output
+z23 discover help [path]        # branch menu — immediate children only
+z23 discover describe <path>    # one leaf's full spec
+z23 discover search <text>      # ≤5 ranked matches
+z23 discover schema <path> --side=input|output
 ```
 
 ## What the catalog currently declares
@@ -87,10 +87,10 @@ stub. Both invariants are proven for the *whole* catalog by
 `test_ready_leaves_bound`, `test_planned_fail_closed`), not asserted here.
 
 **Dev-gated leaves** (🔧) are declared via `ZCL_COMMAND_DEV_READ` /
-`ZCL_COMMAND_DEV_COMMAND`. In a `ZCL_DEV_BUILD` binary (`zclassic23-dev`) they
+`ZCL_COMMAND_DEV_COMMAND`. In a `ZCL_DEV_BUILD` binary (`z23-dev`) they
 are `ready` with a real handler; in a release build they are honest `compat`
 stubs whose `availability_reason` and `compat_target` tell you to run the same
-command against `zclassic23-dev` instead. This page always renders the
+command against `z23-dev` instead. This page always renders the
 **release** view, so it describes the binary an operator actually ships.
 [`tools/lint/check_release_no_dev_symbols.sh`](../tools/lint/check_release_no_dev_symbols.sh)
 proves via `nm` that the release binary links none of the dev executors, so the

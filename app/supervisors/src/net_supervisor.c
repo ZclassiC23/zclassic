@@ -37,7 +37,7 @@ static void peer_floor_tick(struct liveness_contract *c)
     if (!g_peer_floor_cm || !c) return;
     size_t healthy = connman_outbound_healthy_count(g_peer_floor_cm);
     /* The progress_marker carries the outbound_healthy count — visible
-     * via `zclassic23 dumpstate supervisor` for operator inspection. */
+     * via `z23 dumpstate supervisor` for operator inspection. */
     supervisor_progress(g_peer_floor_id, (int64_t)healthy);
     /* When ≥ floor, also tick so the deadline timer doesn't drift; when
      * below floor, intentionally do NOT tick so the progress_quiet

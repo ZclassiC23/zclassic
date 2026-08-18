@@ -5,7 +5,7 @@
  * Drives the sync state machine from SYNC_IDLE through every legal
  * cold-start transition path to SYNC_AT_TIP ("ready"), measures the
  * elapsed time under a 1Hz polling loop that mirrors what the operator
- * observes via `zclassic23 core sync status`, and asserts the run fits within the
+ * observes via `z23 core sync status`, and asserts the run fits within the
  * 10-minute MVP budget.
  *
  * Two paths are exercised because both are live in production — a

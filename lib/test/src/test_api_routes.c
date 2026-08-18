@@ -168,7 +168,7 @@ int api_route_table_focused_tests(void)
         ok = ok && snap && json_get(snap, "path") != NULL;
         ok = ok && commands &&
              strcmp(json_get_str(json_get(commands, "native")),
-                    "zclassic23 refold") == 0;
+                    "z23 refold") == 0;
         json_free(&root);
 
         if (ok) printf("OK\n");

@@ -39,7 +39,7 @@ commit the lane forked from.
 Called out separately from section 2, because deletion is the preferred outcome
 ([`LANE_CONTRACT.md`](LANE_CONTRACT.md) §B6) and it is the one change class that
 silently breaks callers. For each deletion: what it was, what now covers it, and
-how you know nothing else referenced it (`zclassic23 code refs`, `git grep`).
+how you know nothing else referenced it (`z23 code refs`, `git grep`).
 "Nothing deleted" is a valid answer — say it.
 
 ### 4. What could not be done, and why

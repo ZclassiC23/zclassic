@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * ZClassic23 Wallet — WCAG AA dark theme, 480px mobile-first, 8px grid.
+ * Z23 Wallet — WCAG AA dark theme, 480px mobile-first, 8px grid.
  * Compiled into binary via gen_templates. Edit this file, run make. */
 
 /* === Reset === */

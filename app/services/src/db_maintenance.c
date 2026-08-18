@@ -210,7 +210,7 @@ void db_maintenance_status_snapshot(struct db_maintenance_status *out)
     pthread_mutex_unlock(&g_dbm.lock);
 }
 
-/* `zclassic23 dumpstate db_maintenance` — WAL-checkpoint / ANALYZE / VACUUM
+/* `z23 dumpstate db_maintenance` — WAL-checkpoint / ANALYZE / VACUUM
  * background worker's last-run timestamps, durations, run/failure totals, and
  * last error. See CLAUDE.md "Adding state introspection".
  *

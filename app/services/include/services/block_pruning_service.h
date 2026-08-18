@@ -146,7 +146,7 @@ void block_pruning_get_status(const struct block_pruning_service *svc,
                               struct block_pruning_status *out);
 
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe.
- * Wired into `zclassic23 dumpstate block_pruning`. */
+ * Wired into `z23 dumpstate block_pruning`. */
 struct json_value;
 bool block_pruning_dump_state_json(struct json_value *out, const char *key);
 

@@ -1,8 +1,8 @@
 # ROM — the L0-L3 trust machine
 
-Every trust claim zclassic23 makes reduces to four layers. This page is the
+Every trust claim z23 makes reduces to four layers. This page is the
 map of what each layer guarantees, what it does NOT guarantee, and how to
-read its live state in one call: `zclassic23 dumpstate rom`.
+read its live state in one call: `z23 dumpstate rom`.
 
 Cross-references: `docs/CONSENSUS_PARITY_DOCTRINE.md` (why headers are the
 only PoW-bound commitment), `docs/HANDOFF.md` (current live state — this
@@ -33,14 +33,14 @@ far less than that:
 | Sprout commitment state | **Not committed** — ROM/checkpoint-only | Same as above. |
 | Transparent UTXO set | **Not committed** — ROM/checkpoint-only | ZClassic headers carry no UTXO-set root. Only L0's SHA3 checkpoint or a locally-folded L2 state authenticates it. |
 
-`zclassic23 dumpstate rom` publishes this table as machine-readable data
+`z23 dumpstate rom` publishes this table as machine-readable data
 (`commitments`) alongside the live checkpoint, so an agent can check the
 doctrine programmatically instead of re-reading this prose.
 
 ## Reading `dumpstate rom`
 
 ```
-$ zclassic23 dumpstate rom
+$ z23 dumpstate rom
 ```
 
 returns one JSON object with four sections:
@@ -75,5 +75,5 @@ existing public accessor (no new state, no writes, no O(chain) work) — see
 carries no authority of its own over consensus.
 
 For the live H\* / sync-gap numbers this doc deliberately omits, use
-`zclassic23 status` or `zclassic23 dumpstate reducer_frontier`; current
+`z23 status` or `z23 dumpstate reducer_frontier`; current
 canonical state lives in `docs/HANDOFF.md`.

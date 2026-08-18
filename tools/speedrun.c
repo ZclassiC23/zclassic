@@ -1,5 +1,5 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * ZClassic23 Network Sync Speed Run
+ * Z23 Network Sync Speed Run
  *
  * Measures end-to-end time from zero to chain tip via file service.
  * Connects to a RUNNING power node's file service over TCP.
@@ -50,7 +50,7 @@ int main(int argc, char *argv[])
     snprintf(dst_base, sizeof(dst_base), "/tmp/zcl23-speedrun-%d", (int)getpid());
 
     printf("╔══════════════════════════════════════════════════════╗\n");
-    printf("║     ZClassic23 Network Sync Speed Run                ║\n");
+    printf("║     Z23 Network Sync Speed Run                         ║\n");
     printf("╚══════════════════════════════════════════════════════╝\n\n");
     printf("Peer:    %s:18034\n", peer);
     printf("Target:  %s\n\n", dst_base);

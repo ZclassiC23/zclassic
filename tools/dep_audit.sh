@@ -145,7 +145,7 @@ ZLIB_NOTE="CVE-2022-37434 (heap OOB inflate)"
 # --- run checks ------------------------------------------------------------
 
 if [[ $JSON -eq 0 ]]; then
-    echo "=== ZClassic23 Dependency Vulnerability Audit ==="
+    echo "=== Z23 Dependency Vulnerability Audit ==="
     echo "    Date: $(date -u +%Y-%m-%dT%H:%M:%SZ)"
     echo ""
     printf "  %-20s %-14s %-10s %-6s %s\n" "DEPENDENCY" "VERSION" "MINIMUM" "STATUS" "DETAIL"

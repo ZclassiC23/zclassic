@@ -233,7 +233,7 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<!DOCTYPE html><html lang='en'><head>"
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>ZClassic23 Node</title>"
+        "<title>Z23 Node</title>"
         "<style>%s</style></head><body>",
         ONION_PAGE_CSS);
     if (n > 0) off = (size_t)n;
@@ -241,7 +241,7 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
     off += zcl_site_onion_nav_emit(body + off, sizeof(body) - off);
 
     n = snprintf(body + off, sizeof(body) - off,
-        "<h1>ZClassic23 Node</h1>"
+        "<h1>Z23 Node</h1>"
         "<p class='muted'>A new internet. Tor-only. No DNS. No cloud.</p>");
     if (n > 0) off += (size_t)n;
 
@@ -308,7 +308,7 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         n = snprintf(body + off, sizeof(body) - off,
             "<div class='site'>"
             "<a href='http://%s/'>This node</a>"
-            "<div class='desc'>Your local ZClassic23 node</div></div>",
+            "<div class='desc'>Your local Z23 node</div></div>",
             onion);
         if (n > 0) off += (size_t)n;
     }
@@ -329,14 +329,14 @@ static size_t serve_landing_page(uint8_t *response, size_t max)
         "<div class='site'>"
         "<a href='http://zc23kenfdqqkgamthif3m7lbbdsyrotsl2dlw35qrh3iuzopozmpjnad.onion/'>"
         "zc23kenf...jnad.onion</a>"
-        "<div class='desc'>ZClassic23 seed node</div></div>"
+        "<div class='desc'>Z23 seed node</div></div>"
         "<h2>Host Your Site</h2>"
         "<div class='site'>"
-        "<div class='desc'>Every zclassic23 node is a .onion web server.<br>"
+        "<div class='desc'>Every z23 node is a .onion web server.<br>"
         "Put HTML in <code>{datadir}/blog/</code> and it's live.<br>"
         "Explorer, store, blog, and directory are first-class power-node apps.<br>"
         "Register on-chain via ZSLP for network discovery.</div></div>"
-        "<footer>ZClassic23 v0.1.0 &mdash; pure C23 full node + Tor</footer>"
+        "<footer>Z23 v0.1.0 &mdash; pure C23 full node + Tor</footer>"
         "</body></html>");
     if (n > 0) off += (size_t)n;
 
@@ -552,7 +552,7 @@ static size_t serve_search(const char *query, uint8_t *response, size_t max)
         "or through the peer directory, and ZNAM names registered on-chain for "
         "those hosts. A name is a label for an address, not a substitute: the "
         "raw .onion you would connect to is always shown with it.</p>"
-        "<footer>ZClassic23 &mdash; one binary, one onion, one stack</footer>"
+        "<footer>Z23 &mdash; one binary, one onion, one stack</footer>"
         "</body></html>");
     if (n > 0) off += (size_t)n;
 
@@ -762,7 +762,7 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
     int n = snprintf(body, sizeof(body),
         "<!DOCTYPE html><html lang='en'><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>ZClassic23 Node Directory</title>"
+        "<title>Z23 Node Directory</title>"
         "<style>%s</style></head><body>",
         ONION_PAGE_CSS);
     if (n > 0) off = (size_t)n;
@@ -877,7 +877,7 @@ static size_t serve_directory_html(uint8_t *response, size_t max)
     off += (size_t)snprintf(body + off, sizeof(body) - off,
         "<p class='muted'><a href='/directory.json'>JSON API</a> | "
         "<a href='/'>Home</a></p>"
-        "<footer>ZClassic23 &mdash; one binary, one onion, one stack</footer>"
+        "<footer>Z23 &mdash; one binary, one onion, one stack</footer>"
         "</body></html>");
 
     return (size_t)snprintf((char *)response, max,

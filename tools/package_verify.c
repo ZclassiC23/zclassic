@@ -1,7 +1,7 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * zclassic23-package-verify — the EXTERNAL ZCODE package verifier (slice 6).
- * This is a SEPARATE program from the node: the ZClassic23 node itself NEVER * compiles or executes downloaded code. Given a package root, this program
+ * This is a SEPARATE program from the node: the Z23 node itself NEVER * compiles or executes downloaded code. Given a package root, this program
  * loads the signed release envelope, the manifest, the CAS chunks, and the
  * slice-5 declarative recipe from an EXPLICIT package store directory, then
  * builds and tests the package under confinement and writes ONE signed

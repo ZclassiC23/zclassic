@@ -190,7 +190,7 @@ if [ "$new_count" -gt 0 ]; then
     done < "$TMP/new"
     echo "" >&2
     echo "  Fix the DOC to match the tree (never move code to match a doc)." >&2
-    echo "  Find the real path:  zclassic23 code sym --input='{\"name\":\"<symbol>\"}'" >&2
+    echo "  Find the real path:  z23 code sym --input='{\"name\":\"<symbol>\"}'" >&2
     echo "                       git ls-files | grep '<basename>'" >&2
     echo "  If the path is deliberately absent (a deleted file cited for git" >&2
     echo "  recovery, an upstream project's file in an attribution), add" >&2

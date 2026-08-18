@@ -105,7 +105,7 @@ int syncdiag_cases_agent_contracts(void)
                    "zcl.agent_ops.v2") == 0;
         ok = ok && contract_agentops &&
             strcmp(json_get_str(json_get(contract_agentops, "native")),
-                   "zclassic23 agentops") == 0;
+                   "z23 agentops") == 0;
         ok = ok && contract_agentops &&
             strcmp(json_get_str(json_get(contract_agentops,
                                          "api_cli_field")),
@@ -128,7 +128,7 @@ int syncdiag_cases_agent_contracts(void)
                    "zcl.agent_dev_status.v2") == 0;
         ok = ok && contract_agentdevstatus &&
             strcmp(json_get_str(json_get(contract_agentdevstatus, "native")),
-                   "zclassic23 agentdevstatus") == 0;
+                   "z23 agentdevstatus") == 0;
         ok = ok && contract_agentdevstatus &&
             strcmp(json_get_str(json_get(contract_agentdevstatus,
                                          "api_cli_field")),
@@ -149,7 +149,7 @@ int syncdiag_cases_agent_contracts(void)
                    "zcl.application_protocols.index.v2") == 0;
         ok = ok && contract_app_protocols &&
             strcmp(json_get_str(json_get(contract_app_protocols, "native")),
-                   "zclassic23 appprotocols") == 0;
+                   "z23 appprotocols") == 0;
         ok = ok && contract_app_protocols &&
             strcmp(json_get_str(json_get(contract_app_protocols, "rest")),
                    "GET /api/v1/protocols") == 0;
@@ -162,7 +162,7 @@ int syncdiag_cases_agent_contracts(void)
                    "zcl.service_catalog.v2") == 0;
         ok = ok && contract_service_catalog &&
             strcmp(json_get_str(json_get(contract_service_catalog, "native")),
-                   "zclassic23 servicecatalog") == 0;
+                   "z23 servicecatalog") == 0;
         ok = ok && contract_service_catalog &&
             strcmp(json_get_str(json_get(contract_service_catalog, "rest")),
                    "GET /api/v1/service-catalog") == 0;
@@ -177,7 +177,7 @@ int syncdiag_cases_agent_contracts(void)
         ok = ok && contract_service_operations &&
             strcmp(json_get_str(json_get(contract_service_operations,
                                          "native")),
-                   "zclassic23 serviceoperations [operation_id|key=value...]") == 0;
+                   "z23 serviceoperations [operation_id|key=value...]") == 0;
         ok = ok && contract_service_operations &&
             strcmp(json_get_str(json_get(contract_service_operations,
                                          "rest")),
@@ -188,20 +188,20 @@ int syncdiag_cases_agent_contracts(void)
                    "service_operations_command") == 0;
         ok = ok && contract_dumpstate &&
             strcmp(json_get_str(json_get(contract_dumpstate, "native")),
-                   "zclassic23 dumpstate <subsystem> [key]") == 0;
+                   "z23 dumpstate <subsystem> [key]") == 0;
         ok = ok && contract_dumpstate &&
             strcmp(json_get_str(json_get(contract_dumpstate,
                                          "ops_name")),
                    "state_drilldown") == 0;
         ok = ok && contract_getnodelog &&
             strcmp(json_get_str(json_get(contract_getnodelog, "native")),
-                   "zclassic23 getnodelog <pattern>") == 0;
+                   "z23 getnodelog <pattern>") == 0;
         ok = ok && contract_dbquery &&
             strcmp(json_get_str(json_get(contract_dbquery, "schema")),
                    "zcl.sql_result.v1") == 0;
         ok = ok && contract_dbquery &&
             strcmp(json_get_str(json_get(contract_dbquery, "native")),
-                   "zclassic23 dbquery <SELECT>") == 0;
+                   "z23 dbquery <SELECT>") == 0;
         ok = ok && contract_dbquery &&
             strstr(json_get_str(json_get(contract_dbquery,
                                          "probe_params_json")),
@@ -215,7 +215,7 @@ int syncdiag_cases_agent_contracts(void)
                    "zcl.event_log.v1") == 0;
         ok = ok && contract_eventlog &&
             strcmp(json_get_str(json_get(contract_eventlog, "native")),
-                   "zclassic23 eventlog <count>") == 0;
+                   "z23 eventlog <count>") == 0;
         ok = ok && contract_eventlog &&
             strcmp(json_get_str(json_get(contract_eventlog,
                                          "probe_params_json")),
@@ -240,7 +240,7 @@ int syncdiag_cases_agent_contracts(void)
                    "zcl.operator_proof_bundle.v2") == 0;
         ok = ok && contract_proof_bundle &&
             strcmp(json_get_str(json_get(contract_proof_bundle, "native")),
-                   "zclassic23 proofbundle [anchor_datadir]") == 0;
+                   "z23 proofbundle [anchor_datadir]") == 0;
         ok = ok && contract_proof_bundle &&
             strcmp(json_get_str(json_get(contract_proof_bundle,
                                          "api_cli_field")),
@@ -250,7 +250,7 @@ int syncdiag_cases_agent_contracts(void)
                    "zcl.peer_incidents.v2") == 0;
         ok = ok && contract_peerincidents &&
             strcmp(json_get_str(json_get(contract_peerincidents, "native")),
-                   "zclassic23 peerincidents") == 0;
+                   "z23 peerincidents") == 0;
         ok = ok && contract_peerincidents &&
             strcmp(json_get_str(json_get(contract_peerincidents,
                                          "api_cli_field")),
@@ -339,40 +339,40 @@ int syncdiag_cases_agent_contracts(void)
             find_object_with_str(schemas, "schema",
                                  "zcl.operator_deployment_safety.v1") != NULL;
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 agentbuild");
+                                         "z23 agentbuild");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 agentdevstatus");
+                                         "z23 agentdevstatus");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 agentops");
+                                         "z23 agentops");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 agentdiagnose");
+                                         "z23 agentdiagnose");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 appprotocols");
+                                         "z23 appprotocols");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 servicecatalog");
+                                         "z23 servicecatalog");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 serviceoperations");
+                                         "z23 serviceoperations");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 statecatalog");
+                                         "z23 statecatalog");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 dumpstate");
+                                         "z23 dumpstate");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 getnodelog");
+                                         "z23 getnodelog");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 dbquery");
+                                         "z23 dbquery");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 eventlog");
+                                         "z23 eventlog");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 timeline");
+                                         "z23 timeline");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 healthcheck");
+                                         "z23 healthcheck");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 milestone");
+                                         "z23 milestone");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 refold");
+                                         "z23 refold");
         ok = ok && json_array_has_substr(transports,
-                                         "zclassic23 proofbundle");
-        ok = ok && !json_array_has_substr(transports, "zclassic23 status");
+                                         "z23 proofbundle");
+        ok = ok && !json_array_has_substr(transports, "z23 status");
 
         json_free(&params);
         json_free(&contracts);

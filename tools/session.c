@@ -135,7 +135,7 @@ int main(int argc, char **argv)
     event_log_init();
 
     printf("═══════════════════════════════════════════════════\n");
-    printf("  ZClassic23 User Session Simulator\n");
+    printf("  Z23 User Session Simulator\n");
     printf("═══════════════════════════════════════════════════\n\n");
 
     wallet_view_enable_sync();

@@ -1,6 +1,6 @@
-# zclassic23 benchmark history.
+# z23 benchmark history.
 # Columns: date, commit, bench, value, unit, notes.
-# Numeric value rows are regression-gated by build/bin/zclassic23 -bench-regress.
+# Numeric value rows are regression-gated by build/bin/z23 -bench-regress.
 # Empty value rows are pending/skipped measurements and are ignored by the gate.
 # Bench names follow docs/USER_BENCHMARKS.md primaries #1..#5.
 # Append-only: do not rewrite old rows; add a correction row instead.

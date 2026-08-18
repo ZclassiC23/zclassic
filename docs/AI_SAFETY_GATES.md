@@ -5,7 +5,7 @@ tooling — it is the threat model.
 
 ## Claim scope: evidence says exactly one thing
 
-ZClassic23 follows **VERIFY, DON'T TRUST**. Evidence must be described at the
+Z23 follows **VERIFY, DON'T TRUST**. Evidence must be described at the
 same scope as the observation it records:
 
 - A hash verifies byte identity.

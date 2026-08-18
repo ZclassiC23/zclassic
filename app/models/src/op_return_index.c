@@ -362,7 +362,7 @@ bool op_return_index_get_cursor(struct node_db *ndb,
                  "binary writes op_return_index_state.v2 (range-declared "
                  "base_height+base_digest) and will not reinterpret an older "
                  "or unrecognized record as a v2 chain. Rebuild the catalog "
-                 "(`zclassic23 app oprindex rebuild`) to re-derive it.",
+                 "(`z23 app oprindex rebuild`) to re-derive it.",
                  op_return_index_state_version_name(v));
     }
 

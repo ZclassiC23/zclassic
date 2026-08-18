@@ -160,7 +160,7 @@ void zslp_ledger_backfill_reset_for_test(void)
     atomic_store(&g_backfill_last_height, -1);
 }
 
-/* ── `zclassic23 dumpstate zslp_ledger` ─────────────────────────────── */
+/* ── `z23 dumpstate zslp_ledger` ─────────────────────────────── */
 
 bool zslp_ledger_dump_state_json(struct json_value *out, const char *key)
 {

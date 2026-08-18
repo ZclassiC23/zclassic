@@ -7,7 +7,7 @@
  * When a block or transaction is rejected by `check_block` /
  * `check_transaction`, the emitters fire `EV_CONSENSUS_REJECT_BLOCK`
  * and `EV_CONSENSUS_REJECT_TX` events whose payloads include the
- * rejected hash. Those events feed `zclassic23 core consensus report` metrics
+ * rejected hash. Those events feed `z23 core consensus report` metrics
  * endpoint, but metrics alone can't answer the single most important
  * diagnostic question operators ask:
  *

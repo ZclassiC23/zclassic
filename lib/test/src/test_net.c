@@ -2471,7 +2471,7 @@ int test_net(void)
         buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
         bool has_header = (strstr((char *)buf, "HTTP/1.1 200") != NULL);
         bool has_html = (strstr((char *)buf, "</html>") != NULL);
-        bool has_title = (strstr((char *)buf, "ZClassic23") != NULL);
+        bool has_title = (strstr((char *)buf, "Z23") != NULL);
         if (has_header && has_html && has_title) printf("OK (%zu bytes)\n", len);
         else { printf("FAIL\n"); failures++; }
     }
@@ -2504,7 +2504,7 @@ int test_net(void)
         size_t len = onion_service_handle_request(
             "GET", NULL, NULL, 0, buf, sizeof(buf));
         buf[len < sizeof(buf) ? len : sizeof(buf) - 1] = '\0';
-        bool ok = (len > 0 && strstr((char *)buf, "ZClassic23") != NULL);
+        bool ok = (len > 0 && strstr((char *)buf, "Z23") != NULL);
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -2783,14 +2783,14 @@ int test_net(void)
 
     /* ===== ONION SERVICE ROUTING TESTS ===== */
 
-    printf("onion: GET / returns landing page with ZClassic23... ");
+    printf("onion: GET / returns landing page with Z23... ");
     {
         uint8_t resp[16384];
         size_t n = onion_service_handle_request("GET", "/", NULL, 0,
                                                  resp, sizeof(resp));
         bool ok = (n > 0);
         ok = ok && (strstr((char *)resp, "HTTP/1.1 200 OK") != NULL);
-        ok = ok && (strstr((char *)resp, "ZClassic23") != NULL);
+        ok = ok && (strstr((char *)resp, "Z23") != NULL);
         ok = ok && (strstr((char *)resp, "text/html") != NULL);
         if (ok) printf("OK (%zu bytes)\n", n);
         else { printf("FAIL (n=%zu)\n", n); failures++; }

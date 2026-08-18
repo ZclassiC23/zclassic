@@ -70,7 +70,7 @@ Window inventory (everything > S; all IS, survey-verified): the 8 stage cursors 
 - **Home:** `app/jobs/src/window_rebuild.c` (+ header) — a Job: the reducer resetting its own state via the stages' storage contracts. Sentinel: `lib/storage/src/window_rebuild_sentinel.c`, byte-for-byte the `boot_auto_reindex.h` pattern (request/pending/clear, fsync-durable, `WINDOW_REBUILD_MAX=3`).
 - **Crash-only execution:** a runtime trigger only writes the sentinel (typed reason + anchor + attempt) and requests a restart; the verb runs ONLY at boot, after block_index load and before any stage thread starts. A crash during rebuild looks like a fresh trigger (sentinel clears only after post-rebuild verify); the attempt budget burns honestly across crashes.
 - **Steps:** (1) log `window_rebuild begin reason=… attempt=N`; (2) select S = newest self-hash-valid *ratified* seal, else the compiled checkpoint; (3) discard the window in ONE progress.kv `BEGIN IMMEDIATE`: unwind coins/nullifiers C→S+1 via `utxo_apply_delta_reorg.c` (fork-point generalized to S), delete the 8 stage logs above S, reset all 8 cursors to S (one anchor row in tip_finalize_log, the trusted-seed stamp pattern), `coins_applied_height := S`; (4) recompute coins + nullifier SHA3 and verify vs the seal (+count/supply) — mismatch steps the ring back one seal and repeats; (5) reset derived mirrors FROM the just-verified seal values (closes item 3's delete-but-never-recompute gap), clear verdict bits above S; (6) replay forward S+1→target on the reindex connect path (`boot_index.c:183-305` grown a start-height parameter); a missing body above S just stops the replay — the rest is re-fetched by the stages after resume; (7) reseal at the highest grid point ≤ frontier, run the boot integrity gate, clear the sentinel, resume; (8) budget: 120 s wall (17× headroom), 3 attempts ⇒ fall back one rung to full auto-reindex from the compiled anchor (kept verbatim) ⇒ if that also exhausts, **page** (`EV_OPERATOR_NEEDED` + typed trail). The verb never reads/re-fetches below S — sealed-domain corruption pages, always.
-- **Entry points:** runtime `window_rebuild_trigger(reason, anchor)` from every §4d site; boot direct-call from `boot_crashonly.c` classification and the coins-integrity gate; operator: one typed native recovery command plus `zclassic23 ops state --subsystem=seal`.
+- **Entry points:** runtime `window_rebuild_trigger(reason, anchor)` from every §4d site; boot direct-call from `boot_crashonly.c` classification and the coins-integrity gate; operator: one typed native recovery command plus `z23 ops state --subsystem=seal`.
 
 #### 4d. The trigger table — every detector stays, every remedy becomes the verb
 
@@ -102,7 +102,7 @@ re-derive LOC estimates here.
    hash-bound verdicts) — landed, complementary to this plan, zero overlap.
 2. Canonical-frontier steps 1–6: Invariant A (item 1 above) plus
    deriving `coins_best` / demoting the `utxos` mirror.
-3. **M1 — the seal (additive only):** seal table + candidate hook + ratify tick + prefix-end getter + `zclassic23 dumpstate seal` + the rolling-anchor page-on-read-failure fix. Ships independently; proves itself by accumulating ratified seals live, zero behavior change.
+3. **M1 — the seal (additive only):** seal table + candidate hook + ratify tick + prefix-end getter + `z23 dumpstate seal` + the rolling-anchor page-on-read-failure fix. Ships independently; proves itself by accumulating ratified seals live, zero behavior change.
 4. **M2 — the verb:** `window_rebuild_run` + sentinel + `boot_crashonly` rewire (auto-reindex demoted to fallback). Fixture-proven before any trigger uses it.
 5. **M3 — trigger rewire:** §4d rows 1–7 flipped one at a time, each with its fixture; old rung stays compiled-but-uncalled one step, then grep-zero-callers, then delete.
 6. **M4 — deletion Waves A then B** + pinned tests + a lint ratchet (`framework_shape_allowlist` style): no symbol outside `window_rebuild.c`/`utxo_apply_delta_reorg.c` may write `coins`/`coins_applied_height` on a recovery path ("recompute, never repair", enforced).
@@ -140,7 +140,7 @@ re-derive LOC estimates here.
 ### 9. Remove the temporary `-nobgvalidation` once item 2 deploys *(OPEN, owner-gated/live)*
 - **Goal:** restore full background re-verification on the live node. The flag is a TEMPORARY mitigation (via `~/.config/zclassic23/env` word-split into `ZCL_ADDNODE_FLAGS`) because `bg_validation_service.c:291` `check_block` would false-flag canonical block 478544 → a `BLOCK_FAILED_VALID` tip-wedge vector (one stale failed-bit wedges the tip).
 - **Mechanism:** after item 2 deploys, delete the flag from the env file, restart the service, let bg validation walk past h=478544.
-- **Acceptance:** live `zclassic23 core sync validation` shows progress monotonically past 478544 with zero false flags; no `BLOCK_FAILED_VALID` entries; RSS stays within the known bg-validation envelope (watch the stair-step gotcha).
+- **Acceptance:** live `z23 core sync validation` shows progress monotonically past 478544 with zero false flags; no `BLOCK_FAILED_VALID` entries; RSS stays within the known bg-validation envelope (watch the stair-step gotcha).
 - **Size:** config-only + one live observation window.
 
 ---
@@ -234,8 +234,8 @@ these harden the bridge.
 The stickiness invariant applied to reducer holds: **a stall must always be a
 NAMED typed blocker (`lib/util/include/util/blocker.h`) with either an auto-remedy
 condition or an honest, documented owner-gate rationale** — never a bare
-fail-closed refusal invisible to `zclassic23 core sync blockers` /
-`zclassic23 dumpstate subsystem=blocker`. An audit of every fail-closed hold
+fail-closed refusal invisible to `z23 core sync blockers` /
+`z23 dumpstate subsystem=blocker`. An audit of every fail-closed hold
 in `app/jobs/src/` (`utxo_apply`, `script_validate`, `proof_validate`,
 `coin_backfill`) found 12 typed hold sites; the generic backstop
 (`app/conditions/src/blocker_stall_meta_detector.c`) now arms the sticky
@@ -262,7 +262,7 @@ by the meta-detector above.)
 Still-open, non-consensus, hermetically testable (re-check absent from HEAD
 before starting):
 
-- **`header_band` / `connman` health surfaced richer in `zclassic23 dumpstate`** —
+- **`header_band` / `connman` health surfaced richer in `z23 dumpstate`** —
   island-root / contiguous-frontier / remaining / ETA, and "N/3 healthy,
   dialing, K addnodes in backoff" instead of a bare node count.
 - **Split the overloaded `block-not-finalized-by-reducer` reason** into a

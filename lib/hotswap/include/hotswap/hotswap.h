@@ -167,7 +167,7 @@ bool hotswap_manifest_v2_validate(
 /* Number of generations loaded this process (monotone; never decremented). */
 size_t hotswap_generation_count(void);
 
-/* `zclassic23 dumpstate hotswap` (dump-state convention).
+/* `z23 dumpstate hotswap` (dump-state convention).
  * Reentrant-safe; `out` is initialized (json_set_object) by this function. */
 bool hotswap_dump_state_json(struct json_value *out, const char *key);
 

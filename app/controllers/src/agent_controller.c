@@ -77,7 +77,7 @@ bool rpc_agent_dev_status(const struct json_value *params, bool help,
     if (strcmp(json_get_str(json_get(result, "status")), "unavailable") != 0)
         json_push_kv_str(result, "status", "ok");
     json_push_kv_str(result, "collector_command", cmd);
-    json_push_kv_str(result, "native_command", "zclassic23 agentdevstatus");
+    json_push_kv_str(result, "native_command", "z23 agentdevstatus");
     json_push_kv_str(result, "safe_next_action", "run make agent-dev-status");
     return true;
 }
@@ -258,7 +258,7 @@ bool rpc_agent_map(const struct json_value *params, bool help,
     json_push_kv_str(
         result, "summary",
         "Use typed native zclassic23 commands; discover them with "
-        "zclassic23 discover help.");
+        "z23 discover help.");
 
     json_init(&commands);
     json_set_array(&commands);
@@ -415,7 +415,7 @@ bool rpc_agent_impact(const struct json_value *params, bool help,
                      file_count > 0 ? "explicit_file_args"
                                     : "no_files_supplied");
     json_push_kv_str(result, "empty_input_hint",
-                     "pass changed paths, e.g. zclassic23 agentimpact $(git diff --name-only origin/main...HEAD)");
+                     "pass changed paths, e.g. z23 agentimpact $(git diff --name-only origin/main...HEAD)");
     json_push_kv(result, "files", &files);
     json_push_kv(result, "relevant_test_groups", &groups);
     json_push_kv(result, "recommended_commands", &commands);
@@ -452,7 +452,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(result, "build_commit", zcl_build_commit());
     json_push_kv_str(result, "language", "c23");
     json_push_kv_str(result, "summary",
-                     "Use make agent-plan to inspect the exact fast-lane decision without building, make agent-loop or make fast-ci for the cheapest guarded edit loop, make immutable-history-canaries for fast real-chain consensus KATs, make agent-doctor for the combined next-command check, make agent-dev-status before touching the dev lane, make fast-rebuild when a runnable non-LTO dev node is needed, build/bin/zclassic23-dev <command> for no-build API reads, compiler caches when available, and make ci-reproducible for byte identity.");
+                     "Use make agent-plan to inspect the exact fast-lane decision without building, make agent-loop or make fast-ci for the cheapest guarded edit loop, make immutable-history-canaries for fast real-chain consensus KATs, make agent-doctor for the combined next-command check, make agent-dev-status before touching the dev lane, make fast-rebuild when a runnable non-LTO dev node is needed, build/bin/z23-dev <command> for no-build API reads, compiler caches when available, and make ci-reproducible for byte identity.");
 
     json_init(&loop);
     json_set_object(&loop);
@@ -464,7 +464,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
     json_push_kv_str(&loop, "doctor", "make agent-doctor");
     json_push_kv_str(&loop, "dev_lane_status", "make agent-dev-status");
     json_push_kv_str(&loop, "native_dev_lane_status",
-                     "zclassic23 agentdevstatus");
+                     "z23 agentdevstatus");
     json_push_kv_str(&loop, "direct_changed_compile",
                      "make fast-changed-compile");
     json_push_kv_str(&loop, "fast_no_link_compile", "make fast-compile");
@@ -537,10 +537,10 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                      "make agent-stage-dev");
     json_push_kv_str(&dev, "status_command", "make agent-dev-status");
     json_push_kv_str(&dev, "native_status_command",
-                     "zclassic23 agentdevstatus");
+                     "z23 agentdevstatus");
     json_push_kv_str(&dev, "status_json_command",
                      "make agent-dev-status ARGS=--json");
-    json_push_kv_str(&dev, "binary", "build/bin/zclassic23-dev");
+    json_push_kv_str(&dev, "binary", "build/bin/z23-dev");
     json_push_kv_str(&dev, "installed_linger_binary",
                      "$HOME/.local/bin/zclassic23-dev");
     json_push_kv_str(&dev, "object_dir", "build/dev-obj/epochs/<compile_epoch>");
@@ -693,7 +693,7 @@ bool rpc_agent_build(const struct json_value *params, bool help,
                              "make agent-doctor",
                              "read-only combined build, dev-lane, recent focused-test failure, and next-action check");
     agent_push_build_command(&commands, "agent_dev_status_native",
-                             "zclassic23 agentdevstatus",
+                             "z23 agentdevstatus",
                              "native typed dev-lane status contract");
     agent_push_build_command(&commands, "stage_dev_binary",
                              "make agent-stage-dev",

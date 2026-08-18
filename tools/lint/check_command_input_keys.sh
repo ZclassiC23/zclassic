@@ -5,7 +5,7 @@
 #
 # THE BUG THIS EXISTS TO CATCH (reproduced live, 2026-07-29):
 #
-#   $ zclassic23 zcode package publish plan --input='{"release_hex":"00",
+#   $ z23 zcode package publish plan --input='{"release_hex":"00",
 #       "manifest_hex":"00","dir":"/tmp","recipe_hex":"00"}'
 #   -> {"code":"INVALID_INPUT","message":"unknown input key 'recipe_hex'"}
 #

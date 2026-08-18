@@ -136,8 +136,8 @@ int spec_html_quality(void)
                 GET("/wallet");
             THEN("title tag present")
                 EXPECT(has("<title>") || has("<title "));
-            THEN("title contains ZClassic")
-                EXPECT(has("ZClassic"));
+            THEN("title contains Z23")
+                EXPECT(has("Z23"));
             PASS();
         }
 

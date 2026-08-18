@@ -61,7 +61,7 @@ setup() {
     if [ -z "$secret" ]; then
         secret="$(openssl rand -base64 48 | tr -d '\n')"
         printf '%s' "$secret" | secret-tool store \
-            --label='ZClassic23 dev wallet unlock' \
+            --label='Z23 dev wallet unlock' \
             application zclassic23 wallet-scope dev \
             credential wallet-passphrase >/dev/null
     fi

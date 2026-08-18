@@ -1612,7 +1612,7 @@ size_t zcl_command_registry_menu_json(const struct zcl_command_registry *registr
               json_push_kv_str(&root, "path", wanted[0] ? wanted : "root") &&
               json_push_kv_str(&root, "summary",
                                node ? node->summary :
-                               "ZClassic23 sovereign command interface") &&
+                               "Z23 sovereign command interface") &&
               json_push_kv_str(&root, "registry_digest", digest);
     for (size_t i = 0; ok && registry && i < registry->count; i++) {
         const char *parent = registry->commands[i].parent;

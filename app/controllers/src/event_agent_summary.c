@@ -656,7 +656,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         reason = ZCL_STATUS_REASON_TYPED_BLOCKER;
         primary = health.dominant_blocker_id[0]
             ? health.dominant_blocker_id : "typed_blocker_operator_needed";
-        next = "zclassic23 dumpstate blocker";
+        next = "z23 dumpstate blocker";
     } else if (posture.review_required) {
         reason = ZCL_STATUS_REASON_POSTURE_REVIEW;
         primary = posture.status;
@@ -665,41 +665,41 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         reason = ZCL_STATUS_REASON_HEALTH_BLOCKER;
         primary = health.blocking_reason[0] ? health.blocking_reason
                                             : "operator_needed";
-        next = "zclassic23 healthcheck";
+        next = "z23 healthcheck";
     } else if (!health.peer_snapshot_available) {
         reason = ZCL_STATUS_REASON_PEER_SNAPSHOT_BUSY;
         primary = "peer_snapshot_unavailable";
-        next = "zclassic23 getpeerinfo";
+        next = "z23 getpeerinfo";
     } else if (!health.has_peers) {
         reason = ZCL_STATUS_REASON_NO_PEERS;
         primary = "no_peers";
-        next = "zclassic23 getpeerinfo";
+        next = "z23 getpeerinfo";
     } else if (material_gap && health.catchup_stalled) {
         reason = ZCL_STATUS_REASON_CATCHUP_STALLED;
         primary = "catchup_stalled";
-        next = "zclassic23 getsyncdiag";
+        next = "z23 getsyncdiag";
     } else if (material_gap && health.download_dispatch_stalled) {
         reason = ZCL_STATUS_REASON_DOWNLOAD_DISPATCH_IDLE;
         primary = "download_dispatch_idle";
-        next = "zclassic23 getsyncdiag";
+        next = "z23 getsyncdiag";
     } else if (material_gap &&
                (health.in_flight > 0 || health.queued > 0)) {
         reason = ZCL_STATUS_REASON_CHAIN_GAP_DOWNLOADING;
         primary = "chain_gap";
-        next = "zclassic23 downloadstats";
+        next = "z23 downloadstats";
     } else if (material_gap) {
         reason = ZCL_STATUS_REASON_DOWNLOAD_QUEUE_IDLE;
         primary = "download_queue_idle";
-        next = "zclassic23 getsyncdiag";
+        next = "z23 getsyncdiag";
     } else if (material_index_gap) {
         reason = ZCL_STATUS_REASON_PROJECTION_LAG;
         primary = "projection_lag";
-        next = "zclassic23 dumpstate chain_advance_coordinator";
+        next = "z23 dumpstate chain_advance_coordinator";
     } else if (!health.healthy) {
         reason = ZCL_STATUS_REASON_HEALTHCHECK_UNHEALTHY;
         primary = health.blocking_reason[0] ? health.blocking_reason
                                             : "healthcheck_unhealthy";
-        next = "zclassic23 healthcheck";
+        next = "z23 healthcheck";
     }
     const char *status = node_status_reason_status(reason);
     const char *summary = node_status_reason_summary(reason);
@@ -744,7 +744,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
         result, "first_call", "agent", "cached_fast_fields",
         ZCL_AGENT_FIRST_CALL_BUDGET_AGENT_MS, first_call_started_us,
         first_call_budget.partial_result, first_call_budget.partial_reason,
-        first_call_budget.partial_result ? "zclassic23 healthcheck" : "");
+        first_call_budget.partial_result ? "z23 healthcheck" : "");
     json_push_kv_str(result, "source_id_sha256",
                      zcl_build_source_id_sha256());
     json_push_kv_str(result, "build_commit", zcl_build_commit());
@@ -776,7 +776,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
     };
     agent_push_condition_summary_contract_json(result, &condition_view);
     /* Typed-blocker-registry summary derived from the SAME authority as
-     * `zclassic23 dumpstate blocker` (blocker_snapshot_all +
+     * `z23 dumpstate blocker` (blocker_snapshot_all +
      * blocker_select_dominant). Exposing the registry head and count here lets
      * the compact status brief present it beside the condition-engine count so
      * the two operator surfaces can never name disjoint truths. `dominant_id`
@@ -805,7 +805,7 @@ bool rpc_agent_summary(const struct json_value *params, bool help,
                          health.overdue_transient_dominant_id[0]
                              ? health.overdue_transient_dominant_id : "none");
         json_push_kv_str(&breg, "native_state_command",
-                         "zclassic23 dumpstate blocker");
+                         "z23 dumpstate blocker");
         json_push_kv(result, "blocker_registry", &breg);
         json_free(&breg);
     }

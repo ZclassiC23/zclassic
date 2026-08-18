@@ -156,7 +156,7 @@ jobs:
   #             neighbours that is a coin flip, not a gate. Coverage is
   #             likewise excluded: it is a second instrumented rebuild for a
   #             number nobody reads on a PR.
-  #   EXCLUDED  the whole-program LTO link (`make zclassic23`): one `cc` over
+  #   EXCLUDED  the whole-program LTO link (`make z23`): one `cc` over
   #             ~1200 files at -O3 with -flto=auto, a multi-GB,
   #             tens-of-minutes step on a 4-vCPU runner.
   #   EXCLUDED  `make test-parallel`. READ THIS BEFORE RE-DECIDING IT: the

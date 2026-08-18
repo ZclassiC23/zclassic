@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Intervention Ledger — detects every touch of a node, attributed or not
+Description=Z23 Intervention Ledger — detects every touch of a node, attributed or not
 # The record that makes "N days with zero operator intervention" a
 # FALSIFIABLE claim. Per cycle, per watched unit, it records:
 #   - every ActiveState transition, with InvocationID and the systemd

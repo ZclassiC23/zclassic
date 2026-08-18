@@ -42,43 +42,43 @@ int syncdiag_cases_api_catalog(void)
             json_size(resources) >= 4;
         ok = ok && cli && cli->type == JSON_OBJ &&
             strcmp(json_get_str(json_get(cli, "api_command")),
-                   "zclassic23 api") == 0;
+                   "z23 api") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli,
                                                 "app_protocols_command")),
-                          "zclassic23 appprotocols") == 0;
+                          "z23 appprotocols") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli,
                                                 "service_catalog_command")),
-                          "zclassic23 servicecatalog") == 0;
+                          "z23 servicecatalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli,
                                                 "service_operations_command")),
-                          "zclassic23 serviceoperations [operation_id|key=value...]") == 0;
+                          "z23 serviceoperations [operation_id|key=value...]") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "first_command")),
-                          "zclassic23 agent") == 0;
+                          "z23 agent") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "map_command")),
-                          "zclassic23 agentmap") == 0;
+                          "z23 agentmap") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "lanes_command")),
-                          "zclassic23 agentlanes") == 0;
+                          "z23 agentlanes") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "impact_command")),
-                          "zclassic23 agentimpact <files...>") == 0;
+                          "z23 agentimpact <files...>") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "contracts_command")),
-                          "zclassic23 agentcontracts") == 0;
+                          "z23 agentcontracts") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "build_command")),
-                          "zclassic23 agentbuild") == 0;
+                          "z23 agentbuild") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli,
                                                 "interface_command")),
-                          "zclassic23 agentinterface") == 0;
+                          "z23 agentinterface") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli,
                                                 "deploy_guard_command")),
-                          "zclassic23 agentdeployguard [action]") == 0;
+                          "z23 agentdeployguard [action]") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "drilldown_command")),
-                          "zclassic23 healthcheck") == 0;
+                          "z23 healthcheck") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "milestone_command")),
-                          "zclassic23 milestone") == 0;
+                          "z23 milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli, "refold_command")),
-                          "zclassic23 refold") == 0;
+                          "z23 refold") == 0;
         ok = ok && strcmp(json_get_str(json_get(cli,
                                                 "peer_incidents_command")),
-                          "zclassic23 peerincidents") == 0;
+                          "z23 peerincidents") == 0;
 
         struct json_value alias;
         json_init(&alias);

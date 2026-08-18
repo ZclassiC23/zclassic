@@ -219,7 +219,7 @@ int test_wallet_view(void)
     {
         size_t n = wv_get("/wallet");
         bool ok = (n > 0) && wv_is_200();
-        ok = ok && wv_has("ZClassic23 Wallet");  /* page title */
+        ok = ok && wv_has("Z23 Wallet");  /* page title */
         ok = ok && wv_has("class='nav'");       /* navigation */
         if (ok) printf("OK (%zu bytes)\n", n);
         else { printf("FAIL (n=%zu)\n", n); failures++; }
@@ -229,7 +229,7 @@ int test_wallet_view(void)
     {
         size_t n = wv_get("/wallet/");
         bool ok = (n > 0) && wv_is_200();
-        ok = ok && wv_has("ZClassic23 Wallet");
+        ok = ok && wv_has("Z23 Wallet");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -2262,7 +2262,7 @@ int test_wallet_view(void)
         if (!bad) printf("OK\n");
     }
 
-    printf("NAV: all titles contain 'ZClassic23'... ");
+    printf("NAV: all titles contain 'Z23'... ");
     {
         const char *pages[] = {"/wallet", "/wallet/send", "/wallet/receive",
                                 "/wallet/history", "/wallet/coins",
@@ -2270,7 +2270,7 @@ int test_wallet_view(void)
         bool ok = true;
         for (int i = 0; pages[i]; i++) {
             wv_get(pages[i]);
-            if (!wv_has("ZClassic23")) {
+            if (!wv_has("Z23")) {
                 printf("FAIL (%s)\n", pages[i]);
                 ok = false; failures++; break;
             }

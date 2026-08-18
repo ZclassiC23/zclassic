@@ -83,7 +83,7 @@ stdout is a terminal:
 | a file or pipe | none of the above | REFUSE | **no wallet created**, and no half-made one |
 
 Under the shipped service stdout is `node.log` — rotated, copied into backups,
-and readable with `zclassic23 ops logs` — so the phrase may never be printed
+and readable with `z23 ops logs` — so the phrase may never be printed
 there. SKIP is not a downgraded SHOW: it draws no phrase, so there are no words
 to leak on that path. The cost is that the wallet's only backup is the wallet
 file plus its passphrase.
@@ -286,7 +286,7 @@ A table whose row carries any authorizing value belongs on the table list.
 The grant is presented in the agent's own environment and the agent runs as the
 node's uid. Therefore an agent that does not cooperate can:
 
-- run `env -u ZCL_AGENT_SESSION zclassic23 …` and be the unbounded local
+- run `env -u ZCL_AGENT_SESSION z23 …` and be the unbounded local
   operator (`native_command.c:3159` — `granted_capabilities=~0`,
   `authority_ceiling=OWNER`);
 - read `<datadir>/.cookie` and call `sendtoaddress` straight over JSON-RPC,

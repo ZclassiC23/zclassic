@@ -125,7 +125,7 @@ void zcl_devloop_hotswap_guidance(
     }
     if (!next_command || next_command_size == 0) return;
     const char *next =
-        "zclassic23-dev dev status --view=full";
+        "z23-dev dev status --view=full";
     if (story_green) {
         next = "keep editing; exact affected proof is running asynchronously";
     } else if (compile_green) {
@@ -139,10 +139,10 @@ void zcl_devloop_hotswap_guidance(
                (why && strstr(why, "frozen KAT identity changed"))) {
         next = "make -j\"$(nproc)\" dev-bin";
     } else if (phase && strcmp(phase, "compile") == 0) {
-        next = "zclassic23-dev dev diagnose latest";
+        next = "z23-dev dev diagnose latest";
     } else if ((why && strstr(why, "cannot read RPC auth cookie")) ||
                (why && strstr(why, "returned no activation body"))) {
-        next = "zclassic23-dev dev generation current";
+        next = "z23-dev dev generation current";
     }
     (void)snprintf(next_command, next_command_size, "%s", next);
 }
@@ -2072,7 +2072,7 @@ static int hs_hotfork_unity_source(
             " && strcmp(zcl_devloop_watcher_freshness(true,true,false),\"runtime_starting\")==0"
             " && strcmp(zcl_devloop_watcher_freshness(true,true,true),\"current\")==0"
             " && strcmp(zcl_devloop_watcher_next_action(false,false,false,ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),"
-            "\"zclassic23-dev dev begin\")==0"
+            "\"z23-dev dev begin\")==0"
             " && strcmp(zcl_devloop_watcher_next_action(true,true,true,ZCL_DEVLOOP_PUBLISH_VERIFY_ONLY),"
             "\"edit one C23 file\")==0);\n"
             " #undef HF_CHECK\n"

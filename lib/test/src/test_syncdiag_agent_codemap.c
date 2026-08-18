@@ -52,12 +52,12 @@ int syncdiag_cases_agent_codemap(void)
             find_object_with_str(commands, "name", "dev_status");
         ok = ok && map_dev_status &&
             strcmp(json_get_str(json_get(map_dev_status, "native")),
-                   "zclassic23 agentdevstatus") == 0;
+                   "z23 agentdevstatus") == 0;
         const struct json_value *map_proof_bundle =
             find_object_with_str(commands, "name", "proof_bundle");
         ok = ok && map_proof_bundle &&
             strcmp(json_get_str(json_get(map_proof_bundle, "native")),
-                   "zclassic23 proofbundle [anchor_datadir]") == 0;
+                   "z23 proofbundle [anchor_datadir]") == 0;
         ok = ok && find_object_with_str(commands, "method", "healthcheck")
                          != NULL;
         ok = ok && find_object_with_str(commands, "method", "statecatalog")
@@ -68,13 +68,13 @@ int syncdiag_cases_agent_codemap(void)
             find_object_with_str(commands, "name", "compact_status");
         ok = ok && map_compact_status &&
             strcmp(json_get_str(json_get(map_compact_status, "native")),
-                   "zclassic23 status") == 0;
+                   "z23 status") == 0;
         const struct json_value *map_full_compatibility =
             find_object_with_str(commands, "name",
                                  "full_compatibility_status");
         ok = ok && map_full_compatibility &&
             strcmp(json_get_str(json_get(map_full_compatibility, "native")),
-                   "zclassic23 agent") == 0;
+                   "z23 agent") == 0;
         const struct json_value *map_background_quality =
             find_object_with_str(commands, "name", "background_quality");
         ok = ok && map_background_quality &&
@@ -86,26 +86,26 @@ int syncdiag_cases_agent_codemap(void)
             find_object_with_str(commands, "method", "getnodelog");
         ok = ok && map_state &&
             strcmp(json_get_str(json_get(map_state, "native")),
-                   "zclassic23 dumpstate <subsystem> [key]") == 0;
+                   "z23 dumpstate <subsystem> [key]") == 0;
         ok = ok && map_log &&
             strcmp(json_get_str(json_get(map_log, "native")),
-                   "zclassic23 getnodelog <pattern>") == 0;
+                   "z23 getnodelog <pattern>") == 0;
         ok = ok && telemetry && telemetry->type == JSON_ARR;
         const struct json_value *map_peer_incidents =
             find_object_with_str(telemetry, "method", "peerincidents");
         ok = ok && map_peer_incidents &&
             strcmp(json_get_str(json_get(map_peer_incidents, "native")),
-                   "zclassic23 peerincidents") == 0;
+                   "z23 peerincidents") == 0;
         const struct json_value *map_telemetry_status =
             find_object_with_str(telemetry, "name", "compact_status");
         ok = ok && map_telemetry_status &&
             strcmp(json_get_str(json_get(map_telemetry_status, "native")),
-                   "zclassic23 status") == 0;
+                   "z23 status") == 0;
         const struct json_value *map_full_status =
             find_object_with_str(telemetry, "name", "full_status");
         ok = ok && map_full_status &&
             strcmp(json_get_str(json_get(map_full_status, "native")),
-                   "zclassic23 healthcheck") == 0;
+                   "z23 healthcheck") == 0;
         ok = ok &&
             find_object_with_str(telemetry, "name", "node_log") != NULL;
         ok = ok &&
@@ -122,7 +122,7 @@ int syncdiag_cases_agent_codemap(void)
                    "zcl.sql_result.v1") == 0;
         ok = ok && map_db &&
             strcmp(json_get_str(json_get(map_db, "native")),
-                   "zclassic23 dbquery <SELECT>") == 0;
+                   "z23 dbquery <SELECT>") == 0;
         const struct json_value *map_events =
             find_object_with_str(telemetry, "method", "eventlog");
         ok = ok && map_events &&
@@ -130,7 +130,7 @@ int syncdiag_cases_agent_codemap(void)
                    "zcl.event_log.v1") == 0;
         ok = ok && map_events &&
             strcmp(json_get_str(json_get(map_events, "native")),
-                   "zclassic23 eventlog <count>") == 0;
+                   "z23 eventlog <count>") == 0;
         const struct json_value *map_quality_lanes =
             find_object_with_str(telemetry, "name", "quality_lanes");
         ok = ok && map_quality_lanes &&

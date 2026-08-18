@@ -32,7 +32,7 @@ struct agent_security_posture {
      * copied from the SAME chain_evidence_controller_snapshot() call that
      * fills snapshot_anchor_height above — no new read/lock). -1 when unknown
      * (node_db unavailable, or the walk has not recorded a height yet). See
-     * `zclassic23 core sync validation` for the walk this height belongs to. */
+     * `z23 core sync validation` for the walk this height belongs to. */
     int background_validation_height;
     int64_t sprout_anchor_activation_cursor;
     int64_t sapling_anchor_activation_cursor;

@@ -14,8 +14,8 @@ The typed status commands are ground truth; this page is a pointer to
 evidence files, never a substitute for re-checking them:
 
 ```bash
-zclassic23 status
-zclassic23 dumpstate reducer_frontier
+z23 status
+z23 dumpstate reducer_frontier
 tail -5 ~/.local/state/zclassic23-slo/uptime-ledger.jsonl
 ```
 
@@ -538,7 +538,7 @@ delete the table once it stops being useful history.
 | Per-file test headers: `test_core.h` + facets, so a node-header edit no longer dirties ~36% of the test build | `lib/test/include/test/` |
 | Two ISA paths that had never compiled into a shipped binary — AVX-512 SHA3-512 (missing permutation + a 32-byte over-read) and SHA-NI SHA-256 (now runtime-dispatched with a known-answer self-test) | `lib/crypto/src/` |
 | Boot refusals that fire before the log exists now report themselves; the doc they name is guaranteed to exist by `check-error-doc-refs` | `config/src/boot_error.c`, `tools/lint/check_error_doc_refs.sh` |
-| **The vault** — one read model over all six asset classes (transparent, shielded, tokens, names, market offers, swaps), each row carrying an evidence grade. Funds locked in a swap HTLC are counted for the first time; `getbalance` still cannot see them | `app/services/src/vault_read.c`, `tools/command/native_vault_command.c`, `zclassic23 vault list` |
+| **The vault** — one read model over all six asset classes (transparent, shielded, tokens, names, market offers, swaps), each row carrying an evidence grade. Funds locked in a swap HTLC are counted for the first time; `getbalance` still cannot see them | `app/services/src/vault_read.c`, `tools/command/native_vault_command.c`, `z23 vault list` |
 | Wallet-wide sweeps for ZSLP balances, ZNAM names, and shielded notes — previously every one of these could only answer per-address | `app/services/src/`, bound into the vault read model |
 | Three broken commands fixed, all one defect: a handler returned a bare JSON array or an in-memory-only field, and the command bridge dropped it. `app.swap.list` and the three wallet plan legs now return usable bodies | `swap_controller.c:970`, `wallet_native_handlers.c` |
 | The `lib/` module set is declared once in `config/lib_module_order.def` and derived everywhere else — it had been copied into five places, and two of the cross-checks were vacuous | `Makefile:272`, `tools/lint/repo_shape.sh` |
@@ -966,7 +966,7 @@ evidence and left deliberately, not forgotten.
     (`msg_headers.c:1213`). The `catchup: final commit missing tip hash`
     loop is a downstream symptom (zero indexed blocks → NULL
     last_indexed_tip), not a cause. **Measurement trap that
-    cost one wrong read:** `zclassic23 dumpstate` IGNORES the
+    cost one wrong read:** `z23 dumpstate` IGNORES the
     `ZCL_DATADIR`/`ZCL_RPCPORT` env vars — a probe aimed at the stopwatch
     node silently read the live node instead (reported H\*=tip, the live
     node's value). Aim dumpstate probes with explicit flags, or read the
@@ -1055,7 +1055,7 @@ optimising anything here — two confident hypotheses died against these numbers
 ## MVP status
 
 MRS and per-criterion evidence live in [`docs/MVP.md`](MVP.md) and
-`zclassic23 milestone` (REST `GET /api/v1/milestone`). Only a run-passing
+`z23 milestone` (REST `GET /api/v1/milestone`). Only a run-passing
 `make mvp-verify` member moves a ◐ to a ✅ — never hand-bump the count.
 
 ## Operational notes
@@ -1086,7 +1086,7 @@ MRS and per-criterion evidence live in [`docs/MVP.md`](MVP.md) and
 | **dev** | `$HOME/.zclassic-c23-dev` | verify/probe only | Isolated build/test lane; public tooling cannot restart or publish to it. |
 | **soak** | `$HOME/.zclassic-c23-soak` | deliberate re-baseline | Long-uptime / weekly evidence lane; do not churn during development. |
 
-`zclassic23 agentlanes` / REST `/api/v1/agent` report each lane's
+`z23 agentlanes` / REST `/api/v1/agent` report each lane's
 `operator_lane` (`zcl.operator_lane.v1`) and restart policy; prefer that
 contract over parsing systemd names. The units declare the same intent with
 `-operator-lane=canonical|dev|soak`. `zclassicd` (the C++ reference) runs

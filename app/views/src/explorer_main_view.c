@@ -19,7 +19,7 @@ size_t explorer_view_wallet_page(uint8_t *r, size_t max)
         "Connection: close\r\n\r\n"
         "<!DOCTYPE html><html><head><meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width,initial-scale=1'>"
-        "<title>ZClassic23 Wallet</title>"
+        "<title>Z23 Wallet</title>"
         "<style>"
         "*{margin:0;padding:0;box-sizing:border-box}"
         "body{background:#0d1117;color:#e6edf3;font-family:Inter,-apple-system,sans-serif;"
@@ -62,7 +62,7 @@ size_t explorer_view_wallet_page(uint8_t *r, size_t max)
         ".copied{color:#3fb950;font-size:12px;margin-left:8px}"
         "</style></head><body>");
     APPEND(off, r, max,
-        "<div class='hdr'><h1>ZClassic23</h1><span class='sync' id='sync'>Loading...</span></div>"
+        "<div class='hdr'><h1>Z23</h1><span class='sync' id='sync'>Loading...</span></div>"
         "<div class='balance'>"
         "<div class='amount' id='bal' title='Hover for full precision'>—</div>"
         "</div>"

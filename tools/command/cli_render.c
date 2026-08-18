@@ -503,20 +503,20 @@ static const struct {
     const char *code;
     const char *suggestion;
 } g_error_suggestions[] = {
-    { "MISSING_SUBSYSTEM", "zclassic23 statecatalog" },
-    { "STATE_ERROR", "zclassic23 statecatalog" },
-    { "UNKNOWN_COMMAND", "zclassic23 discover search <query>" },
-    { "MISSING_QUERY", "zclassic23 discover search <query>" },
-    { "MISSING_PATH", "zclassic23 discover help" },
-    { "UNKNOWN_PATH", "zclassic23 discover help" },
-    { "BAD_INPUT", "zclassic23 discover schema %s" },
-    { "INVALID_INPUT", "zclassic23 discover schema %s" },
-    { "BAD_FLAG", "zclassic23 discover schema %s" },
-    { "TOO_MANY_ARGS", "zclassic23 discover schema %s" },
-    { "DUPLICATE_CONTROL", "zclassic23 discover schema %s" },
-    { "NODE_UNAVAILABLE", "zclassic23 status" },
-    { "CONNECT_REFUSED", "zclassic23 status" },
-    { "AUTH_REJECTED", "zclassic23 status" },
+    { "MISSING_SUBSYSTEM", "z23 statecatalog" },
+    { "STATE_ERROR", "z23 statecatalog" },
+    { "UNKNOWN_COMMAND", "z23 discover search <query>" },
+    { "MISSING_QUERY", "z23 discover search <query>" },
+    { "MISSING_PATH", "z23 discover help" },
+    { "UNKNOWN_PATH", "z23 discover help" },
+    { "BAD_INPUT", "z23 discover schema %s" },
+    { "INVALID_INPUT", "z23 discover schema %s" },
+    { "BAD_FLAG", "z23 discover schema %s" },
+    { "TOO_MANY_ARGS", "z23 discover schema %s" },
+    { "DUPLICATE_CONTROL", "z23 discover schema %s" },
+    { "NODE_UNAVAILABLE", "z23 status" },
+    { "CONNECT_REFUSED", "z23 status" },
+    { "AUTH_REJECTED", "z23 status" },
 };
 
 static const char *error_suggestion_for(const char *code)
@@ -552,18 +552,18 @@ static void next_as_shell(const struct json_value *next, char *out,
         (strcmp(input->keys[0], "path") == 0 ||
          strcmp(input->keys[0], "query") == 0)) {
         const char *v = json_get_str(&input->children[0]);
-        snprintf(out, cap, "zclassic23 %s %s", words, v ? v : "");
+        snprintf(out, cap, "z23 %s %s", words, v ? v : "");
         return;
     }
     if (input && input->type == JSON_OBJ && input->num_children > 0) {
         char ij[384];
         size_t n = json_write(input, ij, sizeof(ij));
         if (n > 0 && n < sizeof(ij)) {
-            snprintf(out, cap, "zclassic23 %s --input='%s'", words, ij);
+            snprintf(out, cap, "z23 %s --input='%s'", words, ij);
             return;
         }
     }
-    snprintf(out, cap, "zclassic23 %s", words);
+    snprintf(out, cap, "z23 %s", words);
 }
 
 /* ── per-shape renderers ───────────────────────────────────────────── */
@@ -576,7 +576,7 @@ static void render_menu(struct buf *b, const struct zcl_cli_render_env *e,
     bool is_root = !path || strcmp(path, "root") == 0;
 
     char head[256];
-    snprintf(head, sizeof(head), "%s — %s", is_root ? "zclassic23" : path,
+    snprintf(head, sizeof(head), "%s — %s", is_root ? "z23" : path,
              summary ? summary : "");
     emit_header(b, e, head);
     buf_putc(b, '\n');
@@ -824,7 +824,7 @@ static void render_statecatalog(struct buf *b,
     int64_t count = json_get_int(json_get(root, "count"));
     char head[256];
     snprintf(head, sizeof(head),
-             "%lld dumpstate subsystems — zclassic23 ops state "
+             "%lld dumpstate subsystems — z23 ops state "
              "--subsystem=<name>",
              (long long)count);
     emit_header(b, e, head);

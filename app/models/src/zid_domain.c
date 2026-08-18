@@ -363,7 +363,7 @@ bool zid_domain_set_anchor(struct node_db *ndb, const char *domain_name,
     return db_zid_domain_save(ndb, &d);
 }
 
-/* ── `zclassic23 dumpstate zid_domains` ────────────────────────────── */
+/* ── `z23 dumpstate zid_domains` ────────────────────────────── */
 
 static void zd_hex32(const uint8_t b[32], char out[65])
 {

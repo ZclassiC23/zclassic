@@ -268,7 +268,7 @@ int test_vault_read(void)
     {
         /* A separate bug, found while wiring the encumbered row: swap_list
          * set a bare ARRAY as its result, and the native command bridge
-         * rejects any non-object body — so `zclassic23 app swap list`
+         * rejects any non-object body — so `z23 app swap list`
          * answered BAD_TOOL_BODY for its entire existence, leaving the one
          * command that could have shown these funds unusable. The envelope
          * below is the schema the command already declared. */

@@ -733,28 +733,28 @@ int api_rest_index_focused_tests(void)
                           "/api/v1/service-operations") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "api_command")),
-                          "zclassic23 api") == 0;
+                          "z23 api") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "app_protocols_command")),
-                          "zclassic23 appprotocols") == 0;
+                          "z23 appprotocols") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "service_catalog_command")),
-                          "zclassic23 servicecatalog") == 0;
+                          "z23 servicecatalog") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "service_operations_command")),
-                          "zclassic23 serviceoperations [operation_id|key=value...]") == 0;
+                          "z23 serviceoperations [operation_id|key=value...]") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "first_command")),
-                          "zclassic23 agent") == 0;
+                          "z23 agent") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "drilldown_command")),
-                          "zclassic23 healthcheck") == 0;
+                          "z23 healthcheck") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "milestone_command")),
-                          "zclassic23 milestone") == 0;
+                          "z23 milestone") == 0;
         ok = ok && strcmp(json_get_str(json_get(json_get(&root, "cli"),
                                                 "refold_command")),
-                          "zclassic23 refold") == 0;
+                          "z23 refold") == 0;
         ok = ok && json_get(json_get(&root, "cli"),
                             "compat_command") == NULL;
         json_free(&root);

@@ -61,7 +61,7 @@ for pair in "${PAIRS[@]}"; do
     case "$probe" in
         # '.' is allowed: native.leaves probes are dotted canonical command
         # paths (e.g. "core.status"), not removed route identifiers
-        # (e.g. "zclassic23 status").
+        # (e.g. "z23 status").
         ""|*[!A-Za-z0-9_.]*)
             violations="${violations}  $p (invalid canonical probe '$probe')"$'\n'
             ;;

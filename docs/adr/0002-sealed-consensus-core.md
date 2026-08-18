@@ -13,7 +13,7 @@
 
 `docs/FRAMEWORK.md`'s Prime Directive draws a hard line: Equihash parameters,
 activation heights, block/transaction validity, and coin accounting are
-**consensus-parity territory** — a change here must never ship to zclassic23
+**consensus-parity territory** — a change here must never ship to z23
 ahead of the reference chain, even framed as opt-in or miner-signaled (see
 `docs/CONSENSUS_PARITY_DOCTRINE.md`). Before this ADR, that line was
 enforced entirely by *review discipline*: the consensus predicates and

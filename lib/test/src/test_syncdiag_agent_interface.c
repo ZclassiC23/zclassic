@@ -166,7 +166,7 @@ int syncdiag_cases_agent_interface(void)
                    "zcl.mirror_status.v2") == 0;
         ok = ok && mirror_status &&
             strcmp(json_get_str(json_get(mirror_status, "native")),
-                   "zclassic23 getmirrorstatus") == 0;
+                   "z23 getmirrorstatus") == 0;
         ok = ok && deploy_cap &&
             strcmp(json_get_str(json_get(deploy_cap, "schema")),
                    "zcl.agent_deploy_guard.v1") == 0;
@@ -215,26 +215,26 @@ int syncdiag_cases_agent_interface(void)
             json_get_bool(json_get(select_sql_cap, "registry_alias"));
         ok = ok && development_loop &&
             strcmp(json_get_str(json_get(development_loop, "status")),
-                   "zclassic23 status") == 0;
+                   "z23 status") == 0;
         ok = ok && development_loop &&
             strcmp(json_get_str(json_get(development_loop,
                                          "full_compatibility_status")),
-                   "zclassic23 agent") == 0;
+                   "z23 agent") == 0;
         ok = ok && development_loop &&
             strcmp(json_get_str(json_get(development_loop,
                                          "subsystem_state")),
-                   "zclassic23 dumpstate <subsystem> [key]") == 0;
+                   "z23 dumpstate <subsystem> [key]") == 0;
         ok = ok && development_loop &&
             strcmp(json_get_str(json_get(development_loop, "logs")),
-                   "zclassic23 getnodelog <pattern>") == 0;
+                   "z23 getnodelog <pattern>") == 0;
         ok = ok && development_loop &&
             strcmp(json_get_str(json_get(development_loop, "database")),
-                   "zclassic23 dbquery <SELECT>") == 0;
+                   "z23 dbquery <SELECT>") == 0;
         ok = ok && visual_instruments &&
             json_size(visual_instruments) == 9;
         ok = ok && visual_qr &&
             strcmp(json_get_str(json_get(visual_qr, "native")),
-                   "zclassic23 app qr show 'zclassic:t1...?amount=0.01'") == 0;
+                   "z23 app qr show 'zclassic:t1...?amount=0.01'") == 0;
         ok = ok && visual_qr &&
             strcmp(json_get_str(json_get(visual_qr, "path")),
                    "app.qr.show") == 0;
@@ -246,7 +246,7 @@ int syncdiag_cases_agent_interface(void)
                    "output") != NULL;
         ok = ok && visual_status &&
             strcmp(json_get_str(json_get(visual_status, "native")),
-                   "zclassic23 app presentation status") == 0;
+                   "z23 app presentation status") == 0;
         ok = ok && visual_diff &&
             strstr(json_get_str(json_get(visual_diff, "native")),
                    "app presentation code-change") != NULL;
@@ -258,7 +258,7 @@ int syncdiag_cases_agent_interface(void)
                    "app presentation publication-confirm") != NULL;
         ok = ok && visual_corpus &&
             strcmp(json_get_str(json_get(visual_corpus, "native")),
-                   "zclassic23 app presentation corpus") == 0;
+                   "z23 app presentation corpus") == 0;
         ok = ok && visual_publication &&
             strstr(json_get_str(json_get(visual_publication, "native")),
                    "app presentation publication-status") != NULL;
@@ -270,7 +270,7 @@ int syncdiag_cases_agent_interface(void)
                    "zcl.app_presentation_show.input.v1") == 0;
         ok = ok && visual_bounded &&
             strcmp(json_get_str(json_get(visual_bounded, "discover_input")),
-                   "zclassic23 discover schema app.presentation.show") == 0;
+                   "z23 discover schema app.presentation.show") == 0;
         ok = ok && visual_release_confirmation &&
             strstr(json_get_str(json_get(visual_release_confirmation,
                                          "native")),
@@ -298,7 +298,7 @@ int syncdiag_cases_agent_interface(void)
         ok = ok && visual_loop &&
             strcmp(json_get_str(json_get(visual_loop,
                                          "input_discovery")),
-                   "zclassic23 discover schema <leaf>") == 0;
+                   "z23 discover schema <leaf>") == 0;
         ok = ok && visual_loop &&
             strstr(json_get_str(json_get(visual_loop, "text_companion")),
                    "output=text") != NULL;
@@ -638,7 +638,7 @@ int syncdiag_cases_agent_interface(void)
         ok = ok && json_get_int(json_get(wd_json,
                                          "restarts_remaining")) == 2;
         ok = ok && strcmp(json_get_str(json_get(wd_json, "deep_state")),
-                          "zclassic23 dumpstate chain_tip_watchdog") == 0;
+                          "z23 dumpstate chain_tip_watchdog") == 0;
         json_free(&watchdog_body);
 
         wd.no_progress_restarts = 3;

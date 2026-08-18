@@ -1,5 +1,5 @@
 #!/bin/bash
-# One-time deployment setup for ZClassic23.
+# One-time deployment setup for Z23.
 # Run once with: sudo bash deploy/setup.sh
 #
 # After this, 'make deploy' works without sudo ever again.
@@ -9,7 +9,7 @@ TARGET_USER="${SUDO_USER:-$(whoami)}"
 REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 SERVICE_DIR="$(eval echo ~$TARGET_USER)/.config/systemd/user"
 
-echo "Setting up ZClassic23 for user: $TARGET_USER"
+echo "Setting up Z23 for user: $TARGET_USER"
 
 # Enable linger (service survives logout) — may already be enabled
 loginctl enable-linger "$TARGET_USER" 2>/dev/null || true

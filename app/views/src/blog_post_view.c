@@ -157,7 +157,7 @@ size_t blog_post_index_view_render(const struct blog_post_index_page *page,
     };
     sink.out[0] = 0;
     blog_document_open(&sink, page->blog_name[0]
-        ? "ZNAM Blog — ZClassic23" : "ZClassic23 Journal");
+        ? "ZNAM Blog — Z23" : "Z23 Journal");
     blog_nav(&sink, NULL);
     sink_literal(&sink, "<header class='hero'><div><p class='eyebrow'>Wallet-signed publishing demo</p><h1><span class='gradient'>");
     if (page->blog_name[0]) {

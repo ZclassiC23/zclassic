@@ -202,7 +202,7 @@ void store_ensure_schema(sqlite3 *db, const char *datadir)
                 .name = "ZCL23 Access Token",
                 .description =
                     "1 token grants access to premium .onion services on the "
-                    "ZClassic23 network. Tokens are ZSLP tokens on the ZClassic "
+                    "Z23 network. Tokens are ZSLP tokens on the ZClassic "
                     "blockchain.",
                 .price_zatoshi = 1000000,
                 .token_id = "ZCL23ACCESS",
@@ -212,7 +212,7 @@ void store_ensure_schema(sqlite3 *db, const char *datadir)
             {
                 .name = "VPN Credit (1 month)",
                 .description =
-                    "Route traffic through the ZClassic23 onion network. "
+                    "Route traffic through the Z23 onion network. "
                     "1 month of encrypted relay service.",
                 .price_zatoshi = 5000000,
                 .token_id = "ZCL23VPN",
@@ -222,7 +222,7 @@ void store_ensure_schema(sqlite3 *db, const char *datadir)
             {
                 .name = "Storage (1 GB)",
                 .description =
-                    "Encrypted storage on the ZClassic23 distributed network. "
+                    "Encrypted storage on the Z23 distributed network. "
                     "Data replicated across multiple .onion nodes.",
                 .price_zatoshi = 2000000,
                 .token_id = "ZCL23STORE",

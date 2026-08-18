@@ -82,10 +82,10 @@ Do not create a plan, reserve funds, or broadcast while any item is false:
 Run the read-only checks first:
 
 ```bash
-zclassic23 status
-zclassic23 dumpstate reducer_frontier
+z23 status
+z23 dumpstate reducer_frontier
 make custody-status ARGS='--broker-dir=<owner-private-absolute-dir> --wallet-scope=dev'
-zclassic23 metaverse agent money --dir=<owner-private-absolute-dir>
+z23 metaverse agent money --dir=<owner-private-absolute-dir>
 make transaction-lab-status
 ```
 
@@ -124,10 +124,10 @@ value is counted even when it moves between owner-controlled lab wallets.
 For each row, obtain current schemas instead of copying remembered keys:
 
 ```bash
-zclassic23 app transaction-types guide --type=sapling_t_to_z
-zclassic23 discover schema vault.intent.plan
-zclassic23 discover schema vault.intent.commit
-zclassic23 discover schema vault.intent.status
+z23 app transaction-types guide --type=sapling_t_to_z
+z23 discover schema vault.intent.plan
+z23 discover schema vault.intent.commit
+z23 discover schema vault.intent.status
 ```
 
 Pass the source and recipient addresses through the private local stdin path.
@@ -142,7 +142,7 @@ printf '%s' '{
   "effects":[
     {"asset":"ZCL","to":"<private-local-sapling-recipient>","amount":"0.01000000"}
   ]
-}' | zclassic23 vault intent plan --input=-
+}' | z23 vault intent plan --input=-
 ```
 
 Planning is intentionally non-broadcasting, but it creates a durable
@@ -151,12 +151,12 @@ scope/instance, genesis, tip, snapshot root, expiry, and privacy warning. Only
 then may the owner commit the returned plan once:
 
 ```bash
-zclassic23 vault intent commit --input='{
+z23 vault intent commit --input='{
   "wallet_scope":"dev",
   "plan_id":"<64hex-from-reviewed-plan>",
   "confirm":true
 }'
-zclassic23 vault intent status --input='{"plan_id":"<64hex>"}'
+z23 vault intent status --input='{"plan_id":"<64hex>"}'
 ```
 
 Repeating the identical plan request is the supported timeout-recovery path. It
@@ -209,7 +209,7 @@ to the event ledger.
 
 The prerequisite names below are concise checklists, not grants. For every
 `mainnet_ready` row, start with
-`zclassic23 app transaction-types guide --type=<case_id>`, inspect every
+`z23 app transaction-types guide --type=<case_id>`, inspect every
 builder/component/commit schema it names, produce a non-broadcasting plan where
 available, and obtain owner approval for that exact plan. Stateful rows should
 be executed in dependency order within their campaign.

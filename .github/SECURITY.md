@@ -2,7 +2,7 @@
 
 ## Supported status
 
-ZClassic23 is **pre-v1 and in active stabilization** — it is not
+Z23 is **pre-v1 and in active stabilization** — it is not
 production-ready, and there are no supported release lines yet. Only the
 current `main` branch receives fixes. Do not rely on this build as a
 mainnet node until the v1 acceptance criteria in
@@ -14,7 +14,7 @@ are currently plaintext on the wire).
 
 ## Safety and integrity model
 
-ZClassic23 is security-sensitive full-node software, not offensive-security
+Z23 is security-sensitive full-node software, not offensive-security
 tooling. The repository contains Tor, wallet/key handling, P2P networking,
 native operator commands, fuzzers, and crash harnesses because those are required to
 run, inspect, and harden an operator-owned node.
@@ -48,7 +48,7 @@ every PR regardless of origin.
 
 Please report vulnerabilities **privately** via GitHub security
 advisories on
-[ZclassiC23/zclassic](https://github.com/ZclassiC23/zclassic/security/advisories/new),
+[z23c/z23](https://github.com/z23c/z23/security/advisories/new),
 rather than filing a public issue. If you cannot use advisories, contact
 the maintainer privately.
 

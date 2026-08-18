@@ -1,4 +1,4 @@
-# ZClassic23 documentation map
+# Z23 documentation map
 
 This is a curated map, not an inventory. The documentation hierarchy is:
 
@@ -12,9 +12,26 @@ This is a curated map, not an inventory. The documentation hierarchy is:
 7. [`../CLAUDE.md`](../CLAUDE.md) and vendor-specific skills — thin
    compatibility adapters, not independent project doctrine.
 
+## North Star
+
+Z23 exists to make useful software abundant without taking control away from
+the user. **Software made for you, not imposed on you.** The whole product is
+one journey — describe desired behavior, reuse existing C23 first, create only
+the missing code, build fast, show the real consequence, reproduce it on
+another node, accept the exact version, use it in a real application. Ask the
+node for that journey with `z23 zcode guide`; every step returns the next safe
+command.
+
+AI workers are replaceable. Z23 is the durable layer: exact source identity,
+reusable packages, dependency graphs, bounded builds, independent
+reproduction, local policy, distribution, release history, and preservation.
+Documentation here should keep complexity hidden but inspectable, and give the
+reader one obvious next action. The durable statement of this is
+[`../AGENTS.md`](../AGENTS.md#north-star).
+
 ## Public product
 
-ZClassic23 is first a public ZClassic blockchain full node. It also offers an
+Z23 is first a public ZClassic blockchain full node. It also offers an
 optional decentralized C23 software commons where ordinary full nodes can
 publish, discover, fetch, verify, build, independently reproduce, and serve
 exact packages without a central registry.

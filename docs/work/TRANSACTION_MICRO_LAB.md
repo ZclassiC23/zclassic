@@ -13,8 +13,8 @@ expected to translate this runbook into CLI input.
 The fast native planning surface is compiled into the binary:
 
 ```bash
-zclassic23 app transaction-types micro-lab
-zclassic23 app transaction-types micro-lab --slot=91
+z23 app transaction-types micro-lab
+z23 app transaction-types micro-lab --slot=91
 ```
 
 The first call returns the bounded 100-slot/14-type campaign, money envelopes,

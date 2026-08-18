@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * Onion service integration - bridges Tor dynhost to zclassic23 app handlers.
+ * Onion service integration - bridges Tor dynhost to z23 app handlers.
  *
  * This is the glue between our Tor fork's dynhost and the injected app layer.
  * When a request arrives over a Tor circuit:

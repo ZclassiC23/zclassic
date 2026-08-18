@@ -1,4 +1,4 @@
-/* ZClassic23 Blog — MVC/ActiveRecord reference application. */
+/* Z23 Blog — MVC/ActiveRecord reference application. */
 
 ZCL_APP("blog", "ZClassic Blog", "0.1.0")
 

@@ -127,7 +127,7 @@ struct node_health_snapshot {
     /* Mirror lag SLO breach severity (none|warn|critical|fatal). "fatal"
      * flips snapshot.healthy false for serving, conditions, and remedies;
      * it remains separate from the systemd process-hang watchdog. Surfaced
-     * via `zclassic23 status`, `zclassic23 dumpstate health`, and Prometheus
+     * via `z23 status`, `z23 dumpstate health`, and Prometheus
      * zcl_mirror_lag_breach_seconds. */
     int64_t  mirror_lag_blocks;
     int64_t  mirror_lag_breach_seconds;
@@ -146,7 +146,7 @@ struct node_health_snapshot {
      * auto-healing condition engine exhausts remedies for a CRITICAL
      * problem and emits EV_OPERATOR_NEEDED — the "a halt can never be
      * silent" signal. Flips healthy=false and sets degraded_reason so
-     * `zclassic23 status` shows it and the sd_notify heartbeat stops. Cleared
+     * `z23 status` shows it and the sd_notify heartbeat stops. Cleared
      * automatically when the underlying condition clears. */
     bool     operator_needed;
     bool     operator_latch_recovered;

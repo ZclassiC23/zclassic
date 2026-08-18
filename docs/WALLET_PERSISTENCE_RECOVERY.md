@@ -34,7 +34,7 @@ separate `wallet.dat` file to move.
 `<datadir>/wallet_projection.db` is a derived read model, not the key store.
 Copying or repairing it recovers nothing.
 
-`zclassic23 core storage query` and `core storage query offline` deliberately
+`z23 core storage query` and `core storage query offline` deliberately
 **refuse** any statement that names those tables — they answer
 `QUERY_REJECTED: query references secret wallet key material and is denied`.
 Do not plan a recovery around reading them through that command; it will not
@@ -60,7 +60,7 @@ row and reads it back through the wallet's own handle, so it fails whenever
 the wallet could not durably write.
 
 `BOOT_WALLET_KEYSTORE_COUNT_MISMATCH` is different: it means the loader
-dropped rows it could see. That is a zclassic23 defect, not an environment
+dropped rows it could see. That is a z23 defect, not an environment
 problem. Keep the rescue copy — it is the only reproduction.
 
 ## 4. Rotated wallet backups
@@ -83,7 +83,7 @@ recovery key.
 Check what the last run saw:
 
 ```sh
-zclassic23 ops state --subsystem=wallet_backup
+z23 ops state --subsystem=wallet_backup
 # last_tables_verified / wallet_table_count / last_missing_tables
 ```
 
@@ -92,11 +92,11 @@ When `WALLET_BACKUP_PASSWORD` was set, backups are encrypted (`*.sqlite.enc`).
 needed when you want a readable copy:
 
 ```sh
-zclassic23 core wallet backup decrypt \
+z23 core wallet backup decrypt \
   --input='{"from":"<src.enc>","to":"<dst.sqlite>","confirm":true}'
 ```
 
-(The legacy argv form `zclassic23 --decrypt-wallet-backup <src.enc> <dst.sqlite>`
+(The legacy argv form `z23 --decrypt-wallet-backup <src.enc> <dst.sqlite>`
 still works and reads the same environment variable.)
 
 ## 4a. Restoring one
@@ -111,16 +111,16 @@ systemctl --user stop zclassic23
 
 # Rehearsal: runs the real merge in a transaction, rolls it back, and reports
 # per table what a commit would do.
-zclassic23 core wallet restore \
+z23 core wallet restore \
   --input='{"from":"'"$HOME"'/wallet_backups/wallet_backup_<ts>.sqlite",
             "datadir":"'"$HOME"'/.zclassic-c23"}'
 
 # Commit (use the plan's commit_input, or add "confirm":true).
-zclassic23 core wallet restore --input='{"from":"...","datadir":"...","confirm":true}'
+z23 core wallet restore --input='{"from":"...","datadir":"...","confirm":true}'
 
 systemctl --user start zclassic23
-zclassic23 core wallet rescan             # transparent history
-zclassic23 core wallet rescan-witnesses   # REQUIRED before spending a shielded note
+z23 core wallet rescan             # transparent history
+z23 core wallet rescan-witnesses   # REQUIRED before spending a shielded note
 ```
 
 What the report means:

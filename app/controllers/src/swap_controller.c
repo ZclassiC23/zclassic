@@ -969,7 +969,7 @@ static bool rpc_swap_list(const struct json_value *params, bool help,
 
     /* An OBJECT, not a bare array: the native command bridge rejects a
      * non-object body (tools/command/native_command.c), which is why
-     * `zclassic23 app swap list` answered BAD_TOOL_BODY for its whole
+     * `z23 app swap list` answered BAD_TOOL_BODY for its whole
      * existence. The envelope is the one this command already declared as
      * its output schema, and matches rpc_name_list / zcl.names.index.v1. */
     struct json_value swaps_json;

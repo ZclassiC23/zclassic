@@ -74,7 +74,7 @@ HTTPS server), so a direct TLS POST replaces site 1's `curl` shell-out for
 clearnet webhook URLs. **`.onion` webhook URLs are honestly out of scope**:
 the embedded Tor fork is dynhost — **inbound**-request-only
 (`lib/net/include/net/tor_integration.h`'s own architecture comment: "Tor is
-compiled into zclassic23 ... routes `.onion` requests directly into our
+compiled into z23 ... routes `.onion` requests directly into our
 process via C function calls" — there is no outbound-stream API in that
 header or in `vendor/tor_stub.c`). An outbound Tor SOCKS/stream client would
 be new scope, not a Rung-0 deliverable.
@@ -247,7 +247,7 @@ signal handler has already done so.
   seccomp yet, so no `execve` risk from an unmigrated shell-out site that
   Rung 0 missed).
 - **P2** — default-on for release builds running under systemd + the
-  seccomp deny-list + a `dumpstate` sandbox witness (so `zclassic23 core status`-style
+  seccomp deny-list + a `dumpstate` sandbox witness (so `z23 core status`-style
   introspection can prove the sandbox is actually active, not just
   requested).
 - **P3** — a weaker dev profile for `ZCL_DEV_BUILD` (Landlock only, no

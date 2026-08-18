@@ -27,7 +27,7 @@
  *   9. Index rebuild: a fresh build from the persisted CAS bytes equals the
  *      pre-"crash" build entry for entry (the index holds no truth).
  *  10. THE CLI PATH (t_registry_path): the same publication driven through
- *      the catalog the way `zclassic23 zcode package publish ...` drives it
+ *      the catalog the way `z23 zcode package publish ...` drives it
  *      — zcl_command_registry_input_validate() first, then the handler the
  *      leaf BINDS. Cases 1-9 call the handler symbol directly, which skips
  *      input_validate entirely; that blind spot shipped a plan leaf that

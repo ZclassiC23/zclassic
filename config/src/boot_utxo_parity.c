@@ -73,7 +73,7 @@ static bool boot_utxo_parity_start(void *ctx)
     }
 
     /* Always install the cheap, live-safe finalized-frontier observer +
-     * leave the service introspectable via `zclassic23 dumpstate`. */
+     * leave the service introspectable via `z23 dumpstate`. */
     utxo_parity_observe_finalization();
 
     if (boot_utxo_parity_opt_out()) {

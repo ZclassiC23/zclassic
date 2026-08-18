@@ -422,7 +422,7 @@ b=bal['result']
 p=peers['result']
 
 print()
-print('  ZClassic23 Node Status')
+print('  Z23 Node Status')
 print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
 print(f'  Chain:        {r[\"chain\"]}')
 print(f'  Height:       {r[\"blocks\"]}')
@@ -490,7 +490,7 @@ print()
 cmd_help() {
     cat <<'HELP'
 
-  zcl — ZClassic23 Command Line Interface
+  zcl — Z23 Command Line Interface
 
   TRANSACTIONS
     zcl send <addr> <amt>     Send transparent ZCL (t→t)

@@ -35,7 +35,7 @@
 # as the compatibility fallback when neither source declares a port.
 #
 # Query mechanism: zcl-rpc getblockchaininfo (the same lightweight raw-RPC
-# CLI soak_evidence.sh uses — NOT the native `zclassic23 status` command,
+# CLI soak_evidence.sh uses — NOT the native `z23 status` command,
 # which returns the full ~15 KB diagnostic envelope and can take seconds to
 # assemble on a loaded/wedged node; getblockchaininfo answers in single-digit
 # milliseconds and carries both "blocks" (served height) and "headers"

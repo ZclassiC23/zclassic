@@ -179,7 +179,7 @@ all gate export/re-serve/advertise on the sovereign bit, so a
 `release_assisted` node can serve tip but cannot publish or re-seed the
 network with borrowed shielded state.
 
-`zclassic23 dumpstate sovereignty` surfaces the live posture
+`z23 dumpstate sovereignty` surfaces the live posture
 (`coins_kv_proven_authority`, `self_folded_marker`, `trust_mode`:
 `sovereign` | `release_assisted` | `bare`, `authority_posture`). Expected
 value right after an import: `release_assisted` /

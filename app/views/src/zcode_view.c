@@ -168,7 +168,7 @@ size_t zcode_view_packages(const struct vcs_package_index_entry **rows,
             "<p>%zu published release%s (%zu shown).%s</p>",
             total, total == 1 ? "" : "s", rendered,
             total == 0 ? " Publish your first package: "
-                         "`zclassic23 zcode guide`." : "");
+                         "`z23 zcode guide`." : "");
     }
     if (n > 0) off += (size_t)n;
 

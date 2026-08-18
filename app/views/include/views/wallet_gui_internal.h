@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * ZClassic23 GUI shared internals for the WebKit app and self-test driver.
+ * Z23 GUI shared internals for the WebKit app and self-test driver.
  *
  * The GTK/WebKit wallet GUI is split across two translation units that
  * both live in app/views/src/ and are compiled only when WebKit + GTK are

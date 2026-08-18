@@ -299,7 +299,7 @@ int main(int argc, char **argv) {
 
     signal(SIGINT, (void(*)(int))(void(*)(void))exit);
 
-    printf("ZClassic23 Mock RPC Server\n");
+    printf("Z23 Mock RPC Server\n");
     printf("Port: %d  Transparent: %.8f  Shielded: %.8f\n\n",
            port, t_bal, z_bal);
 
@@ -307,7 +307,7 @@ int main(int argc, char **argv) {
 
     printf("Press Ctrl+C to stop.\n\n");
     printf("In another terminal:\n");
-    printf("  build/bin/zclassic23      (wallet connects to mock)\n");
+    printf("  build/bin/z23      (wallet connects to mock)\n");
     printf("  make check-wallet         (automated verification)\n\n");
 
     pthread_join(t, NULL);

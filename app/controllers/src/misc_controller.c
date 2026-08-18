@@ -283,7 +283,7 @@ static bool rpc_benchmark(const struct json_value *params, bool help,
 
     json_set_object(result);
     json_push_kv_str(result, "primary_benchmark_source",
-                     "build/bin/zclassic23 -bench* writes docs/bench-history.csv");
+                     "build/bin/z23 -bench* writes docs/bench-history.csv");
 
     struct json_value primaries = {0};
     json_set_array(&primaries);
@@ -299,7 +299,7 @@ static bool rpc_benchmark(const struct json_value *params, bool help,
         json_set_object(&row);
         json_push_kv_str(&row, "benchmark", names[i]);
         json_push_kv_str(&row, "status", "pending");
-        json_push_kv_str(&row, "how", "run build/bin/zclassic23 -bench*");
+        json_push_kv_str(&row, "how", "run build/bin/z23 -bench*");
         json_push_back(&primaries, &row);
     }
     json_push_kv(result, "primary_benchmarks", &primaries);

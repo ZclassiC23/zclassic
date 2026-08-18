@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Stopwatch Gate failure notifier
+Description=Z23 Stopwatch Gate failure notifier
 # OnFailure= arm for zcl-c3-stopwatch-run@.service and
 # zcl-netdisrupt-run@.service (same pattern as
 # zclassic23-soak-evidence-onfailure.service). Fires ONLY when a

@@ -1,6 +1,6 @@
 # Claude compatibility entry point
 
-Claude is one replaceable coding-agent frontend for ZClassic23. The project
+Claude is one replaceable coding-agent frontend for Z23. The project
 contract is model-neutral; this file intentionally does not duplicate it.
 
 Read, in order:

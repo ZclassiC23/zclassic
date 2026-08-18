@@ -97,7 +97,7 @@ static bool render_guide(struct market_moderation_guide_result_v1 *out)
     (void)snprintf(out->static_boundary, sizeof(out->static_boundary), "%s",
                    "profile files, SQLite review marks, offer cache, RPC, listing enforcement, storage, serving, network and signed wire");
     (void)snprintf(out->next_command, sizeof(out->next_command), "%s",
-                   "zclassic23 app market moderation status");
+                   "z23 app market moderation status");
     return true;
 }
 

@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 External SLO Prober — client-viewpoint uptime ledger (read-only)
+Description=Z23 External SLO Prober — client-viewpoint uptime ledger (read-only)
 # Appends one JSON line per run per DEPLOYED local instance (canonical
 # rpcport 18232, dev rpcport 18252 — the INSTANCES table in the script is
 # the list) to ~/.local/state/zclassic23-slo/uptime-ledger.jsonl via

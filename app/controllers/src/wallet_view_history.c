@@ -52,7 +52,7 @@ size_t serve_history(uint8_t *r, size_t max, int page,
                             const char *filter, const char *search) {
     sqlite3 *db = wv_open_db();
     if (!db) {
-        size_t off = wv_emit_header(r, max, "History — ZClassic23", "/wallet/history");
+        size_t off = wv_emit_header(r, max, "History — Z23", "/wallet/history");
         off += template_render(TMPL_LOADING, NULL, 0,
             (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
@@ -62,7 +62,7 @@ size_t serve_history(uint8_t *r, size_t max, int page,
     int tip = wv_effective_tip(db);
     int per_page = 50;
 
-    size_t off = wv_emit_header(r, max, "History — ZClassic23", "/wallet/history");
+    size_t off = wv_emit_header(r, max, "History — Z23", "/wallet/history");
 
     enum history_filter_mode filter_mode = history_filter_parse(filter);
 
@@ -169,7 +169,7 @@ size_t serve_history(uint8_t *r, size_t max, int page,
 size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
     sqlite3 *db = wv_open_db();
     if (!db) {
-        size_t off = wv_emit_header(r, max, "Transaction — ZClassic23", "/wallet/history");
+        size_t off = wv_emit_header(r, max, "Transaction — Z23", "/wallet/history");
         off += template_render(TMPL_LOADING, NULL, 0,
             (char *)r + off, max - off);
         wv_emit_footer(r, max, &off);
@@ -177,7 +177,7 @@ size_t serve_tx_detail(uint8_t *r, size_t max, const char *txid_hex) {
     }
 
     int tip = wv_effective_tip(db);
-    size_t off = wv_emit_header(r, max, "Transaction — ZClassic23", "/wallet/history");
+    size_t off = wv_emit_header(r, max, "Transaction — Z23", "/wallet/history");
 
     /* Sanitize txid: only hex chars, max 64 */
     char safe_txid[65] = "";

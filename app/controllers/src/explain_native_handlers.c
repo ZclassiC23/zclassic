@@ -1,6 +1,6 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
- * `zclassic23 explain <topic>` composition. See explain_native_handlers.h.
+ * `z23 explain <topic>` composition. See explain_native_handlers.h.
  *
  * Pure topic composers (sync/blockers/health) render one prose `text` block +
  * structured fields from already-parsed JSON; explain_build fetches the RPC
@@ -173,7 +173,7 @@ void explain_compose_sync(const struct explain_inputs *in,
                   "  no cursor is above H* — every stage is within the "
                   "verified height\n");
         tline(t, sizeof(t), &len,
-              "  (per-stage step-EWMA rates: run `zclassic23 ops profile`)\n");
+              "  (per-stage step-EWMA rates: run `z23 ops profile`)\n");
     }
 
     /* Active self-heal conditions. */

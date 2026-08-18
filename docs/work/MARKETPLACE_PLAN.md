@@ -1,7 +1,7 @@
 # On-chain P2P marketplace with atomic swaps for ZSLP/ZCL (2026-07-27)
 
 Owner directive: an on-chain P2P marketplace with cross-chain atomic swaps
-for ZSLP/ZCL. This is an application protocol over ZClassic23 — no consensus
+for ZSLP/ZCL. This is an application protocol over Z23 — no consensus
 change, ZSLP ledger semantics untouched, every wallet-signing step is
 plan/commit with a fee preview.
 

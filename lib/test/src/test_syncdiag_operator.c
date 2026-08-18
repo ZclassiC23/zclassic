@@ -214,7 +214,7 @@ int syncdiag_cases_operator(void)
         ok = ok && snap && json_get(snap, "verification") != NULL;
         ok = ok && commands &&
             strcmp(json_get_str(json_get(commands, "native")),
-                   "zclassic23 refold") == 0;
+                   "z23 refold") == 0;
 
         struct json_value alias;
         json_init(&alias);
@@ -279,7 +279,7 @@ int syncdiag_cases_operator(void)
         ok = ok && commands && commands->type == JSON_OBJ;
         ok = ok && commands &&
             strcmp(json_get_str(json_get(commands, "native")),
-                   "zclassic23 proofbundle [anchor_datadir]") == 0;
+                   "z23 proofbundle [anchor_datadir]") == 0;
         ok = ok && agent &&
             strcmp(json_get_str(json_get(agent, "schema")),
                    "zcl.public_status.v3") == 0;

@@ -34,7 +34,7 @@
  *   segment_sealer_start(svc)              — launch background thread
  *   segment_sealer_stop(svc)               — join thread
  *   segment_sealer_run_catchup(svc, n, force) — seal up to n segments (tests)
- *   segment_sealer_dump_state_json — `zclassic23 dumpstate segment_sealer`
+ *   segment_sealer_dump_state_json — `z23 dumpstate segment_sealer`
  */
 
 #ifndef ZCL_SERVICES_SEGMENT_SEALER_SERVICE_H

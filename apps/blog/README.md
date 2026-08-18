@@ -1,6 +1,6 @@
-# ZClassic23 Blog
+# Z23 Blog
 
-Blog is the reference Rails-style ZClassic23 application:
+Blog is the reference Rails-style Z23 application:
 
 The canonical public mount is `https://zclnet.net/blog`; the identical
 path is served by every participating node's onion endpoint.

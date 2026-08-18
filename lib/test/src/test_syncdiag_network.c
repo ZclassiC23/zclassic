@@ -159,7 +159,7 @@ int syncdiag_cases_network(void)
                           "peerincidents") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "native_command")),
-                          "zclassic23 peerincidents") == 0;
+                          "z23 peerincidents") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "contract_source")),
                           "agent_contracts.def") == 0;
@@ -242,7 +242,7 @@ int syncdiag_cases_network(void)
                           "peerincidents") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "native_command")),
-                          "zclassic23 peerincidents") == 0;
+                          "z23 peerincidents") == 0;
         ok = ok && json_get_bool(json_get(&result,
                                           "compatibility_fallback"));
         ok = ok && strcmp(json_get_str(json_get(&result,
@@ -253,7 +253,7 @@ int syncdiag_cases_network(void)
                           "target_peerincidents_method_not_found") == 0;
         ok = ok && strcmp(json_get_str(json_get(&result,
                                                 "fallback_native_command")),
-                          "zclassic23 dumpstate peer_lifecycle incidents")
+                          "z23 dumpstate peer_lifecycle incidents")
             == 0;
 
         json_free(&result);

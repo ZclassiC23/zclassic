@@ -548,10 +548,10 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
         }
         else if (strcmp(argv[i], "--version") == 0 || strcmp(argv[i], "-version") == 0 ||
                  strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "-V") == 0) {
-            /* Print version + exit. Without this, `zclassic23 --version` (a
+            /* Print version + exit. Without this, `z23 --version` (a
              * judge's reflex) falls through as an unknown flag and silently
              * boots a full node against the default datadir. */
-            printf("zclassic23 v%d.%d.%d (source %.12s)\n",
+            printf("z23 v%d.%d.%d (source %.12s)\n",
                    CLIENT_VERSION_MAJOR, CLIENT_VERSION_MINOR,
                    CLIENT_VERSION_REVISION,
                    zcl_build_source_id_sha256());

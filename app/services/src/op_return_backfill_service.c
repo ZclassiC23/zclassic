@@ -480,7 +480,7 @@ void op_return_backfill_reset_for_test(void)
     index_fold_clear_partial_coverage("op_return_index");
 }
 
-/* ── `zclassic23 dumpstate op_return_index` ─────────────────────────── */
+/* ── `z23 dumpstate op_return_index` ─────────────────────────── */
 
 bool op_return_index_dump_state_json(struct json_value *out, const char *key)
 {
@@ -558,7 +558,7 @@ bool op_return_index_dump_state_json(struct json_value *out, const char *key)
     return true;
 }
 
-/* ── `zclassic23 dumpstate zepoch` ──────────────────────────────────
+/* ── `z23 dumpstate zepoch` ──────────────────────────────────
  *
  * Epoch-anchor status snapshot (the Bounded Node keystone, v1: no
  * background service, anchoring is an operator decision via

@@ -74,33 +74,33 @@ restart). Either way it is named.
 
 ## 3. Watch the machine live
 
-These are typed operator calls. Prefer the native `zclassic23` command and stop
+These are typed operator calls. Prefer the native `z23` command and stop
 when you have your answer.
 
 | Call | Shows |
 |------|-------|
-| `zclassic23 agentinterface` | Preferred AI/operator interface contract. Typed native CLI JSON is the operator surface, and REST is read-only. No external wrapper logic is required. |
-| `zclassic23 api` | Native API discovery from the running node. Same `zcl.rest_index.v2` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, `layer_model` for the ZCL L1 / zclassic23 application-layer boundary, and first native/REST calls. Start here when choosing an interface. |
-| `zclassic23 appprotocols` | Native application-protocol catalog. Same contract as `GET /api/v1/protocols`: ZSLP, ZNAM, market, messaging, and script-contract overlay services, their CRUD/read models, anchors, and consensus boundary. |
-| `zclassic23 agentlanes` | Native canonical/soak/dev topology and deployment-safety contract; use it before choosing a deploy or restart target. |
-| `zclassic23 agentliveness` | Compact lane/service/supervisor/background-quality liveness. Use it when deciding whether a lane is active, stalled, missing quality verdicts, or only being inspected from a static binary. Use `agentliveness full` only for embedded method/lane/domain arrays. |
-| `zclassic23 status` | The native first check: one line by default, or a bounded `zcl.result.v1` / `zcl.core_status_brief.v1` document with H*, gap, peers, health, and the causal blocker. Use `zclassic23 core status` for the larger diagnostic tree. |
-| `zclassic23 milestone` | Node-computed ASCII and JSON progress to v1 MVP. Same contract as `GET /api/v1/milestone`: live systems bar, strict MRS goals bar, partial-proof subgoals bar, and next blockers. |
-| `zclassic23 core status` | The full diagnostic tree: height, peers, sync state, reducer frontier, tip-finalize, condition engine, typed blockers, and chain source scoring. |
-| `zclassic23 core sync diagnose` | Sync state, header-sync counters, watchdog health, chain/header heights, peer maximum height, and download statistics. **It does not list the eight stage cursors**—use `dumpstate reducer_frontier` for those. |
-| `zclassic23 dumpstate reducer_frontier` | The eight stage cursors, `H*` (deepest provably-consistent height—the tip `getblockcount` serves), and the success-checked log frontiers. |
-| `zclassic23 dumpstate blocker` | Active blockers with deadlines and escape actions. |
-| `zclassic23 dumpstate condition_engine` | Self-heal engine: active versus cleared conditions. |
-| `zclassic23 dumpstate service_state` | Operational mode: boot / restore / reconcile / degraded_serving / syncing / healthy / repairing. |
-| `zclassic23 dumpstate chain_evidence` | Native chain evidence: tips, cursors, evidence flags, and any contradiction reason. |
+| `z23 agentinterface` | Preferred AI/operator interface contract. Typed native CLI JSON is the operator surface, and REST is read-only. No external wrapper logic is required. |
+| `z23 api` | Native API discovery from the running node. Same `zcl.rest_index.v2` body as `GET /api` and `GET /api/v1`: version, base path, resource routes, CRUD conventions, `layer_model` for the ZCL L1 / z23 application-layer boundary, and first native/REST calls. Start here when choosing an interface. |
+| `z23 appprotocols` | Native application-protocol catalog. Same contract as `GET /api/v1/protocols`: ZSLP, ZNAM, market, messaging, and script-contract overlay services, their CRUD/read models, anchors, and consensus boundary. |
+| `z23 agentlanes` | Native canonical/soak/dev topology and deployment-safety contract; use it before choosing a deploy or restart target. |
+| `z23 agentliveness` | Compact lane/service/supervisor/background-quality liveness. Use it when deciding whether a lane is active, stalled, missing quality verdicts, or only being inspected from a static binary. Use `agentliveness full` only for embedded method/lane/domain arrays. |
+| `z23 status` | The native first check: one line by default, or a bounded `zcl.result.v1` / `zcl.core_status_brief.v1` document with H*, gap, peers, health, and the causal blocker. Use `z23 core status` for the larger diagnostic tree. |
+| `z23 milestone` | Node-computed ASCII and JSON progress to v1 MVP. Same contract as `GET /api/v1/milestone`: live systems bar, strict MRS goals bar, partial-proof subgoals bar, and next blockers. |
+| `z23 core status` | The full diagnostic tree: height, peers, sync state, reducer frontier, tip-finalize, condition engine, typed blockers, and chain source scoring. |
+| `z23 core sync diagnose` | Sync state, header-sync counters, watchdog health, chain/header heights, peer maximum height, and download statistics. **It does not list the eight stage cursors**—use `dumpstate reducer_frontier` for those. |
+| `z23 dumpstate reducer_frontier` | The eight stage cursors, `H*` (deepest provably-consistent height—the tip `getblockcount` serves), and the success-checked log frontiers. |
+| `z23 dumpstate blocker` | Active blockers with deadlines and escape actions. |
+| `z23 dumpstate condition_engine` | Self-heal engine: active versus cleared conditions. |
+| `z23 dumpstate service_state` | Operational mode: boot / restore / reconcile / degraded_serving / syncing / healthy / repairing. |
+| `z23 dumpstate chain_evidence` | Native chain evidence: tips, cursors, evidence flags, and any contradiction reason. |
 
-`zclassic23 dumpstate` is a generic dispatcher—pass any registered subsystem
+`z23 dumpstate` is a generic dispatcher—pass any registered subsystem
 name. The eight
 stage names work directly as subsystems too: `header_admit`, `validate_headers`,
 `body_fetch`, `body_persist`, `script_validate`, `proof_validate`, `utxo_apply`,
-`tip_finalize`. For drilling deeper, use `zclassic23 getnodelog` for a bounded
-server-side regex tail, `zclassic23 dbquery` for SELECT-only node-database
-inspection, and `zclassic23 ops mirror` for the local reference-daemon view.
+`tip_finalize`. For drilling deeper, use `z23 getnodelog` for a bounded
+server-side regex tail, `z23 dbquery` for SELECT-only node-database
+inspection, and `z23 ops mirror` for the local reference-daemon view.
 
 The complete subsystem list is one array in code:
 `app/controllers/src/diagnostics_registry.c` (`g_dumpers[]`). Adding a new
@@ -146,7 +146,7 @@ crash-recovery slice). A complete atomic state install and copy proof must
 precede live cutover on any borrowed-state node. Whether canonical is
 currently wedged, cured, or holding tip on self-verified state is a live
 fact this page does not carry — verify the live H\* and cure status via
-`zclassic23 status` / `zclassic23 dumpstate reducer_frontier` and
+`z23 status` / `z23 dumpstate reducer_frontier` and
 `docs/HANDOFF.md` §0-LATEST; do not assume from this page.
 
 ## 5. START HERE — fresh agent
@@ -159,13 +159,13 @@ fact this page does not carry — verify the live H\* and cure status via
    lists things that look broken but are not (don't re-chase them);
    **`docs/CODEBASE_MAP.md`** is where-things-live + how-to-do-each-thing.
 3. Look at the live node before trusting any doc: start with
-   `zclassic23 agentmap` for the code/docs/test map, `zclassic23 agentlanes` for
-   canonical/soak/dev safety, `zclassic23 agentliveness` for the current lane's
-   listener/supervisor/quality rollup, `zclassic23 agentbuild` for the cached
-   build loop, `zclassic23 api` for interface discovery, and `zclassic23
-   appprotocols` for the application-layer catalog. Then use `zclassic23
-   status` for compact live state and `zclassic23 milestone` for v1 progress.
-   Drill down with `zclassic23 core status` and `zclassic23 dumpstate
+   `z23 agentmap` for the code/docs/test map, `z23 agentlanes` for
+   canonical/soak/dev safety, `z23 agentliveness` for the current lane's
+   listener/supervisor/quality rollup, `z23 agentbuild` for the cached
+   build loop, `z23 api` for interface discovery, and `z23
+   appprotocols` for the application-layer catalog. Then use `z23
+   status` for compact live state and `z23 milestone` for v1 progress.
+   Drill down with `z23 core status` and `z23 dumpstate
    reducer_frontier` only if needed. A doc can be stale;
    the node cannot.
 4. To understand one stage, open its file — `app/jobs/src/<stage>_stage.c`. Each is

@@ -2,7 +2,7 @@
  *
  * WHAT THIS DEMONSTRATES
  * -----------------------
- * zclassic23's `simnet_wire` harness (lib/sim/src/simnet_wire.c) drives the
+ * z23's `simnet_wire` harness (lib/sim/src/simnet_wire.c) drives the
  * REAL message processor (lib/net/src/msgprocessor.c) and the REAL p2p_node
  * framing/receive-reassembly code against synthetic byte sources — no
  * sockets, no threads, no wall clock. A "tick" is one scheduling quantum:
@@ -228,12 +228,12 @@ int main(void)
  *   - Real per-peer disconnect/reconnect + no-silent-halt liveness:
  *     app/services/src/sync_monitor.c and lib/util/src/supervisor.c (the
  *     supervisor liveness tree — see CLAUDE.md "Adding state
- *     introspection" and `zclassic23 dumpstate supervisor`) are what detect
+ *     introspection" and `z23 dumpstate supervisor`) are what detect
  *     and surface a stalled or partitioned peer set on a live node, instead
  *     of this file's direct simnet_wire_get_stats() polling.
  *
  *   - Typed blocker registry used for the no-silent-halt check:
  *     lib/util/include/util/blocker.h / lib/util/src/blocker.c — the same
  *     PERMANENT/TRANSIENT blocker classes a live node reports via
- *     `zclassic23 dumpstate blocker`.
+ *     `z23 dumpstate blocker`.
  */

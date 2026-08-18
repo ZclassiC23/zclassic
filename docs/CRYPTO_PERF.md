@@ -1,6 +1,6 @@
 # Crypto performance — the standing "beat Rust" invariant
 
-**The invariant:** every C crypto primitive on the ZClassic23 consensus path
+**The invariant:** every C crypto primitive on the Z23 consensus path
 must stay **at least as fast as its Rust/blst counterpart**, and may only ever
 get **faster** — never regress. "Beat Rust" is a durable, gated property, not a
 one-time push. This document is the standing contract; the mechanism is the
@@ -17,7 +17,7 @@ cited Rust numbers, never a live Rust link.
 
 | piece | path | role |
 |---|---|---|
-| Benchmark | `build/bin/zclassic23 -bench-crypto-vs-rust` (`src/main.c`) — `make bench-crypto-vs-rust` | Times every consensus-path C primitive as a **median of N** ns/op, prints machine-readable `CRYPTOPERF <key> <ns> <ops/s>` lines, appends medians to `docs/bench-history.csv`. |
+| Benchmark | `build/bin/z23 -bench-crypto-vs-rust` (`src/main.c`) — `make bench-crypto-vs-rust` | Times every consensus-path C primitive as a **median of N** ns/op, prints machine-readable `CRYPTOPERF <key> <ns> <ops/s>` lines, appends medians to `docs/bench-history.csv`. |
 | Baseline | `tools/crypto_perf_baseline.csv` | Per primitive: `c_ns_baseline` (a **ceiling that may only shrink**), `rust_ns_baseline`, `gate_mode`, `rust_source`. |
 | Gate | `tools/scripts/check_crypto_perf.sh` — `make check-crypto-perf` | Measures C live and enforces the ratchet + the ratio-vs-Rust rule below. |
 

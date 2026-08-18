@@ -8,7 +8,7 @@
 
 size_t serve_receive(uint8_t *r, size_t max) {
     sqlite3 *db = wv_open_db();
-    size_t off = wv_emit_header(r, max, "Receive — ZClassic23", "/wallet/receive");
+    size_t off = wv_emit_header(r, max, "Receive — Z23", "/wallet/receive");
 
     off += template_render(TMPL_RECEIVE_TABS, NULL, 0,
         (char *)r + off, max - off);

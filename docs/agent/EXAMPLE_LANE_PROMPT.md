@@ -58,7 +58,7 @@ the 3,308-character block shown here; the 3,302 figure above is the unredacted
 original.
 
 ```text
-You are an executor in the zclassic23 repository, working on the AGENT
+You are an executor in the z23 repository, working on the AGENT
 DEVELOPMENT HARNESS itself — the tooling this project's own AI orchestrator uses
 to run lanes. Your user is that orchestrator.
 
@@ -106,7 +106,7 @@ HOUSE FACTS — verified by the orchestrator; re-read anything you rely on.
   Read two of them before writing anything that must pass as a gate.
 * The string-safety helper that exists because of the pipefail inversion:
   tools/scripts/sh_str.sh.
-* The only skill in the repo: .claude/skills/zclassic23-dev/SKILL.md — a stub
+* The only skill in the repo: .claude/skills/z23-dev/SKILL.md — a stub
   that imports docs/DEVELOPING.md.
 * The doctrine an agent must know is scattered across CLAUDE.md,
   docs/DEVELOPING.md, docs/DEFENSIVE_CODING.md, docs/AGENT_TRAPS.md.
@@ -118,7 +118,7 @@ HOUSE FACTS — verified by the orchestrator; re-read anything you rely on.
 ## After — the same frame, referencing the contract (6 lines, 426 characters)
 
 ```text
-You are an executor in the zclassic23 repository. Work in
+You are an executor in the z23 repository. Work in
 /home/rhett/github/zclassic23-t3 on branch lane/agent-skills.
 Follow LANE_CONTRACT v1 (docs/agent/LANE_CONTRACT.md) — read it first; it is the
 doctrine, the build etiquette and the gate definitions for this lane.

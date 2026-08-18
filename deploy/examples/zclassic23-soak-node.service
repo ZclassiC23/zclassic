@@ -17,7 +17,7 @@
 # removing both again.
 
 [Unit]
-Description=ZClassic23 Soak Node (pinned binary, long-uptime MVP-C6 evidence)
+Description=Z23 Soak Node (pinned binary, long-uptime MVP-C6 evidence)
 After=network-online.target
 Wants=network-online.target
 # Soak/deploy split (owner-approved 2026-06-12): the main zclassic23 unit

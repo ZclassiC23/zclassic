@@ -183,13 +183,13 @@ static void sov_render_stamp(sqlite3 *pdb, const char *key,
 
 /* ── Last-known-good trust-tier cache (busy-path fallback) ──────────────
  *
- * sovereignty_dump_state_json backs `zclassic23 status`'s trust-tier surface
+ * sovereignty_dump_state_json backs `z23 status`'s trust-tier surface
  * (event_agent_summary.c -> agent_summary_posture_cache.c). The reducer drive
  * and the shielded-history importer both hold progress_store_tx_lock for
  * extended stretches, so a BLOCKING acquire in a diagnostics/status path
  * would take the whole front door dark exactly when an operator most wants
  * it (the same class of bug commit cc4de081a fixed for refold_progress.c /
- * validate_headers_stage.c — its message names `zclassic23 status` as a
+ * validate_headers_stage.c — its message names `z23 status` as a
  * victim). This cache lets the busy branch answer truthfully-but-stale
  * instead of queuing: same shape as agent_security_posture.c's
  * g_posture_cache / posture_cache_store / posture_cache_load — a plain

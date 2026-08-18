@@ -25,7 +25,7 @@
 void register_catalog_lag_exceeded(void);
 
 /* See CLAUDE.md "Adding state introspection". Reentrant-safe.
- * `zclassic23 dumpstate catalog_coverage` — per-index cursor, floor, target,
+ * `z23 dumpstate catalog_coverage` — per-index cursor, floor, target,
  * lag, coverage over the reachable range, and the decisive
  * `emptiness_is_meaningful` flag. `key` is unused (one dump returns all
  * rows). */

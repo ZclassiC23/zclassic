@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Consensus-State Bundle Export Timer — nightly
+Description=Z23 Consensus-State Bundle Export Timer — nightly
 # NOT enabled by installing this file. Enabling is an explicit operator
 # action: review deploy/zclassic23-bundle-export.service's target datadir
 # and ZCL_EXPORT_SECONDARY for this box, then

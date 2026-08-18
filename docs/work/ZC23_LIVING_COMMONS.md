@@ -20,7 +20,7 @@ deployment, service restart, canonical-datadir mutation, or consensus change.
 
 The project mission is:
 
-> **ZClassic23 is a metaverse where people and AI create real things together,
+> **Z23 is a metaverse where people and AI create real things together,
 > and nobody owns the world they build in.**
 
 Here, "metaverse" means the shared, permissionless creation environment formed
@@ -331,7 +331,7 @@ fixture explicitly reports `physical_independence_proven=false`.
 The qualification view is:
 
 ```text
-zclassic23 zcode commons shadow plan --input='{"workspace":"<scratch-cas>","score_receipt_root":"680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8","policy_candidate_root":"<64hex>","reproduction_request_root":"<64hex>","reproduction_proof_set_root":"<64hex>","epoch":<n>,"now_unix":<seconds>}'
+z23 zcode commons shadow plan --input='{"workspace":"<scratch-cas>","score_receipt_root":"680882572af552040efb6ec202915a3d5c2f9704e2d389200c07ed770ba6bea8","policy_candidate_root":"<64hex>","reproduction_request_root":"<64hex>","reproduction_proof_set_root":"<64hex>","epoch":<n>,"now_unix":<seconds>}'
 ```
 
 It reloads and rederives the task, candidate, policy, proof set, work receipts,

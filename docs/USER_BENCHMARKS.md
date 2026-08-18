@@ -1,4 +1,4 @@
-# zclassic23 — User Benchmarks (the only metrics that matter)
+# z23 — User Benchmarks (the only metrics that matter)
 
 > The user does not care about halts, BLOCK_FAILED_MASK, or stage cursors.
 > The user wants: install → it works → stays working → doesn't eat the machine.
@@ -13,10 +13,10 @@
 
 | # | Benchmark | Target | How measured |
 |---|---|---|---|
-| 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | `time build/bin/zclassic23 -bench-coldstart` |
-| 2 | **Warm-start to operational** (restart with synced datadir → same tip, RPC ready) | ≤ **10 s** | `time build/bin/zclassic23 -bench-warmstart` |
+| 1 | **Cold-start to operational** (empty datadir → tip current within 100 blocks, RPC + wallet ready) | ≤ **60 s** | `time build/bin/z23 -bench-coldstart` |
+| 2 | **Warm-start to operational** (restart with synced datadir → same tip, RPC ready) | ≤ **10 s** | `time build/bin/z23 -bench-warmstart` |
 | 3 | **Stay-in-sync MTBF** (mean time between unattended stalls > 60 s) | ≥ **30 days** | 30-day chaos soak (kill -9, net blip, peer churn) |
-| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | `zclassic23 core status` → `memory_rss_mb` over a soak |
+| 4 | **RAM budget steady-state** | ≤ **1 GB RSS** | `z23 core status` → `memory_rss_mb` over a soak |
 | 5 | **Recovery from kill -9** | ≤ **60 s** | scripted kill loop, recovery histogram |
 
 ### Soak: hermetic proxy vs. operational acceptance (#3/#4)
@@ -33,7 +33,7 @@ It is **not** the acceptance run. The real #3 (≥ 30-day MTBF) and #4
 tx load** with zero operator restarts, starting only after a complete
 self-verified cure passes copy proof (complete shielded anchors/nullifiers,
 not just transparent state) — check current sync state with
-`zclassic23 status` / `zclassic23 dumpstate reducer_frontier`;
+`z23 status` / `z23 dumpstate reducer_frontier`;
 `docs/HANDOFF.md` holds current state. Once the cure passes, start a fresh
 exact-same-height-parity window with complete security posture and zero
 intervention. Run that with `make soak-7day` against the pinned candidate.
@@ -56,7 +56,7 @@ intervention. Run that with `make soak-7day` against the pinned candidate.
 ## The halt clause
 
 Operator paging rate target: **0/month**.
-The user is not an operator. If zclassic23 stalls, recovery is automatic or the node
+The user is not an operator. If z23 stalls, recovery is automatic or the node
 is broken. There is no acceptable middle ground where "operator manually deletes a
 sentinel from consensus.db" is the answer.
 

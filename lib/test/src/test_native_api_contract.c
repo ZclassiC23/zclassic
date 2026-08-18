@@ -589,7 +589,7 @@ static int test_native_app_catalog_uses_strict_builtin_source(void)
 
 /* ── wf/status-front-door ─────────────────────────────────────────
  *
- * The flagless `zclassic23 status` front door (core.status.brief,
+ * The flagless `z23 status` front door (core.status.brief,
  * status_brief_native_handler.c) must always answer truthfully and fast.
  * Two contracts, tested directly against zcl_native_status_brief_body
  * (below the command-registry envelope, which test_command_registry_
@@ -1543,7 +1543,7 @@ static int test_raw_native_pipeline_mines_exact_signed_bytes(void)
                anchor_inspect_spec);
         ASSERT_STR_EQ(anchor_inspect_spec->positional_keys, "op_return_hex");
         ASSERT_STR_EQ(anchor_inspect_spec->example,
-                      "zclassic23 core anchor inspect <op_return_hex>");
+                      "z23 core anchor inspect <op_return_hex>");
 
         static const char anchor_digest_hex[] =
             "abababababababababababababababab"

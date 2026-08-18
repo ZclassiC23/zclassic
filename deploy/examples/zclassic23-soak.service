@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Three-Guarantees Soak Probe
+Description=Z23 Three-Guarantees Soak Probe
 After=zclassic23.service
 Requires=zclassic23.service
 

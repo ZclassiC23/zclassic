@@ -288,7 +288,7 @@ int test_qr(void)
              qr_document.action_count == 0u &&
              qr_document.windows[0].pixels == qr_document.qr_card.pixels &&
              strcmp(qr_document.windows[0].title,
-                    "ZClassic23 — Metadata — C copies, Esc closes") == 0 &&
+                    "Z23 — Metadata — C copies, Esc closes") == 0 &&
              strcmp(qr_document.windows[0].copy_text,
                     "generic metadata") == 0);
     ui_present_document_free(&qr_document);
@@ -1293,7 +1293,7 @@ int test_qr(void)
     QR_CHECK("canonical confirmation focuses the harmless decision first",
              strcmp(publication_model.actions[0].id, "cancel") == 0 &&
              strcmp(publication_model.actions[1].id, "confirm") == 0);
-    QR_CHECK("confirmation chrome and effect text are ZClassic23-authored",
+    QR_CHECK("confirmation chrome and effect text are Z23-authored",
              strcmp(publication_model.actions[0].label,
                     "Cancel - make no change") == 0 &&
              strcmp(publication_model.actions[1].label,

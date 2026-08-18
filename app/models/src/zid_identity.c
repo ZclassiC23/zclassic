@@ -225,7 +225,7 @@ bool db_zid_identity_truncate(struct node_db *ndb)
     return true;
 }
 
-/* ── `zclassic23 ops state --subsystem=zid_identities` ─────────────── */
+/* ── `z23 ops state --subsystem=zid_identities` ─────────────── */
 
 static void zid_push_row(struct json_value *out, const struct zid_identity *r)
 {

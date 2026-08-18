@@ -92,7 +92,7 @@ int main(void) {
     /* Print the complete page map */
     printf("\n");
     printf("┌─────────────────────────────────────────────────────────┐\n");
-    printf("│            ZClassic23 Wallet — Page Map                 │\n");
+    printf("│            Z23 Wallet — Page Map                        │\n");
     printf("├─────────────────────────────────────────────────────────┤\n");
     printf("│                                                         │\n");
     printf("│  [Home] [Send] [Receive] [History] [Node]  <- nav tabs  │\n");

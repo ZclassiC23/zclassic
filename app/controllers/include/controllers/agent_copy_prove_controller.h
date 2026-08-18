@@ -7,7 +7,7 @@
  * datadir. See docs/CODEBASE_MAP.md "copy-prove" and tools/repro_on_copy.sh.
  *
  * Poll a run via the diagnostics registry primitive:
- *   zclassic23 dumpstate agent_copy_prove <slug>
+ *   z23 dumpstate agent_copy_prove <slug>
  * See CLAUDE.md "Adding state introspection". Reentrant-safe.
  */
 #ifndef ZCL_CONTROLLERS_AGENT_COPY_PROVE_H

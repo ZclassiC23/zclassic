@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Stopwatch Fixture Peer — dedicated serving node for the C3/PROOF-B wall-clock gates
+Description=Z23 Stopwatch Fixture Peer — dedicated serving node for the C3/PROOF-B wall-clock gates
 # A DEDICATED, minimal serving peer that the C3 stopwatch dials as a
 # read-only P2P client (tools/scripts/cold_start_to_tip_stopwatch.sh /
 # c3_stopwatch_run_and_record.sh, default peer 127.0.0.1:39070). Keeping

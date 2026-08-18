@@ -289,8 +289,8 @@ static void api_push_mvp_operator_proofs(
     json_push_kv_str(&proofs, "schema", "zcl.mvp_operator_proofs.v1");
     json_push_kv_str(&proofs, "api_version", ZCL_REST_API_VERSION);
     json_push_kv_str(&proofs, "source", "docs/MVP.md");
-    json_push_kv_str(&proofs, "native_command", "zclassic23 milestone");
-    json_push_kv_str(&proofs, "alias_command", "zclassic23 mvpstatus");
+    json_push_kv_str(&proofs, "native_command", "z23 milestone");
+    json_push_kv_str(&proofs, "alias_command", "z23 mvpstatus");
     json_push_kv_int(&proofs, "accepted_count", strict_pass);
     json_push_kv_int(&proofs, "target_count", (int64_t)criteria_count);
     json_push_kv_int(&proofs, "pending_count", pending);
@@ -664,7 +664,7 @@ void api_refold_status_json(struct json_value *result)
     struct json_value commands;
     json_init(&commands);
     json_set_object(&commands);
-    json_push_kv_str(&commands, "native", "zclassic23 refold");
+    json_push_kv_str(&commands, "native", "z23 refold");
     json_push_kv_str(&commands, "rest", "/api/v1/refold");
     json_push_kv_str(&commands, "copy_proof",
                      "make repro-on-copy SLUG=soak-refold "

@@ -18,7 +18,7 @@
 # in app/controllers, app/conditions, app/jobs, config/src, and the
 # production lib/ daemons (net/health/rpc) invisible to `make lint` — a
 # background daemon loop is a long-running service whatever directory it
-# lives in, and must be visible to `zclassic23 dumpstate supervisor` so a
+# lives in, and must be visible to `z23 dumpstate supervisor` so a
 # wedged loop is not silent. Each root is scanned non-recursively
 # (`-maxdepth 1`, the `*/src` leaf convention); widening further just means
 # adding another root below.

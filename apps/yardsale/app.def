@@ -1,4 +1,4 @@
-/* ZClassic23 Yardsale — for-sale-by-owner ZSLP/ZCL swap ads.
+/* Z23 Yardsale — for-sale-by-owner ZSLP/ZCL swap ads.
  *
  * Sellers pin up signed, expiring yard-sale signs (zswap_quote.v1), peers
  * gossip them byte-identically, and a buyer settles directly with the seller

@@ -119,7 +119,7 @@ failure_summary() {
 next_action() {
     local dev_next="$1" fail_log="$2" changed_count="$3" fast_next="$4"
     if [ -n "$dev_next" ] &&
-       ! printf '%s' "$dev_next" | grep -q '^zclassic23-dev status$'; then
+       ! printf '%s' "$dev_next" | grep -q '^z23-dev status$'; then
         printf '%s' "$dev_next"
     elif [ -n "$fail_log" ]; then
         printf 'inspect %s or rerun the focused failing group' "$fail_log"

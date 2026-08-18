@@ -755,7 +755,7 @@ static int test_status_brief_flat_lean_envelope(void)
  * class that made `app swap list` answer BAD_TOOL_BODY for its whole
  * existence — see rpc_swap_list). The body must wrap the array in the
  * leaf's declared output envelope (zcl.wallet_utxos.v1, config/commands/
- * core.def) so `zclassic23 core wallet utxo list` returns a usable body.
+ * core.def) so `z23 core wallet utxo list` returns a usable body.
  * Drives the leaf end-to-end through the registry with a mocked
  * node_rpc_call and asserts on the rendered reply bytes — the in-memory
  * reply struct alone would not catch a body the serializer drops. */
@@ -877,7 +877,7 @@ static int test_status_brief_overdue_transient_surfaces(void)
                 "\"overdue_transient_count\":2,"
                 "\"overdue_transient_dominant_id\":"
                     "\"catalog.address_index.lag_exceeded\","
-                "\"native_state_command\":\"zclassic23 dumpstate blocker\"}}";
+                "\"native_state_command\":\"z23 dumpstate blocker\"}}";
         g_status_brief_agent_fixture = fixture;
 
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
@@ -964,7 +964,7 @@ static int test_status_brief_overdue_transient_absent_when_zero(void)
                 "\"dominant_class\":\"TRANSIENT\","
                 "\"overdue_transient_count\":0,"
                 "\"overdue_transient_dominant_id\":\"none\","
-                "\"native_state_command\":\"zclassic23 dumpstate blocker\"}}";
+                "\"native_state_command\":\"z23 dumpstate blocker\"}}";
         g_status_brief_agent_fixture = fixture;
 
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
@@ -1184,7 +1184,7 @@ static int test_status_brief_composite_fails_closed(void)
  * genuine corruption -- indistinguishable from a real bug. It now degrades
  * gracefully: whatever of the flat brief the differently-versioned document
  * still carries is surfaced, with `partial_result`/`schema_skew` naming the
- * mismatch, rather than failing the flagless `zclassic23 status` front
+ * mismatch, rather than failing the flagless `z23 status` front
  * door outright. A schema OUTSIDE the family, or one PRESENT-but-malformed
  * exact v2 field, must still fail closed (test_status_brief_composite_fails_
  * closed / test_status_brief_names_first_failing_field cover those). */
@@ -1661,7 +1661,7 @@ static int test_status_brief_names_first_failing_field(void)
 }
 
 /* Lane S1 regression: the very first command a new user runs
- * (`zclassic23 status`) must come back ok:true, schema-valid, and well
+ * (`z23 status`) must come back ok:true, schema-valid, and well
  * under its latency budget -- both on a healthy caught-up node and on a
  * fresh node that has not synced anything yet. The live bug this guards
  * against surfaced as "invalid zcl.public_status.v2: missing/invalid field

@@ -66,7 +66,7 @@ revocable, expiring, and recorded in the reply's `authority` block.
 
 **Does not bound:** an agent that does not cooperate. The grant is presented in
 the agent's own environment, so the same agent can run `env -u
-ZCL_AGENT_SESSION zclassic23 …` and be the unbounded local operator; and it
+ZCL_AGENT_SESSION z23 …` and be the unbounded local operator; and it
 holds the datadir, so it can read the RPC cookie and call `sendtoaddress`
 straight over JSON-RPC, below the kernel entirely. Confining an agent is an
 OS-level job — a separate uid with no read access to the cookie, or a wrapper

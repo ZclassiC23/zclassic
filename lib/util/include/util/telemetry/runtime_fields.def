@@ -26,7 +26,7 @@ TL_GROUP_END(meta)
  * organ and the memory-pressure organ. There is deliberately no per-child row:
  * the supervisor registry is variable-length (SUPERVISOR_CAP children) and a
  * fixed-offset table cannot hold a list. The per-child listing stays where it
- * already is — `zclassic23 ops state --subsystem=supervisor` — and what lives
+ * already is — `z23 ops state --subsystem=supervisor` — and what lives
  * here is the set of counts, worsts and margins that answer "is the liveness
  * tree healthy" without reading 60 rows.
  *
@@ -46,7 +46,7 @@ TL_LEAF(services, child_count, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
     "joined it",
     "no subsystem is supervised, so nothing in this node has a deadline and a "
     "wedged thread would never be named",
-    "zclassic23 ops state --subsystem=supervisor")
+    "z23 ops state --subsystem=supervisor")
 
 TL_LEAF(services, child_headroom, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
     TFR_MIN_ABS, TL_NONE, 1, TFS_CRITICAL,
@@ -56,7 +56,7 @@ TL_LEAF(services, child_headroom, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
     "the registry is full: the NEXT subsystem to register gets an invalid id "
     "and runs entirely unsupervised, silently, because every child-side "
     "helper then no-ops",
-    "zclassic23 ops state --subsystem=supervisor")
+    "z23 ops state --subsystem=supervisor")
 
 TL_LEAF(services, children_stalled, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
     TFR_EXPECT_ZERO, TL_NONE, 0, TFS_CRITICAL,
@@ -65,7 +65,7 @@ TL_LEAF(services, children_stalled, TLC_I64, TFU_GAUGE, TLV_SUMMARY,
     "stall, or a tripped restart-storm breaker",
     "at least one supervised subsystem has stopped meeting its own liveness "
     "contract and the supervisor has already said so",
-    "zclassic23 ops state --subsystem=supervisor")
+    "z23 ops state --subsystem=supervisor")
 
 TL_LEAF(services, progress_undeclared_count, TLC_I64, TFU_GAUGE, TLV_NORMAL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -130,7 +130,7 @@ TL_LEAF(threads, supervisor_running, TLC_BOOL, TFU_BOOL, TLV_SUMMARY,
     "independent clock every child's deadline is measured against",
     "no deadline is being checked anywhere in the node: a wedged subsystem "
     "would never raise a stall and the node could fall behind silently",
-    "zclassic23 ops state --subsystem=supervisor")
+    "z23 ops state --subsystem=supervisor")
 
 TL_LEAF(threads, sweep_last_age_us, TLC_I64, TFU_MICROSECONDS, TLV_SUMMARY,
     TFR_MAX_ABS, TL_NONE, 30000000, TFS_CRITICAL,
@@ -140,7 +140,7 @@ TL_LEAF(threads, sweep_last_age_us, TLC_I64, TFU_MICROSECONDS, TLV_SUMMARY,
     "treats the sweep as dead",
     "the root of the liveness tree is itself frozen, so every child's "
     "deadline has stopped being evaluated and the backstop is about to act",
-    "zclassic23 ops state --subsystem=supervisor_backstop")
+    "z23 ops state --subsystem=supervisor_backstop")
 
 TL_LEAF(threads, tick_runner_running, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
     TFR_EXPECT_TRUE, TL_NONE, 0, TFS_WARN,
@@ -149,7 +149,7 @@ TL_LEAF(threads, tick_runner_running, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
     "period-driven children fall back to running inline on the sweep thread, "
     "where one slow commit can freeze the sweep heartbeat and have the "
     "backstop kill a healthy node",
-    "zclassic23 ops state --subsystem=supervisor")
+    "z23 ops state --subsystem=supervisor")
 
 TL_LEAF(threads, tick_runner_last_hb_age_us, TLC_I64, TFU_MICROSECONDS,
     TLV_NORMAL, TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -171,7 +171,7 @@ TL_LEAF(threads, tick_runner_stall_fires, TLC_I64, TFU_COUNT_TOTAL, TLV_NORMAL,
     "shared runner, and every period-driven child behind it in the queue "
     "missed its cadence for the duration. Whether it is still wedged is "
     "tick_runner_last_hb_age_us, not this counter",
-    "zclassic23 ops state --subsystem=blocker")
+    "z23 ops state --subsystem=blocker")
 
 TL_LEAF(threads, logical_cpus, TLC_I64, TFU_GAUGE, TLV_NORMAL,
     TFR_MIN_ABS, TL_NONE, 1, TFS_WARN,
@@ -179,7 +179,7 @@ TL_LEAF(threads, logical_cpus, TLC_I64, TFU_GAUGE, TLV_NORMAL,
     "sysconf otherwise. Every worker-pool size in the node is derived from it",
     "the topology probe returned nothing usable, so pool sizing and pinning "
     "fall back to defaults chosen for an unknown machine",
-    "zclassic23 ops state --subsystem=cpu_topology")
+    "z23 ops state --subsystem=cpu_topology")
 
 TL_LEAF(threads, topology_source, TLC_TEXT, TFU_ENUM, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -211,7 +211,7 @@ TL_LEAF(resources, mem_current_bytes, TLC_I64, TFU_BYTES, TLV_SUMMARY,
     "instead",
     "the process is at or past the level where the memory organ fires every "
     "registered shrink sink, and the next step above it is an OOM kill",
-    "zclassic23 ops state --subsystem=mem_pressure")
+    "z23 ops state --subsystem=mem_pressure")
 
 TL_LEAF(resources, mem_denominator_bytes, TLC_I64, TFU_BYTES, TLV_NORMAL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,
@@ -241,7 +241,7 @@ TL_LEAF(resources, mem_polling_active, TLC_BOOL, TFU_BOOL, TLV_NORMAL,
     "half that actually fires the shrink sinks",
     "nothing recomputes the pressure level and no shrink sink will ever fire, "
     "so the numbers here are frozen at whatever the last poll saw",
-    "zclassic23 ops state --subsystem=mem_pressure")
+    "z23 ops state --subsystem=mem_pressure")
 
 TL_LEAF(resources, mem_last_poll_unix, TLC_I64, TFU_UNIX_TIME, TLV_FULL,
     TFR_INFO, TL_NONE, 0, TFS_INFO,

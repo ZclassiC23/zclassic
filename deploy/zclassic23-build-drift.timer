@@ -1,5 +1,5 @@
 [Unit]
-Description=ZClassic23 Build Drift Probe Timer — every 5 minutes
+Description=Z23 Build Drift Probe Timer — every 5 minutes
 
 [Timer]
 # OnCalendar (wall-clock), NOT OnBootSec/OnUnitActiveSec (monotonic).

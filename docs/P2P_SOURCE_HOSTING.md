@@ -1,6 +1,6 @@
 # P2P C23 source hosting
 
-ZClassic23 can host a BitTorrent-like source swarm without changing ZClassic
+Z23 can host a BitTorrent-like source swarm without changing ZClassic
 consensus. The source system is an application protocol: the blockchain may
 anchor publisher identity, release roots, payments, or optional burn receipts,
 but block and transaction validity remain exactly compatible with `zclassicd`.
@@ -126,7 +126,7 @@ receipt.
 
 ## Whole-workspace ZVCS transport
 
-A complete ZClassic23 workspace is larger than the package store's deliberately
+A complete Z23 workspace is larger than the package store's deliberately
 conservative 64 MiB per-release admission bound when represented as loose
 files. It is therefore carried without weakening that bound by
 the `vcs_source_bundle` family
@@ -184,7 +184,7 @@ accept` lifecycle can grant PROVEN publication authority.
 ### Git-free consumer build
 
 A reconstructed carrier is built under two explicit trust inputs: the
-human-accepted ZVCS `source_root`, and a bootstrap `zclassic23` binary whose
+human-accepted ZVCS `source_root`, and a bootstrap `z23` binary whose
 SHA3-256 came through an already trusted channel. The bootstrap does not grant
 acceptance; it only re-derives the complete source root before build admission
 and artifact publication. Carrier checkout additionally takes the immutable

@@ -74,7 +74,7 @@ static bool render(const struct shop_status_view_input_v1 *input,
     if (input->wallet == SHOP_STATUS_WALLET_UNREADABLE &&
         !add_gap(out, "wallet_unreadable",
                  "boot the node once to create node.db, then re-run "
-                 "zclassic23 app shop status"))
+                 "z23 app shop status"))
         return false;
     if (!input->node_db_present) {
         if (!add_gap(out, "node_db_missing",

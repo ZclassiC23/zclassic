@@ -58,7 +58,7 @@ struct agent_contract_field_surface {
 
 static const struct agent_contract_command_surface g_agent_command_surfaces[] = {
     DIRECT_COMMAND("agentmap.commands.core", 1, "compact_status",
-      "zclassic23 status",
+      "z23 status",
       "canonical terse zcl.core_status_brief.v1 first check"),
     CONTRACT_COMMAND("agentmap.commands.core", 2, "map", "agentmap",
       "where code, docs, and tests live"),
@@ -83,7 +83,7 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
     CONTRACT_COMMAND("agentmap.commands.core", 12, "deploy_guard", "agentdeployguard",
       "C-native deploy/restart allow-refuse decision"),
     DIRECT_COMMAND("agentmap.commands.core", 13, "full_compatibility_status",
-      "zclassic23 agent",
+      "z23 agent",
       "full zcl.public_status.v3 compatibility view"),
     DIRECT_COMMAND("agentmap.commands.core", 14, "background_quality",
       "make quality-linger-status",
@@ -136,10 +136,10 @@ static const struct agent_contract_command_surface g_agent_command_surfaces[] = 
       "ask for one exact proven-candidate decision after canonical proof; the visual command cannot accept or publish"),
 
     DIRECT_COMMAND("agentmap.telemetry", 1, "compact_status",
-      "zclassic23 status",
+      "z23 status",
       "stable terse first-call status, blocker, and next action"),
     DIRECT_COMMAND("agentmap.telemetry", 2, "full_status",
-      "zclassic23 healthcheck",
+      "z23 healthcheck",
       "wide health packet with peers, sync, chain, validation, and memory"),
     CONTRACT_COMMAND("agentmap.telemetry", 3, "subsystem_state", "dumpstate",
       "semantic subsystem internals through diagnostics registry"),
@@ -224,7 +224,7 @@ static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
 
     { "agentops.workflow", 1, "first_call",
       "Agents should start from the compact operator contract instead of browsing the full API catalog.",
-      "zclassic23 status; then zclassic23 agentops",
+      "z23 status; then z23 agentops",
       "zcl.agent_ops.v2 no_jq_required=true" },
     { "agentops.workflow", 2, "decide_lane_and_safety",
       "The same source tree can talk to canonical, soak, dev, and fixture lanes; restarts and deploys need lane context first.",
@@ -232,7 +232,7 @@ static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
       "agentops.first_call fields from agent_contracts.def" },
     { "agentops.workflow", 3, "change_with_impact",
       "Changed files should map to focused tests through the shared impact rules instead of ad hoc memory.",
-      "zclassic23 agentimpact <files...>",
+      "z23 agentimpact <files...>",
       "agent_impact_rules.def shared_rule_hits" },
     { "agentops.workflow", 4, "verify_fast_then_deep",
       "The inner loop should prove syntax, lint, and targeted behavior before the wider pre-push gate.",
@@ -240,7 +240,7 @@ static const struct agent_contract_work_surface g_agent_work_surfaces[] = {
       "agentbuild recommended_loop + fast-ci" },
     { "agentops.workflow", 5, "drill_down_only_when_needed",
       "Most one-off diagnostics should use primitive state/log/SQL/timeline tools before adding bespoke API routes.",
-      "zclassic23 dumpstate, getnodelog, dbquery, timeline, and statecatalog",
+      "z23 dumpstate, getnodelog, dbquery, timeline, and statecatalog",
       "diagnostics registry + zcl.timeline.v2" },
 
     { "agentops.top_next_work", 1,
@@ -508,7 +508,7 @@ static bool agent_push_command_surface_entry_json(
 
         char discover[128];
         int discover_len = snprintf(discover, sizeof(discover),
-                                    "zclassic23 discover schema %s",
+                                    "z23 discover schema %s",
                                     spec->path);
         if (discover_len <= 0 || (size_t)discover_len >= sizeof(discover))
             return false;

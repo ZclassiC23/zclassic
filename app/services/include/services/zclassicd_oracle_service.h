@@ -20,7 +20,7 @@
  *     oracle diagnostics and unit tests.
  *
  * See CLAUDE.md "Adding state introspection" — this module follows the
- * *_dump_state_json convention and is wired into `zclassic23 dumpstate oracle`
+ * *_dump_state_json convention and is wired into `z23 dumpstate oracle`
  * dispatcher.
  */
 
@@ -71,7 +71,7 @@ struct zclassicd_oracle_probe_result {
 struct zcl_result zclassicd_oracle_probe(int height,
                             struct zclassicd_oracle_probe_result *out);
 
-/* Reentrant-safe dispatcher entry for `zclassic23 dumpstate oracle`. */
+/* Reentrant-safe dispatcher entry for `z23 dumpstate oracle`. */
 bool zclassicd_oracle_dump_state_json(struct json_value *out, const char *key);
 
 struct zclassicd_oracle_stats {

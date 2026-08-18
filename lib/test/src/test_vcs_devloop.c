@@ -1143,7 +1143,7 @@ static int t_publication_enqueue(const char *dir)
     VD_CHECK("publication: native status names P2P next step",
              strcmp(json_get_str(json_get(
                         &advance_reply.data, "next_command")),
-                    "zclassic23 discover search provider") == 0);
+                    "z23 discover search provider") == 0);
     zcl_command_reply_free(&advance_reply);
     json_free(&advance_input);
     memset(fixture.signer_secret, 0, sizeof(fixture.signer_secret));

@@ -1,7 +1,7 @@
 # NAT traversal, onion hosting, and fast P2P transport — design notes (2026-07-27)
 
 Owner question: how to use Tor for NAT traversal, keep fast P2P networking,
-and build both robustly into ZClassic23 (onion hosts, ZNAM hosting, the
+and build both robustly into Z23 (onion hosts, ZNAM hosting, the
 package swarm, future P2P services). All of this is P2P-layer policy — no
 consensus surface anywhere in this document.
 

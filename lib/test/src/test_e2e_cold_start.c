@@ -61,7 +61,7 @@
  * full child-process boot would additionally prove: the boot loader-rung
  * ordering actually calls load_block_index_from_blocks_table when the
  * earlier rungs see a genesis-only map (config/src/boot_services.c wiring),
- * `zclassic23 status`/RPC surfaces the hydrated tip height, and the process
+ * `z23 status`/RPC surfaces the hydrated tip height, and the process
  * stays up. That is deliberately left to the existing heavy, self-skipping
  * child-process slices (test_importblockindex_cli_dispatch.c's pattern:
  * skip unless build/bin/zclassic23 exists and is newer than its witness
@@ -69,7 +69,7 @@
  * validation threads, shutdown sequencing) inside this fast in-process test
  * risks exactly the flakiness/runtime cost the sibling heavy slices already
  * gate behind opt-in env vars. If the boot-ordering wiring regresses,
- * docs/AGENT_TRAPS.md + the live `zclassic23 status` check remain the
+ * docs/AGENT_TRAPS.md + the live `z23 status` check remain the
  * second line of defense; this slice's job is pinning the import->hydrate
  * DATA seam, which is exactly the seam the live incident broke on.
  *

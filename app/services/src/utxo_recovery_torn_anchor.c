@@ -7,7 +7,7 @@
 /*
  * L1 torn-legacy-coins boot recovery (the §3 dual-store tear).
  *
- * ZClassic23 keeps TWO coins stores:
+ * Z23 keeps TWO coins stores:
  *   (A) node.db `utxos` — the DEPRECATED, lazily-batched legacy mirror. Still
  *       load-bearing for the SHA3 UTXO commitment + the fast-sync snapshot
  *       SERVED to peers (lib/net/src/fast_sync.c streams `FROM utxos`).

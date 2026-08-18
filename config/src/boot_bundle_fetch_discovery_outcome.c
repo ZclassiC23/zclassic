@@ -66,7 +66,7 @@ void bbf_record_discovery_outcome(const char *outcome_name,
                  "(observability-only, does not affect this boot's decision)");
 }
 
-/* `zclassic23 dumpstate bbf_discovery`. SELECT-only peek at the outcome
+/* `z23 dumpstate bbf_discovery`. SELECT-only peek at the outcome
  * bbf_record_discovery_outcome above last persisted; absent (never run this
  * boot, or a fresh datadir) reports outcome_recorded=false rather than a
  * fabricated zero/"none". `key` unused (NULL-safe). See CLAUDE.md "Adding

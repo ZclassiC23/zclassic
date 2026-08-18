@@ -731,7 +731,7 @@ void zcl_native_handle_zdesc_publish(const struct zcl_command_request *request,
         json_push_kv_str(&reply->data, "save_error", save_err);
     json_push_kv_str(&reply->data, "next",
                      "give verifiers the master_pubkey; they resolve with "
-                     "`zclassic23 zcode desc resolve --pubkey=<hex>`. "
+                     "`z23 zcode desc resolve --pubkey=<hex>`. "
                      "Republish each period (the record key rotates daily) "
                      "and use a strictly higher seq each time.");
     reply->status = ZCL_COMMAND_STATUS_PASSED;

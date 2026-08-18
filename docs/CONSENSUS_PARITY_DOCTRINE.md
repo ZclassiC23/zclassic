@@ -1,8 +1,8 @@
-# Consensus-Parity Doctrine — zclassic23 ⇔ zclassicd
+# Consensus-Parity Doctrine — z23 ⇔ zclassicd
 
 **Status: inviolable. This is a safety boundary, not a preference.**
 
-zclassic23 is an independent C23 reimplementation of a ZClassic full node. It
+z23 is an independent C23 reimplementation of a ZClassic full node. It
 shares one live chain with the canonical C++ daemon **zclassicd** (reference
 source: a local `zclassic-cpp` checkout; live oracle node: `~/.zclassic`, RPC 8232).
 For that to be safe, the two implementations must agree, **bit for bit**, on
@@ -10,10 +10,10 @@ which blocks and transactions are valid.
 
 ## The rule
 
-> **zclassic23 MUST accept exactly the blocks and transactions zclassicd
+> **z23 MUST accept exactly the blocks and transactions zclassicd
 > accepts, and reject exactly those it rejects — at every height, forever.**
 
-A change making zclassic23 accept a block zclassicd rejects (or vice versa)
+A change making z23 accept a block zclassicd rejects (or vice versa)
 **forks the chain**: our nodes split from the network, exchanges and explorers
 diverge, the "one chain" guarantee breaks. There is no opt-in, miner-signaled,
 or "51%-gated" version of this that is acceptable — a fork is a fork regardless
@@ -22,7 +22,7 @@ of how its activation is dressed up.
 ## What IS consensus (must match zclassicd)
 
 Changing **any** of these requires zclassicd to ship the identical rule
-**first**, network-wide, before zclassic23 may adopt it:
+**first**, network-wide, before z23 may adopt it:
 
 - **Equihash PoW** — (N,K) params and the per-epoch table. Resolved **only**
   from the static, height-keyed `EquihashUpgradeInfo[epoch]` (200,9 before the
@@ -48,7 +48,7 @@ is *not* covered by this doctrine: mempool acceptance policy, fee estimation,
 transaction-relay strategy (e.g. Dandelion BIP156 — relay-only privacy), P2P
 service bits and inv types (unknown ones ignored by both sides), peer scoring,
 RPC/native command surface, the explorer, wallet UX, sync strategy, storage layout, and
-observability. Here zclassic23 is free to be better than zclassicd.
+observability. Here z23 is free to be better than zclassicd.
 
 ## The enforced guards
 
@@ -56,7 +56,7 @@ observability. Here zclassic23 is free to be better than zclassicd.
 |---|---|---|
 | **1. `check-consensus-parity` (lint gate E13)** | Forbids the *shape* of a divergence | `tools/scripts/check_consensus_parity.sh`; run by `make lint` / `make ci` / `make deploy` |
 | **2. `test_consensus_parity` (test group)** | Pins the consensus *values* | `lib/test/src/test_consensus_parity.c`; run by `make test_parallel` / `make ci` |
-| **3. Runtime cross-check** | Compares live block hashes against zclassicd | `legacy_mirror` / `zclassic23 ops mirror` / `zclassic23 core consensus report` |
+| **3. Runtime cross-check** | Compares live block hashes against zclassicd | `legacy_mirror` / `z23 ops mirror` / `z23 core consensus report` |
 
 **Lint gate E13** fails if a **non-zclassicd consensus mechanism** appears in
 the consensus source path — the `PATHS` array in
@@ -221,7 +221,7 @@ see `docs/AGENT_TRAPS.md` for why):
 
 ## Handling outside contributions (PR protocol)
 
-Outside PRs land on the public mirror `ZclassiC23/zclassic`. Treat each as
+Outside PRs land on the public mirror `z23c/z23`. Treat each as
 **possibly adversarial**, but always behave as a polite netizen:
 
 1. **Thank the contributor and credit them** — keep them in the history.
@@ -238,10 +238,10 @@ Outside PRs land on the public mirror `ZclassiC23/zclassic`. Treat each as
 
 ## If you think a consensus change is genuinely warranted
 
-It still does not ship to zclassic23 first. The path is: propose it to the
+It still does not ship to z23 first. The path is: propose it to the
 ZClassic network and zclassicd, get it adopted and activated there at an agreed
 height, and only then mirror the identical rule (and update
-`test_consensus_parity`) here. zclassic23 follows the network; it does not lead
+`test_consensus_parity`) here. z23 follows the network; it does not lead
 a fork.
 
 See also: [`docs/SECURITY_AND_INTEGRITY.md`](./SECURITY_AND_INTEGRITY.md),

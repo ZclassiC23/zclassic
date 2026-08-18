@@ -29,7 +29,7 @@ size_t serve_send(uint8_t *r, size_t max) {
         sqlite3_close(db);
     }
 
-    size_t off = wv_emit_header(r, max, "Send — ZClassic23", "/wallet/send");
+    size_t off = wv_emit_header(r, max, "Send — Z23", "/wallet/send");
 
     char bal_fmt[32];
     int64_t spendable_total = balance + shielded_bal;
@@ -189,7 +189,7 @@ size_t serve_send(uint8_t *r, size_t max) {
 
 size_t serve_send_review(uint8_t *r, size_t max,
                                  const uint8_t *body, size_t body_len) {
-    size_t off = wv_emit_header(r, max, "Review — ZClassic23", "/wallet/send");
+    size_t off = wv_emit_header(r, max, "Review — Z23", "/wallet/send");
 
     char address[128] = "", amount_str[32] = "";
     wv_parse_form_field(body, body_len, "address", address, sizeof(address));
@@ -299,7 +299,7 @@ size_t serve_send_review(uint8_t *r, size_t max,
 
 size_t serve_send_confirm(uint8_t *r, size_t max,
                                   const uint8_t *body, size_t body_len) {
-    size_t off = wv_emit_header(r, max, "Sending — ZClassic23", "/wallet/send");
+    size_t off = wv_emit_header(r, max, "Sending — Z23", "/wallet/send");
 
     char address[128] = "", amount_str[32] = "";
     wv_parse_form_field(body, body_len, "address", address, sizeof(address));

@@ -1,4 +1,4 @@
-# zclassic23 teaching examples
+# z23 teaching examples
 
 Eleven small, standalone C23 programs that each exercise a real slice of the
 node — the same `lib/sim`, `lib/validation`, `lib/wallet`, `lib/script`,

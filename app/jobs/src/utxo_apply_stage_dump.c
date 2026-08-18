@@ -172,7 +172,7 @@ bool utxo_apply_dump_state_json(struct json_value *out, const char *key)
 
     /* P2 self-heal input: the contiguous applied frontier and whether it equals
      * the durable utxo_apply cursor (the invariant the co-commit sites enforce).
-     * Surfaced here so `zclassic23 dumpstate utxo_apply` shows the invariant
+     * Surfaced here so `z23 dumpstate utxo_apply` shows the invariant
      * directly — frontier_eq_cursor must be true on every quiescent path.
      * coins_applied_height == -1 means ABSENT (a virgin / un-synced datadir),
      * which is a clean "unknown", not a violation. */
