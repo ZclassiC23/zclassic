@@ -29,6 +29,7 @@
 #include "vcs/zcode_task_index.h"
 #include "vcs/zcode_write_scope.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <fcntl.h>
 #include <stdio.h>
@@ -441,6 +442,48 @@ static void run_dependency_header_symbols(
     }
 }
 
+static bool run_ascii_contains_ci(const char *haystack, const char *needle)
+{
+    size_t haystack_len = haystack ? strlen(haystack) : 0;
+    size_t needle_len = needle ? strlen(needle) : 0;
+    if (needle_len == 0 || needle_len > haystack_len) return false;
+    for (size_t i = 0; i + needle_len <= haystack_len; i++) {
+        bool equal = true;
+        for (size_t j = 0; j < needle_len; j++) {
+            unsigned char left = (unsigned char)haystack[i + j];
+            unsigned char right = (unsigned char)needle[j];
+            if (tolower(left) != tolower(right)) {
+                equal = false;
+                break;
+            }
+        }
+        if (equal) return true;
+    }
+    return false;
+}
+
+static bool run_dependency_header_relevant(
+    const char *goal, const char *path, const uint8_t *bytes, size_t len)
+{
+    const char *base = path ? strrchr(path, '/') : NULL;
+    base = base ? base + 1u : path;
+    size_t base_len = base ? strlen(base) : 0;
+    if (base_len > 2u && strcmp(base + base_len - 2u, ".h") == 0) {
+        char stem[VCS_PACKAGE_BUILD_PATH_MAX + 1u];
+        size_t stem_len = base_len - 2u;
+        if (stem_len < sizeof(stem)) {
+            memcpy(stem, base, stem_len);
+            stem[stem_len] = '\0';
+            if (run_ascii_contains_ci(goal, stem)) return true;
+        }
+    }
+    struct run_dependency_candidate symbols = {0};
+    run_dependency_header_symbols(&symbols, bytes, len);
+    for (size_t i = 0; i < symbols.reuse.api_count; i++)
+        if (run_ascii_contains_ci(goal, symbols.reuse.apis[i])) return true;
+    return false;
+}
+
 static bool run_read_dependency_header(
     const char *datadir, const char root_hex[65],
     const struct vcs_package_build_output *output,
@@ -582,16 +625,34 @@ static bool run_dependency_context_json(
         json_init(&row); json_set_object(&row);
         json_init(&apis); json_set_array(&apis);
         json_init(&headers); json_set_array(&headers);
-        for (size_t a = 0; ok && a < candidate->reuse.api_count; a++) {
-            struct json_value api;
-            json_init(&api); json_set_str(&api, candidate->reuse.apis[a]);
-            ok = json_push_back(&apis, &api);
-            json_free(&api);
-        }
+        bool relevant[VCS_PACKAGE_BUILD_MAX_OUTPUTS] = {0};
+        size_t relevant_count = 0;
         for (size_t h = 0; ok && h < candidate->receipt.output_count; h++) {
             const struct vcs_package_build_output *output =
                 &candidate->receipt.outputs[h];
             if (!run_output_is_header(output->path)) continue;
+            uint8_t *bytes = NULL;
+            size_t len = 0;
+            if (!run_read_dependency_header(
+                    datadir, candidate->package.package_root_hex,
+                    output, &bytes, &len)) {
+                (void)snprintf(detail, 256,
+                               "selected header %s changed after receipt verification",
+                               output->path);
+                ok = false;
+                break;
+            }
+            relevant[h] = run_dependency_header_relevant(
+                goal, output->path, bytes, len);
+            if (relevant[h]) relevant_count++;
+            free(bytes);
+        }
+        struct run_dependency_candidate selected_apis = {0};
+        for (size_t h = 0; ok && h < candidate->receipt.output_count; h++) {
+            const struct vcs_package_build_output *output =
+                &candidate->receipt.outputs[h];
+            if (!run_output_is_header(output->path) ||
+                (relevant_count > 0 && !relevant[h])) continue;
             uint8_t *bytes = NULL; size_t len = 0;
             if (!run_read_dependency_header(
                     datadir, candidate->package.package_root_hex,
@@ -602,6 +663,9 @@ static bool run_dependency_context_json(
                 ok = false;
                 break;
             }
+            (void)run_dependency_api_add(
+                &selected_apis, output->path, strlen(output->path));
+            run_dependency_header_symbols(&selected_apis, bytes, len);
             if (len > ZWORK_DEPENDENCY_CONTEXT_MAX - selected_bytes) {
                 free(bytes);
                 (void)snprintf(detail, 256,
@@ -618,6 +682,13 @@ static bool run_dependency_context_json(
             json_free(&header);
             free(bytes);
             if (ok) selected_bytes += len;
+        }
+        for (size_t a = 0; ok && a < selected_apis.reuse.api_count; a++) {
+            struct json_value api;
+            json_init(&api);
+            json_set_str(&api, selected_apis.reuse.apis[a]);
+            ok = json_push_back(&apis, &api);
+            json_free(&api);
         }
         ok = ok && json_push_kv_str(&row, "name", candidate->package.name) &&
              json_push_kv_str(&row, "semver", candidate->package.semver) &&

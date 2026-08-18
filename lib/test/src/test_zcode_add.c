@@ -483,7 +483,14 @@ static bool za_publish(const char *zcode, const char *name,
 
     struct vcs_package_recipe r;
     vcs_package_recipe_init(&r);
-    ok = vcs_package_recipe_add_header(&r, header_path, NULL) &&
+    ok = vcs_package_recipe_add_header(&r, header_path, NULL);
+    for (size_t i = 0; i < file_count && ok; i++) {
+        size_t path_len = strlen(files[i].path);
+        if (strcmp(files[i].path, header_path) != 0 && path_len > 2u &&
+            strcmp(files[i].path + path_len - 2u, ".h") == 0)
+            ok = vcs_package_recipe_add_header(&r, files[i].path, NULL);
+    }
+    ok = ok &&
          vcs_package_recipe_add_source(&r, source_path, NULL) &&
          vcs_package_recipe_add_test_source(&r, test_path, NULL) &&
          vcs_package_recipe_add_include_dir(&r, include_dir, NULL) &&
@@ -632,12 +639,13 @@ static int t_e2e(void)
     struct za_file ring_files[] = {
         { "LICENSE", ZA_LICENSE },
         { "src/ring.h", ZA_RING_H },
+        { "src/noise.h", "int noise_only(void);\n" },
         { "src/ring.c", ZA_RING_C },
         { "test/test_ring.c", ZA_RING_TEST },
     };
     uint8_t ring_root[32];
     bool published = za_publish(zcode, "alice/ringbuffer", "1.0.0", 1,
-                                ring_files, 4, "src/ring.h", "src/ring.c",
+                                ring_files, 5, "src/ring.h", "src/ring.c",
                                 "test/test_ring.c", "src", ring_root);
     ZA_CHECK("fixture package published into the local store", published);
     if (!published) {
@@ -898,6 +906,17 @@ static int t_e2e(void)
         ? json_at(ring_headers, 0) : NULL;
     const struct json_value *ring_content = ring_header
         ? json_get(ring_header, "content") : NULL;
+    const struct json_value *ring_apis = ring_context
+        ? json_get(ring_context, "apis") : NULL;
+    bool saw_selected_ring_api = false;
+    bool saw_unrelated_noise_api = false;
+    for (size_t i = 0; ring_apis && i < ring_apis->num_children; i++) {
+        const char *api = json_get_str(json_at(ring_apis, i));
+        if (api && strcmp(api, "ring_push") == 0)
+            saw_selected_ring_api = true;
+        if (api && strcmp(api, "noise_only") == 0)
+            saw_unrelated_noise_api = true;
+    }
     ZA_CHECK("the model packet contains only lock-bound receipt-verified C23 APIs",
              input_ready &&
                  work_reply.status == ZCL_COMMAND_STATUS_PASSED &&
@@ -906,8 +925,11 @@ static int t_e2e(void)
                  ring_context &&
                  strcmp(json_get_str(json_get(ring_context, "package_root")),
                         root_hex) == 0 &&
+                 ring_headers && ring_headers->num_children == 1 &&
                  ring_content && strstr(json_get_str(ring_content),
                                         "ring_push") != NULL &&
+                 strstr(json_get_str(ring_content), "noise_only") == NULL &&
+                 saw_selected_ring_api && !saw_unrelated_noise_api &&
                  json_get_int(json_get(ring_header, "bytes")) > 0 &&
                  json_get(ring_header, "content_root") == NULL &&
                  json_get(&packet_json, "dependency_context_bytes") == NULL);
