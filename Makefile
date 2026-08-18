@@ -5415,14 +5415,23 @@ ci-install-linger: zclassic23 zcl-rpc
 # real Tor network) needs Tor network EGRESS, which a hermetic CI container
 # lacks — so it CANNOT live in `make ci` and stays out of ci-mvp-gates (the
 # hermetic onion half is mvp-onion-slice). This target runs the real timed
-# bootstrap test (ZCL_TEST_ONLY=onion) but FIRST probes for Tor egress and
-# SKIPs cleanly (exit 0) when egress is unavailable, so it never false-FAILS
-# on a sandboxed host — same SKIP-not-FAIL discipline as test-shielded-payment.
-# Locally-verified, network-gated; NOT a hermetic-✅ gate.
+# bootstrap test (ZCL_TEST_ONLY=onion) but FIRST refuses the two fixture
+# absences that make the real claim un-runnable: it SKIPs cleanly (exit 0)
+# when the binary links the offline Tor stub (vendor/tor not built — the stub
+# tor_run_main returns -1 immediately, which would otherwise false-FAIL after
+# the 90s ceiling; `make tor-full` opts into the real embedded Tor), and SKIPs
+# cleanly (exit 0) when Tor network egress is unavailable, so it never
+# false-FAILs on a sandboxed host — same SKIP-not-FAIL discipline as
+# test-shielded-payment. Locally-verified, network-gated; NOT a hermetic-✅
+# gate.
 .PHONY: mvp-onion-local
 mvp-onion-local: test_zcl
 	@bash -c 'set -uo pipefail; \
 	 echo "══ MVP C2 (real): onion bootstrap <60s over Tor (egress-gated) ══"; \
+	 if [ -z "$(TOR_FULL)" ]; then \
+	     echo "mvp-onion-local: SKIP (binary links the offline Tor stub — vendor/tor not built; run make tor-full to enable the real embedded onion claim)"; \
+	     exit 0; \
+	 fi; \
 	 reachable=0; \
 	 for hp in moria1.torproject.org:9101 tor26.torproject.org:443 dizum.com:443; do \
 	     h=$${hp%%:*}; p=$${hp##*:}; \
@@ -5473,7 +5482,7 @@ mvp-coldstart-to-tip-local: zclassic23 zcl-rpc
 	 echo "══ MVP C3 FULL (real): fresh operator bundle -> zclassic23 peer tip <10min ══"; \
 	 bash tools/scripts/cold_start_to_tip_probe.sh; rc=$$?; \
 	 if [ "$$rc" -eq 2 ]; then \
-	     echo "mvp-coldstart-to-tip-local: SKIP (no operator bundle / serving peer / binaries — run on a synced host)"; \
+	     echo "mvp-coldstart-to-tip-local: SKIP (per the c3-probe SKIP line above — no usable bundle/snapshot fixture, serving peer, or binary for this build)"; \
 	     exit 0; \
 	 fi; \
 	 exit $$rc'

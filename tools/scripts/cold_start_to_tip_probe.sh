@@ -19,7 +19,10 @@
 #
 # Exit: 0 reached at_tip at peer-tip within budget (C3 wrapper viable)
 #       3 seeded authority but did NOT reach at_tip in budget (code seam)
-#       2 SKIP (no bundle fixture / no serving peer / binaries absent)
+#       2 SKIP (no bundle fixture / no serving peer / binaries absent, or the
+#           legacy snapshot sits above the binary's compiled checkpoint
+#           authority so consensus must refuse it — a stale-fixture/binary
+#           mismatch, not a boot regression)
 #       1 FAIL (harness/setup error)
 
 set -uo pipefail
@@ -285,5 +288,9 @@ if [ "$seeded" = 1 ]; then
     echo "=== c3-probe: SEAM — seed authority loaded but forward-sync to at_tip did NOT complete within budget ==="
     write_artifact "seam" 3 "seed authority loaded but forward-sync did not complete within budget"
     exit 3
+fi
+if [ "$MODE" = "legacy-consensus-snapshot" ] && \
+   grep -qE 'REFUSING peer snapshot.*above compiled checkpoint' "$DATADIR/probe.log" 2>/dev/null; then
+    skip "legacy consensus snapshot is above this binary's compiled checkpoint authority — consensus correctly refused it (stale-fixture/binary mismatch, not a boot regression): remint the operator bundle (make bootstrap) or test a binary whose compiled checkpoints cover the snapshot"
 fi
 die "seed authority itself did not complete (<1M height/UTXOs) in budget"
