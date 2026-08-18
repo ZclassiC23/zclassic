@@ -1,4 +1,4 @@
-# ZClassic23 agent entry point
+# Z23 agent entry point
 
 This is the model-neutral operating contract for coding agents. Read it before
 changing the repository. Detailed procedure belongs in
@@ -7,9 +7,35 @@ changing the repository. Detailed procedure belongs in
 maintainer's hosted node belongs only in
 [`docs/HANDOFF.md`](./docs/HANDOFF.md).
 
-## Product and North Star
+## North Star
 
-ZClassic23 is a public ZClassic blockchain full node first. One self-contained
+Z23 exists to make useful software abundant without taking control away from
+the user. **Software made for you, not imposed on you.**
+
+A person should be able to describe what they want a device to do. AI workers
+reuse existing C23 parts first, create only what is missing, build the result
+quickly, show its real behavior, reproduce the exact result on another
+machine, and let the user accept and use that exact version.
+
+AI workers are replaceable. Z23 is the durable layer: exact source identity,
+reusable packages, dependency graphs, bounded builds, independent
+reproduction, local policy, distribution, release history, and preservation.
+The result must remain usable even when the original agent, vendor, registry,
+or company disappears.
+
+The work is one journey:
+
+> Describe desired behavior → reuse existing C23 first → create only missing
+> code → build fast → show the real consequence → reproduce it on another
+> node → accept the exact version → use it in a real application.
+
+The user should feel: "I can make my device work exactly the way I want."
+Keep complexity hidden but inspectable. Give the user one obvious next
+action.
+
+## Product
+
+Z23 is a public ZClassic blockchain full node first. One self-contained
 C23 binary validates the ZClassic chain, participates in its P2P network, holds
 transparent and shielded wallet state, and can expose its services through an
 embedded Tor onion service. It must remain bit-for-bit consensus-compatible
@@ -18,6 +44,8 @@ with `zclassicd`.
 The node also provides an optional decentralized C23 software commons. Ordinary
 full nodes can publish, discover, fetch, verify, build, independently reproduce,
 and serve exact C23 packages without GitHub or a central package registry.
+
+## Operating rules
 
 **VERIFY, DON'T TRUST.** Any agent may propose code. Any node may perform
 computation. No result is accepted because of who produced it. Each receiving
@@ -34,9 +62,20 @@ building and testing. Building and testing are separate from installing,
 linking, executing, or deploying. None grants wallet, consensus,
 canonical-datadir, or deployment authority.
 
-Codex, Claude, and future coding models are replaceable proposal engines.
-ZClassic23 owns exact source and package identity, confinement, execution
-evidence, independent reproduction, and local verification. The fast
+Every change should improve at least one of these: reuse useful C23 code;
+shorten the path from intent to working software; make the result smaller,
+faster, safer, or easier to customize; remove duplication or central
+dependency; improve exact reproduction and long-term preservation. Prefer
+deletion, reuse, and composition over new abstractions. Keep the blockchain
+small and sovereign. Keep the large software corpus off-chain and
+content-addressed. Do not force ZCL as the only payment method. Do not turn
+Z23 into a company, another AI harness, or a speculative token product.
+
+The near-term proof is one person creating or improving a real C23
+application from reusable parts, seeing the consequence, reproducing it
+elsewhere, accepting the exact version, and using it.
+
+AI workers are replaceable proposal engines. The fast
 development reactor is factory equipment, not the public product; expand it
 only when that directly advances public-node or C23 Commons acceptance.
 
@@ -90,8 +129,8 @@ catalogs from the binary instead of copying counts into prose.
 4. Ask the built binary for the current command tree and source map:
 
    ```bash
-   build/bin/zclassic23 discover help
-   build/bin/zclassic23 code map
+   build/bin/z23 discover help
+   build/bin/z23 code map
    ```
 
    Descend with `discover help <path>`, search with the positional
@@ -135,8 +174,8 @@ On the maintainer host only, read [`docs/HANDOFF.md`](./docs/HANDOFF.md), then
 verify it against the running node:
 
 ```bash
-build/bin/zclassic23 status
-build/bin/zclassic23 dumpstate reducer_frontier
+build/bin/z23 status
+build/bin/z23 dumpstate reducer_frontier
 ```
 
 A document can be stale; the node cannot. Do not copy live height, soak, or

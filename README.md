@@ -1,4 +1,11 @@
-# ZClassic23
+# Z23
+
+> **ZClassic23 is now Z23.** Same node, same protocol, same git history — new
+> name. The repository moved to <https://github.com/z23c/z23> (the old
+> `ZclassiC23/zclassic` URL redirects here). The binaries are now `z23` /
+> `z23-dev`; the old `zclassic23` names still work as aliases while scripts
+> migrate. Consensus, chain IDs, network parameters, `zcl.*` protocol domains,
+> package roots, and the `~/.zclassic-c23` datadir are unchanged.
 
 [![license](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
 [![language](https://img.shields.io/badge/language-C23-00599C.svg)](#)
@@ -8,7 +15,15 @@
 **Write exact C23. Any node builds it, runs it under bounded authority, and
 reproduces the result byte-for-byte — with no central software registry.**
 
-ZClassic23 is a public ZClassic blockchain full node in one self-contained C23
+Z23 exists to make useful software abundant without taking control away from
+the user. **Software made for you, not imposed on you.** Describe what you
+want your device to do; AI workers reuse existing C23 parts first, create only
+what is missing, build the result fast, show its real behavior, and reproduce
+the exact result on another machine — you accept and use that exact version,
+and it stays usable even when the original agent, vendor, registry, or company
+disappears.
+
+Z23 is a public ZClassic blockchain full node in one self-contained C23
 binary, and that same node is a decentralized C23 software commons. People and
 AI agents propose exact source; nodes fetch it, build it in confinement, run
 it, and check each other's results. Nothing is accepted because of who produced
@@ -18,8 +33,8 @@ Here is the whole idea in one command — two pilot programs fly a deterministic
 dogfight, and your machine re-derives the exact same match:
 
 ```bash
-git clone https://github.com/ZclassiC23/zclassic.git
-cd zclassic
+git clone https://github.com/z23c/z23.git
+cd z23
 make arena-demo
 ```
 
@@ -47,7 +62,7 @@ and read the two-node proof and the honest gaps in
 
 ---
 
-> **One binary, one onion, one stack.** ZClassic23 is first a public ZClassic
+> **One binary, one onion, one stack.** Z23 is first a public ZClassic
 > blockchain full node: consensus-compatible validation, wallet custody, peer
 > networking, synchronization, and optional in-process Tor in one C23 binary.
 
@@ -63,7 +78,7 @@ computation, but each receiving node verifies exact objects, signatures, roots,
 and evidence under its own local policy. No result is accepted because of who
 produced it.
 
-ZClassic23 implements the ZClassic (ZCL) consensus rules—Equihash 200,9
+Z23 implements the ZClassic (ZCL) consensus rules—Equihash 200,9
 proof-of-work plus transparent and Sapling shielded transactions—and must
 remain bit-for-bit consensus-compatible with `zclassicd`.
 
@@ -99,22 +114,22 @@ No central service or project developer is an authority a node must rely on.
 Workers and coding agents are untrusted producers of independently verifiable
 proposals and evidence.
 
-## What ZClassic23 does not do
+## What Z23 does not do
 
 - It has no central coordinator or central package registry.
 - It never executes downloaded C merely because it was fetched or stored.
 - It does not claim that tests, signatures, or reproduction prove general
   safety.
 - The C23 Commons does not change ZClassic consensus.
-- It does not require one AI vendor; Codex, Claude, and future models are
+- It does not require one AI vendor; AI workers are
   replaceable proposal engines.
 - It has no live ZC23 token economics today; those surfaces remain
   simulation-only.
 
 ```bash
-git clone https://github.com/ZclassiC23/zclassic.git && cd zclassic
+git clone https://github.com/z23c/z23.git && cd z23
 make
-build/bin/zclassic23
+build/bin/z23
 ```
 
 ---
@@ -137,7 +152,7 @@ build/bin/zclassic-cli z_getbalance <addr>
 
 Receiving and sending shielded funds, plus verifying and relaying shielded
 transactions, use the in-tree native C23 Sapling implementation. No Rust
-toolchain, library, or runtime is part of ZClassic23.
+toolchain, library, or runtime is part of Z23.
 
 ### Serve a site with no domain name and no certificate
 
@@ -147,8 +162,8 @@ serves its own block explorer and REST API on your own `.onion`.
 
 ```bash
 git submodule update --init vendor/tor      # then build per docs/BUILD.md
-build/bin/zclassic23 -tor
-build/bin/zclassic23 status                 # your .onion address
+build/bin/z23 -tor
+build/bin/z23 status                 # your .onion address
 ```
 
 The default build links a Tor *stub*, so `-tor` runs the node normally without
@@ -171,8 +186,8 @@ clearnet HTTPS — so neither side needs to expose an IP address, a domain name,
 or an account.
 
 ```bash
-build/bin/zclassic23 -tor                    # your .onion hosts /yardsale
-build/bin/zclassic23 discover help yardsale  # the typed ad/ceremony commands
+build/bin/z23 -tor                    # your .onion hosts /yardsale
+build/bin/z23 discover help yardsale  # the typed ad/ceremony commands
 ```
 
 Any node can host its own MVC-style web app on its onion the same way the
@@ -226,12 +241,12 @@ operate the node directly. The live catalog is discoverable; no vendor SDK or
 model lock-in is required.
 
 ```bash
-build/bin/zclassic23 status                 # height, peers, sync, health, one call
-build/bin/zclassic23 discover help          # the live command catalog
-build/bin/zclassic23 discover search <query>     # find a command by keyword
-build/bin/zclassic23 discover schema <leaf>      # exact input keys before you call
-build/bin/zclassic23 code map               # navigate the source tree
-build/bin/zclassic23 ops logs --pattern='error|warn'
+build/bin/z23 status                 # height, peers, sync, health, one call
+build/bin/z23 discover help          # the live command catalog
+build/bin/z23 discover search <query>     # find a command by keyword
+build/bin/z23 discover schema <leaf>      # exact input keys before you call
+build/bin/z23 code map               # navigate the source tree
+build/bin/z23 ops logs --pattern='error|warn'
 ```
 
 Every reply is self-describing and size-bounded, and no failure reply lacks a
@@ -253,7 +268,7 @@ A P2P game framework rides the same network layer — peer latency in
 microseconds, and a working TicTacToe as the reference implementation.
 
 ```bash
-build/bin/zclassic23 core network peers latency
+build/bin/z23 core network peers latency
 ```
 
 ### Build on the C23 Commons
@@ -264,10 +279,10 @@ projection. These applications sit below the public full node and package
 reproduction network in the product priority order.
 
 ```bash
-build/bin/zclassic23 zcode guide                    # the creator's map: find, inspect, fetch, create, improve
-build/bin/zclassic23 discover search metaverse      # orient in the command tree
-build/bin/zclassic23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'
-build/bin/zclassic23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'
+build/bin/z23 zcode guide                    # the creator's map: find, inspect, fetch, create, improve
+build/bin/z23 discover search metaverse      # orient in the command tree
+build/bin/z23 metaverse property list --input='{"datadir":"/tmp/zcl23-tour"}'
+build/bin/z23 zcode commons status --input='{"workspace":"/tmp/zcl23-tour-commons"}'
 ```
 
 Honest scope: ZC23 patronage today is **simulation-only** — no live token, and
@@ -284,7 +299,7 @@ anything missing. What you need: **gcc 14+** (or clang with working
 
 ```bash
 make -j"$(nproc)"   # node + CLI + RPC tool -> build/bin/
-make -j"$(nproc)" dev-bin  # a fast non-LTO build for iterating -> build/bin/zclassic23-dev
+make -j"$(nproc)" dev-bin  # a fast non-LTO build for iterating -> build/bin/z23-dev
 make -j"$(nproc)" test     # all registered parallel groups
 make lint           # the defensive-coding gates
 ```
@@ -313,10 +328,10 @@ isolated development instance.
 The node is built to report its own state, so begin with its typed diagnostics:
 
 ```bash
-build/bin/zclassic23 status                    # height, peers, sync, blocker, health
-build/bin/zclassic23 core sync diagnose        # why sync is where it is
-build/bin/zclassic23 ops logs --pattern='error|warn'
-build/bin/zclassic23 ops health                # synced / has_peers / tip_stale / tip_lag
+build/bin/z23 status                    # height, peers, sync, blocker, health
+build/bin/z23 core sync diagnose        # why sync is where it is
+build/bin/z23 ops logs --pattern='error|warn'
+build/bin/z23 ops health                # synced / has_peers / tip_stale / tip_lag
 ```
 
 If the height is frozen, `status` names the cause in `primary_blocker` — a stall
@@ -337,8 +352,8 @@ A plain start from an empty datadir takes hours. If you already run the C++
 `zclassicd`, importing its headers first is the fast path:
 
 ```bash
-build/bin/zclassic23 --importblockindex ~/.zclassic   # headers FIRST
-build/bin/zclassic23                                  # then a normal boot
+build/bin/z23 --importblockindex ~/.zclassic   # headers FIRST
+build/bin/z23                                  # then a normal boot
 ```
 
 Order matters — skipping the import leaves a ~3.1M-header hole and the node
@@ -381,7 +396,7 @@ seccomp deny-list, installed with seccomp `TSYNC` so already-running P2P and
 validation threads are covered rather than only new ones.
 
 ```bash
-build/bin/zclassic23 dumpstate sandbox      # per-thread coverage
+build/bin/z23 dumpstate sandbox      # per-thread coverage
 ```
 
 **No subprocess execution.** Zero `system()` and `popen()` in shipped
@@ -410,7 +425,7 @@ a node mid-write on an isolated datadir and requires it to fold back to its tip
 with no manual repair.
 
 **Read-only queries are constrained by construction.**
-`zclassic23 core storage query` is SELECT-only, rejects semicolons, auto-LIMITs,
+`z23 core storage query` is SELECT-only, rejects semicolons, auto-LIMITs,
 carries a wall-clock budget, and denies wallet-secret tables by name.
 
 **The gates run on your machine**, without reliance on a hosted CI service:
@@ -441,7 +456,7 @@ custody are pre-genesis and simulation-only; the ~1-minute cold sync the
 fast-sync stack is designed for is a target, not today's proven path.
 
 Ask the running node rather than treating this page as live state:
-`zclassic23 status`.
+`z23 status`.
 
 ---
 
@@ -458,7 +473,7 @@ Ask the running node rather than treating this page as live state:
 - [`docs/MVP.md`](docs/MVP.md) — v1 criteria and honest readiness
 - [`AGENTS.md`](AGENTS.md) — model-neutral coding-agent entry point
 
-**Something wrong?** `zclassic23 status` first, then
+**Something wrong?** `z23 status` first, then
 [`docs/RUNBOOK.md`](docs/RUNBOOK.md). File bugs through GitHub Issues — the
 templates in [`.github/ISSUE_TEMPLATE/`](.github/ISSUE_TEMPLATE/) ask for the
 two things that make a report actionable. Security reports:
