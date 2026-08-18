@@ -59,8 +59,29 @@ static void pkgl_note(char *rule, size_t rule_cap, char *detail,
     (void)snprintf(detail, detail_cap, "%s", detail_text);
 }
 
-/* `name_or_root` is 64 hex (identity) or "publisher/package" (a SELECTION
- * that resolves to the highest published semver). */
+static const struct vcs_package_release *pkgl_release_for_name_semver(
+    const struct pkgl_ctx *ctx, const char *name, size_t name_len,
+    const char *semver)
+{
+    if (!ctx || !name || name_len == 0 ||
+        name_len > VCS_PACKAGE_RELEASE_NAME_MAX || !semver || !semver[0])
+        return NULL;
+    const struct vcs_package_release *best = NULL;
+    for (size_t i = 0; i < ctx->release_count; i++) {
+        const struct vcs_package_release *release = &ctx->releases[i];
+        if (strlen(release->name) != name_len ||
+            memcmp(release->name, name, name_len) != 0 ||
+            strcmp(release->semver, semver) != 0)
+            continue;
+        if (!best || release->publisher_sequence > best->publisher_sequence)
+            best = release;
+    }
+    return best;
+}
+
+/* `name_or_root` is 64 hex (identity), "publisher/package@semver" (an exact
+ * version selection), or "publisher/package" (a selection that resolves to
+ * the highest published semver). Every later lifecycle step is root-pinned. */
 static struct zcl_result pkgl_resolve_target(const struct pkgl_ctx *ctx,
                                              const char *name_or_root,
                                              uint8_t out_root[32])
@@ -74,8 +95,11 @@ static struct zcl_result pkgl_resolve_target(const struct pkgl_ctx *ctx,
                            name_or_root);
         return ZCL_OK;
     }
-    const struct vcs_package_release *rel =
-        pkgl_release_for_name(ctx, name_or_root);
+    const char *at = strrchr(name_or_root, '@');
+    const struct vcs_package_release *rel = at
+        ? pkgl_release_for_name_semver(
+              ctx, name_or_root, (size_t)(at - name_or_root), at + 1)
+        : pkgl_release_for_name(ctx, name_or_root);
     if (!rel)
         return ZCL_ERR(-1, "no package named '%s' is published here",
                        name_or_root);

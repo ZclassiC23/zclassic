@@ -459,8 +459,11 @@ ZCL_COMMAND_READY_COMMAND(
     "proof-policy owners only for behavior still missing. Exact reuse creates no "
     "task. A selected installed partial match enters the exact task dependency "
     "lock, but changes no source or authoritative project metadata. Its typed "
-    "next action carries the selected name or work ID without "
-    "requiring a root copy. The default is root-free; details=true exposes "
+    "next action carries the selected name or work ID without requiring a root "
+    "copy. A locally known match without a verified install is shown separately "
+    "and handed to the existing explicit zcode use lifecycle before work starts, "
+    "so unavailable code is never reported as reused. "
+    "The default is root-free; details=true exposes "
     "exact identities. "
     "This command changes no source file and launches no model or build.",
     ZCL_COMMAND_RESULT_BUDGET,
@@ -1804,7 +1807,8 @@ ZCL_COMMAND_READY_COMMAND(
     "zcode.package.dev.use", "zcode.package.dev", "zcode.use",
     "Use dependency",
     "Typed convenience adapter over zcode.package.add plan/commit. Give "
-    "name_or_root to produce the exact root-pinned dependency plan, or give "
+    "name_or_root as a package name, exact name@semver, or root to produce "
+    "the exact root-pinned dependency plan, or give "
     "plan_id to re-derive, confined-build, atomically install, and activate "
     "that plan. Hashes remain authoritative; ZNAM is only an optional input "
     "resolver.", 0,

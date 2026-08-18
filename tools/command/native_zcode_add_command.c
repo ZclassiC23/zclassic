@@ -242,7 +242,8 @@ void zcl_native_handle_zcode_package_add_plan(
                                ZCL_COMMAND_EXIT_INVALID, "MISSING_TARGET",
                                "normalize", false, false,
                                "name_or_root is required (a 64-hex package "
-                               "root, or a publisher/package name)", command);
+                               "root, publisher/package name, or exact "
+                               "publisher/package@semver)", command);
         return;
     }
 

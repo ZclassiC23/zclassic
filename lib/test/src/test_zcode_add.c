@@ -585,6 +585,18 @@ static bool za_publish(const char *zcode, const char *name,
     "  if(ring_pop(&r,&v)) return 1;\n" \
     "  printf(\"ring ok\\n\"); return 0; }\n"
 
+#define ZA_STACK_H \
+    "#pragma once\n" \
+    "int stack_push(int value);\n"
+
+#define ZA_STACK_C \
+    "#include \"stack.h\"\n" \
+    "int stack_push(int value){ return value + 1; }\n"
+
+#define ZA_STACK_TEST \
+    "#include \"stack.h\"\n" \
+    "int main(void){ return stack_push(1) == 2 ? 0 : 1; }\n"
+
 #define ZA_LICENSE "MIT License\n\nPermission is hereby granted...\n"
 
 /* Overwrite one CAS object with different bytes of the same length: the
@@ -812,9 +824,11 @@ static int t_e2e(void)
         json_read(&reuse_next_input, work_reply.next[0].input_json,
                   strlen(work_reply.next[0].input_json)) &&
         reuse_next_input.type == JSON_OBJ &&
-        reuse_next_input.num_children == 1 &&
+        reuse_next_input.num_children == 2 &&
         strcmp(json_get_str(json_get(&reuse_next_input, "name_or_root")),
-               "alice/ringbuffer@1.0.0") == 0;
+               "alice/ringbuffer@1.0.0") == 0 &&
+        strcmp(json_get_str(json_get(&reuse_next_input, "datadir")),
+               base) == 0;
     const struct zcl_command_spec *reuse_next_spec =
         zcl_command_registry_find(zcl_command_catalog(), "zcode.use", NULL);
     char reuse_next_why[160] = {0};
@@ -837,6 +851,84 @@ static int t_e2e(void)
                  strcmp(work_reply.next[0].command, "zcode.use") == 0 &&
                  strstr(work_reply.next[0].input_json, root_hex) == NULL);
     json_free(&reuse_next_input);
+    zcl_command_reply_free(&work_reply);
+    json_free(&work_input);
+
+    struct za_file stack_files[] = {
+        { "LICENSE", ZA_LICENSE },
+        { "src/stack.h", ZA_STACK_H },
+        { "src/stack.c", ZA_STACK_C },
+        { "test/test_stack.c", ZA_STACK_TEST },
+    };
+    uint8_t stack_root[32];
+    bool stack_published = za_publish(
+        zcode, "alice/stack", "1.0.0", 3, stack_files, 4,
+        "src/stack.h", "src/stack.c", "test/test_stack.c", "src",
+        stack_root);
+    char stack_root_hex[65];
+    za_hex(stack_root, sizeof(stack_root), stack_root_hex);
+    json_init(&work_input); json_set_object(&work_input);
+    input_ready = stack_published &&
+        json_push_kv_str(&work_input, "workspace", workspace) &&
+        json_push_kv_str(&work_input, "goal",
+                         "Make harness use stack") &&
+        json_push_kv_str(&work_input, "context_symbol", "harness") &&
+        json_push_kv_str(&work_input, "profile", "quick") &&
+        json_push_kv_str(&work_input, "datadir", base);
+    work_request.input = &work_input;
+    zcl_command_reply_init(&work_reply,
+                           "zcl.zcode_reuse_preparation.v1");
+    if (input_ready)
+        zcl_native_handle_zcode_work_start(&work_request, &work_reply);
+    const struct json_value *prepare_plan =
+        json_get(&work_reply.data, "reuse_plan");
+    const struct json_value *prepare_reused = prepare_plan
+        ? json_get(prepare_plan, "reused") : NULL;
+    const struct json_value *prepare_available = prepare_plan
+        ? json_get(prepare_plan, "available_after_use") : NULL;
+    struct json_value prepare_next_input;
+    json_init(&prepare_next_input);
+    bool prepare_next_ok = work_reply.next_count == 1 &&
+        json_read(&prepare_next_input, work_reply.next[0].input_json,
+                  strlen(work_reply.next[0].input_json));
+    const struct zcl_command_spec *prepare_next_spec =
+        zcl_command_registry_find(zcl_command_catalog(), "zcode.use", NULL);
+    char prepare_next_why[160] = {0};
+    prepare_next_ok = prepare_next_ok && prepare_next_spec &&
+        zcl_command_registry_input_validate(
+            prepare_next_spec, &prepare_next_input, prepare_next_why,
+            sizeof(prepare_next_why));
+    snprintf(workspace_path, sizeof(workspace_path), "%s/.zvcs", workspace);
+    ZA_CHECK("known source is explicitly used before it can count as reuse",
+             input_ready && work_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                 strcmp(json_get_str(json_get(&work_reply.data, "state")),
+                        "REUSE_PREPARATION_REQUIRED") == 0 &&
+                 prepare_reused && prepare_reused->num_children == 0 &&
+                 prepare_available && prepare_available->num_children == 1 &&
+                 prepare_next_ok &&
+                 strcmp(work_reply.next[0].command, "zcode.use") == 0 &&
+                 strcmp(json_get_str(json_get(
+                            &prepare_next_input, "name_or_root")),
+                        "alice/stack@1.0.0") == 0 &&
+                 strstr(work_reply.next[0].input_json, stack_root_hex) == NULL &&
+                 !za_exists(workspace_path));
+    struct zcl_command_request prepare_use_request = {
+        .input = &prepare_next_input,
+    };
+    struct zcl_command_reply prepare_use_reply;
+    zcl_command_reply_init(&prepare_use_reply,
+                           "zcl.zcode_reuse_preparation_use.v1");
+    if (prepare_next_ok)
+        zcl_native_handle_zcode_use(&prepare_use_request, &prepare_use_reply);
+    ZA_CHECK("the suggested action reaches the existing exact use plan",
+             prepare_next_ok &&
+                 prepare_use_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                 json_get_bool(json_get(&prepare_use_reply.data, "ready")) &&
+                 strcmp(json_get_str(json_get(
+                            &prepare_use_reply.data, "target_root")),
+                        stack_root_hex) == 0);
+    zcl_command_reply_free(&prepare_use_reply);
+    json_free(&prepare_next_input);
     zcl_command_reply_free(&work_reply);
     json_free(&work_input);
 
@@ -1071,6 +1163,13 @@ static int t_e2e(void)
         package_lifecycle_plan(base, "alice/ringbuffer", t0 + 2, &plan2);
     ZA_CHECK("the name now SELECTS the higher semver's root",
              p2 && r2.ok && memcmp(plan2.plan.target_root, ring2_root, 32) == 0);
+    struct package_lifecycle_plan_report exact_version_plan;
+    struct zcl_result exact_version_planned = package_lifecycle_plan(
+        base, "alice/ringbuffer@1.0.0", t0 + 2, &exact_version_plan);
+    ZA_CHECK("name@semver selects that exact version instead of latest",
+             exact_version_planned.ok && exact_version_plan.ready &&
+                 memcmp(exact_version_plan.plan.target_root, ring_root, 32) ==
+                     0);
     struct package_lifecycle_commit_report commit2;
     struct zcl_result cr2 =
         package_lifecycle_commit(base, plan2.plan_id, t0 + 3, &commit2);

@@ -494,6 +494,18 @@ static const char *zwork_reuse_datadir(
     return datadir && datadir[0] ? datadir : NULL;
 }
 
+static bool zwork_use_next_input(
+    const struct zcl_command_request *request, const char *package_ref,
+    struct json_value *next_input)
+{
+    const char *datadir = zwork_str(request->input, "datadir");
+    json_init(next_input);
+    json_set_object(next_input);
+    return json_push_kv_str(next_input, "name_or_root", package_ref) &&
+        ((!datadir || !datadir[0]) ||
+         json_push_kv_str(next_input, "datadir", datadir));
+}
+
 static bool zwork_index_lock_node(
     const struct vcs_package_index *index, const uint8_t root[32],
     struct vcs_package_lock_node *out)
@@ -607,27 +619,32 @@ static bool zwork_reuse_render_unavailable(struct json_value *plan,
 {
     json_init(plan); json_set_object(plan);
     json_init(expert); json_set_object(expert);
-    struct json_value selected, roots;
+    struct json_value selected, pending, roots;
     json_init(&selected); json_set_array(&selected);
+    json_init(&pending); json_set_array(&pending);
     json_init(&roots); json_set_array(&roots);
     bool ok = json_push_kv_str(plan, "stage", "Finding reusable software") &&
         json_push_kv_str(plan, "search_status", "datadir_not_provided") &&
         json_push_kv_str(plan, "network_discovery", "not_requested") &&
         json_push_kv(plan, "reused", &selected) &&
+        json_push_kv(plan, "available_after_use", &pending) &&
         json_push_kv_int(plan, "packages_scanned", 0) &&
         json_push_kv_bool(plan, "new_code_required", true) &&
         json_push_kv_str(plan, "missing", "local package facts unavailable") &&
         json_push_kv(expert, "selected_roots", &roots);
-    json_free(&roots); json_free(&selected); return ok;
+    json_free(&roots); json_free(&pending); json_free(&selected); return ok;
 }
 
 static bool zwork_reuse_render(
     const struct zcl_command_request *request, const char *goal,
     struct vcs_package_prepared *prepared, struct json_value *plan_json,
-    struct json_value *expert_json, bool *complete_out, bool *composed_out)
+    struct json_value *expert_json, bool *complete_out, bool *composed_out,
+    char prepare_ref[VCS_PACKAGE_RELEASE_NAME_MAX +
+                     VCS_PACKAGE_RELEASE_SEMVER_MAX + 2u])
 {
     *complete_out = false;
     *composed_out = false;
+    prepare_ref[0] = '\0';
     const char *datadir = zwork_reuse_datadir(request);
     if (!datadir) return zwork_reuse_render_unavailable(plan_json, expert_json);
     char zcode_dir[ZWORK_PATH_MAX];
@@ -679,9 +696,11 @@ static bool zwork_reuse_render(
         prepared, index, candidates, &reuse, &composed_packages);
     json_init(plan_json); json_set_object(plan_json);
     json_init(expert_json); json_set_object(expert_json);
-    struct json_value selected, roots;
+    struct json_value selected, pending, roots;
     json_init(&selected); json_set_array(&selected);
+    json_init(&pending); json_set_array(&pending);
     json_init(&roots); json_set_array(&roots);
+    size_t ready_count = 0;
     for (size_t i = 0; ok && i < reuse.selected_count; i++) {
         size_t at = reuse.selected[i].input_index;
         const struct vcs_package_reuse_input *input = &inputs[at];
@@ -695,16 +714,19 @@ static bool zwork_reuse_render(
             json_push_kv_str(
                 &row, "composition",
                 input->locked ? "already_declared" :
-                input->installed && reuse.disposition ==
-                    VCS_PACKAGE_REUSE_PARTIAL ? "candidate_only" :
-                                               "not_ready");
+                input->installed
+                    ? reuse.disposition == VCS_PACKAGE_REUSE_PARTIAL
+                        ? "candidate_only" : "available_now"
+                    : "explicit_use_required");
         for (size_t a = 0; ok && a < input->api_count; a++) {
             struct json_value api; json_init(&api);
             json_set_str(&api, input->apis[a]);
             ok = json_push_back(&apis, &api); json_free(&api);
         }
+        bool usable_now = input->locked || input->installed ||
+            reuse.disposition == VCS_PACKAGE_REUSE_COMPLETE;
         ok = ok && json_push_kv(&row, "apis", &apis) &&
-            json_push_back(&selected, &row) &&
+            json_push_back(usable_now ? &selected : &pending, &row) &&
             json_push_kv_str(&root, "name", input->package->name) &&
             json_push_kv_str(&root, "semver", input->package->semver) &&
             json_push_kv_str(&root, "package_root",
@@ -712,8 +734,22 @@ static bool zwork_reuse_render(
             json_push_kv_bool(&root, "already_locked", input->locked) &&
             json_push_kv_int(&root, "score", reuse.selected[i].score) &&
             json_push_back(&roots, &root);
+        if (ok && usable_now) ready_count++;
+        if (ok && !usable_now && prepare_ref[0] == '\0') {
+            int rn = snprintf(
+                prepare_ref,
+                VCS_PACKAGE_RELEASE_NAME_MAX +
+                    VCS_PACKAGE_RELEASE_SEMVER_MAX + 2u,
+                "%s@%s", input->package->name, input->package->semver);
+            if (rn <= 0 ||
+                rn >= (int)(VCS_PACKAGE_RELEASE_NAME_MAX +
+                            VCS_PACKAGE_RELEASE_SEMVER_MAX + 2u))
+                ok = false;
+        }
         json_free(&root); json_free(&apis); json_free(&row);
     }
+    if (reuse.disposition != VCS_PACKAGE_REUSE_PARTIAL || ready_count > 0)
+        prepare_ref[0] = '\0';
     if (ok) {
         ok = json_push_kv_str(plan_json, "stage", "Finding reusable software") &&
             json_push_kv_str(plan_json, "search_status", "complete") &&
@@ -721,10 +757,13 @@ static bool zwork_reuse_render(
             json_push_kv_str(plan_json, "disposition",
                 vcs_package_reuse_disposition_string(reuse.disposition)) &&
             json_push_kv(plan_json, "reused", &selected) &&
+            json_push_kv(plan_json, "available_after_use", &pending) &&
             json_push_kv_bool(plan_json, "new_code_required",
                               reuse.new_code_required) &&
             json_push_kv_str(plan_json, "missing",
-                reuse.new_code_required ? goal : "none") &&
+                prepare_ref[0]
+                    ? "explicitly use the selected package before creating code"
+                    : reuse.new_code_required ? goal : "none") &&
             json_push_kv_str(expert_json, "search_order",
                              "installed_then_local_metadata") &&
             json_push_kv_int(expert_json, "packages_scanned",
@@ -747,7 +786,7 @@ static bool zwork_reuse_render(
             "One or more installed packages were ignored because their exact receipts or outputs did not verify");
     *complete_out = ok && reuse.disposition == VCS_PACKAGE_REUSE_COMPLETE;
     *composed_out = ok && composed_packages > 0;
-    json_free(&roots); json_free(&selected);
+    json_free(&roots); json_free(&pending); json_free(&selected);
     for (size_t i = 0; i < count; i++) vcs_package_recipe_free(&recipes[i]);
     free(inputs); free(recipes); free(candidates); vcs_package_index_free(index);
     return ok;
@@ -918,12 +957,45 @@ void zcl_native_handle_zcode_work_start(
     struct json_value reuse_plan, reuse_expert;
     bool reuse_complete = false;
     bool reuse_composed = false;
+    char reuse_prepare_ref[VCS_PACKAGE_RELEASE_NAME_MAX +
+                           VCS_PACKAGE_RELEASE_SEMVER_MAX + 2u];
     if (!zwork_reuse_render(request, goal, &prepared, &reuse_plan,
                             &reuse_expert, &reuse_complete,
-                            &reuse_composed)) {
+                            &reuse_composed, reuse_prepare_ref)) {
         zwork_fail(reply, "REUSE_PLAN_FAILED", "reuse",
                    "local package facts could not be ranked", false, false);
         vcs_package_prepared_free(&prepared);
+        return;
+    }
+    if (reuse_prepare_ref[0]) {
+        struct json_value next_input;
+        bool rendered = zwork_use_next_input(
+                request, reuse_prepare_ref, &next_input) &&
+            json_push_kv_str(&reply->data, "work_id", "") &&
+            json_push_kv_str(&reply->data, "goal", goal) &&
+            json_push_kv_str(&reply->data, "state",
+                             "REUSE_PREPARATION_REQUIRED") &&
+            json_push_kv_str(&reply->data, "stage",
+                             "Preparing reusable software") &&
+            json_push_kv_str(&reply->data, "profile", profile.name) &&
+            json_push_kv(&reply->data, "reuse_plan", &reuse_plan) &&
+            json_push_kv_str(&reply->data, "authoritative_workspace",
+                             "unchanged") &&
+            json_push_kv_str(&reply->data, "next_safe_command",
+                             "zcode use") &&
+            json_push_kv_bool(&reply->data, "details_available", true) &&
+            (!details || json_push_kv(
+                &reply->data, "expert", &reuse_expert)) &&
+            zwork_add_next(
+                reply, "zcode.use", &next_input,
+                "explicitly build and admit the selected reusable package");
+        json_free(&next_input);
+        json_free(&reuse_expert); json_free(&reuse_plan);
+        vcs_package_prepared_free(&prepared);
+        if (!rendered)
+            zwork_fail(reply, "WORK_OUTPUT_FAILED", "render",
+                       "bounded reuse preparation summary could not be rendered",
+                       false, false);
         return;
     }
     if (reuse_complete) {
@@ -937,10 +1009,10 @@ void zcl_native_handle_zcode_work_start(
             ? snprintf(package_ref, sizeof(package_ref), "%s@%s", name,
                        semver) : -1;
         struct json_value next_input;
-        json_init(&next_input); json_set_object(&next_input);
+        json_init(&next_input);
         bool rendered = package_ref_len > 0 &&
             (size_t)package_ref_len < sizeof(package_ref) &&
-            json_push_kv_str(&next_input, "name_or_root", package_ref) &&
+            zwork_use_next_input(request, package_ref, &next_input) &&
             json_push_kv_str(&reply->data, "work_id", "") &&
             json_push_kv_str(&reply->data, "goal", goal) &&
             json_push_kv_str(&reply->data, "state", "REUSE_READY") &&
