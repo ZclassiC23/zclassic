@@ -840,19 +840,7 @@ static int t_e2e(void)
     zcl_command_reply_free(&work_reply);
     json_free(&work_input);
 
-    char harness_meta_with_dep[1024];
-    snprintf(harness_meta_with_dep, sizeof(harness_meta_with_dep),
-             "{\"schema\":1,\"name\":\"fixture/harness\","
-             "\"semver\":\"0.1.0\",\"language\":\"c23\","
-             "\"license\":\"MIT\",\"include_dir\":\"include\","
-             "\"source_dir\":\"src\",\"dependencies\":[{"
-             "\"root\":\"%s\",\"name\":\"alice/ringbuffer\","
-             "\"semver\":\"1.0.0\"}]}\n", root_hex);
-    snprintf(workspace_path, sizeof(workspace_path), "%s/zcode-package.json",
-             workspace);
-    bool dependency_workspace_ready = za_write_file(
-        workspace_path, harness_meta_with_dep, strlen(harness_meta_with_dep),
-        0600);
+    bool dependency_workspace_ready = workspace_ready;
     json_init(&work_input); json_set_object(&work_input);
     input_ready = dependency_workspace_ready &&
         json_push_kv_str(&work_input, "workspace", workspace) &&
@@ -871,11 +859,32 @@ static int t_e2e(void)
     if (locked_work_id && locked_work_id->type == JSON_STR)
         snprintf(locked_work_id_text, sizeof(locked_work_id_text), "%s",
                  json_get_str(locked_work_id));
+    const struct json_value *partial_reuse_plan =
+        json_get(&work_reply.data, "reuse_plan");
+    const struct json_value *partial_reused = partial_reuse_plan
+        ? json_get(partial_reuse_plan, "reused") : NULL;
+    const struct json_value *partial_selected = partial_reused
+        ? json_at(partial_reused, 0) : NULL;
+    const char *partial_composition = partial_selected
+        ? json_get_str(json_get(partial_selected, "composition")) : NULL;
+    snprintf(workspace_path, sizeof(workspace_path), "%s/zcode-package.json",
+             workspace);
+    struct json_value authoritative_metadata;
+    bool authoritative_metadata_read = za_read_json_file(
+        workspace_path, &authoritative_metadata);
+    const struct json_value *authoritative_dependencies =
+        authoritative_metadata_read
+            ? json_get(&authoritative_metadata, "dependencies") : NULL;
     ZA_CHECK("a partial reuse goal enters the existing bounded work lifecycle",
              input_ready && work_reply.status == ZCL_COMMAND_STATUS_PASSED &&
                  strcmp(json_get_str(json_get(&work_reply.data, "state")),
                         "AWAITING_CANDIDATE") == 0 &&
+                 partial_composition &&
+                 strcmp(partial_composition, "candidate_only") == 0 &&
+                 authoritative_dependencies &&
+                 authoritative_dependencies->num_children == 0 &&
                  strncmp(locked_work_id_text, "work-", 5) == 0);
+    if (authoritative_metadata_read) json_free(&authoritative_metadata);
     zcl_command_reply_free(&work_reply);
     json_free(&work_input);
 
@@ -891,6 +900,8 @@ static int t_e2e(void)
         zcl_native_handle_zcode_work_run(&work_request, &work_reply);
     const struct json_value *adapter_packet =
         json_get(&work_reply.data, "adapter_packet_path");
+    const struct json_value *candidate_workspace =
+        json_get(&work_reply.data, "candidate_workspace");
     struct json_value packet_json;
     bool packet_read = adapter_packet && adapter_packet->type == JSON_STR &&
         za_read_json_file(json_get_str(adapter_packet), &packet_json);
@@ -906,6 +917,17 @@ static int t_e2e(void)
         ? json_at(ring_headers, 0) : NULL;
     const struct json_value *ring_content = ring_header
         ? json_get(ring_header, "content") : NULL;
+    char candidate_metadata_path[4500] = {0};
+    struct json_value candidate_metadata;
+    bool candidate_metadata_read = candidate_workspace &&
+        snprintf(candidate_metadata_path, sizeof(candidate_metadata_path),
+                 "%s/zcode-package.json",
+                 json_get_str(candidate_workspace)) > 0 &&
+        za_read_json_file(candidate_metadata_path, &candidate_metadata);
+    const struct json_value *candidate_dependencies = candidate_metadata_read
+        ? json_get(&candidate_metadata, "dependencies") : NULL;
+    const struct json_value *candidate_dependency = candidate_dependencies
+        ? json_at(candidate_dependencies, 0) : NULL;
     const struct json_value *ring_apis = ring_context
         ? json_get(ring_context, "apis") : NULL;
     bool saw_selected_ring_api = false;
@@ -922,6 +944,12 @@ static int t_e2e(void)
                  work_reply.status == ZCL_COMMAND_STATUS_PASSED &&
                  locked_dependencies && locked_dependencies->num_children == 1 &&
                  dependency_context && dependency_context->num_children == 1 &&
+                 json_get_bool(json_get(
+                     &work_reply.data,
+                     "candidate_dependency_metadata_changed")) &&
+                 candidate_dependency &&
+                 strcmp(json_get_str(json_get(candidate_dependency, "root")),
+                        root_hex) == 0 &&
                  ring_context &&
                  strcmp(json_get_str(json_get(ring_context, "package_root")),
                         root_hex) == 0 &&
@@ -933,7 +961,30 @@ static int t_e2e(void)
                  json_get_int(json_get(ring_header, "bytes")) > 0 &&
                  json_get(ring_header, "content_root") == NULL &&
                  json_get(&packet_json, "dependency_context_bytes") == NULL);
+    if (candidate_metadata_read) json_free(&candidate_metadata);
     if (packet_read) json_free(&packet_json);
+    zcl_command_reply_free(&work_reply);
+    json_free(&work_input);
+
+    json_init(&work_input); json_set_object(&work_input);
+    input_ready = locked_work_id_text[0] &&
+        json_push_kv_str(&work_input, "workspace", workspace) &&
+        json_push_kv_str(&work_input, "work", locked_work_id_text) &&
+        json_push_kv_str(&work_input, "adapter", "manual") &&
+        json_push_kv_str(&work_input, "datadir", base);
+    work_request.input = &work_input;
+    zcl_command_reply_init(&work_reply,
+                           "zcl.zcode_composition_not_behavior.v1");
+    if (input_ready)
+        zcl_native_handle_zcode_work_run(&work_request, &work_reply);
+    ZA_CHECK("candidate-only dependency composition is not admitted as behavior",
+             input_ready &&
+                 work_reply.status == ZCL_COMMAND_STATUS_PASSED &&
+                 strcmp(json_get_str(json_get(&work_reply.data, "state")),
+                        "AWAITING_CANDIDATE") == 0 &&
+                 !json_get_bool(json_get(
+                     &work_reply.data,
+                     "candidate_dependency_metadata_changed")));
     zcl_command_reply_free(&work_reply);
     json_free(&work_input);
 

@@ -730,6 +730,178 @@ static bool run_excerpts_json(
     return true;
 }
 
+static bool run_candidate_metadata_read(
+    const char *candidate_workspace, struct json_value *document)
+{
+    char path[ZWORK_RUN_PATH_MAX];
+    int n = snprintf(path, sizeof(path), "%s/%s", candidate_workspace,
+                     VCS_PACKAGE_DEPS_META_PATH);
+    if (n <= 0 || (size_t)n >= sizeof(path)) return false;
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    struct stat st;
+    bool ok = fstat(fd, &st) == 0 && S_ISREG(st.st_mode) && st.st_size > 0 &&
+        (uint64_t)st.st_size <= VCS_PACKAGE_DEPS_META_MAX_BYTES;
+    size_t len = ok ? (size_t)st.st_size : 0;
+    char *wire = ok ? zcl_malloc(len + 1u,
+                                 "zcode.work.candidate_metadata") : NULL;
+    if (ok && !wire) ok = false;
+    size_t off = 0;
+    while (ok && off < len) {
+        ssize_t got = read(fd, wire + off, len - off);
+        if (got < 0 && errno == EINTR) continue;
+        if (got <= 0) ok = false;
+        else off += (size_t)got;
+    }
+    if (close(fd) != 0) ok = false;
+    if (ok) {
+        wire[len] = '\0';
+        json_init(document);
+        ok = json_read(document, wire, len) && document->type == JSON_OBJ;
+        if (!ok) json_free(document);
+    }
+    free(wire);
+    return ok;
+}
+
+static bool run_candidate_metadata_write(
+    const char *candidate_workspace, const struct json_value *document)
+{
+    size_t len = json_write(document, NULL, 0);
+    if (len == 0 || len > VCS_PACKAGE_DEPS_META_MAX_BYTES) return false;
+    char *wire = zcl_malloc(len + 1u, "zcode.work.composed_metadata");
+    if (!wire || json_write(document, wire, len + 1u) != len) {
+        free(wire);
+        return false;
+    }
+    struct vcs_package_deps checked;
+    bool valid = vcs_package_deps_parse_meta(
+        (const uint8_t *)wire, len, &checked, NULL, 0) ==
+        VCS_PACKAGE_DEPS_OK;
+    char path[ZWORK_RUN_PATH_MAX] = {0};
+    char temporary[ZWORK_RUN_PATH_MAX] = {0};
+    int pn = snprintf(path, sizeof(path), "%s/%s", candidate_workspace,
+                      VCS_PACKAGE_DEPS_META_PATH);
+    int tn = snprintf(temporary, sizeof(temporary),
+                      "%s.zcode-package.compose.XXXXXX", candidate_workspace);
+    int fd = valid && pn > 0 && (size_t)pn < sizeof(path) && tn > 0 &&
+                     (size_t)tn < sizeof(temporary)
+        ? mkstemp(temporary)
+        : -1;
+    bool ok = fd >= 0 && fcntl(fd, F_SETFD, FD_CLOEXEC) == 0;
+    size_t off = 0;
+    while (ok && off < len) {
+        ssize_t wrote = write(fd, wire + off, len - off);
+        if (wrote < 0 && errno == EINTR) continue;
+        if (wrote <= 0) ok = false;
+        else off += (size_t)wrote;
+    }
+    if (ok) ok = fsync(fd) == 0;
+    if (fd >= 0 && close(fd) != 0) ok = false;
+    if (ok) ok = rename(temporary, path) == 0;
+    if (ok) {
+        int dir_fd = open(candidate_workspace,
+                          O_RDONLY | O_DIRECTORY | O_CLOEXEC | O_NOFOLLOW);
+        ok = dir_fd >= 0 && fsync(dir_fd) == 0;
+        if (dir_fd >= 0 && close(dir_fd) != 0) ok = false;
+    }
+    if (!ok && temporary[0]) (void)unlink(temporary);
+    free(wire);
+    return ok;
+}
+
+static bool run_metadata_has_root(
+    const struct json_value *dependencies, const uint8_t root[32])
+{
+    char root_hex[65];
+    zcl_hex_encode(root, 32, root_hex);
+    for (size_t i = 0; dependencies && i < json_size(dependencies); i++) {
+        const struct json_value *row = json_at(dependencies, i);
+        const char *value = row && row->type == JSON_OBJ
+            ? run_str(row, "root") : NULL;
+        if (value && strcmp(value, root_hex) == 0) return true;
+    }
+    return false;
+}
+
+static bool run_compose_candidate_metadata(
+    const char *candidate_workspace, const struct vcs_zcode_task_v1 *task,
+    const char *workspace, bool *changed_out)
+{
+    *changed_out = false;
+    struct vcs_package_lock lock;
+    vcs_package_lock_init(&lock);
+    if (!run_load_lock(workspace, task, &lock) || lock.count == 0)
+        return false;
+    struct json_value document;
+    if (!run_candidate_metadata_read(candidate_workspace, &document))
+        return false;
+    struct json_value *dependencies = (struct json_value *)json_get(
+        &document, "dependencies");
+    if (!dependencies) {
+        struct json_value empty;
+        json_init(&empty); json_set_array(&empty);
+        bool added = json_push_kv(&document, "dependencies", &empty);
+        json_free(&empty);
+        dependencies = added ? (struct json_value *)json_get(
+            &document, "dependencies") : NULL;
+    }
+    bool ok = dependencies && dependencies->type == JSON_ARR;
+    for (size_t i = 0; ok && i + 1u < lock.count; i++) {
+        const struct vcs_package_lock_node *node = &lock.nodes[i];
+        if (run_metadata_has_root(dependencies, node->root)) continue;
+        char root_hex[65];
+        zcl_hex_encode(node->root, 32, root_hex);
+        struct json_value row;
+        json_init(&row); json_set_object(&row);
+        ok = json_push_kv_str(&row, "root", root_hex) &&
+            json_push_kv_str(&row, "name", node->name) &&
+            json_push_kv_str(&row, "semver", node->semver) &&
+            json_push_back(dependencies, &row);
+        json_free(&row);
+        if (ok) *changed_out = true;
+    }
+    if (ok && *changed_out)
+        ok = run_candidate_metadata_write(candidate_workspace, &document);
+    json_free(&document);
+    return ok;
+}
+
+struct run_behavior_diff {
+    bool changed;
+};
+
+static void run_behavior_diff_cb(enum vcs_diff_kind kind,
+                                 const struct vcs_entry *before,
+                                 const struct vcs_entry *after, void *user)
+{
+    (void)kind;
+    struct run_behavior_diff *diff = user;
+    const char *path = after ? after->path : before ? before->path : NULL;
+    if (path && strcmp(path, VCS_PACKAGE_DEPS_META_PATH) != 0)
+        diff->changed = true;
+}
+
+static bool run_candidate_has_behavior_change(
+    const char *workspace, const uint8_t base_root[32],
+    const uint8_t candidate_root[32])
+{
+    struct vcs_manifest base, candidate;
+    vcs_manifest_init(&base);
+    vcs_manifest_init(&candidate);
+    if (!vcs_tree_load(workspace, base_root, &base) ||
+        !vcs_tree_load(workspace, candidate_root, &candidate)) {
+        vcs_manifest_free(&candidate);
+        vcs_manifest_free(&base);
+        return false;
+    }
+    struct run_behavior_diff diff = {0};
+    vcs_manifest_diff(&base, &candidate, run_behavior_diff_cb, &diff);
+    vcs_manifest_free(&candidate);
+    vcs_manifest_free(&base);
+    return diff.changed;
+}
+
 static bool run_candidate_workspace(const char *store,
                                     const struct vcs_zcode_task_v1 *task,
                                     const char *task_hex, uint32_t attempt,
@@ -1559,6 +1731,15 @@ void zcl_native_handle_zcode_work_run(
         free(goal); vcs_zcode_agent_context_free(&context);
         vcs_zcode_task_index_free(index); return;
     }
+    bool metadata_composed = false;
+    if (!run_compose_candidate_metadata(
+            candidate_workspace, &task, workspace, &metadata_composed)) {
+        run_fail(reply, "DEPENDENCY_COMPOSITION_REFUSED", "compose",
+                 "the exact task dependency lock could not be reflected in the isolated candidate metadata",
+                 false, created);
+        free(goal); vcs_zcode_agent_context_free(&context);
+        vcs_zcode_task_index_free(index); return;
+    }
     char prior_packet_path[ZWORK_RUN_PATH_MAX] = {0};
     char *prior_packet = NULL;
     size_t prior_packet_len = 0;
@@ -1587,7 +1768,9 @@ void zcl_native_handle_zcode_work_run(
             vcs_zcode_agent_context_free(&context);
             vcs_zcode_task_index_free(index); return;
         }
-        if (memcmp(candidate_root, materialize_root, 32) != 0) {
+        if (memcmp(candidate_root, materialize_root, 32) != 0 &&
+            run_candidate_has_behavior_change(
+                workspace, materialize_root, candidate_root)) {
             bool handled = run_admit(
                 workspace, candidate_workspace, proof_datadir, goal,
                 entry, context_entry,
@@ -1668,11 +1851,13 @@ void zcl_native_handle_zcode_work_run(
         uint8_t candidate_root[32];
         bool captured = vcs_tree_capture_into(candidate_workspace, workspace,
                                               candidate_root) == VCS_OK;
-        if (!captured || memcmp(candidate_root, materialize_root, 32) == 0) {
+        if (!captured || memcmp(candidate_root, materialize_root, 32) == 0 ||
+            !run_candidate_has_behavior_change(
+                workspace, materialize_root, candidate_root)) {
             run_fail(reply, captured ? "ADAPTER_REFUSAL" :
                                       "CANDIDATE_CAPTURE_FAILED",
                      captured ? "adapter" : "capture",
-                     captured ? "Codex completed without an admissible source change"
+                     captured ? "Codex completed without an admissible behavior change beyond dependency composition"
                               : "Codex output could not be captured safely",
                      true, true);
             free(adapter_output); json_free(&packet); free(goal);
@@ -1688,6 +1873,10 @@ void zcl_native_handle_zcode_work_run(
         if (handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
             (void)json_push_kv_int(&reply->data, "model_context_bytes",
                                    (int64_t)model_context_bytes);
+        if (handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
+            (void)json_push_kv_bool(
+                &reply->data, "candidate_dependency_metadata_changed",
+                metadata_composed);
         if (details && handled && reply->status == ZCL_COMMAND_STATUS_PASSED)
             (void)json_push_kv_str(&reply->data, "adapter_output",
                                    adapter_output);
@@ -1713,6 +1902,9 @@ void zcl_native_handle_zcode_work_run(
                          manual_packet_path) &&
         json_push_kv_int(&reply->data, "model_context_bytes",
                          (int64_t)model_context_bytes) &&
+        json_push_kv_bool(&reply->data,
+                          "candidate_dependency_metadata_changed",
+                          metadata_composed) &&
         json_push_kv_str(&reply->data, "authority", "NONE_MANUAL_HANDOFF") &&
         json_push_kv_bool(&reply->data, "details_available", true) &&
         run_add_work_next(
