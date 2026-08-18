@@ -420,6 +420,34 @@ static int test_data_tree_render(void)
     return failures;
 }
 
+/* ── unit: zcode.guide data tree ───────────────────────────────────── */
+
+/* zcode.guide is the one obvious next action a new reader is told to run,
+ * so it must not answer in raw JSON on a terminal. */
+static int test_guide_tree_render(void)
+{
+    int failures = 0;
+    TEST("zcode.guide renders its journey as a human tree, not raw JSON") {
+        const char *doc =
+            "{\"schema\":\"zcl.result.v1\",\"command\":\"zcode.guide\","
+            "\"ok\":true,\"status\":\"passed\",\"data\":{"
+            "\"mission\":\"Tell Z23 what you want C23 software to do.\","
+            "\"next_action\":\"Describe the behavior you want.\"}}";
+        struct zcl_cli_render_env e = cr_env(80, false);
+        char out[8192];
+        size_t n = zcl_cli_render_doc(doc, strlen(doc), "zcode.guide", &e,
+                                      out, sizeof(out));
+        ASSERT(n > 0);
+        ASSERT(strstr(out, "zcode.guide") != NULL);
+        ASSERT(strstr(out, "next_action") != NULL);
+        ASSERT(strstr(out, "Describe the behavior you want.") != NULL);
+        ASSERT(strstr(out, "\"schema\"") == NULL); /* not the raw envelope */
+        ASSERT(cr_max_line_width(out) <= 80);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── unit: brief colorization ──────────────────────────────────────── */
 
 static int test_brief_render(void)
@@ -660,6 +688,7 @@ int test_cli_render(void)
     failures += test_error_unknown_command_uses_envelope_query();
     failures += test_error_ansi_and_unknown_schema_fallback();
     failures += test_data_tree_render();
+    failures += test_guide_tree_render();
     failures += test_brief_render();
 
     const char *stale = NULL;

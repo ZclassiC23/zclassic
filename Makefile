@@ -4058,6 +4058,19 @@ arena-svg-check: $(ARENA_DEMO_BINS)
 arena-demo-opt-parity: $(ARENA_DEMO_BINS)
 	@ARENA_OPT_PARITY=1 tools/dev/arena_demo.sh
 
+# ── README terminal figures ───────────────────────────────────────────────
+# The README shows what the command surface actually prints. A hand-made
+# screenshot is a pinned fact with no live source, so the figures are
+# GENERATED from the built binary (ZCL_HUMAN=1 + fixed COLUMNS, ANSI -> SVG:
+# no screen, no browser, no image library). `readme-svg-check` is the
+# staleness gate — change the registry or the human renderer without
+# regenerating and it names the stale figure.
+.PHONY: readme-svg readme-svg-check
+readme-svg: $(ZCLASSIC23_BIN)
+	@tools/dev/readme_svg.sh
+readme-svg-check: $(ZCLASSIC23_BIN)
+	@READMESVG_CHECK=1 tools/dev/readme_svg.sh
+
 # End-to-end proof of the factory plus the census package-scope intake on
 # the tiny-lines fixture, entirely under test-tmp/.
 .PHONY: package-factory-selftest

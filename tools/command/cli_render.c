@@ -952,7 +952,8 @@ static bool tree_render_leaf(const char *command_path)
 {
     return command_path &&
            (strcmp(command_path, "ops.state") == 0 ||
-            strcmp(command_path, "ops.logs") == 0);
+            strcmp(command_path, "ops.logs") == 0 ||
+            strcmp(command_path, "zcode.guide") == 0);
 }
 
 static void render_data_tree(struct buf *b,
