@@ -648,6 +648,17 @@ struct zcl_result build_fabric_worker_approve(
     return ZCL_OK;
 }
 
+struct zcl_result build_fabric_worker_enroll_local(
+    struct node_db *ndb, const struct db_build_worker *worker, int64_t now)
+{
+    if (!ndb || !ndb->open || !worker || !worker->worker_id[0])
+        return ZCL_ERR(-1, "local enrollment requires an open db and worker");
+    struct db_build_worker existing;
+    if (db_build_worker_find(ndb, worker->worker_id, &existing))
+        return ZCL_OK;
+    return build_fabric_worker_approve(ndb, worker, now);
+}
+
 struct zcl_result build_fabric_worker_revoke(
     struct node_db *ndb, const char *worker_id, int64_t now)
 {

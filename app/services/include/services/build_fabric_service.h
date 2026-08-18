@@ -81,6 +81,15 @@ struct zcl_result build_fabric_worker_approve(
 struct zcl_result build_fabric_worker_revoke(
     struct node_db *ndb, const char *worker_id, int64_t now);
 
+/* Enroll this node's own operator identity as an authority on this node.
+ * The key lives in the datadir and is authorized by possession of it, so a
+ * requester node that never runs `-buildworker` can still promote a lane it
+ * owns. An identity the operator has already ruled on is left exactly as it
+ * stands: a revoked or expired local row keeps refusing, because this never
+ * resurrects one. */
+struct zcl_result build_fabric_worker_enroll_local(
+    struct node_db *ndb, const struct db_build_worker *worker, int64_t now);
+
 /* A worker may only quarantine its signed bytes and physical observation.
  * It cannot advance the action or admit a shared cache result. */
 struct zcl_result build_fabric_receipt_quarantine(

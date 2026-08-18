@@ -1723,6 +1723,20 @@ static int t_store_dump_state(void)
              vcs_package_store_open_global() &&
              vcs_package_store_global() != NULL);
 
+    /* A command handed a datadir has to decide whether the resident store
+     * already covers it: publishing through a second handle over the same
+     * directory writes correct bytes into a store the running node's serving
+     * engine never hears about. The answer is this exact string, so it is
+     * asserted here rather than guessed at each call site. */
+    char expect_root[512];
+    (void)snprintf(expect_root, sizeof(expect_root), "%s/zcode", dd);
+    ZS_CHECK("dump: the store names the directory it owns",
+             vcs_package_store_root_dir(vcs_package_store_global()) != NULL &&
+             strcmp(vcs_package_store_root_dir(vcs_package_store_global()),
+                    expect_root) == 0);
+    ZS_CHECK("dump: no store owns no directory",
+             vcs_package_store_root_dir(NULL) == NULL);
+
     const char *paths[] = { "dump.txt" };
     const size_t lens[] = { 64 };
     struct zs_pkg p;

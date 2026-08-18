@@ -50,6 +50,49 @@ FIGURES=(
     "contract|100|z23 discover describe zcode.package.source.reproduce|discover describe zcode.package.source.reproduce"
 )
 
+# ── the demo figures ──────────────────────────────────────────────────────
+# These three are NOT a property of the binary alone, so they are handled
+# separately and honestly.
+#
+#   commons-demo / commons-proof  are RECORDINGS. `make commons-demo` runs two
+#     real nodes for minutes; a staleness gate cannot re-run it. So the demo
+#     writes what it proved and what it measured to a text artifact, that
+#     artifact is committed, and this script only draws it. The numbers on the
+#     README are therefore one real run on stated hardware — never typed in.
+#
+#   commons-topology is emitted by the demo script itself, so it always
+#     matches the script that is in the tree.
+#
+# Both are then checked against reality below: the recorded strip must still
+# name the stages the demo runs, and every command path in the topology must
+# still exist in this binary's own registry.
+JOURNEY="tools/dev/commons_journey_acceptance.sh"
+STRIP_FILE="docs/assets/z23-commons-demo.strip"
+FACTS_FILE="docs/assets/z23-commons-demo.facts"
+
+demo_check() {
+    [ -r "$STRIP_FILE" ] || { echo "readme_svg: FAIL — no recorded strip at $STRIP_FILE (run: make commons-demo)" >&2; exit 1; }
+    [ -r "$FACTS_FILE" ] || { echo "readme_svg: FAIL — no recorded facts at $FACTS_FILE (run: make commons-demo)" >&2; exit 1; }
+    # 1. the recording still describes the journey the script runs, in order.
+    local rest labels
+    rest="$(cat "$STRIP_FILE")"
+    labels="$(bash "$JOURNEY" --strip-labels)"
+    while IFS= read -r label; do
+        case "$rest" in
+            *"$label"*) rest="${rest#*"$label"}" ;;
+            *) echo "readme_svg: FAIL — the recorded strip no longer shows '$label' in order; rerun: make commons-demo" >&2
+               exit 1 ;;
+        esac
+    done <<<"$labels"
+    # 2. every command the topology names still exists in this binary.
+    local path
+    for path in $(bash "$JOURNEY" --topology | tr -cs 'a-z0-9.' '\n' |
+                  grep -E '^zcode(\.[a-z0-9]+)+$' | sort -u); do
+        "$BIN" discover describe "$path" >/dev/null 2>&1 ||
+            { echo "readme_svg: FAIL — the topology names $path, which this binary does not have" >&2; exit 1; }
+    done
+}
+
 # ── ANSI → SVG ────────────────────────────────────────────────────────────
 # Monospace layout is computed, not trusted to the viewer's font: every run
 # is placed at its exact column and given a textLength, so the figure stays
@@ -164,6 +207,29 @@ for fig in "${FIGURES[@]}"; do
         else
             echo "readme-svg-check: STALE  docs/assets/z23-term-$name.svg" >&2
             echo "  the figure no longer matches '$BIN $argv' — run: make readme-svg" >&2
+            status=1
+        fi
+    else
+        echo "readme-svg: wrote $dest  ($(wc -c <"$dest") bytes)"
+    fi
+done
+
+demo_check
+for fig in \
+    "commons-demo|100|make commons-demo|cat $STRIP_FILE" \
+    "commons-proof|100|what the demo measured|cat $FACTS_FILE" \
+    "commons-topology|100|how the bytes travel|bash $JOURNEY --topology"
+do
+    IFS='|' read -r name cols title source <<<"$fig"
+    dest="$OUT_DIR/z23-term-$name.svg"
+    # shellcheck disable=SC2086
+    eval $source | ansi_to_svg "$title" "$cols" > "$dest"
+    if [ "$CHECK" = "1" ]; then
+        if cmp -s "$dest" "docs/assets/z23-term-$name.svg"; then
+            echo "readme-svg-check: docs/assets/z23-term-$name.svg  up to date"
+        else
+            echo "readme-svg-check: STALE  docs/assets/z23-term-$name.svg" >&2
+            echo "  the figure no longer matches its source — run: make readme-svg" >&2
             status=1
         fi
     else

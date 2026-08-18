@@ -200,6 +200,11 @@ struct vcs_package_store *vcs_package_store_open(const char *datadir,
                                                  uint64_t quota_bytes);
 void vcs_package_store_close(struct vcs_package_store *store);
 
+/* The directory this handle owns, exactly as it was built: "<datadir>/zcode".
+ * A caller that must decide whether the resident store already covers the
+ * datadir it was handed compares against this rather than guessing. */
+const char *vcs_package_store_root_dir(const struct vcs_package_store *store);
+
 /* Bind a pin/unpin plan token to the exact package status observed under the
  * store's in-process lock. False means the root is not tracked. Shared by the
  * resident RPC and the offline native fallback so plan/commit cannot drift. */

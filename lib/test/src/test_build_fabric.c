@@ -660,6 +660,64 @@ static int test_bf_reproduction_plan(void)
     return failures;
 }
 
+
+/* A requester node runs no build worker on purpose, so nothing else ever
+ * enrolls its operator identity — and without an enrolled identity the
+ * person on that node could never accept their own work. Enrollment is
+ * first-use only: it must never resurrect an identity the operator already
+ * ruled on. */
+static int test_bf_local_enrollment(void)
+{
+    int failures = 0;
+    TEST("build_fabric: local enrollment admits a first-use identity and never revives a revoked one") {
+        struct node_db ndb;
+        char dir[256], path[320];
+        ASSERT(bf_open(&ndb, dir, sizeof(dir), path, sizeof(path), "enroll"));
+        struct db_build_worker worker, stored;
+        bf_worker(&worker);
+        ASSERT(!db_build_worker_find(&ndb, worker.worker_id, &stored));
+
+        /* First use: the identity is admitted on this node. */
+        ASSERT(build_fabric_worker_enroll_local(&ndb, &worker, 130).ok);
+        ASSERT(db_build_worker_find(&ndb, worker.worker_id, &stored));
+        ASSERT_EQ(stored.approved, 1);
+        ASSERT_EQ(stored.revoked, 0);
+
+        /* Repeating it changes nothing: enrollment is not an approval loop. */
+        ASSERT(build_fabric_worker_enroll_local(&ndb, &worker, 131).ok);
+        ASSERT(db_build_worker_find(&ndb, worker.worker_id, &stored));
+        ASSERT_EQ(stored.approved_at, worker.approved_at);
+
+        /* The operator revokes it. Enrolling again still succeeds as a
+         * call and MUST leave the refusal standing. */
+        ASSERT(build_fabric_worker_revoke(&ndb, worker.worker_id, 132).ok);
+        ASSERT(build_fabric_worker_enroll_local(&ndb, &worker, 133).ok);
+        ASSERT(db_build_worker_find(&ndb, worker.worker_id, &stored));
+        ASSERT_EQ(stored.revoked, 1);
+
+        /* An expired row is the same story: still expired afterwards. One
+         * identity per key, so this second one carries its own. */
+        struct db_build_worker expiring;
+        bf_worker(&expiring);
+        (void)snprintf(expiring.worker_id, sizeof(expiring.worker_id), "%s",
+                       id_b);
+        (void)snprintf(expiring.signer_pubkey, sizeof(expiring.signer_pubkey),
+                       "%s", id_a);
+        expiring.expires_at = 140;
+        ASSERT(build_fabric_worker_enroll_local(&ndb, &expiring, 134).ok);
+        ASSERT(build_fabric_worker_enroll_local(&ndb, &expiring, 150).ok);
+        ASSERT(db_build_worker_find(&ndb, expiring.worker_id, &stored));
+        ASSERT_EQ(stored.expires_at, 140);
+
+        /* Nothing without an open ledger or an identity. */
+        ASSERT(!build_fabric_worker_enroll_local(NULL, &worker, 135).ok);
+        ASSERT(!build_fabric_worker_enroll_local(&ndb, NULL, 135).ok);
+        node_db_close(&ndb);
+        test_rm_rf(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
 static int test_bf_leases(void)
 {
     int failures = 0;
@@ -1624,6 +1682,7 @@ int test_build_fabric(void)
     failures += test_bf_service();
     failures += test_bf_reproduction_plan();
     failures += test_bf_leases();
+    failures += test_bf_local_enrollment();
     failures += test_bf_toolchain_capture_cache();
     failures += test_bf_execution_observation_codec();
     failures += test_bf_confined_worker();

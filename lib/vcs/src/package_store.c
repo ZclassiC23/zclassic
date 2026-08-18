@@ -383,6 +383,11 @@ bool vcs_package_store_pin_plan(
 static pthread_mutex_t g_global_lock = PTHREAD_MUTEX_INITIALIZER;
 static struct vcs_package_store *g_global_store;
 
+const char *vcs_package_store_root_dir(const struct vcs_package_store *store)
+{
+    return store ? store->root : NULL;
+}
+
 bool vcs_package_store_open_global(void)
 {
     pthread_mutex_lock(&g_global_lock);

@@ -224,6 +224,25 @@ nonzero executed-group count. Do not accept a cached summary as an uncached
 proof. `tools/scripts/gate-and-report.sh <lintlog> <testlog>` verifies the
 canonical verdict tokens when a mission requires the combined report.
 
+The product front door is one command, and it is how you check that the whole
+Commons journey still holds end to end — a person asks for behavior, the node
+reuses C23 from a peer, creates only what is missing, a second node reproduces
+the exact bytes, tampering is refused by name, the person accepts, and the
+accepted application runs:
+
+```bash
+make commons-demo        # two fresh isolated datadirs; exit 0 means all nine steps held
+make readme-svg-check    # the README figures still match what this binary prints
+```
+
+`commons-demo` is deliberately outside `make ci`: it spawns two real regtest
+daemons, mines a regtest chain and runs confined package builds. The README's
+demo, proof and topology figures are rendered from a recording that same run
+writes — `ZCL_COMMONS_DEMO_RECORD=1 make commons-demo` refreshes
+`docs/assets/z23-commons-demo.{strip,facts}`, and `make readme-svg` redraws the
+SVGs from it. Never hand-edit either file: the gate exists so a figure cannot
+outlive the journey it describes.
+
 Focused and deep proof receipts describe only their bound observations. A
 passing compiler/test/reproduction receipt does not grant runtime publication
 or establish general code safety.

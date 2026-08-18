@@ -517,6 +517,14 @@ void zcl_native_handle_zcode_package_publish_plan(
 
 /* ── zcode package publish commit ───────────────────────────────────── */
 
+/* Close only a handle this call opened. The resident store outlives every
+ * command that borrows it. */
+static void zc_store_release(struct vcs_package_store *store, bool owned)
+{
+    if (owned)
+        vcs_package_store_close(store);
+}
+
 void zcl_native_handle_zcode_package_publish_commit(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply)
@@ -644,8 +652,20 @@ void zcl_native_handle_zcode_package_publish_commit(
         }
     }
 
-    struct vcs_package_store *store =
-        vcs_package_store_open(datadir, vcs_package_store_quota_bytes());
+    /* A running node already owns one store over its own datadir, and that
+     * object — not the bytes on disk — is what its package swarm answers
+     * from. Opening a second handle here writes the manifest, chunks and
+     * carrier correctly and still leaves the serving engine with an index
+     * that never heard of this package: the node announces a root it then
+     * refuses to send, until it is restarted. So when this commit names the
+     * datadir the resident handle was opened from, publish through that
+     * handle. Any other datadir keeps the one-shot owned-store path. */
+    struct vcs_package_store *resident = vcs_package_store_global();
+    const char *resident_root = vcs_package_store_root_dir(resident);
+    bool own_store = !(resident_root && strcmp(resident_root, zcode_dir) == 0);
+    struct vcs_package_store *store = own_store
+        ? vcs_package_store_open(datadir, vcs_package_store_quota_bytes())
+        : resident;
     if (!store) {
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "STORE_OPEN",
@@ -660,7 +680,7 @@ void zcl_native_handle_zcode_package_publish_commit(
     enum vcs_package_store_result sres = vcs_package_store_put_manifest(
         store, cand.manifest_wire, cand.manifest_wire_len, root);
     if (sres != VCS_PACKAGE_STORE_OK) {
-        vcs_package_store_close(store);
+        zc_store_release(store, own_store);
         vcs_service_book_free(book);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL,
@@ -677,7 +697,7 @@ void zcl_native_handle_zcode_package_publish_commit(
     sres = vcs_package_store_put_recipe(store, cand.recipe_wire,
                                         cand.recipe_wire_len, NULL);
     if (sres != VCS_PACKAGE_STORE_OK) {
-        vcs_package_store_close(store);
+        zc_store_release(store, own_store);
         vcs_service_book_free(book);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL,
@@ -690,7 +710,7 @@ void zcl_native_handle_zcode_package_publish_commit(
 
     uint8_t *buf = zcl_malloc(VCS_PACKAGE_CHUNK_BYTES, "zc_chunk_buf");
     if (!buf) {
-        vcs_package_store_close(store);
+        zc_store_release(store, own_store);
         vcs_service_book_free(book);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL, "ALLOC",
@@ -728,7 +748,7 @@ void zcl_native_handle_zcode_package_publish_commit(
     free(buf);
     if (io_failed) {
         /* Staging survives: a later commit of the same candidate resumes. */
-        vcs_package_store_close(store);
+        zc_store_release(store, own_store);
         vcs_service_book_free(book);
         zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
                                ZCL_COMMAND_EXIT_INTERNAL,
@@ -762,7 +782,7 @@ void zcl_native_handle_zcode_package_publish_commit(
             store, &transport, dir);
     if (transport_result != VCS_PACKAGE_TRANSPORT_OK) {
         vcs_package_transport_free(&transport);
-        vcs_package_store_close(store);
+        zc_store_release(store, own_store);
         vcs_service_book_free(book);
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
@@ -778,7 +798,7 @@ void zcl_native_handle_zcode_package_publish_commit(
         enum vcs_package_accept_result ar;
         sres = vcs_package_store_put_release(store, &cand.release, &ar);
         if (sres != VCS_PACKAGE_STORE_OK) {
-            vcs_package_store_close(store);
+            zc_store_release(store, own_store);
             vcs_package_transport_free(&transport);
             vcs_service_book_free(book);
             zcl_command_reply_fail(
@@ -791,7 +811,7 @@ void zcl_native_handle_zcode_package_publish_commit(
             return;
         }
     }
-    vcs_package_store_close(store);
+    zc_store_release(store, own_store);
 
     /* Slice 11: a successful FRESH local commit records the admission event
      * in the local service book (dedup by release id — a redelivered

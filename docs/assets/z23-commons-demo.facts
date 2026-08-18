@@ -1,0 +1,15 @@
+# Recorded by `make commons-demo`. Every value was measured by that
+# run on the machine named below; nothing here is typed in by hand.
+recorded_utc          = 2026-08-18T17:43:01Z
+host_cpu              = AMD Ryzen 9 7950X3D 16-Core Processor (32 threads)
+host_os               = Linux 6.8.0-111-generic x86_64
+compiler              = cc (Ubuntu 14.2.0-4ubuntu2~24.04.1) 14.2.0
+conditions            = two fresh isolated regtest datadirs, one machine, 1 peer
+ask_to_visible_result = 47 s
+remote_reproduction   = 29 s
+bytes_over_the_wire   = 14960 (reused package) + 22028 (accepted application)
+reused_package_match  = byte-identical on both nodes (1766 bytes)
+application_match     = byte-identical program on both nodes (16640 bytes)
+tamper_refused        = 4 of 4, each by name
+central_services      = 0
+whole_journey         = 79 s

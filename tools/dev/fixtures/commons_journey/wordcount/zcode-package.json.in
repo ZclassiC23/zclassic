@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "name": "z23/wordcount",
+  "name": "you/wordcount",
   "semver": "0.1.0",
   "language": "c23",
   "license": "Apache-2.0",

@@ -28,14 +28,9 @@
 #   8. Altered source, dependency, receipt or artifact is refused BY NAME.
 #   9. Acceptance is explicit, and `zcode use` then runs the application.
 #
-# STATUS: steps 1-7 are asserted today. Steps 8 and 9 (work accept, the
-# accepted app's own publication, byte-identical remote source reproduction,
-# the tamper refusals, and zcode use) are still being built; the verdict this
-# script prints at the end names exactly what it did and did not prove.
-#
 # The fixture is deliberately small and real: tools/dev/fixtures/commons_journey
 # holds z23/textstat (a finished, dependency-free counter package) and
-# z23/wordcount (an application that reuses it and needs one behavior nothing
+# you/wordcount (an application that reuses it and needs one behavior nothing
 # in the commons provides — the longest line). Nothing here is a mock.
 #
 # DELIBERATELY opt-in (NOT in `make ci`): it spawns two real regtest daemons,
@@ -79,6 +74,17 @@ CJ_GOAL="use z23/textstat and report the longest line of a text file"
 # reconstructing the source and reproducing the exact bytes.
 CJ_PROFILE="quick"
 
+# A syntactically perfect 64-hex root that names nothing anywhere. Every
+# tamper case below hands one of these — or altered bytes — to a leaf that
+# must refuse it BY NAME rather than by silence, empty result, or crash.
+CJ_FAKE_ROOT="deadbeef00000000000000000000000000000000000000000000000000000001"
+CJ_REFUSAL_SOURCE="LANE_NOT_ACCEPTED"
+CJ_REFUSAL_DEPENDENCY="TARGET_UNRESOLVED"
+CJ_REFUSAL_ARTIFACT="SOURCE_PACKAGE_CHECKOUT_REFUSED"
+# The fourth tamper is the stale acceptance in step 8: a confirmation bound
+# to a decision the person was never shown.
+CJ_REFUSAL_RECEIPT="CONFIRMATION_IDENTITY_STALE"
+
 # The application manifest is written at run time because a dependency is named
 # by its exact root, and that root is not known until the package it names has
 # been prepared. Passing an empty root writes the no-dependency form.
@@ -90,7 +96,7 @@ cj_write_package_json() {
     cat >"$ws/zcode-package.json" <<JSON
 {
   "schema": 1,
-  "name": "z23/wordcount",
+  "name": "you/wordcount",
   "semver": "0.1.0",
   "language": "c23",
   "license": "Apache-2.0",
@@ -376,11 +382,11 @@ cj_roots_hidden() {
 # A 32-byte mode-0600 secret used only through inherited descriptors. It
 # never reaches a command JSON body or a daemon datadir.
 cj_sign_digest() {
-    local digest="$1" out
+    local digest="$1" key="${2:-$DHT_WORK/publisher.key}" out
     printf '%s' "$digest" | xxd -r -p >"$DHT_WORK/release.digest"
     : >"$DHT_WORK/release.signature"
     chmod 0600 "$DHT_WORK/release.digest" "$DHT_WORK/release.signature"
-    exec 7<"$DHT_WORK/publisher.key" 8<"$DHT_WORK/release.digest" \
+    exec 7<"$key" 8<"$DHT_WORK/release.digest" \
          9>"$DHT_WORK/release.signature"
     "$CJ_SIGNER" --sign --key-fd 7 --digest-fd 8 --signature-fd 9 ||
         cj_die "offline release signing failed"
@@ -441,6 +447,64 @@ cj_use_package() {
     CJ_USE_COMMIT="$commit"
 }
 
+# Turn the accepted-work carrier back into the exact accepted source. The
+# command is handed three independent identities — the package it holds, the
+# source tree it must derive, and the accepted work that authorizes it — and
+# refuses unless all three agree, so a destination directory is only ever
+# written from bytes that verified.
+cj_checkout_accepted() {
+    local node="$1" dest="$2" dd cas
+    case "$node" in a) dd="$DHT_DD_A" ;; b) dd="$DHT_DD_B" ;;
+        *) cj_die "cj_checkout_accepted: unknown node '$node'" ;; esac
+    cas="$dest-cas"
+    rm -rf "$dest" "$cas"
+    mkdir -p "$dest" "$cas"
+    "cj_$node" zcode workspace source package checkout \
+        --input="{\"datadir\":\"$dd\",\"package_root\":\"$CJ_APP_ROOT\",\"source_root\":\"$CJ_ACCEPTED_SOURCE\",\"accepted_work_root\":\"$CJ_ACCEPTED_WORK\",\"workspace\":\"$cas\",\"destination\":\"$dest\"}"
+}
+
+# Build the accepted application out of a checked-out source tree, against
+# the dependency this node admitted for itself. Nothing here reaches into the
+# other node's datadir: each machine links only what it holds.
+cj_build_wordcount() {
+    local src="$1" dd="$2" out="$3"
+    cc -std=c23 -O1 -D_POSIX_C_SOURCE=200809L \
+        -I"$src/include" \
+        -I"$dd/zcode/installed/$CJ_TEXTSTAT_ROOT/include" \
+        "$src/app/main.c" "$src/src/wordcount.c" \
+        "$dd/zcode/installed/$CJ_TEXTSTAT_ROOT/lib/libtextstat.a" \
+        -o "$out"
+}
+
+# The one file in a node's content store that holds the largest source shard
+# of a package. The store is content-addressed and stores each chunk whole,
+# so the shard's exact size names its chunk; if that is ever ambiguous this
+# says so instead of tampering with something else and calling it a proof.
+cj_source_chunk_file() {
+    local node="$1" root="$2" show dd i path size best=0 hits
+    case "$node" in a) dd="$DHT_DD_A" ;; b) dd="$DHT_DD_B" ;;
+        *) cj_die "cj_source_chunk_file: unknown node '$node'" ;; esac
+    show="$("cj_$node" zcode package show --input="{\"root\":\"$root\"}")"
+    cj_require_ok "package show $root" "$show"
+    i=0
+    while :; do
+        path="$(cj_field "data.files_page.$i.path" "$show" '')"
+        [ -n "$path" ] || break
+        size="$(cj_field "data.files_page.$i.size" "$show" 0)"
+        case "$path" in
+            zclassic23-source/shard-*)
+                if [ "$size" -gt "$best" ]; then best="$size"; fi ;;
+        esac
+        i=$((i + 1))
+    done
+    [ "$best" -gt 0 ] ||
+        cj_die "package $root carries no source shard to alter"
+    hits="$(find "$dd/zcode/cas" -type f -size "${best}c")"
+    [ -n "$hits" ] && [ "$(printf '%s\n' "$hits" | wc -l)" -eq 1 ] ||
+        cj_die "the $best-byte source shard does not name exactly one stored chunk"
+    printf '%s\n' "$hits"
+}
+
 # ── peer-to-peer distribution ────────────────────────────────────────────
 # The frozen DHT grammar keeps naming and custody apart. A POINTER binds the
 # package root a person asks for to the carrier root that holds its bytes; a
@@ -448,23 +512,32 @@ cj_use_package() {
 # Nothing here is a registry: a provider can vanish and the package survives,
 # because the name is the content and any other holder answers for it.
 cj_publish_record() {
-    local node="$1" kind="$2" root="$3" transport="$4" seq="$5"
+    local node="$1" ns="$2" kind="$3" root="$4" transport="$5" seq="$6"
     local now expiry common plan token commit
     now="$(date +%s)"; expiry=$((now + 3600))
-    common="\"kind\":\"$kind\",\"namespace\":\"zclassic23.package\",\"transport_root\":\"$transport\",\"sequence\":$seq,\"not_before\":$((now - 5)),\"expiry\":$expiry"
+    common="\"kind\":\"$kind\",\"namespace\":\"$ns\",\"transport_root\":\"$transport\",\"sequence\":$seq,\"not_before\":$((now - 5)),\"expiry\":$expiry"
     [ "$kind" != pointer ] || common="$common,\"semantic_root\":\"$root\""
     plan="$("cj_$node" zcode network publish --input="{\"mode\":\"plan\",$common}")"
-    cj_require_ok "node $node $kind plan $root" "$plan"
+    cj_require_ok "node $node $ns $kind plan $root" "$plan"
     token="$(cj_field data.plan_token "$plan")"
     commit="$("cj_$node" zcode network publish \
         --input="{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}")"
-    cj_require_ok "node $node $kind commit $root" "$commit"
+    cj_require_ok "node $node $ns $kind commit $root" "$commit"
 }
 
 cj_announce_package() {
     local node="$1" root="$2" transport="$3" seq="$4"
-    cj_publish_record "$node" pointer  "$root" "$transport" "$seq"
-    cj_publish_record "$node" provider "$root" "$transport" "$seq"
+    cj_publish_record "$node" zclassic23.package pointer  "$root" "$transport" "$seq"
+    cj_publish_record "$node" zclassic23.package provider "$root" "$transport" "$seq"
+}
+
+# Serving a package's BYTES and serving its SOURCE are two different
+# services, and a node offers them separately. `zcode package source
+# reproduce` asks the zclassic23.source namespace for a package root, so a
+# publisher who wants its source independently re-derivable says so here.
+cj_announce_source() {
+    local node="$1" root="$2" seq="$3"
+    cj_publish_record "$node" zclassic23.source provider "$root" "$root" "$seq"
 }
 
 cj_pin_root() {
@@ -588,7 +661,8 @@ cj_journey_peer_distribution() {
     [ "$(cj_sql b "SELECT count(*) FROM build_receipts")" = 0 ] ||
         cj_die "node B already held build evidence before fetching anything"
     cj_fetch_package b "$CJ_TEXTSTAT_ROOT" "$CJ_TEXTSTAT_TRANSPORT"
-    cj_note "node B fetched z23/textstat from the overlay: $CJ_FETCH_BYTES bytes"
+    CJ_TEXTSTAT_BYTES="$CJ_FETCH_BYTES"
+    cj_note "node B fetched z23/textstat from the overlay: $CJ_TEXTSTAT_BYTES bytes"
 
     # PROOF: fetched source stays inert. Arriving on this machine executed
     # nothing and produced no evidence; only an explicit local decision can.
@@ -944,8 +1018,13 @@ cj_connect_authenticated() {
 
 cj_overlay() {
     cj_step "the authenticated overlay the two nodes share"
+    # Three service types cross this overlay: package bytes, one immutable
+    # work action, and the signed source-reproduction evidence node B
+    # publishes after it rebuilds what node A accepted.
     cj_allow_policy a zclassic23.package; cj_allow_policy a zclassic23.work
+    cj_allow_policy a zclassic23.source
     cj_allow_policy b zclassic23.package; cj_allow_policy b zclassic23.work
+    cj_allow_policy b zclassic23.source
     dht_kill_group "$DHT_PGID_B"; DHT_PGID_B=""
     dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
     DHT_BUILDWORKERS=1
@@ -959,12 +1038,352 @@ cj_overlay() {
     cj_connect_authenticated
 }
 
+# ── 8/9  the person decides, and the exact bytes travel ──────────────────
+# CANDIDATE is proof readiness. PROVEN is a human decision, and only this
+# command makes it. Everything downstream — publication, the source carrier
+# another machine reconstructs — is derived from that one decision, which is
+# why acceptance can be bound to the exact facts the person was shown.
+cj_journey_accept() {
+    cj_step "8/9  zcode work accept — the person decides, and the exact bytes travel"
+    local stale accept again
+
+    # TAMPER (receipt): an acceptance bound to a decision that was never
+    # shown. The identity is a hash over the exact task, candidate, policy
+    # and proof set; anything else is a different decision.
+    stale="$(cj_a zcode work accept \
+        --input="{\"workspace\":\"$CJ_WS\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\",\"confirmation_identity\":\"$CJ_FAKE_ROOT\"}")"
+    cj_require_refusal "acceptance bound to a decision nobody was shown" \
+        "$stale" "CONFIRMATION_IDENTITY_STALE"
+
+    accept="$(cj_a zcode work accept \
+        --input="{\"workspace\":\"$CJ_WS\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\",\"details\":true}")"
+    cj_require_ok "work accept" "$accept"
+    printf '%s\n' "$accept" >"$DHT_WORK/accept.json"
+    [ "$(cj_field data.state "$accept" '')" = PROVEN ] ||
+        cj_die "acceptance did not reach PROVEN: $accept"
+    [ "$(cj_field data.goal_decision "$accept" '')" = accepted ] ||
+        cj_die "acceptance did not record the person's decision: $accept"
+    CJ_ACCEPTED_SOURCE="$(printf '%s' "$(cj_field data.expert "$accept")" | cj_jget source_root '')"
+    [ "${#CJ_ACCEPTED_SOURCE}" -eq 64 ] ||
+        cj_die "acceptance bound no accepted source root: $accept"
+    # The lane receipt IS the accepted work: every later step that has to
+    # prove "a person accepted exactly this" resolves that chain from here.
+    CJ_ACCEPTED_WORK="$(printf '%s' "$(cj_field data.expert "$accept")" | cj_jget lane_receipt_root '')"
+    [ "${#CJ_ACCEPTED_WORK}" -eq 64 ] ||
+        cj_die "acceptance bound no lane receipt root: $accept"
+
+    # Saying yes twice is the same yes.
+    again="$(cj_a zcode work accept \
+        --input="{\"workspace\":\"$CJ_WS\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\"}")"
+    cj_require_ok "work accept (repeat)" "$again"
+    [ "$(cj_field data.idempotent "$again" False)" = True ] ||
+        cj_die "repeating an acceptance was not idempotent: $again"
+    cj_human_first "work accept" "$again"
+    cj_roots_hidden "work accept" "$again" "$accept"
+    cj_note "accepted: PROVEN, source ${CJ_ACCEPTED_SOURCE:0:16}…"
+}
+
+# The accepted work becomes an ordinary package anyone can hold. It is
+# published by a SECOND offline identity under a SECOND namespace:
+# z23/textstat came from whoever wrote it, and `you/wordcount` is this
+# person's own. Both halves matter — a publisher namespace binds first-come
+# to one key, so the person's application cannot be published into someone
+# else's name and their own name cannot be taken from them. The publisher
+# secret never enters the node: plan returns a digest, the signature is made
+# outside, and commit carries the sealed envelope.
+cj_journey_publish_accepted() {
+    local plan digest body signature seal commit
+    CJ_APP_PUBLISHER="$("$CJ_SIGNER" --generate "$DHT_WORK/app-publisher.key")"
+    [ -n "$CJ_APP_PUBLISHER" ] ||
+        cj_die "could not create the application publisher identity"
+    plan="$(cj_a zcode publish plan \
+        --input="{\"workspace\":\"$CJ_WS\",\"datadir\":\"$DHT_DD_A\",\"source_root\":\"$CJ_ACCEPTED_SOURCE\",\"publisher_pubkey\":\"$CJ_APP_PUBLISHER\"}")"
+    cj_require_ok "publish plan (accepted work)" "$plan"
+    printf '%s\n' "$plan" >"$DHT_WORK/app-publish-plan.json"
+    digest="$(cj_field data.release_signing_digest "$plan" '')"
+    body="$(cj_field data.release_body_hex "$plan" '')"
+    [ -n "$digest" ] && [ -n "$body" ] ||
+        cj_die "publish plan returned nothing to sign: $plan"
+    signature="$(cj_sign_digest "$digest" "$DHT_WORK/app-publisher.key")"
+    seal="$(cj_a zcode package dev seal \
+        --input="{\"release_body_hex\":\"$body\",\"signature_hex\":\"$signature\"}")"
+    cj_require_ok "seal (accepted work)" "$seal"
+    CJ_APP_RELEASE_HEX="$(cj_field data.release_hex "$seal" '')"
+    [ -n "$CJ_APP_RELEASE_HEX" ] || cj_die "sealing produced no release: $seal"
+    commit="$(cj_a zcode publish \
+        --input="{\"workspace\":\"$CJ_WS\",\"datadir\":\"$DHT_DD_A\",\"source_root\":\"$CJ_ACCEPTED_SOURCE\",\"release_hex\":\"$CJ_APP_RELEASE_HEX\"}")"
+    cj_require_ok "publish commit (accepted work)" "$commit"
+    printf '%s\n' "$commit" >"$DHT_WORK/app-publish-commit.json"
+    CJ_APP_ROOT="$(cj_field data.package_root "$commit" '')"
+    CJ_APP_TRANSPORT="$(cj_field data.transport_root "$commit" '')"
+    [ "${#CJ_APP_ROOT}" -eq 64 ] ||
+        cj_die "the accepted application was published without a package root: $commit"
+    [ "${#CJ_APP_TRANSPORT}" -eq 64 ] ||
+        cj_die "the accepted application was published without a carrier: $commit"
+    cj_note "you/wordcount published from the accepted work: ${CJ_APP_ROOT:0:16}…"
+}
+
+# A second machine reconstructs the exact source from the carrier it fetched
+# and signs one SOURCE_REPRODUCTION_ACK for it. The ACK names the source tree
+# root it derived; if that root equals the one node A accepted, two
+# independent machines built the same bytes from the same evidence.
+cj_journey_remote_reproduction() {
+    local plan commit seq nb exp token derived
+    cj_announce_package a "$CJ_APP_ROOT" "$CJ_APP_TRANSPORT" 1
+    cj_announce_source  a "$CJ_APP_ROOT" 1
+    cj_fetch_package b "$CJ_APP_ROOT" "$CJ_APP_TRANSPORT"
+    CJ_APP_BYTES="$CJ_FETCH_BYTES"
+    cj_note "node B fetched the accepted application: $CJ_APP_BYTES bytes"
+
+    plan="$(cj_b zcode package source reproduce \
+        --input="{\"mode\":\"plan\",\"root\":\"$CJ_APP_ROOT\",\"datadir\":\"$DHT_DD_B\"}")"
+    cj_require_ok "source reproduce plan" "$plan"
+    printf '%s\n' "$plan" >"$DHT_WORK/reproduce-plan.json"
+    [ "$(cj_field data.reconstructed "$plan" False)" = True ] ||
+        cj_die "node B did not reconstruct the source: $plan"
+    derived="$(cj_field data.source_tree_root "$plan" '')"
+    [ "$derived" = "$CJ_ACCEPTED_SOURCE" ] ||
+        cj_die "node B reconstructed different source bytes: got $derived want $CJ_ACCEPTED_SOURCE"
+    seq="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget sequence 0)"
+    nb="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget not_before 0)"
+    exp="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget expiry 0)"
+    token="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget plan_token '')"
+    commit="$(cj_b zcode package source reproduce \
+        --input="{\"mode\":\"commit\",\"root\":\"$CJ_APP_ROOT\",\"datadir\":\"$DHT_DD_B\",\"sequence\":$seq,\"not_before\":$nb,\"expiry\":$exp,\"plan_token\":\"$token\"}")"
+    cj_require_ok "source reproduce commit" "$commit"
+    printf '%s\n' "$commit" >"$DHT_WORK/reproduce-commit.json"
+    [ "$(cj_field data.evidence_signed "$commit" False)" = True ] ||
+        cj_die "node B published no signed reproduction evidence: $commit"
+    [ "$(cj_field data.physical_independence_attested "$commit" True)" = False ] ||
+        cj_die "a same-host reproduction claimed physical independence: $commit"
+    cj_note "node B reproduced the exact source and signed for it: ${derived:0:16}…"
+}
+
+# Four ways to hand a node something that is not what it claims to be. Each
+# one must be refused BY NAME: a refusal whose reason the person can read is
+# the difference between a system that is safe and a system that is silent.
+# The fourth (a receipt bound to a decision nobody was shown) was already
+# refused in step 8, where that decision is made.
+cj_journey_tamper_refusals() {
+    local refused restored chunk saved
+
+    # ALTERED SOURCE: a source root nobody accepted cannot be published, even
+    # by the person who owns the workspace and the publisher key.
+    refused="$(cj_a zcode publish plan \
+        --input="{\"workspace\":\"$CJ_WS\",\"datadir\":\"$DHT_DD_A\",\"source_root\":\"$CJ_FAKE_ROOT\",\"publisher_pubkey\":\"$CJ_APP_PUBLISHER\"}")"
+    cj_require_refusal "altered source" "$refused" "$CJ_REFUSAL_SOURCE"
+
+    # ALTERED DEPENDENCY: a dependency nobody holds is never silently skipped.
+    refused="$(cj_b zcode use --input="{\"name_or_root\":\"$CJ_FAKE_ROOT\"}")"
+    cj_require_refusal "altered dependency" "$refused" "$CJ_REFUSAL_DEPENDENCY"
+
+    # ALTERED ARTIFACT: the bytes node B is holding for the accepted
+    # application are changed on disk, in the content store itself. The next
+    # command that turns those bytes back into source must notice by content
+    # — the store is addressed by hash, so a chunk that no longer hashes to
+    # its own name is not the artifact it claims to be.
+    chunk="$(cj_source_chunk_file b "$CJ_APP_ROOT")"
+    saved="$DHT_WORK/app-chunk.saved"
+    cp "$chunk" "$saved"
+    "$DHT_ACCEPTANCE_C23" flip-byte "$chunk" last >/dev/null
+    refused="$(cj_checkout_accepted b "$DHT_WORK/tamper-checkout")"
+    cp "$saved" "$chunk"
+    cj_require_refusal "altered artifact" "$refused" "$CJ_REFUSAL_ARTIFACT"
+
+    # And the restored store is whole again: a tamper test that leaves the
+    # node broken proves nothing about the node.
+    restored="$(cj_checkout_accepted b "$DHT_WORK/restored-checkout")"
+    cj_require_ok "checkout after the altered bytes were restored" "$restored"
+    cj_note "tamper refused by name: source, dependency, receipt, artifact"
+}
+
+# ── 9/9  the accepted application runs ───────────────────────────────────
+# What was published from the accepted work is a source carrier: it holds the
+# exact accepted source as verified shards, its closed authority chain, and
+# an inert marker. That is deliberate — distributing software is not the same
+# act as running it, and nothing a peer sends may build itself on arrival.
+# So the last step is the one a person actually performs: admit the package
+# locally, turn it back into source, and build it against the dependency this
+# machine already admitted.
+cj_journey_use_app() {
+    cj_step "9/9  zcode use — the accepted application runs on the second machine"
+    local src_b src_a bin_b bin_a sample out want ts_a ts_b
+
+    # The person on node B admits the accepted application explicitly.
+    cj_use_package b "$CJ_APP_ROOT"
+    [ -d "$DHT_DD_B/zcode/installed/$CJ_APP_ROOT" ] ||
+        cj_die "node B admitted the accepted application but installed nothing"
+
+    # Two machines, one dependency, one set of bytes: node A and node B each
+    # built z23/textstat with their own build fabric from source they each
+    # obtained separately, and the artifacts match byte for byte.
+    ts_a="$DHT_DD_A/zcode/installed/$CJ_TEXTSTAT_ROOT/lib/libtextstat.a"
+    ts_b="$DHT_DD_B/zcode/installed/$CJ_TEXTSTAT_ROOT/lib/libtextstat.a"
+    cmp -s "$ts_a" "$ts_b" ||
+        cj_die "the two machines built different bytes for the reused package"
+    CJ_LIB_BYTES="$(wc -c <"$ts_b")"
+    cj_note "both machines built byte-identical z23/textstat ($CJ_LIB_BYTES bytes)"
+
+    # Node B turns the carrier back into the accepted source. The command
+    # verifies every shard against the accepted source root and re-resolves
+    # the PROVEN authority before it writes a single file.
+    src_b="$DHT_WORK/checkout-b"
+    cj_require_ok "node B accepted-source checkout" \
+        "$(cj_checkout_accepted b "$src_b")"
+    [ -f "$src_b/include/wordcount/wordcount.h" ] ||
+        cj_die "the accepted source arrived without its public header"
+    grep -q 'wordcount_longest_line' "$src_b/src/wordcount.c" ||
+        cj_die "the accepted source does not contain the behavior this journey created"
+
+    # The visible result: the application, built on node B out of source node
+    # B reconstructed itself, linked against the artifact node B built itself.
+    sample="$DHT_WORK/sample.txt"
+    printf '%s\n' \
+        'the commons is not a registry' \
+        'it is whoever happens to hold the bytes right now' \
+        'and the name of a thing is what it contains' >"$sample"
+    bin_b="$DHT_WORK/wordcount-b"
+    cj_build_wordcount "$src_b" "$DHT_DD_B" "$bin_b" ||
+        cj_die "the accepted application did not build on node B"
+    out="$("$bin_b" "$sample")"
+    # The oracle is deliberately not this project: coreutils wc and awk count
+    # the same file independently, so the assertion cannot drift into "what
+    # our own code happened to print".
+    want="lines $(wc -l <"$sample") words $(wc -w <"$sample") bytes $(wc -c <"$sample") longest_line $(awk "{ if (length(\$0) > m) m = length(\$0) } END { print m + 0 }" "$sample")"
+    [ "$out" = "$want" ] ||
+        cj_die "the application ran but answered '$out' instead of '$want'"
+    CJ_APP_OUTPUT="$out"
+
+    # And it is the same program on both machines: node A builds it from the
+    # source it accepted, node B from the source it fetched and re-derived,
+    # and the two executables are the same bytes.
+    src_a="$DHT_WORK/checkout-a"
+    cj_require_ok "node A accepted-source checkout" \
+        "$(cj_checkout_accepted a "$src_a")"
+    bin_a="$DHT_WORK/wordcount-a"
+    cj_build_wordcount "$src_a" "$DHT_DD_A" "$bin_a" ||
+        cj_die "the accepted application did not build on node A"
+    cmp -s "$bin_a" "$bin_b" ||
+        cj_die "the two machines built different programs from the same accepted source"
+    CJ_APP_BINARY_BYTES="$(wc -c <"$bin_b")"
+    cj_note "wordcount sample.txt -> $CJ_APP_OUTPUT"
+    cj_note "identical $CJ_APP_BINARY_BYTES-byte program on both machines"
+    cj_note "the longest_line number is the behavior this journey created"
+}
+
+# ── the strip and the topology ───────────────────────────────────────────
+# The mission's eight stages, printed by the run that earned them. The README
+# figures are rendered from a recording of one real run; `--strip-labels` is
+# how that generator refuses a recording whose stages no longer match this
+# script, and `--topology` emits the drawing itself so it cannot go stale.
+# One owner, so no figure can describe a journey this file does not run.
+CJ_STRIP_LABELS='YOU ASKED
+REUSED FROM PEER
+CREATED MISSING BEHAVIOR
+VISIBLE RESULT
+REPRODUCED ON NODE B
+TAMPER REFUSED
+ACCEPTED
+USED'
+
+cj_strip_row() { printf '  \033[1;36m%-26s\033[0m%s\n' "$1" "$2"; }
+cj_strip_cont() { printf '  %-26s\033[2m%s\033[0m\n' "" "$1"; }
+
+cj_strip() {
+    printf '  \033[1mYOU ASKED\033[0m → \033[1mREUSED FROM PEER\033[0m → \033[1mCREATED MISSING BEHAVIOR\033[0m → \033[1mVISIBLE RESULT\033[0m →\n'
+    printf '  \033[1mREPRODUCED ON NODE B\033[0m → \033[1mTAMPER REFUSED\033[0m → \033[1mACCEPTED\033[0m → \033[1mUSED\033[0m\n\n'
+    cj_strip_row "YOU ASKED" "$CJ_GOAL"
+    cj_strip_row "REUSED FROM PEER" \
+        "z23/textstat ${CJ_TEXTSTAT_ROOT:0:12}… — $CJ_TEXTSTAT_BYTES bytes from node A, no registry"
+    cj_strip_row "CREATED MISSING BEHAVIOR" \
+        "wordcount_longest_line() — the only code this journey wrote"
+    cj_strip_row "VISIBLE RESULT" \
+        "built and tested on node A ${CJ_SECS_RESULT}s after the ask, bound to the exact source"
+    cj_strip_row "REPRODUCED ON NODE B" \
+        "re-derived ${CJ_ACCEPTED_SOURCE:0:12}… in ${CJ_SECS_REPRO}s and signed for it"
+    # Four kinds of lie, four refusals. The names go on their own lines
+    # because the name is the point: a refusal a person can read.
+    cj_strip_row "TAMPER REFUSED" \
+        "altered source · unknown dependency · stale acceptance · altered bytes"
+    cj_strip_cont "each by name: $CJ_REFUSAL_SOURCE · $CJ_REFUSAL_DEPENDENCY"
+    cj_strip_cont "$CJ_REFUSAL_RECEIPT · $CJ_REFUSAL_ARTIFACT"
+    cj_strip_row "ACCEPTED" \
+        "one exact version, by hand — PROVEN, published as you/wordcount"
+    cj_strip_row "USED" "wordcount sample.txt → $CJ_APP_OUTPUT"
+    printf '\n  \033[2mtwo fresh datadirs · %s bytes over the overlay · 1 peer · central services contacted: 0\033[0m\n' \
+        "$CJ_APP_BYTES"
+}
+
+# How the bytes actually travel. Every command path named here is checked
+# against the running binary's own registry when the figure is generated, so
+# this drawing cannot outlive the commands it names.
+cj_topology() {
+    cat <<'TOPO'
+  NODE A — the person's workshop                NODE B — a second machine, nothing installed
+  ┌───────────────────────────────────┐         ┌───────────────────────────────────┐
+  │ workspace  the accepted work      │         │ store      empty at boot          │
+  │ store      the bytes it holds     │         │ installed  empty at boot          │
+  │ swarm      serves what it holds   │         │ swarm      serves what it verified│
+  └───────────────────────────────────┘         └───────────────────────────────────┘
+
+   1 PUBLISH    zcode.package.publish.commit     accepted source becomes one signed carrier
+   2 ANNOUNCE   zcode.network.publish            POINTER: package root → carrier root
+                                                 PROVIDER: an authenticated peer holding it
+   3 DISCOVER   zcode.network.find               node B asks the overlay who holds that root
+   4 FETCH      zcode.package.fetch              bytes arrive from node A — and stay inert
+   5 REPRODUCE  zcode.package.source.reproduce   node B re-derives the exact source tree
+   6 USE        zcode.package.dev.use            node B admits it — an explicit local decision
+   7 BUILD      zcode.workspace.source.package.checkout
+                                                 carrier → accepted source → the program runs
+   8 SERVE      node B answers for the same roots, so the next peer need not ask node A
+
+  no registry · no coordinator · no privileged node · central services contacted: 0
+TOPO
+}
+
+# What this run measured, as plain key = value text. The README's proof figure
+# is rendered from this file, so those numbers are a recording of one real run
+# on stated hardware — never a claim typed onto a page.
+cj_write_facts() {
+    local cpu
+    cpu="$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -1)"
+    [ -n "$cpu" ] || cpu="unknown CPU"
+    {
+        printf '# Recorded by `make commons-demo`. Every value was measured by that\n'
+        printf '# run on the machine named below; nothing here is typed in by hand.\n'
+        printf 'recorded_utc          = %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+        printf 'host_cpu              = %s (%s threads)\n' "$cpu" "$(nproc)"
+        printf 'host_os               = %s %s\n' "$(uname -sr)" "$(uname -m)"
+        printf 'compiler              = %s\n' "$(${CC:-cc} --version | head -1)"
+        printf 'conditions            = two fresh isolated regtest datadirs, one machine, 1 peer\n'
+        printf 'ask_to_visible_result = %s s\n' "$CJ_SECS_RESULT"
+        printf 'remote_reproduction   = %s s\n' "$CJ_SECS_REPRO"
+        printf 'bytes_over_the_wire   = %s (reused package) + %s (accepted application)\n' \
+            "$CJ_TEXTSTAT_BYTES" "$CJ_APP_BYTES"
+        printf 'reused_package_match  = byte-identical on both nodes (%s bytes)\n' "$CJ_LIB_BYTES"
+        printf 'application_match     = byte-identical program on both nodes (%s bytes)\n' "$CJ_APP_BINARY_BYTES"
+        printf 'tamper_refused        = 4 of 4, each by name\n'
+        printf 'central_services      = 0\n'
+        printf 'whole_journey         = %s s\n' "$CJ_SECS_TOTAL"
+    } >"$1"
+}
+
+# Read-only modes for the README figure generator. They print and exit before
+# anything is booted, claimed, mined or written.
+case "${1:-}" in
+    --strip-labels) printf '%s\n' "$CJ_STRIP_LABELS"; exit 0 ;;
+    --topology)     cj_topology; exit 0 ;;
+    "") ;;
+    *) cj_die "unknown argument '$1' (accepted: --strip-labels, --topology)" ;;
+esac
+
 cj_step "bring-up: two fresh isolated datadirs"
 cj_boot
 cj_build_peer_helper
 cj_identities
 
 cj_step "the journey"
+CJ_T0="$(date +%s)"
 cj_journey_guide
 cj_journey_publish_reusable
 # The hosting engine that serves package bytes to peers is built at node
@@ -978,11 +1397,34 @@ cj_journey_work_start_unavailable
 cj_journey_admit_reuse
 cj_journey_create_missing
 cj_journey_show
+CJ_SECS_RESULT=$(( $(date +%s) - CJ_T0 ))
+cj_journey_accept
+cj_journey_publish_accepted
+CJ_T_REPRO="$(date +%s)"
+cj_journey_remote_reproduction
+CJ_SECS_REPRO=$(( $(date +%s) - CJ_T_REPRO ))
+cj_journey_tamper_refusals
+cj_journey_use_app
 
-# The verdict names its own coverage. Steps 8 and 9 — zcode work accept, the
-# accepted app's own publication and byte-identical remote source
-# reproduction, the four tamper refusals, and zcode use running the result —
-# are not asserted yet, so a green run of this script must not be read as the
-# complete journey. It says so itself rather than leaving exit 0 to imply it.
+# The verdict is the whole journey or nothing. Every step above dies on its
+# first broken promise, so reaching this line means all nine held on two
+# fresh datadirs that reached no service outside this machine.
+
+# The strip: the mission's eight stages, printed by the run that just earned
+# them, plus the recording the README figures are rendered from.
+# ZCL_COMMONS_DEMO_RECORD=1 updates the committed recording; without it this
+# run writes only into its own work directory and changes nothing in the tree.
+CJ_SECS_TOTAL=$(( $(date +%s) - CJ_T0 ))
+cj_step "what just happened"
+cj_strip | tee "$DHT_WORK/commons-demo.strip"
+cj_write_facts "$DHT_WORK/commons-demo.facts"
+if [ "${ZCL_COMMONS_DEMO_RECORD:-0}" = 1 ]; then
+    cp "$DHT_WORK/commons-demo.strip" \
+       "$REPO_ROOT/docs/assets/z23-commons-demo.strip"
+    cp "$DHT_WORK/commons-demo.facts" \
+       "$REPO_ROOT/docs/assets/z23-commons-demo.facts"
+    cj_note "recorded docs/assets/z23-commons-demo.{strip,facts}; redraw with: make readme-svg"
+fi
+
 cj_step "verdict"
-printf '%s\n' '{"schema":"zcl.commons_journey_acceptance.v1","verdict":"PASS","steps_proven":7,"steps_total":9,"complete":false,"reuse_before_creation":true,"no_false_reuse_claim":true,"peer_to_peer_fetch":true,"fetched_source_inert":true,"explicit_local_admission":true,"independent_remote_build":true,"approved_signer_required":true,"human_first_terminal_output":true,"not_yet_proven":["work accept","accepted-app publication","remote source reproduction","tamper refused by name","zcode use runs the app"]}'
+printf '%s\n' '{"schema":"zcl.commons_journey_acceptance.v1","verdict":"PASS","steps_proven":9,"steps_total":9,"complete":true,"reuse_before_creation":true,"no_false_reuse_claim":true,"peer_to_peer_fetch":true,"fetched_source_inert":true,"explicit_local_admission":true,"independent_remote_build":true,"approved_signer_required":true,"explicit_human_acceptance":true,"accepted_work_published":true,"remote_source_reproduced":true,"byte_identical_artifacts":true,"tamper_refused_by_name":["source","dependency","receipt","artifact"],"application_ran":true,"central_services_contacted":0,"human_first_terminal_output":true}'

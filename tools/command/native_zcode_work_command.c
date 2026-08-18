@@ -1775,14 +1775,25 @@ static void zwork_accept_inner(const char *workspace, const char *datadir,
     bool opened = target != 0 && n > 0 && (size_t)n < sizeof(db_path) &&
         (owned || zwork_open_build_ledger(
             ndb, db_path, "zcode.work.accept", false));
+    int64_t now = (int64_t)platform_time_wall_unix();
     struct zcl_result result = opened
         ? build_fabric_worker_identity_load(
               datadir, &signer, secret, pubkey)
         : ZCL_ERR(-1, "human acceptance ledger could not be opened");
+    /* Acceptance is signed by this node's own operator identity, which lives
+     * in this datadir. A requester node runs no build worker on purpose — it
+     * must not be able to prove its own work — so nothing else ever enrolls
+     * that key here, and without this the last human step of the journey
+     * refuses every candidate with an unapproved signer. Enrollment is
+     * first-use only: an identity the operator revoked or let expire keeps
+     * refusing. */
+    if (result.ok) {
+        signer.last_seen_at = now;
+        result = build_fabric_worker_enroll_local(ndb, &signer, now);
+    }
     if (result.ok)
         result = zcode_lane_advance(
-            ndb, workspace, action_id, target,
-            (int64_t)platform_time_wall_unix(), secret, pubkey, &status);
+            ndb, workspace, action_id, target, now, secret, pubkey, &status);
     memory_cleanse(secret, sizeof(secret));
     if (opened && !owned) node_db_close(ndb);
     if (!result.ok) {

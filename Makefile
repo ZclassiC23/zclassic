@@ -2359,6 +2359,23 @@ secure-release-regressions-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-ve
 	ulimit -s unlimited && $(TEST_PARALLEL_REL_ACTIVE) \
 	  --exact=$(SECURE_RELEASE_REGRESSION_GROUPS) --no-cache
 
+# ── the front door ───────────────────────────────────────────────────────
+# `make commons-demo` is the one command that shows the whole product: a
+# person asks for behavior, their node reuses C23 from a peer, creates only
+# what is missing, shows the result, a second node reproduces the exact
+# bytes, tampering is refused by name, the person accepts, and the accepted
+# application runs. Two fresh isolated datadirs; nothing outside this machine
+# is contacted after the build. Exit 0 means every one of those held.
+#
+# It is deliberately not part of `make ci`: it spawns two real regtest
+# daemons, mines a regtest chain and runs confined package builds.
+.PHONY: commons-demo commons-journey-acceptance
+commons-demo: zclassic23 zcl-rpc zclassic23-package-sign tools/arena-product-journey-c23
+	@bash tools/dev/commons_journey_acceptance.sh
+
+# The same proof under its acceptance name, for scripts and release notes.
+commons-journey-acceptance: commons-demo
+
 .PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance arena-product-journey
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
