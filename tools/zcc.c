@@ -309,6 +309,8 @@ struct plan {
     int out_idx;      /* index of the -o VALUE, or -1 */
     const char *out_path;
     const char *dep_path;
+    int dep_idx;          /* index of the -MF VALUE, or -1 */
+    int dep_inline_idx;   /* index of a joined -MFvalue, or -1 */
     char dep_buf[PATH_MAX];
     int *src;         /* indexes of .c inputs */
     int src_n;
@@ -336,6 +338,8 @@ static void plan_build(struct plan *pl, int argc, char **argv)
     pl->argv = argv;
     pl->argc = argc;
     pl->out_idx = -1;
+    pl->dep_idx = -1;
+    pl->dep_inline_idx = -1;
     pl->src = zcl_calloc((size_t)argc, sizeof *pl->src, "zcc sources");
     pl->blob = zcl_calloc((size_t)argc, sizeof *pl->blob, "zcc blob inputs");
     pl->libdir = zcl_calloc((size_t)argc, sizeof *pl->libdir, "zcc -L dirs");
@@ -365,8 +369,17 @@ static void plan_build(struct plan *pl, int argc, char **argv)
             want_dep = true;
         } else if (strcmp(a, "-MF") == 0 && i + 1 < argc) {
             dep_explicit = argv[++i];
+            pl->dep_idx = i;
         } else if (strncmp(a, "-MF", 3) == 0 && a[3]) {
             dep_explicit = a + 3;
+            pl->dep_inline_idx = i;
+        } else if ((strcmp(a, "-MT") == 0 || strcmp(a, "-MQ") == 0) &&
+                   i + 1 < argc) {
+            /* -MT/-MQ NAME the make target in the depfile. Their value is an
+             * object path, not an input. Leaving it unconsumed made it look
+             * like a positional input, which broke the -E probe and silently
+             * bypassed EVERY node object in this repository. */
+            i++;
         } else if (strcmp(a, "-L") == 0 && i + 1 < argc) {
             pl->libdir[pl->libdir_n++] = argv[++i];
         } else if (strncmp(a, "-L", 2) == 0 && a[2]) {
@@ -410,11 +423,23 @@ static void plan_build(struct plan *pl, int argc, char **argv)
 
 /* argv with the -o VALUE replaced by a fixed placeholder: the artifact's
  * destination must not change the key, but every other flag must. */
+/* Where an artifact is WRITTEN does not change the bytes written, so the key
+ * must not contain it. This is not a nicety: the node's per-object rule
+ * compiles into a fresh mktemp staging directory and publishes atomically, so
+ * `-o` and `-MF` both carry a random path on every single invocation. Hashing
+ * them verbatim gave this cache a 0% hit rate on 1733 objects while looking
+ * perfectly healthy.
+ *
+ * `-MT`/`-MQ` are different and stay in the key: they set the target name
+ * written INSIDE the depfile, so two invocations differing only there produce
+ * different depfile bytes, and this cache restores depfiles. */
 static void hash_argv(struct sha3_256_ctx *h, const struct plan *pl)
 {
     for (int i = 1; i < pl->argc; i++) {
-        if (i == pl->out_idx)
+        if (i == pl->out_idx || i == pl->dep_idx)
             hstr(h, "<output>");
+        else if (i == pl->dep_inline_idx)
+            hstr(h, "-MF<output>");
         else
             hstr(h, pl->argv[i]);
     }
@@ -616,11 +641,14 @@ static bool preprocess(const struct plan *pl, int src_idx, const char *tmpdir,
             strcmp(a, "-MD") == 0 || strcmp(a, "-MMD") == 0 ||
             strcmp(a, "-MP") == 0)
             continue;
-        if (strcmp(a, "-MF") == 0) {
-            i++;
+        if (strcmp(a, "-MF") == 0 || strcmp(a, "-MT") == 0 ||
+            strcmp(a, "-MQ") == 0) {
+            i++;   /* also drop the value, or it becomes a phantom input */
             continue;
         }
         if (strncmp(a, "-MF", 3) == 0 && a[3])
+            continue;
+        if ((strncmp(a, "-MT", 3) == 0 || strncmp(a, "-MQ", 3) == 0) && a[3])
             continue;
         /* other inputs would only produce "linker input unused" noise */
         bool other_input = false;
@@ -1047,11 +1075,16 @@ static int cmd_stats(struct cache *c)
 {
     long hit = counter(c, "hit"), miss = counter(c, "miss");
     long bypass = counter(c, "bypass"), total = hit + miss;
+    long unkeyable = counter(c, "unkeyable");
     printf("zcc cache      %s\n", c->root);
     printf("  size         %lld MB\n", tree_bytes(c->root) / (1024 * 1024));
     printf("  hits         %ld\n", hit);
     printf("  misses       %ld\n", miss);
     printf("  bypassed     %ld\n", bypass);
+    /* Never hide this behind a zero: an unkeyable compile is a compile this
+     * cache silently failed to speed up, and it is worth naming. */
+    printf("  unkeyable    %ld%s\n", unkeyable,
+           unkeyable > 0 ? "  (ZCC_LOG=<path> names them)" : "");
     if (total > 0)
         printf("  hit rate     %.1f%%\n", 100.0 * (double)hit / (double)total);
     return 0;
@@ -1156,7 +1189,13 @@ int main(int argc, char **argv)
 
     if (!have_ckey || audit) {
         if (!content_key(&pl, c.tmp, &deps, ckey)) {
+            /* The -E probe did not work here. Run the real compiler, but say
+             * so: an invocation that silently declines to be cached is a
+             * performance bug nobody can see. A -MT value left unconsumed
+             * once made EVERY node object take this path. */
             deps_free(&deps);
+            bump(&c, "unkeyable");
+            logline("UNKEY", "the -E probe failed", &pl);
             return exec_direct(cc_argv);
         }
         have_deps = true;

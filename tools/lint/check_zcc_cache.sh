@@ -108,6 +108,43 @@ d="$(build header)" || exit 1
 [ "$a" != "$d" ] || fail "a changed header produced the same object bytes"
 [ "$("$WORK/prog")" = 100 ] || fail "the build after a header edit used stale code"
 
+
+# 6. THE SECOND REGRESSION: the node compiles every object into a FRESH
+#    mktemp staging directory and publishes atomically, so `-o` and `-MF`
+#    carry a different random path on every invocation, and `-MT` names the
+#    final target. Two bugs lived in that shape at once — the -MT value was
+#    read as a phantom input file, which failed the -E probe and silently
+#    dropped every node object out of the cache, and the -MF staging path
+#    went into the key, which gave 1733 objects a 0% hit rate while the cache
+#    looked healthy. Same source, different staging paths, must HIT.
+stage_build()
+{
+    local tag="$1" dir
+    dir="$WORK/stage.$tag"
+    mkdir -p "$dir"
+    "$ZCC" cc -std=c23 -O1 -Wall -I"$WORK" \
+        -MD -MP -MF "$dir/main.d" -MT "$WORK/final/main.o" \
+        -c "$WORK/main.c" -o "$dir/main.o" 2>/dev/null || return 1
+    sha256sum < "$dir/main.o" | awk '{print $1}'
+}
+mkdir -p "$WORK/final"
+s1="$(stage_build one)" || fail "staged compile failed"
+[ "$(last_disposition)" = MISS ] || fail "the first staged compile was not a MISS"
+[ -s "$WORK/stage.one/main.d" ] || fail "the compiler wrote no depfile"
+s2="$(stage_build two)" || fail "second staged compile failed"
+[ "$(last_disposition)" = HIT ] ||
+    fail "a staged rebuild missed: the random -o/-MF paths are in the key"
+[ "$s1" = "$s2" ] || fail "a staged cache hit produced different object bytes"
+[ -s "$WORK/stage.two/main.d" ] || fail "a cache hit did not restore the depfile"
+grep -q 'main.o' "$WORK/stage.two/main.d" ||
+    fail "the restored depfile does not name its target"
+
+# 7. Nothing may take the unkeyable path: it means the -E probe failed and
+#    the compile ran uncached. Bug 1 above sat there, silent, until this
+#    counter existed.
+unkey="$("$ZCC" --zcc-stats | awk '/unkeyable/ {print $2}')"
+[ "${unkey:-0}" = 0 ] || fail "$unkey compile(s) could not be keyed at all"
+
 if [ "$failures" -ne 0 ]; then
     echo "check_zcc_cache: $failures failure(s); the compile cache is NOT trustworthy" >&2
     echo "  clear it now: make cc-cache-clear" >&2

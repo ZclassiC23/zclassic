@@ -104,6 +104,14 @@ expensive part. Same work, same tree, cache cold then warm:
 The cache keys any single-output compiler invocation, **link steps included** —
 those tool rules have no `-c`, so a per-object cache would not touch them.
 
+It also covers the ordinary case. Rebuilding every object in the tree, 1733
+translation units, after deleting the epoch's objects but keeping the cache:
+
+| | Wall | CPU |
+|---|---|---|
+| Cold (nothing cached) | 15.7 s | 224 s |
+| Warm (1733 of 1733 served) | 8.8 s | 45 s |
+
 ```bash
 make cc-cache-stats      # hits, misses, bypasses, size on disk
 make cc-cache-trim       # evict oldest entries down to ZCC_TRIM_MB (4096)
@@ -116,7 +124,7 @@ ZCC_LOG=/tmp/zcc.log make …   # one line per compile: HIT / MISS / BYPASS
 ### Why you can believe a hit
 
 A compile cache that serves the wrong bytes is worse than no cache, because
-every other proof in this project is a statement about bytes. Three things
+every other proof in this project is a statement about bytes. Four things
 keep it honest:
 
 - **The key is what the compiler actually reads.** The content key hashes the
@@ -127,8 +135,13 @@ keep it honest:
   on the command line, and editing a header left the `.c` file's timestamp
   untouched, so it served a stale object. The fast path now stores a manifest
   of every file the compile read and re-checks all of them. `check-zcc-cache`
-  builds a fixture five ways on every `make lint` and fails if a header edit is
+  builds a fixture seven ways on every `make lint` and fails if a header edit is
   ever served from cache.
+- **A compile it cannot key says so.** Silently declining to cache is a
+  performance bug nobody can see: one unconsumed `-MT` value made every node
+  object skip the cache while the counters looked healthy. Those invocations
+  are now counted as `unkeyable` in `make cc-cache-stats`, logged as `UNKEY`,
+  and the gate fails if the count is not zero.
 - **`make cc-cache-audit` proves it empirically**, recompiling every hit for
   real and byte-comparing the result. Run it after touching `tools/zcc.c`.
 
