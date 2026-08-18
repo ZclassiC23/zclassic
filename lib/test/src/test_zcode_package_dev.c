@@ -93,6 +93,21 @@ static bool zpd_next_is(const struct zcl_command_reply *reply,
     return ok;
 }
 
+static bool zpd_next_datadir_is(const struct zcl_command_reply *reply,
+                                const char *command, const char *workspace,
+                                const char *work_id, const char *datadir)
+{
+    if (!zpd_next_is(reply, command, workspace, work_id, NULL))
+        return false;
+    struct json_value input;
+    json_init(&input);
+    bool ok = json_read(&input, reply->next[0].input_json,
+                        strlen(reply->next[0].input_json)) &&
+        strcmp(json_get_str(json_get(&input, "datadir")), datadir) == 0;
+    json_free(&input);
+    return ok;
+}
+
 static bool zpd_pubkey(secp256k1_context *ctx, const uint8_t secret[32],
                        uint8_t pubkey[33])
 {
@@ -1681,6 +1696,68 @@ static int zpd_test_work_start(void)
         json_free(&input);
         ASSERT(vcs_tree_capture_path(root, source_after) == VCS_OK);
         ASSERT(memcmp(source_before, source_after, sizeof(source_before)) == 0);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        ASSERT(json_push_kv_str(&input, "datadir", zbuild_datadir));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_status_test.v1");
+        zcl_native_handle_zcode_work_status(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Accepted") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "next_action")),
+                      "Continue publishing this accepted version.") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "next_safe_command")),
+                      "zcode work accept") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "remaining_risks")),
+                      "accepted version is not fully published") == 0);
+        ASSERT(!json_get_bool(json_get(
+            &reply.data, "confirmation_ready")));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "confirmation_effect")),
+                      "none") == 0);
+        ASSERT(zpd_next_datadir_is(
+            &reply, "zcode.work.accept", absolute_root,
+            saved_work_id, zbuild_datadir));
+        struct json_value accepted_next;
+        json_init(&accepted_next);
+        ASSERT(json_read(&accepted_next, reply.next[0].input_json,
+                         strlen(reply.next[0].input_json)));
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        request.input = &accepted_next;
+        zcl_command_reply_init(&reply, "zcl.zcode_work_accept_test.v1");
+        zcl_native_handle_zcode_work_accept(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get_bool(json_get(&reply.data, "idempotent")));
+        ASSERT(json_get_bool(json_get(
+            &reply.data, "publication_reused")));
+        ASSERT(reply.next_count == 1);
+        ASSERT(strcmp(reply.next[0].command,
+                      "dev.publication.advance") == 0);
+        struct json_value guided_publication_next;
+        json_init(&guided_publication_next);
+        ASSERT(json_read(&guided_publication_next,
+                         reply.next[0].input_json,
+                         strlen(reply.next[0].input_json)));
+        ASSERT(strcmp(json_get_str(json_get(
+                          &guided_publication_next, "job_root")),
+                      publication_job_hex) == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &guided_publication_next, "datadir")),
+                      zbuild_datadir) == 0);
+        ASSERT(json_get(&guided_publication_next, "task_root") == NULL);
+        ASSERT(json_get(&guided_publication_next,
+                        "candidate_root") == NULL);
+        json_free(&guided_publication_next);
+        zcl_command_reply_free(&reply);
+        json_free(&accepted_next);
 
         ASSERT(node_db_open(&acceptance_db, zbuild_db));
         struct zcl_result accepted_found = zcode_accepted_work_find(

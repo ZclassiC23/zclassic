@@ -1320,7 +1320,7 @@ void zcl_native_handle_zcode_work_status(
         proof.facts.quorum_satisfied ? "approved_signer_threshold" :
         proof.facts.valid_receipts > 0 ? "pending" : "none";
     const char *next_safe_command = entry->expired ? "zcode work start" :
-        accepted ? "apply or reject the accepted patch in source control" :
+        accepted ? "zcode work accept" :
         repair_needed && entry->candidate_count >= 3u ? "zcode work start" :
         repair_needed || !entry->latest_action_root_hex[0]
             ? "zcode work run" :
@@ -1330,7 +1330,7 @@ void zcl_native_handle_zcode_work_status(
             proof.facts.fuzz_satisfied && !proof.facts.review_satisfied
             ? "zcode work review" : "zcode work status";
     const char *next_action = entry->expired ? "Start a fresh bounded task." :
-        accepted ? "Decide whether to apply or reject the accepted patch." :
+        accepted ? "Continue publishing this accepted version." :
         repair_needed ? "Repair the named candidate failure." :
         !entry->latest_action_root_hex[0] ? "Produce one bounded candidate." :
         confirmation_ready
@@ -1341,13 +1341,18 @@ void zcl_native_handle_zcode_work_status(
             ? "Review the exact candidate evidence." :
               "Keep thinking while the missing proof arrives.";
     char continuation_workspace[ZWORK_PATH_MAX] = {0};
+    char continuation_datadir[ZWORK_PATH_MAX] = {0};
     bool can_resume_candidate = !entry->expired && !accepted &&
         (repair_needed || !entry->latest_action_root_hex[0]);
     bool can_present_confirmation = !entry->expired && !accepted &&
         confirmation_ready;
+    bool can_resume_publication = !entry->expired && accepted;
     bool continuation_ready =
-        (!can_resume_candidate && !can_present_confirmation) ||
-        realpath(workspace, continuation_workspace) != NULL;
+        (!can_resume_candidate && !can_present_confirmation &&
+         !can_resume_publication) ||
+        (realpath(workspace, continuation_workspace) != NULL &&
+         (!proof_datadir || !proof_datadir[0] ||
+          realpath(proof_datadir, continuation_datadir) != NULL));
     char remaining_risks[256];
     if (entry->expired)
         (void)snprintf(remaining_risks, sizeof(remaining_risks),
@@ -1357,7 +1362,7 @@ void zcl_native_handle_zcode_work_status(
                        "latest candidate failed confined package build or tests");
     else if (accepted)
         (void)snprintf(remaining_risks, sizeof(remaining_risks),
-                       "accepted candidate is not applied, release-qualified, or published");
+                       "accepted version is not fully published");
     else if (!entry->latest_action_root_hex[0])
         (void)snprintf(remaining_risks, sizeof(remaining_risks),
                        "candidate not admitted");
@@ -1499,11 +1504,11 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&reply->data, "remaining_risks",
                          remaining_risks) &&
         json_push_kv_bool(&reply->data, "confirmation_ready",
-                          confirmation_ready) &&
+                          !accepted && confirmation_ready) &&
         (!details || json_push_kv_str(
             &reply->data, "confirmation_identity", confirmation_identity)) &&
         json_push_kv_str(&reply->data, "confirmation_effect",
-                         confirmation_ready
+                         !accepted && confirmation_ready
                            ? "advance exact candidate to PROVEN; do not apply, sign, or publish"
                            : "none") &&
         json_push_kv_int(&reply->data, "scope_violations", 0) &&
@@ -1515,18 +1520,26 @@ void zcl_native_handle_zcode_work_status(
                       json_push_kv(&reply->data, "expert", &expert)));
     struct json_value next_input;
     json_init(&next_input); json_set_object(&next_input);
-    if (ok && (can_resume_candidate || can_present_confirmation)) {
+    if (ok && (can_resume_candidate || can_present_confirmation ||
+               can_resume_publication)) {
         ok = continuation_ready &&
             json_push_kv_str(&next_input, "workspace",
                              continuation_workspace) &&
             json_push_kv_str(&next_input, "work", work_id) &&
+            (!proof_datadir || !proof_datadir[0] ||
+             json_push_kv_str(&next_input, "datadir",
+                              continuation_datadir)) &&
             zwork_add_next(
                 reply,
                 can_resume_candidate
                   ? "zcode.work.run"
+                  : can_resume_publication
+                  ? "zcode.work.accept"
                   : "app.presentation.release-confirm",
                 &next_input,
-                can_present_confirmation
+                can_resume_publication
+                  ? "resume this exact accepted work and recover its existing publication continuation"
+                  : can_present_confirmation
                   ? "show the real result and ask for one exact human decision"
                   : repair_needed
                   ? "repair the bounded candidate and admit this exact work again"

@@ -482,7 +482,9 @@ ZCL_COMMAND_READY_READ(
     "identity roots. It gives the AI an exact confirmation identity only when "
     "policy is satisfied. Candidate creation and repair resume through typed "
     "workspace/work inputs; a ready candidate opens the separate display-only "
-    "human decision. No acceptance, source edit or publication occurs.",
+    "human decision; accepted work resumes its existing idempotent acceptance "
+    "to recover the exact publication continuation. Status itself performs no "
+    "acceptance, source edit or publication.",
     ZCL_COMMAND_RESULT_BUDGET,
     "zcode,work,status,human,evidence,latest",
     "zcl.zcode_work_status.input.v1", "zcl.zcode_work_status.v1",
