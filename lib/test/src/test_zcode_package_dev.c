@@ -1755,8 +1755,30 @@ static int zpd_test_work_start(void)
         ASSERT(json_get(&guided_publication_next, "task_root") == NULL);
         ASSERT(json_get(&guided_publication_next,
                         "candidate_root") == NULL);
-        json_free(&guided_publication_next);
+        request.input = &guided_publication_next;
+        zcl_command_reply_init(
+            &reply, "zcl.dev_publication_advance_test.v1");
+        zcl_native_handle_dev_publication_advance(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "status")),
+                      "PACKAGE_MAPPING_READY") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Publishing") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "next_action")),
+                      "Choose the publisher identity and prepare offline signing.") == 0);
+        ASSERT(strcmp(json_get_str(json_get(
+                          &reply.data, "next_safe_command")),
+                      "zcode package dev publish plan") == 0);
+        ASSERT(json_get_bool(json_get(
+            &reply.data, "details_available")));
+        ASSERT(json_get(&reply.data, "publication_job_root") == NULL);
+        ASSERT(json_get(&reply.data, "progress_receipt_root") == NULL);
+        ASSERT(json_get(&reply.data, "lane_receipt_root") == NULL);
+        ASSERT(json_get(&reply.data, "proof_set_root") == NULL);
+        ASSERT(json_get(&reply.data, "package_mapping_root") == NULL);
         zcl_command_reply_free(&reply);
+        json_free(&guided_publication_next);
         json_free(&accepted_next);
 
         ASSERT(node_db_open(&acceptance_db, zbuild_db));
@@ -1822,6 +1844,7 @@ static int zpd_test_work_start(void)
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "job_root", publication_job_hex));
         ASSERT(json_push_kv_str(&input, "datadir", zbuild_datadir));
+        ASSERT(json_push_kv_bool(&input, "details", true));
         struct zcl_command_context publication_context = {
             .source_root = accepted_publication_workspace,
             .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,

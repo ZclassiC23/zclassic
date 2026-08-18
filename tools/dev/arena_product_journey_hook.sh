@@ -416,7 +416,7 @@ APJ_SOURCE_TAMPER="$(apj_native "$APJ_A" zcode work accept \
 APJ_ADVANCE="$(ZCL_DEV_SOURCE_ROOT="$APJ_AUTHOR" "$C23_BETA_DEV_BIN" \
     -datadir="${DDS[$APJ_A]}" -rpcport="${RPCS[$APJ_A]}" -regtest \
     dev publication advance \
-    --input="{\"job_root\":\"$APJ_JOB\",\"datadir\":\"${DDS[$APJ_A]}\"}" \
+    --input="{\"job_root\":\"$APJ_JOB\",\"datadir\":\"${DDS[$APJ_A]}\",\"details\":true}" \
     2>/dev/null | tail -1 || true)"
 apj_ok "dev.publication exact mapping" "$APJ_ADVANCE"
 [ "$(printf '%s' "$APJ_ADVANCE" | apj_jget data.status)" = PACKAGE_MAPPING_READY ] ||

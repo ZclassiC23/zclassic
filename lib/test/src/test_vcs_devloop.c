@@ -912,6 +912,7 @@ static int t_publication_enqueue(const char *dir)
     json_init(&advance_input);
     json_set_object(&advance_input);
     (void)json_push_kv_str(&advance_input, "job_root", job_hex);
+    (void)json_push_kv_bool(&advance_input, "details", true);
     struct zcl_command_context command_context = {
         .source_root = dir,
         .authority_ceiling = ZCL_COMMAND_AUTH_OPERATOR,
@@ -1093,6 +1094,26 @@ static int t_publication_enqueue(const char *dir)
              memcmp(workspace_progress_root,
                     accepted_retry_root, 32) == 0);
     zcl_hex_encode(release_root, 32, mapping_hex);
+    json_init(&advance_input);
+    json_set_object(&advance_input);
+    (void)json_push_kv_str(&advance_input, "job_root", job_hex);
+    zcl_command_reply_init(&advance_reply,
+                           "zcl.dev_publication_advance.v1");
+    zcl_native_handle_dev_publication_advance(
+        &advance_request, &advance_reply);
+    VD_CHECK("publication: guided advance preserves workspace phase",
+             advance_reply.exit_code == ZCL_COMMAND_EXIT_OK &&
+             strcmp(json_get_str(json_get(
+                        &advance_reply.data, "status")),
+                    "WORKSPACE_PUBLISHED") == 0);
+    VD_CHECK("publication: guided advance names registered provider step",
+             strcmp(json_get_str(json_get(
+                        &advance_reply.data, "next_safe_command")),
+                    "zcode network publish") == 0);
+    VD_CHECK("publication: guided advance keeps workspace root hidden",
+             json_get(&advance_reply.data, "workspace_root") == NULL);
+    zcl_command_reply_free(&advance_reply);
+    json_free(&advance_input);
     json_init(&advance_input);
     json_set_object(&advance_input);
     (void)json_push_kv_str(&advance_input, "job_root", job_hex);

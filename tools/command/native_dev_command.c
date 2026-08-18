@@ -858,6 +858,7 @@ void zcl_native_handle_dev_publication_advance(
     const struct zcl_command_request *request, struct zcl_command_reply *reply)
 {
     const char *job_hex = json_get_str(json_get(request->input, "job_root"));
+    bool details = json_get_bool(json_get(request->input, "details"));
     uint8_t job_root[32];
     if (!job_hex || strlen(job_hex) != 64 ||
         !zcl_hex_decode_lower(job_hex, job_root, sizeof(job_root))) {
@@ -868,10 +869,25 @@ void zcl_native_handle_dev_publication_advance(
             job_hex ? job_hex : "missing job_root");
         return;
     }
+    char resolved_workspace[PATH_MAX];
+    const char *workspace = json_get_str(json_get(request->input,
+                                                   "workspace"));
+    const char *repo_root = dev_source_root(request);
+    if (workspace && workspace[0]) {
+        if (!realpath(workspace, resolved_workspace)) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "PUBLICATION_WORKSPACE_INVALID", "normalize", false, false,
+                "workspace must resolve to the existing exact source store",
+                workspace);
+            return;
+        }
+        repo_root = resolved_workspace;
+    }
     uint8_t receipt_root[32];
     bool reused = false;
     if (!vcs_devloop_publication_advance_waiting_acceptance(
-            dev_source_root(request), job_root, receipt_root, &reused)) {
+            repo_root, job_root, receipt_root, &reused)) {
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
             "PUBLICATION_ADVANCE_FAILED", "advance", true, false,
@@ -882,7 +898,6 @@ void zcl_native_handle_dev_publication_advance(
     struct vcs_devloop_publication_job job;
     struct vcs_devloop_publication_receipt progress;
     uint8_t loaded_progress_root[32];
-    const char *repo_root = dev_source_root(request);
     bool have_job = vcs_devloop_publication_job_load(
         repo_root, job_root, &job);
     bool have_progress = vcs_devloop_publication_progress_load(
@@ -1093,21 +1108,54 @@ void zcl_native_handle_dev_publication_advance(
             job_hex);
         return;
     }
+    const char *status = source_reproduced ? "SOURCE_REPRODUCED" :
+        storage_acknowledged ? "STORAGE_ACKNOWLEDGED" :
+        provider_announced ? "PROVIDER_ANNOUNCED" :
+        workspace_published ? "WORKSPACE_PUBLISHED" :
+        passport_published ? "PASSPORT_PUBLISHED" :
+        release_published ? "RELEASE_PUBLISHED" :
+        mapping_ready ? "PACKAGE_MAPPING_READY" :
+        lane_bound ? "PROVEN_WORK_BOUND" : "WAITING_ACCEPTANCE";
+    const char *next_action = source_reproduced
+        ? "Keep this accepted package available to other nodes." :
+        storage_acknowledged
+        ? "Collect independent source reproduction." :
+        provider_announced
+        ? "Collect independent storage acknowledgements." :
+        workspace_published
+        ? "Announce the exact package from the existing node." :
+        passport_published
+        ? "Create the durable package workspace." :
+        release_published
+        ? "Publish the package identity and workspace." :
+        mapping_ready
+        ? "Choose the publisher identity and prepare offline signing." :
+        lane_bound
+        ? "Continue mapping the accepted source." :
+          "Wait for exact human acceptance.";
+    const char *next_safe_command = source_reproduced
+        ? "dev publication status" :
+        storage_acknowledged || provider_announced
+        ? "dev publication collect" :
+        workspace_published ? "zcode network publish" :
+        passport_published ? "zcode workspace manifest plan" :
+        release_published ? "zcode passport plan" :
+        mapping_ready ? "zcode package dev publish plan" :
+        lane_bound ? "dev publication advance" : "zcode work status";
     (void)json_push_kv_str(&reply->data, "schema",
                            "zcl.dev_publication_advance.v1");
-    (void)json_push_kv_str(&reply->data, "status",
-                           source_reproduced ? "SOURCE_REPRODUCED" :
-                           storage_acknowledged ? "STORAGE_ACKNOWLEDGED" :
-                           provider_announced ? "PROVIDER_ANNOUNCED" :
-                           workspace_published ? "WORKSPACE_PUBLISHED" :
-                           passport_published ? "PASSPORT_PUBLISHED" :
-                           release_published ? "RELEASE_PUBLISHED" :
-                           mapping_ready ? "PACKAGE_MAPPING_READY" :
-                           lane_bound ? "PROVEN_WORK_BOUND"
-                                      : "WAITING_ACCEPTANCE");
-    (void)json_push_kv_str(&reply->data, "publication_job_root", job_hex);
-    (void)json_push_kv_str(&reply->data, "progress_receipt_root",
-                           receipt_hex);
+    (void)json_push_kv_str(&reply->data, "status", status);
+    (void)json_push_kv_str(&reply->data, "stage", "Publishing");
+    (void)json_push_kv_str(&reply->data, "next_action", next_action);
+    (void)json_push_kv_str(&reply->data, "next_safe_command",
+                           next_safe_command);
+    (void)json_push_kv_bool(&reply->data, "details_available", true);
+    if (details) {
+        (void)json_push_kv_str(&reply->data, "publication_job_root",
+                               job_hex);
+        (void)json_push_kv_str(&reply->data, "progress_receipt_root",
+                               receipt_hex);
+    }
     (void)json_push_kv_bool(&reply->data, "receipt_reused", reused);
     (void)json_push_kv_bool(&reply->data, "acceptance_reverified",
                             acceptance_verified);
@@ -1135,48 +1183,59 @@ void zcl_native_handle_dev_publication_advance(
             ? mapping.lane_receipt_root : progress.artifact_root;
         char lane_hex[65];
         zcl_hex_encode(lane_receipt, 32, lane_hex);
-        (void)json_push_kv_str(&reply->data, "lane_receipt_root", lane_hex);
+        if (details)
+            (void)json_push_kv_str(&reply->data, "lane_receipt_root",
+                                   lane_hex);
         if (mapping_ready) {
             char mapping_hex[65];
             zcl_hex_encode(
                 release_published ? mapping_receipt.artifact_root
                                   : progress.artifact_root,
                 32, mapping_hex);
-            (void)json_push_kv_str(&reply->data, "package_mapping_root",
-                                   mapping_hex);
-            (void)json_push_kv_int(&reply->data, "bytes_scanned",
-                                   (int64_t)progress.bytes_scanned);
-            (void)json_push_kv_int(&reply->data, "new_chunks",
-                                   progress.new_chunks);
-            (void)json_push_kv_int(&reply->data, "reused_chunks",
-                                   progress.reused_chunks);
+            if (details) {
+                (void)json_push_kv_str(&reply->data,
+                                       "package_mapping_root",
+                                       mapping_hex);
+                (void)json_push_kv_int(&reply->data, "bytes_scanned",
+                                       (int64_t)progress.bytes_scanned);
+                (void)json_push_kv_int(&reply->data, "new_chunks",
+                                       progress.new_chunks);
+                (void)json_push_kv_int(&reply->data, "reused_chunks",
+                                       progress.reused_chunks);
+            }
         }
         if (release_published) {
             char release_hex[65];
             zcl_hex_encode(release_receipt.artifact_root, 32, release_hex);
-            (void)json_push_kv_str(&reply->data, "release_root",
-                                   release_hex);
+            if (details)
+                (void)json_push_kv_str(&reply->data, "release_root",
+                                       release_hex);
         }
         if (passport_published) {
             char passport_hex[65];
             zcl_hex_encode(passport_receipt.artifact_root, 32, passport_hex);
-            (void)json_push_kv_str(&reply->data, "passport_root",
-                                   passport_hex);
+            if (details)
+                (void)json_push_kv_str(&reply->data, "passport_root",
+                                       passport_hex);
         }
         if (workspace_published) {
             char workspace_hex[65];
             zcl_hex_encode(workspace_receipt.artifact_root, 32,
                            workspace_hex);
-            (void)json_push_kv_str(&reply->data, "workspace_root",
-                                   workspace_hex);
+            if (details)
+                (void)json_push_kv_str(&reply->data, "workspace_root",
+                                       workspace_hex);
         }
         if (provider_announced) {
             char provider_hex[65];
             zcl_hex_encode(provider_receipt.artifact_root, 32, provider_hex);
-            (void)json_push_kv_str(&reply->data, "provider_record_root",
-                                   provider_hex);
-            (void)json_push_kv_int(&reply->data, "providers",
-                                   progress.providers);
+            if (details) {
+                (void)json_push_kv_str(&reply->data,
+                                       "provider_record_root",
+                                       provider_hex);
+                (void)json_push_kv_int(&reply->data, "providers",
+                                       progress.providers);
+            }
         }
         if (storage_acknowledged) {
             char ack_set_hex[65];
@@ -1184,31 +1243,34 @@ void zcl_native_handle_dev_publication_advance(
                                ? storage_receipt.artifact_root
                                : progress.artifact_root,
                            32, ack_set_hex);
-            (void)json_push_kv_str(&reply->data, "storage_ack_set_root",
-                                   ack_set_hex);
-            (void)json_push_kv_int(&reply->data, "storage_acks",
-                                   progress.storage_acks);
+            if (details) {
+                (void)json_push_kv_str(&reply->data,
+                                       "storage_ack_set_root", ack_set_hex);
+                (void)json_push_kv_int(&reply->data, "storage_acks",
+                                       progress.storage_acks);
+            }
         }
         if (source_reproduced) {
             char reproduction_hex[65];
             zcl_hex_encode(progress.artifact_root, 32, reproduction_hex);
-            (void)json_push_kv_str(
-                &reply->data, "source_reproduction_record_root",
-                reproduction_hex);
+            if (details)
+                (void)json_push_kv_str(
+                    &reply->data, "source_reproduction_record_root",
+                    reproduction_hex);
             (void)json_push_kv_str(
                 &reply->data, "reproduced",
                 "signed_distinct_source_reconstruction");
             (void)json_push_kv_bool(
                 &reply->data, "physical_independence_attested", false);
         }
-        if (lane_name[0])
+        if (details && lane_name[0])
             (void)json_push_kv_str(&reply->data, "lane", lane_name);
-        if (proof_set_hex[0])
+        if (details && proof_set_hex[0])
             (void)json_push_kv_str(&reply->data, "proof_set_root",
                                    proof_set_hex);
         vcs_package_mapping_set_free(&mapping);
     }
-    (void)json_push_kv_str(
+    if (details) (void)json_push_kv_str(
         &reply->data, "blocker",
         lane_bound && !acceptance_verified
             ? "proven_work_datadir_reverification_required" :
@@ -1227,7 +1289,7 @@ void zcl_native_handle_dev_publication_advance(
                             mapping_ready && !release_published && !reused);
     (void)json_push_kv_bool(&reply->data, "network_called", false);
     (void)json_push_kv_bool(&reply->data, "wallet_called", false);
-    (void)json_push_kv_str(
+    if (details) (void)json_push_kv_str(
         &reply->data, "next_command",
         lane_bound && !acceptance_verified
             ? "zclassic23 discover schema dev.publication.advance" :

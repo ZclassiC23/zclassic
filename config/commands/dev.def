@@ -106,7 +106,9 @@ ZCL_COMMAND_DEV_COMMAND(
     "zcode work accept, the background worker "
     "builds one root-addressed ZVCS-blob to content.v2 chunk mapping set: "
     "only cache misses read source bytes, and the receipt reports scanned "
-    "bytes plus new and reused chunks. It performs no release signature, "
+    "bytes plus new and reused chunks. The default response is human-first "
+    "and root-free; details=true exposes bound roots, receipts, and metrics. "
+    "It performs no release signature, "
     "network, wallet, Git or canonical-node action. A separately verified "
     "provider record may advance the same append-only job without granting "
     "network authority, and cannot substitute "
@@ -114,7 +116,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "dev,publication,advance,receipt,resume,idempotent",
     "zcl.dev_publication_advance_input.v1",
     "zcl.dev_publication_advance.v1",
-    "job_root,datadir,workspace,action_id", "job_root",
+    "job_root,datadir,workspace,action_id,details", "job_root",
     "zclassic23-dev dev publication advance --input='"
     "{\"job_root\":\"<64-lowercase-hex>\"}'",
     ZCL_COMMAND_EFFECT_MUTATE, ZCL_COMMAND_RISK_DEV_MUTATION,
