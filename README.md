@@ -223,6 +223,9 @@ hardware. The shipped binary links only stock `libc` plus static archives in
 `vendor/lib/`, so there is nothing to install at runtime and nothing to keep
 updated.
 
+Day to day you want `make dev-bin`: it skips LTO, rebuilds only what changed,
+and the compile cache that ships in this repository serves the rest.
+
 Datadir is `~/.zclassic-c23/` (`-datadir=DIR`). Default ports: P2P `8033`, RPC
 `18232`. The fresh-machine walkthrough — build, run a node and explorer, set up
 an isolated development instance — is
@@ -303,7 +306,7 @@ Ask the running node rather than treating this page as live state:
 
 ## Going further
 
-- [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) — first run on a fresh machine
+- [`docs/GETTING_STARTED.md`](docs/GETTING_STARTED.md) — **Public start here**: first run on a fresh machine
 - [`docs/C23_COMMONS_QUICKSTART.md`](docs/C23_COMMONS_QUICKSTART.md) — the journey, end to end
 - [`docs/NATIVE_COMMAND_INTERFACE.md`](docs/NATIVE_COMMAND_INTERFACE.md) — the agent interface
 - [`docs/HOW_THE_NODE_WORKS.md`](docs/HOW_THE_NODE_WORKS.md) — the node as a state machine
