@@ -139,7 +139,47 @@ s2="$(stage_build two)" || fail "second staged compile failed"
 grep -q 'main.o' "$WORK/stage.two/main.d" ||
     fail "the restored depfile does not name its target"
 
-# 7. Nothing may take the unkeyable path: it means the -E probe failed and
+# 7. THE THIRD REGRESSION: a link that names its objects through an
+#    @response-file, which is how this tree links 2 667 test objects without
+#    overflowing ARG_MAX. The link command line is byte-identical between
+#    runs and so is the response file — only the OBJECTS it lists change. A
+#    cache that keys on argv alone therefore sees nothing move and serves the
+#    previous binary: an edited source recompiled, relinked, and still ran
+#    the old code, and the test suite reported results for a function that no
+#    longer existed. The response file must be expanded and its inputs keyed.
+cat > "$WORK/rsplib.c" <<'SRC'
+int rsp_value(void) { return 1; }
+SRC
+cat > "$WORK/rspmain.c" <<'SRC'
+#include <stdio.h>
+int rsp_value(void);
+int main(void) { printf("%d\n", rsp_value()); return 0; }
+SRC
+"$ZCC" cc -std=c23 -O1 -c "$WORK/rsplib.c" -o "$WORK/rsplib.o" 2>/dev/null ||
+    fail "the response-file fixture library did not compile"
+"$ZCC" cc -std=c23 -O1 -c "$WORK/rspmain.c" -o "$WORK/rspmain.o" 2>/dev/null ||
+    fail "the response-file fixture main did not compile"
+printf '%s %s\n' "$WORK/rsplib.o" "$WORK/rspmain.o" > "$WORK/link.rsp"
+
+"$ZCC" cc -std=c23 -O1 "@$WORK/link.rsp" -o "$WORK/rspprog" 2>/dev/null ||
+    fail "the response-file link failed"
+[ "$(last_disposition)" = MISS ] || fail "the first response-file link was not a MISS"
+[ "$("$WORK/rspprog")" = 1 ] || fail "the response-file link produced the wrong program"
+
+cat > "$WORK/rsplib.c" <<'SRC'
+int rsp_value(void) { return 2; }
+SRC
+"$ZCC" cc -std=c23 -O1 -c "$WORK/rsplib.c" -o "$WORK/rsplib.o" 2>/dev/null ||
+    fail "the edited response-file fixture library did not compile"
+"$ZCC" cc -std=c23 -O1 "@$WORK/link.rsp" -o "$WORK/rspprog" 2>/dev/null ||
+    fail "the relink after an object edit failed"
+[ "$(last_disposition)" = MISS ] ||
+    fail "a link whose objects changed was served from cache"
+[ "$("$WORK/rspprog")" = 2 ] ||
+    fail "the relinked program still runs the object bytes it was built from before"
+
+# 8. Nothing may take the unkeyable path
+: it means the -E probe failed and
 #    the compile ran uncached. Bug 1 above sat there, silent, until this
 #    counter existed.
 unkey="$("$ZCC" --zcc-stats | awk '/unkeyable/ {print $2}')"

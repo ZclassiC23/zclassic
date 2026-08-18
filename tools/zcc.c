@@ -40,7 +40,9 @@
  *   Level 2 (content key) — compiler identity, cwd, normalized argv, the
  *   PREPROCESSED text of every .c input (so headers, -I paths, -D macros and
  *   include order are all folded in exactly), and the raw bytes of every
- *   object/archive input.
+ *   object/archive input. An @response-file is expanded
+ *   first, so the objects one link names through it are keyed exactly like
+ *   objects spelled on the command line.
  *
  * A level-1 hit trusts (size, mtime_ns, inode) to stand for content, for the
  * inputs AND for every recorded include. That is the one place this cache
@@ -57,6 +59,8 @@
  *   - --coverage, -fprofile-*   : writes .gcno/.gcda beside the object
  *   - a -E probe that fails     : let the real compiler print the real error
  *   - an unusable cache dir     : never fail a build over a cache
+ *   - an @response-file this cache cannot parse (quotes, escapes, or a
+ *     token that names no readable file)
  *
  * DEPFILES. -MD/-MMD/-MF produce a second artifact. It is stored and restored
  * with the object; a hit that silently skipped the .d file would corrupt
@@ -77,6 +81,7 @@
 #include "base/serialize_le.h"
 #include "sha3/sha3.h"
 
+#include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
 #include <fcntl.h>
@@ -318,6 +323,12 @@ struct plan {
     int blob_n;
     char **libdir;    /* -L directories */
     int libdir_n;
+    /* Inputs named INSIDE an @response-file, plus the response file itself.
+     * They are file inputs like any other; they simply are not spelled on
+     * the command line. Owned strings, because nothing in argv points at
+     * them. */
+    char **rsp;
+    int rsp_n;
     const char *bypass;
 };
 
@@ -331,6 +342,88 @@ static bool is_regular(const char *p)
 {
     struct stat st;
     return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+/* Grow-on-demand list of owned input paths harvested from response files. */
+static bool plan_push_rsp(struct plan *pl, const char *path, size_t len)
+{
+    if (len == 0)
+        return true;
+    char *copy = zcl_malloc(len + 1u, "zcc response-file input");
+    if (!copy) {
+        pl->bypass = "out of memory";
+        return false;
+    }
+    memcpy(copy, path, len);
+    copy[len] = '\0';
+    if (!is_regular(copy)) {
+        /* A token that names no readable file cannot be keyed on, and
+         * guessing what it meant is how a cache starts lying. */
+        free(copy);
+        pl->bypass = "response file names something this cache cannot stat";
+        return false;
+    }
+    char **np = zcl_realloc(pl->rsp, ((size_t)pl->rsp_n + 1u) * sizeof *np,
+                            "zcc response-file inputs");
+    if (!np) {
+        free(copy);
+        pl->bypass = "out of memory";
+        return false;
+    }
+    pl->rsp = np;
+    pl->rsp[pl->rsp_n++] = copy;
+    return true;
+}
+
+/* A response file (`@path`) is how one link names thousands of objects
+ * without overflowing ARG_MAX. Every one of those objects is an input, yet
+ * none of them appears in argv — so a cache that keys only on what argv
+ * names sees a link whose inputs never change. This tree hit exactly that:
+ * an edited test object recompiled, relinked, and the resulting binary still
+ * ran the OLD code, because the link was served from the cache on a key that
+ * had not moved. A suite then reported results for a function that no longer
+ * existed in the source. Absorb the listed files as the real inputs they
+ * are, and hash the response file itself so a changed object LIST changes
+ * the key too.
+ *
+ * Only whitespace-separated plain paths are understood. Quoting and
+ * backslash escapes are legal in GNU response files; rather than key on a
+ * guess about them, a response file that uses them bypasses the cache. */
+static bool plan_absorb_response_file(struct plan *pl, const char *path)
+{
+    struct buf b = { 0 };
+    if (!read_file(path, &b)) {
+        buf_free(&b);
+        pl->bypass = "response file could not be read";
+        return false;
+    }
+    /* The list itself is an input: dropping one object changes nothing about
+     * the remaining objects' bytes. */
+    if (!plan_push_rsp(pl, path, strlen(path))) {
+        buf_free(&b);
+        return false;
+    }
+    size_t i = 0;
+    while (i < b.len) {
+        while (i < b.len && isspace((unsigned char)b.p[i]))
+            i++;
+        if (i >= b.len)
+            break;
+        if (b.p[i] == '"' || b.p[i] == '\'' || b.p[i] == '\\') {
+            buf_free(&b);
+            pl->bypass = "response file uses quoting this cache does not parse";
+            return false;
+        }
+        size_t start = i;
+        while (i < b.len && !isspace((unsigned char)b.p[i]))
+            i++;
+        if (!plan_push_rsp(pl, (const char *)b.p + start, i - start)) {
+            buf_free(&b);
+            return false;
+        }
+    }
+    buf_free(&b);
+    return true;
 }
 
 static void plan_build(struct plan *pl, int argc, char **argv)
@@ -384,6 +477,9 @@ static void plan_build(struct plan *pl, int argc, char **argv)
             pl->libdir[pl->libdir_n++] = argv[++i];
         } else if (strncmp(a, "-L", 2) == 0 && a[2]) {
             pl->libdir[pl->libdir_n++] = argv[i] + 2;
+        } else if (a[0] == '@' && a[1]) {
+            if (!plan_absorb_response_file(pl, a + 1))
+                return;
         } else if (a[0] == '-') {
             continue;
         } else if (has_suffix(a, ".c")) {
@@ -397,7 +493,7 @@ static void plan_build(struct plan *pl, int argc, char **argv)
         pl->bypass = "no single -o artifact";
         return;
     }
-    if (pl->src_n == 0 && pl->blob_n == 0) {
+    if (pl->src_n == 0 && pl->blob_n == 0 && pl->rsp_n == 0) {
         pl->bypass = "no file inputs to key on";
         return;
     }
@@ -534,6 +630,16 @@ static bool probe_key(const struct plan *pl, char out[HEXLEN + 1u])
         if (stat(p, &st) != 0)
             return false;
         hstr(&h, p);
+        hu64(&h, (uint64_t)st.st_size);
+        hu64(&h, (uint64_t)st.st_mtim.tv_sec);
+        hu64(&h, (uint64_t)st.st_mtim.tv_nsec);
+        hu64(&h, (uint64_t)st.st_ino);
+    }
+    for (int i = 0; i < pl->rsp_n; i++) {
+        struct stat st;
+        if (stat(pl->rsp[i], &st) != 0)
+            return false;
+        hstr(&h, pl->rsp[i]);
         hu64(&h, (uint64_t)st.st_size);
         hu64(&h, (uint64_t)st.st_mtim.tv_sec);
         hu64(&h, (uint64_t)st.st_mtim.tv_nsec);
@@ -707,6 +813,16 @@ static bool content_key(const struct plan *pl, const char *tmpdir,
             return false;
         }
         hstr(&h, pl->argv[pl->blob[i]]);
+        hfield(&h, b.p, b.len);
+        buf_free(&b);
+    }
+    for (int i = 0; i < pl->rsp_n; i++) {
+        struct buf b = { 0 };
+        if (!read_file(pl->rsp[i], &b)) {
+            buf_free(&b);
+            return false;
+        }
+        hstr(&h, pl->rsp[i]);
         hfield(&h, b.p, b.len);
         buf_free(&b);
     }
