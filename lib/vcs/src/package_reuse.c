@@ -111,7 +111,7 @@ static uint32_t semantic_score(const char *goal,
         char token[96];
         if (len >= sizeof(token)) len = sizeof(token) - 1u;
         memcpy(token, word, len); token[len] = '\0';
-        if (ascii_contains_ci(package->name, token)) score += 80;
+        if (base && ascii_contains_ci(base, token)) score += 80;
         for (size_t i = 0; i < input->api_count; i++)
             if (ascii_contains_ci(input->apis[i], token)) score += 30;
     }

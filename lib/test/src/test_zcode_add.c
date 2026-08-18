@@ -871,7 +871,7 @@ static int t_e2e(void)
     input_ready = stack_published &&
         json_push_kv_str(&work_input, "workspace", workspace) &&
         json_push_kv_str(&work_input, "goal",
-                         "Make harness use stack") &&
+                         "Make harness use alice/stack") &&
         json_push_kv_str(&work_input, "context_symbol", "harness") &&
         json_push_kv_str(&work_input, "profile", "quick") &&
         json_push_kv_str(&work_input, "datadir", base);

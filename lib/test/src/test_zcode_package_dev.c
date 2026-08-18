@@ -912,6 +912,12 @@ static int zpd_test_reuse_plan(void)
         ASSERT(plan.selected[0].input_index == 0);
 
         ASSERT(vcs_package_reuse_plan_build(
+            "Make harness compose zclassic23/json", inputs, 2, &plan));
+        ASSERT(plan.disposition == VCS_PACKAGE_REUSE_PARTIAL);
+        ASSERT(plan.selected_count == 1);
+        ASSERT(plan.selected[0].input_index == 0);
+
+        ASSERT(vcs_package_reuse_plan_build(
             "Render a deterministic flight replay", inputs, 2, &plan));
         ASSERT(plan.disposition == VCS_PACKAGE_REUSE_NONE);
         ASSERT(plan.selected_count == 0);
