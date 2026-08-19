@@ -2507,6 +2507,25 @@ bool msg_send_messages(void *ctx, struct p2p_node *node, bool send_trickle)
                 syncsvc_note_headers_requested(node, now_send);
             }
         }
+
+        /* All-rejected (bad-prevblk) recovery probe continuation. The
+         * receive-side probe (process_headers, msg_headers.c) fires once
+         * per all-rejected batch, but when the announcement burst ends no
+         * incoming message remains to trigger it and the peer's real tip is
+         * never learned (rejected headers carry no height we accept). While
+         * reject_probe_pending is armed, re-fire from this periodic per-peer
+         * tick under the same per-peer rate limit until a batch connects
+         * again (any accepted header disarms it). */
+        if (!snapshot_active &&
+            syncsvc_should_fire_reject_probe(node, now_send)) {
+            atomic_store_explicit(&node->last_reject_probe_time, now_send,
+                                  memory_order_relaxed);
+            printf("Peer %s: reject-probe pending — re-probing with "
+                   "getheaders from our best header h=%d\n",
+                   node->addr_name, best_header_height);
+            push_getheaders_from(mp, node,
+                                 mp->main_state->pindex_best_header);
+        }
         if (should_sync && !snapshot_active) {
             struct block_index *tip = active_chain_tip(
                 &mp->main_state->chain_active);

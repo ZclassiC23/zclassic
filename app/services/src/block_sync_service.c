@@ -25,6 +25,7 @@
 #include "validation/main_state.h"
 #include "validation/process_block.h"
 #include "consensus/params.h"
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 #include "util/log_macros.h"
@@ -492,6 +493,46 @@ void syncsvc_plan_recovery_getheaders(struct sync_getheaders_action *action,
     action->should_send = true;
     action->anchor = syncsvc_recovery_header_anchor(recovery, tip);
     action->should_log = false;
+}
+
+/* Per-peer rate limit for the all-rejected (bad-prevblk) recovery probe —
+ * see SYNC_REJECT_PROBE_INTERVAL_SECS in sync_planner.h. Pure over
+ * (now, last_probe) so the decision is unit-testable; the caller stamps
+ * node->last_reject_probe_time when this returns true. */
+bool syncsvc_should_probe_after_reject(int64_t now_seconds,
+                                       int64_t last_probe_seconds)
+{
+    if (last_probe_seconds <= 0)
+        return true;  // raw-return-ok:never-probed-is-not-an-error
+    return (now_seconds - last_probe_seconds) >=
+           SYNC_REJECT_PROBE_INTERVAL_SECS;
+}
+
+void syncsvc_note_header_batch_outcome(struct p2p_node *node,
+                                       size_t accepted,
+                                       bool any_bad_prevblk)
+{
+    if (!node) return;
+    if (accepted > 0) {
+        atomic_store_explicit(&node->reject_probe_pending, false,
+                              memory_order_relaxed);
+    } else if (any_bad_prevblk) {
+        atomic_store_explicit(&node->reject_probe_pending, true,
+                              memory_order_relaxed);
+    }
+}
+
+bool syncsvc_should_fire_reject_probe(const struct p2p_node *node,
+                                      int64_t now_seconds)
+{
+    if (!node)
+        return false;  // raw-return-ok:null-peer-is-not-an-error
+    if (!atomic_load_explicit(&node->reject_probe_pending,
+                              memory_order_relaxed))
+        return false;  // raw-return-ok:not-pending-is-not-an-error
+    return syncsvc_should_probe_after_reject(now_seconds,
+        atomic_load_explicit(&node->last_reject_probe_time,
+                             memory_order_relaxed));
 }
 
 void syncsvc_apply_stall_recovery(const struct sync_stall_recovery *recovery,

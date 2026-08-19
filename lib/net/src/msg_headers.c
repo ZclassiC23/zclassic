@@ -34,6 +34,7 @@
 #include "net/netaddr.h"
 #include "net/header_corroboration.h"
 #include "net/checkpoint_header_fetch.h"
+#include "platform/time_compat.h"
 #include "services/header_range_scheduler.h"  // lib-layer-ok:net3-range-parallel-header-planner
 #include <signal.h>
 extern volatile sig_atomic_t g_shutdown_requested;
@@ -1100,6 +1101,7 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
     struct sync_header_processing_plan header_plan = {0};
     size_t accepted = 0;
     size_t newly_added = 0;  /* headers that were NOT already in block index */
+    bool any_bad_prevblk = false;  /* any header rejected as unconnectable */
     struct uint256 seq_hashes[512];
     int32_t seq_heights[512];
     size_t seq_count = 0;
@@ -1192,6 +1194,12 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                 seq_count++;
             }
         } else {
+            /* Track the unconnectable-rejection signal: a batch rejected
+             * with bad-prevblk usually means the peer is AHEAD of us (we
+             * missed the intermediate header), not that it is garbage —
+             * the all-rejected recovery probe below keys on this. */
+            if (strcmp(state.reject_reason, "bad-prevblk") == 0)
+                any_bad_prevblk = true;
             if (i < 3) {
                 char hex[65], prevhex[65];
                 struct uint256 hh;
@@ -1247,6 +1255,12 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
      * eviction onto honest peers). Only new-to-index headers count. */
     syncsvc_note_headers_received(node, newly_added);
 
+    /* Arm/disarm the recovery-probe pending flag: an all-rejected
+     * bad-prevblk batch arms it (so the periodic per-peer tick re-probes
+     * even after the announcement burst ends); any batch that accepts a
+     * header disarms it — the conversation is connected again. */
+    syncsvc_note_header_batch_outcome(node, accepted, any_bad_prevblk);
+
     {
         struct block_index *tip = active_chain_tip(&mp->main_state->chain_active);
         int our_height = tip ? tip->nHeight : 0;
@@ -1288,6 +1302,33 @@ bool process_headers(struct msg_processor *mp, struct p2p_node *node,
                         "all %llu headers rejected", (unsigned long long)count);
             printf("WARNING: Peer %s: all %llu headers rejected — sync stalled!\n",
                    node->addr_name, (unsigned long long)count);
+        }
+
+        /* All-rejected recovery probe (the missed-intermediate-header stall):
+         * a direct tip announcement (BIP 130) whose prev we do not have is
+         * all-rejected with bad-prevblk, and should_request_more_headers
+         * requires accepted>0, so without this probe no getheaders follow-up
+         * is ever scheduled and — once the frontier-parity gate disables the
+         * stale-peer disconnect — the node forgets the announced height and
+         * sits below the network tip forever. Re-probe with getheaders from
+         * our best header; the exponential locator lets the peer serve the
+         * missing intermediate headers. Keyed on the bad-prevblk signal and
+         * rate-limited per peer so a garbage peer cannot make us ping-pong. */
+        if (header_plan.batch.should_probe_after_reject && any_bad_prevblk) {
+            int64_t now_s = (int64_t)platform_time_wall_time_t();
+            int64_t last_probe = atomic_load_explicit(
+                &node->last_reject_probe_time, memory_order_relaxed);
+            if (syncsvc_should_probe_after_reject(now_s, last_probe)) {
+                atomic_store_explicit(&node->last_reject_probe_time, now_s,
+                                      memory_order_relaxed);
+                int best_h = mp->main_state->pindex_best_header
+                    ? mp->main_state->pindex_best_header->nHeight : -1;
+                printf("Peer %s: all-rejected batch (bad-prevblk) — probing "
+                       "with getheaders from our best header h=%d\n",
+                       node->addr_name, best_h);
+                push_getheaders_from(mp, node,
+                                     mp->main_state->pindex_best_header);
+            }
         }
 
         if (header_plan.batch.should_emit_received) {

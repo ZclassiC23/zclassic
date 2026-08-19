@@ -43,6 +43,11 @@ struct sync_header_batch {
     bool should_warn_all_rejected;
     bool should_emit_received;
     bool should_request_more_headers;
+    /* All-rejected batches may be a legitimate ahead-of-us tip announcement
+     * we cannot connect (bad-prevblk). The receiver should re-probe with
+     * getheaders from our best header — rate-limited at the call site via
+     * syncsvc_should_probe_after_reject. */
+    bool should_probe_after_reject;
 };
 
 struct sync_header_download_plan {
@@ -338,6 +343,30 @@ struct zcl_result syncsvc_build_getheaders_locator(struct block_locator *loc,
                                       const struct uint256 *genesis_hash);
 
 #define HEADER_STALL_TIMEOUT_SECS 120
+
+/* Rate limit for the all-rejected-batch recovery probe: when every header in
+ * a batch is rejected as unconnectable (bad-prevblk — the peer is likely just
+ * AHEAD of us, e.g. a BIP 130 direct tip announcement while we missed the
+ * intermediate header), re-probe with getheaders from our best header at most
+ * once per peer per SYNC_REJECT_PROBE_INTERVAL_SECS. Longer than the 5s
+ * getheaders plan interval so a garbage peer cannot make us ping-pong, far
+ * below any stall timeout. Pure decision over (now, last_probe) for tests. */
+#define SYNC_REJECT_PROBE_INTERVAL_SECS 20
+bool syncsvc_should_probe_after_reject(int64_t now_seconds,
+                                       int64_t last_probe_seconds);
+
+/* Per-peer pending state machine for the recovery probe: an all-rejected
+ * bad-prevblk batch ARMS the probe (peer is likely ahead of us; without the
+ * pending flag the burst end leaves no trigger to ever re-probe), any batch
+ * that accepts >= 1 header DISARMS it (the conversation is connected again). */
+void syncsvc_note_header_batch_outcome(struct p2p_node *node,
+                                       size_t accepted,
+                                       bool any_bad_prevblk);
+/* Periodic-tick decision: re-fire the probe only while pending AND the
+ * per-peer rate limit (above) permits. Reads node->reject_probe_pending and
+ * node->last_reject_probe_time; the caller stamps the time when true. */
+bool syncsvc_should_fire_reject_probe(const struct p2p_node *node,
+                                      int64_t now_seconds);
 
 /* Returns false (keep the peer) when best_header_height has reached
  * the peer's handshake-claimed tip minus 144 — at frontier parity no

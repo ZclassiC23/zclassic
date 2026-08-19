@@ -20,6 +20,7 @@
 
 #include "test/test_core.h"
 #include "util/util.h"
+#include "platform/time_compat.h"
 
 #include "mining/miner.h"
 #include "net/msg_internal.h"
@@ -275,6 +276,14 @@ int test_process_headers_adversarial(void)
         if (orphan_mined) {
             node.disconnect = false;
             atomic_store(&node.misbehavior, 0);
+            /* The all-rejected recovery probe (bad-prevblk → getheaders from
+             * our best header) would legitimately fire here; arm its per-peer
+             * rate limit so the send path stays untouched (no-socket test
+             * design — a failed send would close the stub node and mask the
+             * penalty assertions below). The probe decision itself is pinned
+             * in test_sync_service. */
+            int64_t probe_armed = (int64_t)platform_time_wall_time_t();
+            atomic_store(&node.last_reject_probe_time, probe_armed);
             size_t map0 = ms.map_block_index.size;
             struct msg_headers_stats st0, st1;
             msg_headers_get_stats(&st0);
@@ -294,6 +303,11 @@ int test_process_headers_adversarial(void)
                      st1.total_rejected == st0.total_rejected + 1);
             PH_CHECK("non-connecting: DoS 0 — orphan peer NOT penalized",
                      atomic_load(&node.misbehavior) == 0 && !node.disconnect);
+            PH_CHECK("non-connecting: recovery probe rate-limited, not fired",
+                     atomic_load(&node.last_reject_probe_time) == probe_armed);
+            PH_CHECK("non-connecting: recovery probe pending armed",
+                     atomic_load(&node.reject_probe_pending));
+            atomic_store(&node.reject_probe_pending, false);
             stream_free(&s);
         }
     }

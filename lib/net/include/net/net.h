@@ -351,6 +351,18 @@ struct p2p_node {
      * rationale as above — _Atomic + relaxed. */
     _Atomic int64_t  last_useful_headers_time;  /* last time peer delivered accepted headers */
     uint64_t total_headers_delivered;   /* lifetime count of accepted headers from peer */
+    /* Last time we answered an all-rejected (bad-prevblk) headers batch from
+     * this peer with a recovery getheaders probe from our best header.
+     * Per-peer rate limit (SYNC_REJECT_PROBE_INTERVAL_SECS) so a peer serving
+     * unconnectable headers cannot make us ping-pong getheaders. */
+    _Atomic int64_t  last_reject_probe_time;
+    /* An all-rejected bad-prevblk batch means the peer is likely AHEAD of us
+     * (missed intermediate headers) and the conversation has no follow-up
+     * trigger once the announcement burst ends. Pending stays set until any
+     * batch from this peer accepts a header again; the periodic per-peer
+     * tick (msg_send_messages) re-fires the probe under last_reject_probe_time's
+     * rate limit while pending. */
+    _Atomic bool     reject_probe_pending;
 
     _Atomic int misbehavior;  /* cumulative misbehavior score; banned at 100 */
     /* Monotonic timestamp (ms since UNIX epoch) of last accepted / valid

@@ -164,7 +164,7 @@ void syncsvc_evaluate_header_batch(struct sync_header_batch *result,
     if (!result) return;
     *result = empty;
 
-    result->should_warn_all_rejected =
+    result->should_warn_all_rejected = result->should_probe_after_reject =
         (accepted == 0 && total_count > 0);
     result->should_emit_received = (accepted > 0);
     /* ZClassic/Zcash MAX_HEADERS_RESULTS is 160, not Bitcoin's 2000.

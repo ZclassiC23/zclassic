@@ -326,21 +326,93 @@ static int test_sync_service_header_batch_followup(void)
         ASSERT(batch.should_warn_all_rejected);
         ASSERT(!batch.should_emit_received);
         ASSERT(!batch.should_request_more_headers);
+        /* All-rejected batches arm the recovery probe (the call site keys
+         * on bad-prevblk and applies the per-peer rate limit). */
+        ASSERT(batch.should_probe_after_reject);
+
+        syncsvc_evaluate_header_batch(&batch, 0, 0, NULL);
+        ASSERT(!batch.should_warn_all_rejected);
+        ASSERT(!batch.should_probe_after_reject);
 
         syncsvc_evaluate_header_batch(&batch, 5, 5, &tip);
         ASSERT(!batch.should_warn_all_rejected);
         ASSERT(batch.should_emit_received);
         ASSERT(!batch.should_request_more_headers);
+        ASSERT(!batch.should_probe_after_reject);
 
         syncsvc_evaluate_header_batch(&batch, 5, 2000, &tip);
         ASSERT(!batch.should_warn_all_rejected);
         ASSERT(batch.should_emit_received);
         ASSERT(batch.should_request_more_headers);
+        ASSERT(!batch.should_probe_after_reject);
 
         tip.phashBlock = NULL;
         syncsvc_evaluate_header_batch(&batch, 2, 2000, &tip);
         ASSERT(batch.should_emit_received);
         ASSERT(!batch.should_request_more_headers);
+        ASSERT(!batch.should_probe_after_reject);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_reject_probe_rate_limit(void)
+{
+    int failures = 0;
+
+    TEST("sync_service rate-limits the all-rejected recovery probe") {
+        /* Never probed (0 / unset) → probe allowed. */
+        ASSERT(syncsvc_should_probe_after_reject(1000, 0));
+        /* Inside the interval → suppressed. */
+        ASSERT(!syncsvc_should_probe_after_reject(
+            1000, 1000 - SYNC_REJECT_PROBE_INTERVAL_SECS + 1));
+        ASSERT(!syncsvc_should_probe_after_reject(1000, 1000));
+        /* At and past the interval → allowed. */
+        ASSERT(syncsvc_should_probe_after_reject(
+            1000, 1000 - SYNC_REJECT_PROBE_INTERVAL_SECS));
+        ASSERT(syncsvc_should_probe_after_reject(1000, 500));
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_sync_service_reject_probe_pending(void)
+{
+    int failures = 0;
+
+    TEST("sync_service arms and disarms the reject-probe pending flag") {
+        struct p2p_node node;
+        memset(&node, 0, sizeof(node));
+
+        /* All-rejected bad-prevblk batch arms pending. */
+        syncsvc_note_header_batch_outcome(&node, 0, true);
+        ASSERT(node.reject_probe_pending);
+
+        /* Periodic re-probe: pending with a fresh probe stamp → suppressed
+         * inside the rate-limit window. */
+        node.last_reject_probe_time = 1000;
+        ASSERT(!syncsvc_should_fire_reject_probe(&node, 1001));
+        /* Interval elapsed → fires. */
+        ASSERT(syncsvc_should_fire_reject_probe(
+            &node, 1000 + SYNC_REJECT_PROBE_INTERVAL_SECS));
+        /* Never probed (stamp 0) → fires immediately. */
+        node.last_reject_probe_time = 0;
+        ASSERT(syncsvc_should_fire_reject_probe(&node, 42));
+
+        /* All-rejected batch WITHOUT bad-prevblk does not arm. */
+        node.reject_probe_pending = false;
+        syncsvc_note_header_batch_outcome(&node, 0, false);
+        ASSERT(!node.reject_probe_pending);
+        ASSERT(!syncsvc_should_fire_reject_probe(&node, 100000));
+
+        /* Any accepted header disarms — even with bad-prevblk rejects in
+         * the same batch, the conversation is connected again. */
+        node.reject_probe_pending = true;
+        syncsvc_note_header_batch_outcome(&node, 3, true);
+        ASSERT(!node.reject_probe_pending);
+        ASSERT(!syncsvc_should_fire_reject_probe(&node, 100000));
         PASS();
     } _test_next:;
 
@@ -2078,6 +2150,8 @@ int test_sync_service(void)
     failures += test_sync_service_invalid_block_getheaders_action();
     failures += test_sync_service_headers_log_throttle();
     failures += test_sync_service_header_batch_followup();
+    failures += test_sync_service_reject_probe_rate_limit();
+    failures += test_sync_service_reject_probe_pending();
     failures += test_sync_service_block_file_scan_trigger();
     failures += test_sync_service_block_assignment_plan();
     failures += test_sync_service_assigns_peer_blocks();
