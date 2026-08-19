@@ -101,6 +101,28 @@
 #                           (default: ${ZCL_PAS_WORK_DATADIR}-verify)
 #   ZCL_PAS_VERDICT_LOG     PASS/FAIL verdict file
 #                           (default: $ZCL_PAS_WORK_DATADIR/produce-anchor-snapshot-verdict.log)
+#   ZCL_PAS_OPERATOR_LANE   operator lane to declare for the offline mint
+#                           (default: unset — auto-adopted from the copy, see
+#                           OPERATOR LANE below)
+#
+# OPERATOR LANE: wallet_identity_ensure (app/models/src/wallet_identity.c:107)
+# FAILS the boot when the runtime lane does not equal the lane persisted in the
+# datadir, and the copy inherits the SOURCE datadir's persisted lane. A mint
+# driven with no -operator-lane therefore dies at db_open with
+# "identity conflict: persisted lane=<X> does not match runtime lane=unknown"
+# against every already-run source — which is every source this script is meant
+# to use. So the lane is declared, not omitted: tools/repro_on_copy.sh solves the
+# same problem by inheriting the source unit's ExecStart and stripping only
+# network/port identity, and this is that same rule for a script that builds its
+# own argv. Resolution order: $ZCL_PAS_OPERATOR_LANE, else an explicit
+# -operator-lane already inside $ZCL_PAS_MINT_FLAGS, else adopt the persisted
+# lane the failed boot itself names and retry once.
+#
+# Adopting the persisted lane is safe and is NOT a lane escalation: the mint is
+# offline (it "skips frontend/P2P/runtime services"), binds no port, and runs
+# against an isolated copy — never $HOME/.zclassic-c23. It grants the fold no
+# authority the source datadir did not already carry, and the artifact's two
+# hard-asserts against the compiled checkpoint are unchanged either way.
 #
 # On PASS, the verified artifact is at $ZCL_PAS_WORK_DATADIR/utxo-anchor.snapshot.
 # Exit: 0 PASS · 1 FAIL (verdict log always names the reason either way).
@@ -123,6 +145,25 @@ CHECKPOINT_HEIGHT=3056758
 # a matching "full" producer-lane marker (a fresh, never-before-minted
 # source) and want full crypto re-validation instead.
 MINT_FLAGS="${ZCL_PAS_MINT_FLAGS:--mint-anchor -mint-anchor-fast}"
+OPERATOR_LANE="${ZCL_PAS_OPERATOR_LANE:-}"
+
+# True when $MINT_FLAGS already declares a lane, so an explicit caller choice is
+# never overridden and the flag is never passed twice.
+mint_flags_have_lane() {
+    case " $MINT_FLAGS " in
+        *" -operator-lane="*) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The persisted lane named by a failed boot's own identity-conflict line, e.g.
+# "identity conflict: persisted lane=canonical does not match runtime lane=test".
+# Empty when this boot did not fail that way — the caller must then not retry.
+mint_log_persisted_lane() {
+    [ -f "$MINT_LOG" ] || return 0
+    sed -n 's/.*identity conflict: persisted lane=\([A-Za-z0-9_-][A-Za-z0-9_-]*\).*/\1/p' \
+        "$MINT_LOG" | tail -1
+}
 
 ts() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 log() { echo "[$(ts)] [produce-anchor-snapshot] $*"; }
@@ -191,12 +232,36 @@ fi
 # marker — config/include/config/mint_anchor_progress.h). Foreground: this
 # script is meant to run under a durable systemd --user unit, so blocking for
 # hours here is correct, not a bug. ─────────────────────────────────────────
+if [ -n "$OPERATOR_LANE" ] && ! mint_flags_have_lane; then
+    MINT_FLAGS="$MINT_FLAGS -operator-lane=$OPERATOR_LANE"
+    log "declaring operator lane from ZCL_PAS_OPERATOR_LANE: $OPERATOR_LANE"
+fi
+
 log "driving $MINT_FLAGS against $WORK_DATADIR"
 log "on-disk fold progress: $WORK_DATADIR/mint-progress.log ; full log: $MINT_LOG"
 # shellcheck disable=SC2086
 "$BINARY" -datadir="$WORK_DATADIR" $MINT_FLAGS >>"$MINT_LOG" 2>&1
 MINT_RC=$?
 log "$MINT_FLAGS exited rc=$MINT_RC"
+
+# Undeclared lane + an identity conflict is the one failure this script can
+# resolve without the operator knowing anything about the source datadir: the
+# refusal names the lane it wanted. Adopt it and retry EXACTLY once, and only
+# when no lane was declared — an explicit caller choice that conflicts is a real
+# disagreement and must stay fatal. The mint is resumable via its own progress
+# marker, so the retry never restarts the fold from height 0.
+if [ "$MINT_RC" -ne 0 ] && ! mint_flags_have_lane; then
+    PERSISTED_LANE="$(mint_log_persisted_lane)"
+    if [ -n "$PERSISTED_LANE" ]; then
+        log "identity conflict: the copy persists operator lane" \
+            "'$PERSISTED_LANE' — adopting it and retrying the mint once"
+        MINT_FLAGS="$MINT_FLAGS -operator-lane=$PERSISTED_LANE"
+        # shellcheck disable=SC2086
+        "$BINARY" -datadir="$WORK_DATADIR" $MINT_FLAGS >>"$MINT_LOG" 2>&1
+        MINT_RC=$?
+        log "$MINT_FLAGS exited rc=$MINT_RC"
+    fi
+fi
 
 if [ "$MINT_RC" -ne 0 ]; then
     verdict_fail "mint-anchor exited non-zero ($MINT_RC) — see $MINT_LOG"
