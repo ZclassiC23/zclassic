@@ -50,6 +50,15 @@ SELFTEST=0
 # a comment usually establishes "at launch" or "pre-Bubbles" before the number
 # appears. Anything narrower produces false positives on correct prose, and a
 # gate that cries wolf gets suppressed instead of obeyed.
+#
+# The scan walks the working tree, so it also walks whatever untracked scratch
+# happens to be sitting in it. build/ and vendor/ were already skipped;
+# .claude/worktrees/ and test-tmp/ (.gitignore:66 and :52) are skipped for the
+# same reason plus a sharper one — a nested worktree checked out at a commit
+# from before the 192,7 correction still carries the old flat prose, so leaving
+# it in scope makes this gate unpassable until the developer deletes work in
+# progress. Only .claude/worktrees/ is excluded, never the tracked
+# .claude/skills/, which stays in scope.
 CLAIM='ZClassic is|ZClassic uses|[Mm]ainnet|proof-of-work|PoW|Consensus validation|Header chain|the chain is|network is'
 QUALIFIER='[Pp]re-Bubbles|[Bb]efore|[Bb]elow|launch|[Oo]riginal|height|epoch|Sprout|legacy|historic|fixture|witness|baked|benchmark|until|selected|[Uu]pgrade|192'
 
@@ -62,6 +71,7 @@ scan_prose()
             --include='*.def' --include='*.in' -E \
             'Equihash[ -]?\(?200[,/ ]?9\)?' . 2>/dev/null |
         grep -v '^\./build/' | grep -v '^\./vendor/' |
+        grep -v '^\./\.claude/worktrees/' | grep -v '^\./test-tmp/' |
         grep -v "^\./$DOC:" |
         grep -v '^\./tools/lint/check_equihash_params.sh:' |
         grep -v '^\./tools/equihash_params_fact.c:' |
