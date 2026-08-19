@@ -381,6 +381,11 @@ examples, and transport mappings until a leaf is described.
 
 ### Leaf description
 
+Before calling anything you can read its exact contract - inputs, output schema,
+risk, cost and time budget:
+
+![z23 discover describe - the typed contract for one command](assets/z23-term-contract.svg)
+
 Schema: `zcl.command_spec.v1`
 
 Required fields:

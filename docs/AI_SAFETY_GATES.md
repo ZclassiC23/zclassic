@@ -196,15 +196,17 @@ A per-line `<!-- stale-ok: <reason> -->` marker (non-empty reason required)
 exempts a line that legitimately records a constant or a dated measurement — a
 benchmark log row, an immutable positioning statement in an ADR.
 
-**A known gap, stated plainly.** The sibling gate
+**A gap that was closed, and the rule it left behind.** The sibling gate
 `tools/scripts/check_doc_counts.sh`, which machine-checks code-derived counts
 (test groups, ports, adapters, condition registrations) against a canonical
-`DOC-COUNTS` block in [`CODEBASE_MAP.md`](./CODEBASE_MAP.md), scans `CLAUDE.md`
-and `docs/**` but **not** `README.md`. The single most-read file in the
-repository is the one file exempt from that gate — which is why several counts
-in it rotted undetected. The durable repair applied to `README.md` was not to
-correct the numbers but to delete them and point at the derived source instead;
-prose with no number in it cannot go stale.
+`DOC-COUNTS` block in [`CODEBASE_MAP.md`](./CODEBASE_MAP.md), once scanned
+`CLAUDE.md` and `docs/**` but **not** `README.md`. The single most-read file in
+the repository was the one file exempt from that gate — which is why several
+counts in it rotted undetected. Its scan set is now every tracked `*.md` via
+`git ls-files`, so `README.md` is covered. The durable repair applied to
+`README.md` was still not to correct the numbers but to delete them and point at
+the derived source instead; prose with no number in it cannot go stale, and that
+remains the rule for the entry documents regardless of gate coverage.
 
 ---
 

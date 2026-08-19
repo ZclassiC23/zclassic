@@ -70,7 +70,22 @@ Each published release should contain:
 - the publisher's compressed secp256k1 public key and key id;
 - a chain id and monotonically increasing publisher sequence;
 - optional parent release roots;
+- an SPDX license identifier drawn from the frozen v1 allowlist;
 - a canonical low-S signature over a SHA3-256 domain-separated release id.
+
+The license field is not advisory. Publish validation rejects any identifier
+outside the frozen allowlist - `0BSD`, `MIT`, `Apache-2.0`, `BSD-2-Clause`,
+`BSD-3-Clause`, `ISC`, `Zlib` - with unknown, empty and compound expressions all
+refused, and separately requires the matching top-level `LICENSE` text inside
+the package manifest. The allowlist is exported as the single authority through
+`vcs_package_release_license_allowed()`; the reward-eligibility gate and the C23
+corpus census both consult it rather than keeping their own copy.
+
+Read the scope precisely: this is an admission rule for *becoming* a release,
+not a filter applied to every byte on the wire. Chunk serving authenticates
+content against the root-committed manifest and does not re-evaluate a license,
+so a node re-serving bytes it fetched is answering for content, not vouching for
+terms.
 
 The wallet broker signs the release id; private keys never enter an App. A
 signature establishes authorship, not safety. Downloaded source remains inert

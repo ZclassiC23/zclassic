@@ -263,6 +263,31 @@ flag set. The full offline signature quorum, SBOM/provenance, and independent
 third-party reproduction that gate *stable publication* remain contained (see
 Release integrity above).
 
+## Check it yourself
+
+The README states these properties; this is where each one names the mechanism
+*and* the command that shows it, so none of them has to be taken on faith.
+
+| Property | Check it yourself |
+| --- | --- |
+| **A validity decision has exactly two inputs** - the binary you compiled, and the proof-of-work-heaviest header chain. No operator attestation, no certificate authority, no registry lookup anywhere in a consensus path. | [`HOW_THE_NODE_WORKS.md`](./HOW_THE_NODE_WORKS.md) |
+| **`core/` is byte-sealed** - checkpoints, chain params and consensus math are pinned by `core/MANIFEST.sha3`. Any byte change fails `check-core-seal` and needs a recorded unseal ([`../core/UNSEAL.md`](../core/UNSEAL.md)). This binds an AI agent working on the code exactly as much as it binds you. | `make lint` |
+| **Consensus stays bit-compatible with `zclassicd`** - enforced by `check-consensus-parity` plus a golden-value test group; consensus-changing contributions are declined ([`CONSENSUS_PARITY_DOCTRINE.md`](./CONSENSUS_PARITY_DOCTRINE.md)). | `make -j"$(nproc)" t-fast ONLY=consensus_parity` |
+| **The process restricts itself before it reports ready** - `-sandbox=steady` applies `no_new_privs`, `PR_SET_DUMPABLE(0)`, Landlock datadir grants and a seccomp deny-list, installed with seccomp `TSYNC` so already-running threads are covered, not only new ones. | `build/bin/z23 ops state --subsystem=sandbox` |
+| **No subprocess execution** - zero `system()` and `popen()` in shipped app/lib/config code, enforced by a gate rather than by convention. An explicitly admitted commons build or test action may invoke its bound toolchain only inside the separate bounded worker lifecycle; fetching source never invokes it. | `make lint` |
+| **Wallet secrets have exactly one writer** - the encryption-aware `wallet_sqlite` layer. The old plaintext mirror is deleted and a gate ratchets that it never returns. Keys wrap in AES-256-GCM (PBKDF2-HMAC-SHA512, 200k iterations) under a passphrase ([`CUSTODY_MODEL.md`](./CUSTODY_MODEL.md)). | `make lint` |
+| **Crash recovery is executed, not claimed** - a node is kill-9ed mid-write on an isolated datadir and must fold back to its tip with no manual repair. | `make test-crash-bootstrap` |
+| **Read-only queries are constrained by construction** - SELECT-only, semicolons rejected, auto-`LIMIT`, a wall-clock budget, and wallet-secret tables denied by name. | `build/bin/z23 core storage query` |
+| **The gates run on your machine**, with no hosted CI service in the loop. | `make lint && make ci` |
+
+And the boundaries, stated plainly. Z23 has no central coordinator and no
+central package registry. It never executes downloaded C merely because it was
+fetched or stored. It does not claim that tests, signatures or reproduction
+prove general safety. The C23 Commons does not change ZClassic consensus. It
+does not require one AI vendor - AI workers are replaceable proposal engines.
+And it has no live ZC23 token economics today; those surfaces remain
+simulation-only.
+
 ## Reviewer checklist
 
 High-signal local checks:

@@ -1,48 +1,69 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="544" viewBox="0 0 1240 544" role="img" aria-label="The one journey: intent to working software">
-<rect width="1240" height="544" rx="16" fill="#0b0f16"/>
-<rect x="0.5" y="0.5" width="1239" height="543" rx="15.5" fill="none" stroke="#243044"/>
-<text x="38" y="54" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="25" font-weight="bold" fill="#eef4fb">One journey: intent to working software</text>
-<text x="38" y="82" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" fill="#66788c">Every step answers with the next safe command, so you never have to remember this picture.</text>
-<line x1="64" y1="128" x2="64" y2="440" stroke="#243044" stroke-width="2"/>
-<line x1="660" y1="128" x2="660" y2="440" stroke="#243044" stroke-width="2"/>
-<circle cx="64" cy="128" r="17" fill="#111823" stroke="#243044" stroke-width="2"/>
-<text x="64" y="134" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">1</text>
-<text x="106" y="126" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">Describe the behavior you want</text>
-<text x="106" y="153" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6bd18a">z23 zcode guide</text>
-<text x="106" y="176" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">Plain words. No account, no ticket, no repository.</text>
-<circle cx="64" cy="232" r="17" fill="#111823" stroke="#243044" stroke-width="2"/>
-<text x="64" y="238" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">2</text>
-<text x="106" y="230" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">Reuse existing C23 first</text>
-<text x="106" y="257" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6bd18a">z23 zcode work start</text>
-<text x="106" y="280" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">The commons is searched before a new line is written.</text>
-<circle cx="64" cy="336" r="17" fill="#111823" stroke="#243044" stroke-width="2"/>
-<text x="64" y="342" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">3</text>
-<text x="106" y="334" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">Create only what is missing</text>
-<text x="106" y="361" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6bd18a">the work loop proposes exact source</text>
-<text x="106" y="384" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">New code is the exception, never the default.</text>
-<circle cx="64" cy="440" r="17" fill="#111823" stroke="#243044" stroke-width="2"/>
-<text x="64" y="446" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">4</text>
-<text x="106" y="438" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">Build and test it, contained</text>
-<text x="106" y="465" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6bd18a">z23 zcode work run</text>
-<text x="106" y="488" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">Fetching authorized none of this. Nor does building.</text>
-<circle cx="660" cy="128" r="17" fill="#111823" stroke="#243044" stroke-width="2"/>
-<text x="660" y="134" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">5</text>
-<text x="702" y="126" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">See the real consequence</text>
-<text x="702" y="153" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6bd18a">z23 zcode work show</text>
-<text x="702" y="176" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">Real behavior and real diffs, not a summary of them.</text>
-<circle cx="660" cy="232" r="17" fill="#111823" stroke="#57a6ff" stroke-width="2"/>
-<text x="660" y="238" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">6</text>
-<text x="702" y="230" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">Reproduce it on another node</text>
-<text x="702" y="257" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6bd18a">z23 zcode package source reproduce</text>
-<text x="702" y="280" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">A second node re-derives the bytes, or refuses.</text>
-<circle cx="660" cy="336" r="17" fill="#111823" stroke="#243044" stroke-width="2"/>
-<text x="660" y="342" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">7</text>
-<text x="702" y="334" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">Accept the exact version</text>
-<text x="702" y="361" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6bd18a">z23 zcode work accept</text>
-<text x="702" y="384" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">Your node, your policy, one exact version.</text>
-<circle cx="660" cy="440" r="17" fill="#111823" stroke="#6bd18a" stroke-width="2"/>
-<text x="660" y="446" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">8</text>
-<text x="702" y="438" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">Use it in a real application</text>
-<text x="702" y="465" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6bd18a">z23 zcode use</text>
-<text x="702" y="488" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">It still works when whoever made it is gone.</text>
+<svg xmlns="http://www.w3.org/2000/svg" width="1240" height="452" viewBox="0 0 1240 452" role="img" aria-label="PLAY, CHANGE, KEEP, SHARE — the four moves of Z23, each one command">
+<title>PLAY - CHANGE - KEEP - SHARE: the four moves, each one command</title>
+<rect width="1240" height="452" rx="16" fill="#0b0f16"/>
+<rect x="0.5" y="0.5" width="1239" height="451" rx="15.5" fill="none" stroke="#243044"/>
+<line x1="0" y1="104" x2="1240" y2="104" stroke="#1a2432"/>
+<line x1="0" y1="404" x2="1240" y2="404" stroke="#1a2432"/>
+
+<text x="620" y="56" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="26" font-weight="bold" letter-spacing="3" fill="#eef4fb">PLAY &#8594; CHANGE &#8594; KEEP &#8594; SHARE</text>
+<text x="620" y="84" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">A foundry, not a package manager. Every move is one command.</text>
+
+<!-- PLAY -->
+<rect x="40" y="128" width="272" height="256" rx="10" fill="#101725" stroke="#243044"/>
+<rect x="40" y="128" width="272" height="3" rx="1.5" fill="#6bd18a"/>
+<text x="60" y="162" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="bold" letter-spacing="1" fill="#6bd18a">01</text>
+<text x="60" y="200" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="25" font-weight="bold" letter-spacing="2" fill="#eef4fb">PLAY</text>
+<line x1="60" y1="218" x2="292" y2="218" stroke="#243044"/>
+<text x="60" y="248" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">Run a real application</text>
+<text x="60" y="270" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">right now. A C compiler</text>
+<text x="60" y="292" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">is the whole list.</text>
+<rect x="56" y="316" width="240" height="34" rx="6" fill="#0b0f16" stroke="#2c4a3a"/>
+<text x="70" y="338" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="bold" fill="#6bd18a">make arena-demo</text>
+<text x="60" y="372" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#5d7186">no node &#183; no chain &#183; no account</text>
+
+<!-- CHANGE -->
+<rect x="336" y="128" width="272" height="256" rx="10" fill="#101725" stroke="#243044"/>
+<rect x="336" y="128" width="272" height="3" rx="1.5" fill="#6db8f2"/>
+<text x="356" y="162" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="bold" letter-spacing="1" fill="#6db8f2">02</text>
+<text x="356" y="200" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="25" font-weight="bold" letter-spacing="2" fill="#eef4fb">CHANGE</text>
+<line x1="356" y1="218" x2="588" y2="218" stroke="#243044"/>
+<text x="356" y="248" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">Say what you want to be</text>
+<text x="356" y="270" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">different, in a sentence.</text>
+<text x="356" y="292" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">Reuse first; write the gap.</text>
+<rect x="352" y="316" width="240" height="34" rx="6" fill="#0b0f16" stroke="#26435c"/>
+<text x="366" y="338" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="bold" fill="#6db8f2">zcode work start</text>
+<text x="356" y="372" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#5d7186">existing C23 searched first</text>
+
+<!-- KEEP -->
+<rect x="632" y="128" width="272" height="256" rx="10" fill="#101725" stroke="#243044"/>
+<rect x="632" y="128" width="272" height="3" rx="1.5" fill="#f2c14e"/>
+<text x="652" y="162" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="bold" letter-spacing="1" fill="#f2c14e">03</text>
+<text x="652" y="200" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="25" font-weight="bold" letter-spacing="2" fill="#eef4fb">KEEP</text>
+<line x1="652" y1="218" x2="884" y2="218" stroke="#243044"/>
+<text x="652" y="248" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">Accept one exact version</text>
+<text x="652" y="270" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">by hand. Nothing else can</text>
+<text x="652" y="292" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">make that decision.</text>
+<rect x="648" y="316" width="240" height="34" rx="6" fill="#0b0f16" stroke="#54462a"/>
+<text x="662" y="338" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="bold" fill="#f2c14e">zcode work accept</text>
+<text x="652" y="372" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#5d7186">yours, and it outlives us all</text>
+
+<!-- SHARE -->
+<rect x="928" y="128" width="272" height="256" rx="10" fill="#101725" stroke="#243044"/>
+<rect x="928" y="128" width="272" height="3" rx="1.5" fill="#ef8b6a"/>
+<text x="948" y="162" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" font-weight="bold" letter-spacing="1" fill="#ef8b6a">04</text>
+<text x="948" y="200" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="25" font-weight="bold" letter-spacing="2" fill="#eef4fb">SHARE</text>
+<line x1="948" y1="218" x2="1180" y2="218" stroke="#243044"/>
+<text x="948" y="248" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">Publish it. A stranger</text>
+<text x="948" y="270" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">re-derives your exact</text>
+<text x="948" y="292" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#c3d2e2">bytes and serves them on.</text>
+<rect x="944" y="316" width="240" height="34" rx="6" fill="#0b0f16" stroke="#5a3a2e"/>
+<text x="958" y="338" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="bold" fill="#ef8b6a">zcode publish</text>
+<text x="948" y="372" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="12" fill="#5d7186">author-signed, permissive</text>
+
+<!-- connectors -->
+<path d="M318 250 l8 6 -8 6" fill="none" stroke="#3d5168" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M614 250 l8 6 -8 6" fill="none" stroke="#3d5168" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+<path d="M910 250 l8 6 -8 6" fill="none" stroke="#3d5168" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+
+<text x="620" y="432" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" fill="#5d7186">no store &#183; no account &#183; no registry &#183; no permanent AI vendor &#8212; and it still works when they are gone</text>
 </svg>
