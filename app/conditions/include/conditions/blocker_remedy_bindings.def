@@ -166,6 +166,7 @@ ZCL_BLOCKER_REMEDY(net.block_intake_body_dropped,              sync_rate_below_f
  * page. */
 ZCL_BLOCKER_REMEDY(utxo_apply.nullifier_backfill_gap,          sapling_anchor_frontier_unavailable)
 ZCL_BLOCKER_REMEDY(utxo_apply.apply_failed,                    reducer_frontier_reconcile_light) /* same class as script_validate.prevout_unresolved: a held apply pins H*, tip_age grows past the reconcile detect gate, the dry-run re-derives the hole and the apply's own blocker_clear() fires (utxo_apply_stage.c:228/583) */
+ZCL_BLOCKER_REMEDY(bundle_exporter.degraded,                   OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.fatal_store,                     OWNER)
 ZCL_BLOCKER_REMEDY(utxo_apply.commit_invariant_violation,      OWNER)
 /* work/db-lock-fixes: 8 consecutive aborted catchup passes park the

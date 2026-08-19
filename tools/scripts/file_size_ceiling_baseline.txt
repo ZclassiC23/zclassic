@@ -87,7 +87,7 @@ config/src/boot_services.c 1476
 # over. The work-adapter half (boot_zcode_work_*) is the natural future
 # split seam if this file grows again.
 config/src/boot_zcode_swarm.c 913
-config/src/bundle_exporter.c 925
+config/src/bundle_exporter.c 991
 config/src/consensus_state_install_runtime.c 919
 config/src/consensus_state_producer_receipt.c 805
 config/src/consensus_state_snapshot_install_activate.c 1169 # ADR-0008 (seed-floor declaration)

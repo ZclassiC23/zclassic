@@ -20,6 +20,8 @@
 #include "test/test_core.h"
 #include "net/rom_seed.h"
 #include "config/bundle_exporter.h"
+#include "storage/progress_store.h"
+#include "util/blocker.h"
 
 #include <fcntl.h>
 #include <stdint.h>
@@ -409,6 +411,63 @@ static int test_bx_rotation_deregister_unlink(void)
     return failures;
 }
 
+/* (e2) A DEGRADED exporter names itself. This is the regression for a silent
+ * production outage: the canonical node last minted a bundle on 2026-07-24 and
+ * was still serving it on 2026-08-19, 165,288 blocks behind its own tip,
+ * because a binary upgrade left the stored producer session foreign to the
+ * running build. That refusal is correct and stays. What was wrong is that it
+ * was INVISIBLE — one WARN at boot, then a 30-second tick forever with
+ * exports_ok=0 AND exports_failed=0, which is indistinguishable from a healthy
+ * node that simply has not hit its cadence. Every cold-starting peer paid for
+ * that month as crawl time.
+ *
+ * A fresh progress store has no proven coins authority, so bx_qualified refuses
+ * here for its own (equally real) reason and the exporter comes up degraded —
+ * the exact state under test. The assertion is that the degradation is NAMED,
+ * carries the staleness numbers an operator needs, and is RESOURCE-class so the
+ * transient TTL sweep cannot retire it back into silence. */
+static int test_bx_degraded_names_a_blocker(void)
+{
+    int failures = 0;
+    TEST("bundle-exporter: a degraded exporter names its outage, never sits silent") {
+        blocker_reset_for_testing();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "bundle_degraded", "ok");
+
+        ASSERT(progress_store_open(dir));
+        sqlite3 *pdb = progress_store_db();
+        ASSERT(pdb != NULL);
+
+        /* Nothing here is proven/refolded, so the exporter cannot qualify. It
+         * must still ARM (never block boot) and must not export. */
+        ASSERT(bundle_exporter_start(pdb, dir));
+
+        struct blocker_snapshot snap[BLOCKER_CAP];
+        int n = blocker_snapshot_all(snap, BLOCKER_CAP);
+        int found = -1;
+        for (int i = 0; i < n; i++)
+            if (strcmp(snap[i].id, "bundle_exporter.degraded") == 0)
+                found = i;
+        /* RED without the fix: the registry stays empty and found == -1. */
+        ASSERT(found >= 0);
+        ASSERT(strcmp(snap[found].owner_subsystem, "bundle_exporter") == 0);
+        /* RESOURCE, not TRANSIENT: nothing in this process re-runs the gates,
+         * so a TTL-retired record would restore exactly the silence this test
+         * exists to prevent. */
+        ASSERT(snap[found].class == BLOCKER_RESOURCE);
+        /* The reason has to be actionable on its own, not a bare label: it says
+         * no bundle exists to serve and that no in-process retry will fix it. */
+        ASSERT(strstr(snap[found].reason, "consensus-state bundle") != NULL);
+        ASSERT(strstr(snap[found].reason, "no in-process retry") != NULL);
+
+        bundle_exporter_stop();
+        blocker_reset_for_testing();
+        test_rm_rf_recursive(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* (f) The mint gate is INTACT: the exporter still refuses to publish from a
  * borrowed / unstamped build. bx_qualified's exact-source-identity rung (part of
  * the borrowed-state refusal) accepts ONLY a lowercase 64-hex SHA-256 source
@@ -443,6 +502,7 @@ int test_bundle_publish_serve(void)
     failures += test_bx_at_tip_gate();
     failures += test_bx_cadence();
     failures += test_bx_rotation_deregister_unlink();
+    failures += test_bx_degraded_names_a_blocker();
     failures += test_bx_mint_gate_source_rung_intact();
     return failures;
 }

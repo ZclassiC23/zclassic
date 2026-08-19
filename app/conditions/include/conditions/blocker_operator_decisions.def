@@ -262,3 +262,31 @@ ZCL_BLOCKER_DECISION(wallet_phrase_no_terminal,
  * withheld (influence for directory entries finalized at or after the onset
  * height) and, just as importantly, what is NOT (tip-following, relay, the
  * block explorer, wallet viewing). ─────────────────────────────────────── */
+
+/* ── Standing bundle-exporter outage (config/src/bundle_exporter.c,
+ * bx_name_degraded). Qualification and the producer session are decided ONCE,
+ * at bundle_exporter_start; nothing re-runs them in-process. Measured on the
+ * canonical node 2026-08-19: last mint 2026-07-24, 165,288 blocks behind its
+ * own tip, because a binary upgrade left the stored producer session foreign
+ * to the running build. The refusal was correct. The silence was the bug. ── */
+ZCL_BLOCKER_DECISION(bundle_exporter.degraded,
+    "A person must choose; the node will not restart itself. This node is not "
+    "minting consensus-state bundles and cannot start again while it runs, "
+    "because both gates it must pass are evaluated once at startup. Read the "
+    "live reason first: it names which gate refused and how stale the newest "
+    "bundle already is. "
+    "OPTION A - restart this node on a build whose source identity matches the "
+    "datadir's producer session, then let the standing exporter mint a fresh "
+    "bundle at the next cadence. The blocker clears on the next boot and "
+    "cold-starting peers land near the tip again. Cost: a node restart, plus "
+    "the export's disk and CPU at mint time. "
+    "OPTION B - leave it degraded and keep serving the bundle already on disk. "
+    "This node stays fully correct for itself; nothing about its own "
+    "validation, relay or wallet changes. Cost is paid entirely by OTHER "
+    "people: every peer cold-starting from this node lands at the stale "
+    "bundle's height and must crawl every block body from there, and that gap "
+    "grows by roughly one block per target spacing forever. "
+    "There is deliberately no option that resumes the stored session under a "
+    "different binary. A self-consistent foreign producer claim is still "
+    "foreign, and adopting one would let this node publish state under an "
+    "identity it cannot honestly make.")

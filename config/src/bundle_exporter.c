@@ -37,6 +37,7 @@
 #include "services/node_health_service.h"
 
 #include "kernel/service_kernel.h"
+#include "util/blocker.h"
 #include "util/supervisor.h"
 #include "supervisors/domains.h"
 #include "util/thread_registry.h"
@@ -116,6 +117,52 @@ static void bx_note_refusal(const char *fmt, ...)
     pthread_mutex_lock(&g_bx.lock);
     snprintf(g_bx.last_refusal, sizeof g_bx.last_refusal, "%s", buf);
     pthread_mutex_unlock(&g_bx.lock);
+}
+
+/* A degraded exporter is a SILENT production outage, and that is the whole
+ * reason this exists. Qualification and the producer session are decided ONCE,
+ * in bundle_exporter_start; nothing re-runs them in-process. So a node that
+ * comes up degraded logs one WARN at boot and then ticks forever, exporting
+ * nothing, while `dumpstate bundle_exporter` reports exports_ok=0 AND
+ * exports_failed=0 — the shape of a node that is working fine, not one that
+ * stopped a month ago. Measured on the canonical node 2026-08-19: the last
+ * mint was 2026-07-24, 165,288 blocks behind its own tip, because a binary
+ * upgrade left the stored producer session foreign to the running build. The
+ * refusal was correct; the silence was not. Every cold-starting peer inherits
+ * that staleness as crawl time, so the outage is named here with the numbers
+ * that make it actionable.
+ *
+ * BLOCKER_RESOURCE, not TRANSIENT: nothing in this process can clear it (the
+ * gates never re-run), so it must not be TTL-retired back into silence after
+ * thirty quiet minutes. No escape_action — there is no safe automatic remedy;
+ * re-minting needs an operator to restart the node on a matching build. */
+static void bx_name_degraded(const char *degradation)
+{
+    int32_t last_h = atomic_load(&g_bx_last_export_height);
+    int64_t last_us = atomic_load(&g_bx_last_export_time_us);
+    int64_t age_secs = last_us > 0 ? (GetTimeMicros() - last_us) / 1000000 : -1;
+
+    /* The distinguishing detail goes FIRST: blocker_set keys fault identity on
+     * the reason, and the tail is what gets cut. `%.110s` bounds the borrowed
+     * degradation text so the whole sentence stays inside BLOCKER_REASON_MAX
+     * without needing a scratch buffer. */
+    char reason[BLOCKER_REASON_MAX];
+    if (last_h >= 0 && age_secs >= 0)
+        snprintf(reason, sizeof reason,
+                 "no consensus-state bundle minted for %lld day(s) (newest is "
+                 "h=%d): %.110s — cold-starting peers must crawl block bodies "
+                 "from h=%d, and no in-process retry exists",
+                 (long long)(age_secs / 86400), last_h, degradation, last_h);
+    else
+        snprintf(reason, sizeof reason,
+                 "no consensus-state bundle has ever been minted here: "
+                 "%.110s — cold-starting peers get no state source from this "
+                 "node, and no in-process retry exists", degradation);
+
+    struct blocker_record b;
+    if (blocker_init(&b, "bundle_exporter.degraded", "bundle_exporter",
+                     BLOCKER_RESOURCE, reason))
+        (void)blocker_set(&b);
 }
 
 static int64_t bx_env_i64(const char *name, int64_t dflt)
@@ -649,8 +696,20 @@ static void *bx_worker_main(void *arg)
         pthread_mutex_lock(&g_bx.lock);
         bool session = g_bx.session_open;
         pthread_mutex_unlock(&g_bx.lock);
-        if (!session)
-            continue; /* degraded — keep heartbeating, never export */
+        if (!session) {
+            /* Degraded — keep heartbeating, never export, and SAY SO every
+             * tick. blocker_set's own token bucket collapses the repeats, so
+             * this costs one stored record and keeps it from being retired as
+             * stale evidence while the outage is still real. */
+            pthread_mutex_lock(&g_bx.lock);
+            char degradation[256];
+            snprintf(degradation, sizeof degradation, "%s",
+                     g_bx.degradation_reason[0] ? g_bx.degradation_reason
+                                                : "producer session not open");
+            pthread_mutex_unlock(&g_bx.lock);
+            bx_name_degraded(degradation);
+            continue;
+        }
 
         bx_try_export_once();
     }
@@ -753,6 +812,13 @@ bool bundle_exporter_start(sqlite3 *pdb, const char *datadir)
     atomic_store(&g_bx_last_export_height,
                  bx_scan_newest(bundles_dir, &newest_mtime_us));
     atomic_store(&g_bx_last_export_time_us, newest_mtime_us);
+
+    /* Name it now, not one worker tick from now: the generation scan above is
+     * what supplies the staleness numbers, so this is the first moment the
+     * blocker can carry them. The worker re-fires it on every tick. */
+    if (!session_open)
+        bx_name_degraded(degradation[0] ? degradation
+                                        : "producer session not open");
 
     /* Register the supervised (best-effort, no-stall) contract. */
     if (supervisor_start()) {
