@@ -81,11 +81,8 @@ the package manifest. The allowlist is exported as the single authority through
 `vcs_package_release_license_allowed()`; the reward-eligibility gate and the C23
 corpus census both consult it rather than keeping their own copy.
 
-Read the scope precisely: this is an admission rule for *becoming* a release,
-not a filter applied to every byte on the wire. Chunk serving authenticates
-content against the root-committed manifest and does not re-evaluate a license,
-so a node re-serving bytes it fetched is answering for content, not vouching for
-terms.
+That rule is no longer only a publication-time rule. It is also what an opted-in
+host will and will not put on the wire - see **Public hosting admission** below.
 
 The wallet broker signs the release id; private keys never enter an App. A
 signature establishes authorship, not safety. Downloaded source remains inert
@@ -233,6 +230,36 @@ bootstrap, byte-compares their binaries, and—when
 `ZCL_REPRO_REFERENCE_BIN` is set—requires both to equal the accepted candidate.
 Its success report states `github_contacted=false`.
 
+## Public hosting admission
+
+Hosting is off until `-packagehost=1`, and announcing yourself as a provider on
+the overlay is a further, separate step. Once hosting is on, completeness is
+still not enough to reach a stranger. The engine classifies every tracked root
+against a closed set of shapes (`lib/vcs/include/vcs/package_public_shape.h`)
+before it will announce it or answer a WANT for it, and every refusal names the
+requirement that failed rather than going quiet:
+
+| shape | what makes it hostable |
+| --- | --- |
+| package transport carrier | the whole carrier closure is re-derived from the stored bytes with `vcs_package_transport_build()` and must hash back to this exact root: signature verified against the key the envelope names, SPDX identifier on the frozen allowlist, `LICENSE` text present, and release/recipe/inner-manifest bound to each other |
+| released package | a persisted envelope names this exact root, verifies, and carries an allowlisted identifier; the manifest carries top-level `LICENSE` |
+| ZVCS source bundle | top-level `LICENSE` plus a lane receipt that parses, validates, and verifies against the signer key it names |
+| blob | the frozen one-file bytes-only shape, which by contract carries no authorship claim and cannot carry a source tree |
+| work context / work output | moved between peers that already accepted each other's signed work frames, and fetched directly from that sender |
+
+Everything else is refused: an incomplete download, a bare manifest with no
+release, an inner package root whose envelope never arrived, a carrier whose
+closure does not re-derive, and any package shape the node does not recognize.
+A verdict is cached per package root and per store mutation generation, so an
+envelope arriving after its manifest re-opens the question rather than leaving
+the package permanently unhostable.
+
+Two limits, stated rather than implied. The work shapes are admitted on the
+strength of the work node's own signed admission, not because they are licensed
+content. And the source bundle's full accepted-work authority chain is verified
+by the consumer on checkout (`vcs_source_package_reconstruct_verify`), not on
+every WANT - proving it means reconstructing the tree.
+
 ## Swarm flow
 
 1. A peer gossips a bounded announcement containing the package root and
@@ -248,6 +275,11 @@ Its success report states `github_contacted=false`.
 5. Completion re-verifies every file and the package root. Nothing is executed.
 6. An explicit operator action may inspect, build in containment, test, sign a
    local verdict, and publish/install atomically.
+7. Re-serving what you fetched is not automatic. The fetched root must itself
+   pass the public-hosting admission above before this node announces it or
+   answers a WANT for it.
+
+![how the bytes travel between two nodes](assets/z23-term-commons-topology.svg)
 
 HTTPS and onion are transport adapters over the same package/CAS contract;
 both are live as of slice 13. Direct P2P rides the node's existing

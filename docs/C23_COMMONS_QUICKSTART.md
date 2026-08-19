@@ -37,6 +37,8 @@ remember the table.
 | Reproduce it independently | `z23 zcode package source reproduce --datadir=/tmp/z23-commons` | [Reproducer](#reproducer) |
 | Accept and use that exact version | `z23 zcode use --datadir=/tmp/z23-commons` | [Consumer](#consumer) |
 
+![z23 zcode guide — the one obvious next action](assets/z23-term-guide.svg)
+
 Acceptance is a human decision about one exact version, taken on your node
 under your policy. Nothing in this path requires GitHub, a central registry, or
 a particular AI vendor, and the result stays usable when any of them

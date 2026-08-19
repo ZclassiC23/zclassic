@@ -278,6 +278,7 @@ The README states these properties; this is where each one names the mechanism
 | **Wallet secrets have exactly one writer** - the encryption-aware `wallet_sqlite` layer. The old plaintext mirror is deleted and a gate ratchets that it never returns. Keys wrap in AES-256-GCM (PBKDF2-HMAC-SHA512, 200k iterations) under a passphrase ([`CUSTODY_MODEL.md`](./CUSTODY_MODEL.md)). | `make lint` |
 | **Crash recovery is executed, not claimed** - a node is kill-9ed mid-write on an isolated datadir and must fold back to its tip with no manual repair. | `make test-crash-bootstrap` |
 | **Read-only queries are constrained by construction** - SELECT-only, semicolons rejected, auto-`LIMIT`, a wall-clock budget, and wallet-secret tables denied by name. | `build/bin/z23 core storage query` |
+| **Public hosting default-refuses** - a node announces and serves only packages it can classify into a named public shape, and the licensed shapes require a verified author signature, an allowlisted SPDX identifier and real `LICENSE` text before a byte moves ([`P2P_SOURCE_HOSTING.md`](./P2P_SOURCE_HOSTING.md)). Anything unrecognised is refused by name. | `make -j"$(nproc)" t-fast ONLY=zcode_swarm` |
 | **The gates run on your machine**, with no hosted CI service in the loop. | `make lint && make ci` |
 
 And the boundaries, stated plainly. Z23 has no central coordinator and no

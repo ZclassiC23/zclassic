@@ -5,6 +5,17 @@ without intervention."** Eight binary acceptance criteria, each with
 a verification target. The MVP Readiness Score (MRS) is the count of passing
 criteria; MVP is achieved at 8/8.
 
+`make commons-demo` runs the whole journey on one machine and writes what it
+measured; `make commons-multihost-acceptance` runs it across two machines and
+then takes the publisher offline.
+
+![what the commons demo measured](assets/z23-term-commons-proof.svg)
+
+Read the conditions with the numbers: two isolated nodes, a regtest chain, one
+peer over the node's own authenticated overlay — not a swarm, not the open
+internet. Both nodes share a physical host, so this is node independence, not
+hardware independence.
+
 ## Acceptance criteria
 
 | # | Criterion | How we verify | Status |

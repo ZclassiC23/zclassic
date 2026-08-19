@@ -9,6 +9,7 @@
 #include "vcs/package_swarm_node.h"
 
 #include "vcs/package_manifest.h"
+#include "vcs/package_public_shape.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 
@@ -113,6 +114,19 @@ struct swarm_outbound {
     uint8_t bytes[VCS_SWARM_OUTBOUND_FRAME_MAX];
 };
 
+/* Direct-mapped public-hosting verdict cache. One announce sweep touches
+ * at most VCS_SWARM_MAX_LOCAL_ANNOUNCES roots, so a table that size keeps a
+ * full sweep off the verifier while a hot serve root stays resident.
+ * Collisions simply reclassify. */
+#define VCS_SWARM_PUBLIC_CACHE_SLOTS VCS_SWARM_MAX_LOCAL_ANNOUNCES
+struct swarm_public_entry {
+    uint8_t root[32];
+    uint64_t generation;
+    enum vcs_package_public_shape shape;
+    const char *rule;
+    bool used;
+};
+
 struct vcs_swarm_engine {
     pthread_mutex_t lock;
     struct vcs_package_store *store; /* borrowed */
@@ -130,10 +144,14 @@ struct vcs_swarm_engine {
     uint64_t last_tick;
     bool ticked;
     /* Single-entry serve cache: the last manifest parsed for serving
-     * inbound chunk WANTs. */
+     * inbound chunk WANTs, and the public-hosting verdict for that same
+     * root. Both are keyed by the store's mutation generation, so a
+     * package that completes, gains bytes, or is evicted is reclassified
+     * rather than served off a stale decision. */
     uint8_t serve_root[32];
     struct vcs_package_manifest serve_manifest;
     bool serve_loaded;
+    struct swarm_public_entry public_cache[VCS_SWARM_PUBLIC_CACHE_SLOTS];
 };
 
 static uint64_t nonce_bump(struct vcs_swarm_engine *engine);
@@ -854,6 +872,46 @@ static void handle_announce(struct vcs_swarm_engine *engine,
     }
 }
 
+/* Public-hosting admission for one root, cached per (root, generation).
+ *
+ * Every byte this node offers a stranger passes through here: the ANNOUNCE
+ * that advertises a root and the WANT that asks for its manifest or its
+ * chunks. Completeness is not enough. The root must match one of the
+ * closed shapes in vcs/package_public_shape.h, and the one shape that
+ * carries source for other people to build — the package transport
+ * carrier — must re-derive its whole signed, permissively licensed
+ * closure out of the bytes we hold. Anything else is refused by name.
+ *
+ * Called with engine->lock held; takes the store lock beneath it, which is
+ * the order the serve path already uses. */
+static bool public_serveable(struct vcs_swarm_engine *engine,
+                             const uint8_t root[32], const char **rule_out)
+{
+    struct vcs_package_possession_receipt receipt;
+    memset(&receipt, 0, sizeof(receipt));
+    if (!vcs_package_store_possession_snapshot(engine->store, root,
+                                               &receipt)) {
+        if (rule_out) *rule_out = "not-tracked";
+        return false;
+    }
+    struct swarm_public_entry *slot =
+        &engine->public_cache[root[0] % VCS_SWARM_PUBLIC_CACHE_SLOTS];
+    if (!slot->used || memcmp(slot->root, root, 32) != 0 ||
+        slot->generation != receipt.mutation_generation) {
+        const char *rule = "not-tracked";
+        enum vcs_package_public_shape shape =
+            vcs_package_public_shape_classify(engine->store, root, &rule);
+        memcpy(slot->root, root, 32);
+        slot->generation = receipt.mutation_generation;
+        slot->shape = shape;
+        slot->rule = rule;
+        slot->used = true;
+    }
+    if (rule_out)
+        *rule_out = slot->rule;
+    return slot->shape != VCS_PACKAGE_PUBLIC_REFUSED;
+}
+
 static void serve_manifest_want(struct vcs_swarm_engine *engine,
                                 struct swarm_peer *peer,
                                 const struct vcs_package_swarm_object *want,
@@ -1023,6 +1081,14 @@ static void handle_want(struct vcs_swarm_engine *engine,
         peer->seen_count++;
     if (!engine->store)
         return;
+    /* Public-hosting admission. Refusing is not an offence: the requester
+     * has no way to know what this node will host, so it costs them
+     * nothing but gets a named rule instead of silence. */
+    const char *rule = NULL;
+    if (!public_serveable(engine, want->package_root, &rule)) {
+        res->rule = rule;
+        return;
+    }
     if (want->object_kind == VCS_PACKAGE_SWARM_OBJECT_MANIFEST)
         serve_manifest_want(engine, peer, want, day, res);
     else
@@ -1504,6 +1570,11 @@ size_t vcs_swarm_engine_announce_to(struct vcs_swarm_engine *engine,
     size_t queued = 0;
     for (size_t i = 0; i < n; i++) {
         if (peer_was_announced(p, summaries[i].root))
+            continue;
+        /* Advertise only what this node would actually serve. Announcing a
+         * root we would then refuse is worse than not announcing it: it
+         * spends the peer's request budget on an answer that cannot come. */
+        if (!public_serveable(engine, summaries[i].root, NULL))
             continue;
         struct vcs_package_swarm_message msg;
         memset(&msg, 0, sizeof(msg));

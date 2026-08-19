@@ -49,6 +49,7 @@
 #include "crypto/sha3.h"
 #include "event/event.h"
 #include "keys/key.h"
+#include "keys/key_io.h"
 #include "keys/pubkey.h"
 #include "net/fast_sync.h"
 #include "net/msgprocessor.h"
@@ -65,6 +66,7 @@
 #include "vcs/package_service.h"
 #include "vcs/package_mapping.h"
 #include "vcs/package_prepare.h"
+#include "vcs/package_accept.h"
 #include "vcs/package_release.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm.h"
@@ -259,29 +261,37 @@ static bool zwn_make_evidence_package(
     struct zwn_pkg *p, const uint8_t *const wires[5],
     const size_t lengths[5])
 {
-    static const char *const paths[5] = {
+    /* "LICENSE" sorts before "evidence/...", and the manifest wants paths
+     * in sorted order. It is here because a package this node offers to
+     * peers must carry its own licence text. */
+    static const char *const paths[6] = {
+        "LICENSE",
         ZWN_EVIDENCE_PASSPORT,
         ZWN_EVIDENCE_RELEASE,
         ZWN_EVIDENCE_ASSIGNMENT,
         ZWN_EVIDENCE_WORKSPACE,
         ZWN_EVIDENCE_COMMIT,
     };
+    static const char k_license[] = "MIT\n";
     memset(p, 0, sizeof(*p));
     vcs_package_manifest_init(&p->manifest);
-    for (size_t i = 0; i < 5; i++) {
-        if (!wires[i] || lengths[i] == 0 || lengths[i] > ZWN_MAX_FILE)
+    for (size_t i = 0; i < 6; i++) {
+        const uint8_t *bytes =
+            i == 0 ? (const uint8_t *)k_license : wires[i - 1];
+        size_t len = i == 0 ? sizeof(k_license) - 1u : lengths[i - 1];
+        if (!bytes || len == 0 || len > ZWN_MAX_FILE)
             return false;
-        memcpy(p->contents[i], wires[i], lengths[i]);
-        p->lens[i] = lengths[i];
-        p->total_bytes += lengths[i];
+        memcpy(p->contents[i], bytes, len);
+        p->lens[i] = len;
+        p->total_bytes += len;
         uint8_t hash[32];
-        if (!vcs_package_chunk_hash(wires[i], lengths[i], hash) ||
+        if (!vcs_package_chunk_hash(bytes, len, hash) ||
             !vcs_package_manifest_add(
                 &p->manifest, paths[i], VCS_PACKAGE_MODE_FILE,
-                lengths[i], hash, 1))
+                len, hash, 1))
             return false;
     }
-    p->count = 5;
+    p->count = 6;
     if (!vcs_package_manifest_serialize(
             &p->manifest, &p->wire, &p->wire_len))
         return false;
@@ -293,6 +303,66 @@ static void zwn_free_package(struct zwn_pkg *p)
     vcs_package_manifest_free(&p->manifest);
     free(p->wire);
     p->wire = NULL;
+}
+
+/* The engine hosts only recognized public shapes, and a plain source
+ * package becomes one by carrying LICENSE text plus a signed envelope that
+ * names its exact root (vcs/package_public_shape.h). Fixture publisher key
+ * and namespace are derived from the root so every distinct package gets a
+ * distinct publisher — one key may hold only one namespace. */
+static bool zwn_publish_release(struct vcs_package_store *store,
+                                const uint8_t root[32])
+{
+    struct privkey sk;
+    struct pubkey pk;
+    memcpy(sk.vch, root, 32);
+    sk.fValid = true;
+    sk.fCompressed = true;
+    if (!privkey_get_pubkey(&sk, &pk) ||
+        pk.size != COMPRESSED_PUBLIC_KEY_SIZE)
+        return false;
+    struct vcs_package_release r;
+    memset(&r, 0, sizeof(r));
+    r.schema_version = VCS_PACKAGE_RELEASE_VERSION;
+    snprintf(r.name, sizeof(r.name), "zwn%02x%02x%02x%02x/fixture",
+             root[0], root[1], root[2], root[3]);
+    snprintf(r.semver, sizeof(r.semver), "1.0.0");
+    memcpy(r.package_root, root, 32);
+    for (int i = 0; i < 32; i++)
+        r.recipe_root[i] = (uint8_t)(root[i] ^ 0x5au);
+    memcpy(r.publisher_pubkey, pk.vch, COMPRESSED_PUBLIC_KEY_SIZE);
+    r.publisher_sequence = 1u;
+    const struct chain_params *params = chain_params_get();
+    if (!params)
+        return false;
+    size_t pk_len = 0, sc_len = 0;
+    const unsigned char *p58 =
+        chain_params_base58_prefix(params, B58_PUBKEY_ADDRESS, &pk_len);
+    const unsigned char *s58 =
+        chain_params_base58_prefix(params, B58_SCRIPT_ADDRESS, &sc_len);
+    struct tx_destination dest;
+    dest.type = DEST_KEY_ID;
+    memset(dest.id.key.id.data, 0x44, 20);
+    if (!encode_destination(&dest, p58, pk_len, s58, sc_len,
+                            r.reward_address, sizeof(r.reward_address)))
+        return false;
+    snprintf(r.license, sizeof(r.license), "MIT");
+    if (!vcs_package_accept_chain_id(r.chain_id, sizeof(r.chain_id)))
+        return false;
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    if (vcs_package_release_id(&r, id) != VCS_PACKAGE_RELEASE_OK)
+        return false;
+    struct uint256 hash;
+    memcpy(hash.data, id, 32);
+    unsigned char compact[COMPACT_SIGNATURE_SIZE];
+    if (!privkey_sign_compact(&sk, &hash, compact))
+        return false;
+    memcpy(r.signature, compact + 1, VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
+    enum vcs_package_accept_result ar = VCS_PACKAGE_ACCEPT_ERR_NULL;
+    return vcs_package_store_put_release(store, &r, &ar) ==
+               VCS_PACKAGE_STORE_OK &&
+           (ar == VCS_PACKAGE_ACCEPT_OK ||
+            ar == VCS_PACKAGE_ACCEPT_DUPLICATE);
 }
 
 static bool zwn_store_package(struct vcs_package_store *store,
@@ -309,7 +379,7 @@ static bool zwn_store_package(struct vcs_package_store *store,
                                         p->lens[i]) != VCS_PACKAGE_STORE_OK)
             return false;
     }
-    return true;
+    return zwn_publish_release(store, root);
 }
 
 static bool zwn_store_source_transport(

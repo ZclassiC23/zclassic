@@ -55,9 +55,17 @@
 #include "command/native_command.h"
 #include "config/boot_zcode_dht.h"
 #include "vcs/blob_store.h"
+#include "vcs/package_release.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm_node.h"
+
+#include "chain/chainparams.h"
+#include "core/uint256.h"
+#include "keys/key.h"
+#include "keys/key_io.h"
+#include "script/standard.h"
+#include "vcs/package_accept.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -132,6 +140,81 @@ static const uint8_t *sw_chunk_bytes(const struct sw_pkg *p,
 {
     *len = p->lens[file_index];
     return p->contents[file_index];
+}
+
+/* ── public-hosting fixture: the release that makes a package hostable ──
+ *
+ * The engine refuses to announce or serve a root that is not a recognized
+ * public shape (vcs/package_public_shape.h). sw_make_package builds the
+ * released-package shape — a top-level LICENSE plus sources — so the one
+ * thing these fixtures still need is the signed envelope that names the
+ * exact root and carries an allowlisted SPDX identifier. Every serving
+ * fixture below publishes one; the tests that prove REFUSAL deliberately
+ * do not. */
+static bool sw_keypair(uint8_t seed, struct privkey *sk, struct pubkey *pk)
+{
+    memset(sk->vch, seed, 32);
+    sk->fValid = true;
+    sk->fCompressed = true;
+    return privkey_get_pubkey(sk, pk) &&
+           pk->size == COMPRESSED_PUBLIC_KEY_SIZE;
+}
+
+static bool sw_reward_address(char *out, size_t out_size)
+{
+    const struct chain_params *params = chain_params_get();
+    if (!params)
+        return false;
+    size_t pk_len = 0, sc_len = 0;
+    const unsigned char *pk =
+        chain_params_base58_prefix(params, B58_PUBKEY_ADDRESS, &pk_len);
+    const unsigned char *sc =
+        chain_params_base58_prefix(params, B58_SCRIPT_ADDRESS, &sc_len);
+    struct tx_destination dest;
+    dest.type = DEST_KEY_ID;
+    memset(dest.id.key.id.data, 0x44, 20);
+    return encode_destination(&dest, pk, pk_len, sc, sc_len, out, out_size);
+}
+
+/* Sign a release naming `root` and persist it. `seed` picks the publisher
+ * key: one key may name only one package root per sequence, so distinct
+ * fixture packages need distinct seeds. */
+static bool sw_publish_release(struct vcs_package_store *store,
+                               const uint8_t root[32], uint8_t seed,
+                               const char *name)
+{
+    struct privkey sk;
+    struct pubkey pk;
+    struct vcs_package_release r;
+    memset(&r, 0, sizeof(r));
+    if (!sw_keypair(seed, &sk, &pk))
+        return false;
+    r.schema_version = VCS_PACKAGE_RELEASE_VERSION;
+    snprintf(r.name, sizeof(r.name), "%s", name);
+    snprintf(r.semver, sizeof(r.semver), "1.0.0");
+    memcpy(r.package_root, root, 32);
+    for (int i = 0; i < 32; i++)
+        r.recipe_root[i] = (uint8_t)(0x50 + i);
+    memcpy(r.publisher_pubkey, pk.vch, COMPRESSED_PUBLIC_KEY_SIZE);
+    r.publisher_sequence = 1u;
+    if (!sw_reward_address(r.reward_address, sizeof(r.reward_address)))
+        return false;
+    snprintf(r.license, sizeof(r.license), "MIT");
+    if (!vcs_package_accept_chain_id(r.chain_id, sizeof(r.chain_id)))
+        return false;
+    uint8_t id[VCS_PACKAGE_RELEASE_ID_BYTES];
+    if (vcs_package_release_id(&r, id) != VCS_PACKAGE_RELEASE_OK)
+        return false;
+    struct uint256 hash;
+    memcpy(hash.data, id, 32);
+    unsigned char compact[COMPACT_SIGNATURE_SIZE];
+    if (!privkey_sign_compact(&sk, &hash, compact))
+        return false;
+    memcpy(r.signature, compact + 1, VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
+    enum vcs_package_accept_result ar = VCS_PACKAGE_ACCEPT_ERR_NULL;
+    return vcs_package_store_put_release(store, &r, &ar) ==
+               VCS_PACKAGE_STORE_OK &&
+           (ar == VCS_PACKAGE_ACCEPT_OK || ar == VCS_PACKAGE_ACCEPT_DUPLICATE);
 }
 
 /* ── fixture node: store + book + engine over one datadir ─────────── */
@@ -1117,6 +1200,45 @@ static int t_swarm_serving_and_allowance(void)
                      n.store, p.root, p.manifest.files[i].path, 0,
                      p.contents[i], p.lens[i]) == VCS_PACKAGE_STORE_OK);
     const uint64_t peer = 8001;
+    /* Complete is not hostable. Before the release lands, the engine
+     * announces nothing and answers a manifest WANT with the named
+     * refusal instead of bytes. */
+    SW_CHECK("unreleased package is not announced",
+             vcs_swarm_engine_peer_add(n.engine, 8009, key) &&
+             vcs_swarm_engine_announce_to(n.engine, 8009) == 0);
+    /* ...and a WANT for it is refused BY NAME, with no reply, no penalty
+     * and no offence: the requester cannot know what we host. */
+    {
+        struct vcs_package_swarm_message unlicensed;
+        memset(&unlicensed, 0, sizeof(unlicensed));
+        unlicensed.type = VCS_PACKAGE_SWARM_WANT;
+        unlicensed.body.want.request_id = 8801;
+        memcpy(unlicensed.body.want.package_root, p.root, 32);
+        unlicensed.body.want.object_kind = VCS_PACKAGE_SWARM_OBJECT_MANIFEST;
+        unlicensed.body.want.file_index = UINT32_MAX;
+        unlicensed.body.want.chunk_index = UINT32_MAX;
+        uint8_t refused_frame[8 + 96 + SW_MAX_FILE];
+        size_t refused_len = 0;
+        SW_CHECK("unreleased want serializes",
+                 vcs_package_swarm_serialize(&unlicensed, refused_frame,
+                                             sizeof(refused_frame),
+                                             &refused_len));
+        struct vcs_swarm_frame_result refused =
+            vcs_swarm_engine_handle_frame(n.engine, 8009, refused_frame,
+                                          refused_len, SW_DAY, 1);
+        SW_CHECK("unreleased want refused by name, not by silence",
+                 refused.reply == NULL &&
+                 refused.penalty == VCS_SWARM_PENALTY_NONE &&
+                 !refused.disconnect_peer && refused.rule != NULL &&
+                 strcmp(refused.rule, "no-verified-release") == 0);
+        struct vcs_service_key_totals unlicensed_totals;
+        SW_CHECK("refusal credits nothing and books no offence",
+                 vcs_service_key_totals(n.book, key, SW_DAY,
+                                        &unlicensed_totals) &&
+                 unlicensed_totals.verified_bytes_uploaded == 0);
+    }
+    SW_CHECK("release published",
+             sw_publish_release(n.store, p.root, 0x41, "swarm-serve/fixture"));
     SW_CHECK("peer add", vcs_swarm_engine_peer_add(n.engine, peer, key));
 
     /* Announce our complete packages to the peer. */
@@ -1144,6 +1266,8 @@ static int t_swarm_serving_and_allowance(void)
                  vcs_package_store_put_chunk(
                      n.store, p2.root, p2.manifest.files[i].path, 0,
                      p2.contents[i], p2.lens[i]) == VCS_PACKAGE_STORE_OK);
+    SW_CHECK("late release published",
+             sw_publish_release(n.store, p2.root, 0x42, "swarm-late/fixture"));
     SW_CHECK("late package announced to the existing peer",
              vcs_swarm_engine_announce_to(n.engine, peer) == 1);
     SW_CHECK("late announce frame drains",

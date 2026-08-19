@@ -702,6 +702,18 @@ enum vcs_package_store_result vcs_package_store_put_release(
     snprintf(path, sizeof(path), "%s/releases/%s", store->root, id_hex);
     bool ok = store_atomic_write(path, wire, wire_len);
     free(wire);
+    /* An accepted envelope changes what the package IS to the outside
+     * world: an unsigned root nobody may host becomes a signed, licensed
+     * one that may be announced and served. Observers key their public-
+     * hosting decision on the mutation generation, so a release landing
+     * after its manifest must advance it — otherwise the package stays
+     * privately hostable-in-name-only until some unrelated byte arrives. */
+    if (ok) {
+        struct store_package *pkg =
+            store_find(store, release->package_root, NULL);
+        if (pkg)
+            store_package_touch(store, pkg);
+    }
     pthread_mutex_unlock(&store->lock);
     return ok ? VCS_PACKAGE_STORE_OK : VCS_PACKAGE_STORE_ERR_IO;
 }
