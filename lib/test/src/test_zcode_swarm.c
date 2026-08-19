@@ -50,6 +50,8 @@
 
 #include "test/test_core.h"
 
+#include "test/public_shape_fixture.h"
+
 #include "base/hex.h"
 #include "base/serialize_le.h"
 #include "command/native_command.h"
@@ -78,7 +80,7 @@
 } while (0)
 
 #define SW_MAX_FILES 12u
-#define SW_MAX_FILE 512u
+#define SW_MAX_FILE 1200u
 #define SW_DAY 20500
 #define SW_CONTRIBUTOR_SCORE UINT64_C(100)
 #define SWARM_PUMP_MAX_WANTS 40u
@@ -107,9 +109,20 @@ static bool sw_make_package(struct sw_pkg *p, size_t count, uint8_t seed)
         return false;
     vcs_package_manifest_init(&p->manifest);
     for (size_t i = 0; i < count; i++) {
-        size_t len = 40u + i * 31u + seed;
-        for (size_t j = 0; j < len; j++)
-            p->contents[i][j] = (uint8_t)(seed + i * 7u + j * 3u);
+        size_t len;
+        if (strcmp(k_paths[i], "LICENSE") == 0) {
+            /* Real MIT text: the hosting rule reads these bytes and holds
+             * them against the envelope's SPDX identifier, so a fixture
+             * that shipped noise here would be refused — correctly. */
+            len = strlen(TEST_LICENSE_TEXT_MIT);
+            if (len > SW_MAX_FILE)
+                return false;
+            memcpy(p->contents[i], TEST_LICENSE_TEXT_MIT, len);
+        } else {
+            len = 40u + i * 31u + seed;
+            for (size_t j = 0; j < len; j++)
+                p->contents[i][j] = (uint8_t)(seed + i * 7u + j * 3u);
+        }
         p->lens[i] = len;
         uint8_t hash[32];
         if (!vcs_package_chunk_hash(p->contents[i], len, hash))

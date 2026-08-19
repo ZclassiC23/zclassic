@@ -331,6 +331,13 @@ bool vcs_package_store_possession_snapshot(
     struct vcs_package_store *store, const uint8_t package_root[32],
     struct vcs_package_possession_receipt *out);
 
+/* The store-wide mutation counter: strictly increasing across every
+ * store-mediated mutation of ANY package, including eviction. A per-package
+ * generation cannot see a sibling change, so a cached decision that depended
+ * on more than one package (a dependency closure, say) must key on this
+ * instead. O(1), lock-bounded. Zero when `store` is NULL. */
+uint64_t vcs_package_store_mutation_epoch(struct vcs_package_store *store);
+
 /* Expensive possession proof for STORAGE_ACK authorship. Requires a complete
  * package (and, when requested, a current local pin), re-parses and root-binds
  * the manifest, reads every chunk, re-hashes every coordinate, then rechecks

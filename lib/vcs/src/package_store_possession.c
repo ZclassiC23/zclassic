@@ -129,6 +129,16 @@ bool vcs_package_store_possession_snapshot(
     return found;
 }
 
+uint64_t vcs_package_store_mutation_epoch(struct vcs_package_store *store)
+{
+    if (!store)
+        return 0;
+    pthread_mutex_lock(&store->lock);
+    uint64_t epoch = store->next_mutation_generation;
+    pthread_mutex_unlock(&store->lock);
+    return epoch;
+}
+
 static void proof_cas_path(const struct vcs_package_possession_proof *proof,
                            const uint8_t hash[32], char out[STORE_PATH_MAX])
 {

@@ -37,6 +37,8 @@
  *      content.v2 evidence closure, then accepted source rebuilds Git-free. */
 
 #include "test/test_core.h"
+
+#include "test/public_shape_fixture.h"
 #include "test/accepted_work_fixture.h"
 
 #include "base/hex.h"
@@ -103,7 +105,7 @@
 #define ZWN_DAY 20500
 #define ZWN_SCORE UINT64_C(100) /* EARNED_CONTRIBUTOR: announces allowed */
 #define ZWN_MAX_FILES 13u
-#define ZWN_MAX_FILE 512u
+#define ZWN_MAX_FILE 1200u
 #define ZWN_KEY_DOMAIN "zcl.zcode_swarm_peer.v1"
 #define ZWN_EVIDENCE_ASSIGNMENT "evidence/source-assignment.v1"
 #define ZWN_EVIDENCE_COMMIT "evidence/zvcs-commit.v1"
@@ -238,9 +240,19 @@ static bool zwn_make_package(struct zwn_pkg *p, size_t count, uint8_t seed)
         return false;
     vcs_package_manifest_init(&p->manifest);
     for (size_t i = 0; i < count; i++) {
-        size_t len = 40u + i * 31u + seed;
-        for (size_t j = 0; j < len; j++)
-            p->contents[i][j] = (uint8_t)(seed + i * 7u + j * 3u);
+        size_t len;
+        if (strcmp(k_paths[i], "LICENSE") == 0) {
+            /* Real MIT text: the hosting rule reads these bytes and holds
+             * them against the envelope's SPDX identifier. */
+            len = strlen(TEST_LICENSE_TEXT_MIT);
+            if (len > ZWN_MAX_FILE)
+                return false;
+            memcpy(p->contents[i], TEST_LICENSE_TEXT_MIT, len);
+        } else {
+            len = 40u + i * 31u + seed;
+            for (size_t j = 0; j < len; j++)
+                p->contents[i][j] = (uint8_t)(seed + i * 7u + j * 3u);
+        }
         p->lens[i] = len;
         p->total_bytes += len;
         uint8_t hash[32];
@@ -272,7 +284,7 @@ static bool zwn_make_evidence_package(
         ZWN_EVIDENCE_WORKSPACE,
         ZWN_EVIDENCE_COMMIT,
     };
-    static const char k_license[] = "MIT\n";
+    static const char k_license[] = TEST_LICENSE_TEXT_MIT;
     memset(p, 0, sizeof(*p));
     vcs_package_manifest_init(&p->manifest);
     for (size_t i = 0; i < 6; i++) {
@@ -3849,7 +3861,7 @@ static int zwn_t_unrequested(const struct chain_params *params)
                                       data.body.data.object.expected_hash));
         data.body.data.bytes = pkg.contents[0];
         data.body.data.bytes_len = (uint32_t)pkg.lens[0];
-        uint8_t frame[1024];
+        uint8_t frame[4096];
         size_t frame_len = 0;
         ASSERT(vcs_package_swarm_serialize(&data, frame, sizeof(frame),
                                            &frame_len));

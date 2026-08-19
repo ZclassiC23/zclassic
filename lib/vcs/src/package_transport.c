@@ -268,6 +268,19 @@ enum vcs_package_transport_result vcs_package_transport_store(
         LOG_RETURN(result == VCS_PACKAGE_TRANSPORT_OK
                        ? VCS_PACKAGE_TRANSPORT_ERR_STORE : result,
                    "vcs.package.transport", "carrier publication failed");
+    /* Reconstruct the inner package out of the carrier we just wrote, the
+     * same step a consumer runs after fetching it. Without this a publisher
+     * holds every byte of its own package while the store has no record of
+     * the package root — so it could not answer for its own release, and a
+     * dependent carrier could not prove the dependency is one this node can
+     * hand over. It is a CAS-only reconstruction: no new bytes, no build,
+     * no execution. */
+    struct vcs_package_transport_import receipt;
+    enum vcs_package_transport_result imported =
+        vcs_package_transport_import(store, root, &receipt);
+    if (imported != VCS_PACKAGE_TRANSPORT_OK)
+        LOG_RETURN(imported, "vcs.package.transport",
+                   "carrier stored but its inner package did not reconstruct");
     return VCS_PACKAGE_TRANSPORT_OK;
 }
 

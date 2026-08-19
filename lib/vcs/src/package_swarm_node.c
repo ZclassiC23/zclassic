@@ -121,9 +121,11 @@ struct swarm_outbound {
 #define VCS_SWARM_PUBLIC_CACHE_SLOTS VCS_SWARM_MAX_LOCAL_ANNOUNCES
 struct swarm_public_entry {
     uint8_t root[32];
-    uint64_t generation;
+    uint64_t generation; /* this package's own mutation generation */
+    uint64_t epoch;      /* store-wide, only meaningful when dep_scoped */
     enum vcs_package_public_shape shape;
     const char *rule;
+    bool dep_scoped;
     bool used;
 };
 
@@ -872,15 +874,22 @@ static void handle_announce(struct vcs_swarm_engine *engine,
     }
 }
 
-/* Public-hosting admission for one root, cached per (root, generation).
+/* Public-hosting admission for one root.
  *
  * Every byte this node offers a stranger passes through here: the ANNOUNCE
  * that advertises a root and the WANT that asks for its manifest or its
  * chunks. Completeness is not enough. The root must match one of the
- * closed shapes in vcs/package_public_shape.h, and the one shape that
- * carries source for other people to build — the package transport
- * carrier — must re-derive its whole signed, permissively licensed
- * closure out of the bytes we hold. Anything else is refused by name.
+ * closed shapes in vcs/package_public_shape.h, and the shapes that carry
+ * source for other people to build must re-derive their whole signed,
+ * permissively licensed closure — dependency graph included — out of the
+ * bytes we hold. Anything else is refused by name.
+ *
+ * Caching. A self-contained verdict is only invalidated by this package
+ * changing, so it keys on the package's own generation. A verdict that
+ * rested on the dependency graph can be falsified by a SIBLING package
+ * being evicted or mutated, which that generation cannot see, so it keys
+ * on the store-wide epoch as well. Getting this wrong would keep serving a
+ * package whose dependencies this node can no longer hand over.
  *
  * Called with engine->lock held; takes the store lock beneath it, which is
  * the order the serve path already uses. */
@@ -894,17 +903,21 @@ static bool public_serveable(struct vcs_swarm_engine *engine,
         if (rule_out) *rule_out = "not-tracked";
         return false;
     }
+    uint64_t epoch = vcs_package_store_mutation_epoch(engine->store);
     struct swarm_public_entry *slot =
         &engine->public_cache[root[0] % VCS_SWARM_PUBLIC_CACHE_SLOTS];
-    if (!slot->used || memcmp(slot->root, root, 32) != 0 ||
-        slot->generation != receipt.mutation_generation) {
-        const char *rule = "not-tracked";
-        enum vcs_package_public_shape shape =
-            vcs_package_public_shape_classify(engine->store, root, &rule);
+    bool stale = !slot->used || memcmp(slot->root, root, 32) != 0 ||
+                 slot->generation != receipt.mutation_generation ||
+                 (slot->dep_scoped && slot->epoch != epoch);
+    if (stale) {
+        struct vcs_package_public_verdict verdict;
+        vcs_package_public_shape_classify(engine->store, root, &verdict);
         memcpy(slot->root, root, 32);
         slot->generation = receipt.mutation_generation;
-        slot->shape = shape;
-        slot->rule = rule;
+        slot->epoch = epoch;
+        slot->shape = verdict.shape;
+        slot->rule = verdict.rule;
+        slot->dep_scoped = verdict.dep_scoped;
         slot->used = true;
     }
     if (rule_out)

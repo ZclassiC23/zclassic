@@ -289,6 +289,80 @@ bool vcs_package_release_license_allowed(const char *license)
     return release_license_valid_n(license, strlen(license));
 }
 
+/* Every allowlisted license's own text carries these phrases. This is not a
+ * claim that the text is a genuine, unmodified license — no substring test
+ * can be that — but it does refuse the specific lie of declaring one
+ * identifier and shipping text that cannot be that license: an empty file, a
+ * placeholder, someone else's proprietary terms. Both phrases must appear
+ * when the second is present; matching is case-insensitive so a re-rendered
+ * copy still passes. Frozen alongside the allowlist it interprets. */
+static const struct release_license_text {
+    const char *license;
+    const char *phrase[2]; /* lowercase; the second may be NULL */
+} release_license_texts[] = {
+    {"0BSD",
+     {"permission to use, copy, modify, and/or distribute this software",
+      NULL}},
+    {"MIT", {"permission is hereby granted, free of charge", NULL}},
+    {"Apache-2.0", {"apache license", "version 2.0"}},
+    {"BSD-2-Clause",
+     {"redistribution and use in source and binary forms", NULL}},
+    {"BSD-3-Clause",
+     {"redistribution and use in source and binary forms",
+      "neither the name"}},
+    {"ISC",
+     {"permission to use, copy, modify, and/or distribute this software",
+      "copyright notice"}},
+    {"Zlib",
+     {"altered source versions must be plainly marked as such", NULL}},
+};
+
+static unsigned char release_lower(unsigned char c)
+{
+    return (c >= 'A' && c <= 'Z') ? (unsigned char)(c - 'A' + 'a') : c;
+}
+
+/* Case-insensitive substring search. `needle` is already lowercase. */
+static bool release_text_contains(const uint8_t *hay, size_t hay_len,
+                                  const char *needle)
+{
+    size_t need_len = strlen(needle);
+    if (need_len == 0 || need_len > hay_len)
+        return false;
+    for (size_t i = 0; i + need_len <= hay_len; i++) {
+        size_t j = 0;
+        while (j < need_len &&
+               release_lower(hay[i + j]) == (unsigned char)needle[j])
+            j++;
+        if (j == need_len)
+            return true;
+    }
+    return false;
+}
+
+bool vcs_package_release_license_text_matches(const char *license,
+                                              const uint8_t *text, size_t len)
+{
+    if (!license || !text || len == 0)
+        return false;
+    if (len > VCS_PACKAGE_RELEASE_LICENSE_TEXT_MAX_BYTES)
+        return false;
+    for (size_t i = 0; i < sizeof(release_license_texts) /
+                               sizeof(release_license_texts[0]); i++) {
+        const struct release_license_text *e = &release_license_texts[i];
+        if (strcmp(e->license, license) != 0)
+            continue;
+        for (size_t p = 0; p < 2; p++) {
+            if (!e->phrase[p])
+                break;
+            if (!release_text_contains(text, len, e->phrase[p]))
+                return false;
+        }
+        return true;
+    }
+    return false; /* not on the allowlist: never "matching" */
+}
+
 /* ── validation ───────────────────────────────────────────────────── */
 
 enum vcs_package_release_error vcs_package_release_validate(

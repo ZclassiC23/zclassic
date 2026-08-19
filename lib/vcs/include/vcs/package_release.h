@@ -164,6 +164,20 @@ const char *vcs_package_release_error_string(
  * authority instead of duplicating the list. Pure query; never logs. */
 bool vcs_package_release_license_allowed(const char *license);
 
+/* The largest LICENSE text this rule will read. The longest allowlisted
+ * license (Apache-2.0) is ~11 KiB; anything past this is not a license file
+ * and is refused rather than scanned. */
+#define VCS_PACKAGE_RELEASE_LICENSE_TEXT_MAX_BYTES (256u * 1024u)
+
+/* True when `text` plausibly IS the license `license` names: the canonical
+ * phrases of that identifier appear in it (case-insensitively). Refuses an
+ * empty file, a placeholder, and text belonging to a different license, so
+ * "declares MIT, ships something else" cannot pass. It does not and cannot
+ * prove the text is an unmodified official copy. A license not on the v1
+ * allowlist never matches. Pure query; never logs. */
+bool vcs_package_release_license_text_matches(const char *license,
+                                              const uint8_t *text, size_t len);
+
 /* Validate every field against the v1 grammars above. Does NOT look at the
  * signature. Returns VCS_PACKAGE_RELEASE_OK or the first failed rule. */
 enum vcs_package_release_error vcs_package_release_validate(

@@ -19,19 +19,19 @@
  *                 zcl.zcode_release.v1 envelope must verify against the
  *                 publisher key it names, its SPDX identifier must be on
  *                 the frozen v1 allowlist, its sources must carry LICENSE
- *                 text, and release, recipe and inner manifest must bind
- *                 to each other and to this exact root. That whole
- *                 closure is re-derived here from the stored bytes with
- *                 vcs_package_transport_build(); nothing is taken on
- *                 trust from the fetch that delivered it.
+ *                 text that IS that license, and release, recipe and
+ *                 inner manifest must bind to each other and to this
+ *                 exact root. That whole closure is re-derived here from
+ *                 the stored bytes with vcs_package_transport_build();
+ *                 nothing is taken on trust from the fetch that
+ *                 delivered it.
  *   RELEASE       the inner package a carrier reconstructs into: a plain
  *                 content.v2 root that a persisted zcl.zcode_release.v1
- *                 envelope names and signs. Same three requirements as
- *                 TRANSPORT — the envelope verifies, its SPDX identifier
- *                 is on the allowlist, the manifest carries LICENSE text
- *                 — proved against the envelope rather than against a
- *                 carrier, because the manifest root the store filed
- *                 these bytes under IS the root the publisher signed.
+ *                 envelope names and signs. Same requirements as
+ *                 TRANSPORT, proved against the envelope rather than
+ *                 against a carrier, because the manifest root the store
+ *                 filed these bytes under IS the root the publisher
+ *                 signed.
  *   SOURCE_BUNDLE the ZVCS source carrier an accepted work publishes. It
  *                 carries its own top-level LICENSE and a lane receipt
  *                 signed by the key that receipt names, both of which are
@@ -54,8 +54,35 @@
  * the work node's own admission is what governs them. Stated plainly so
  * nobody reads this rule as more than it is.
  *
+ * TWO RULES APPLY TO BOTH LICENSED SHAPES.
+ *
+ * The license text must be the license. A LICENSE path in a manifest is
+ * not license text: an empty file, a placeholder, or a proprietary EULA
+ * all satisfy "the path exists". The bytes are read and held against the
+ * identifier the signed envelope declares
+ * (vcs_package_release_license_text_matches). That does not prove the
+ * copy is unmodified — no substring test could — but "declares MIT,
+ * ships something that cannot be MIT" no longer passes.
+ *
+ * PERMISSIVE-LICENSE CLOSURE. Offering an application publicly is a claim
+ * that a stranger can reproduce it, and nobody can reproduce what this
+ * node may not hand over. So the transitive dependency graph — read from
+ * the root-committed zcode-package.json, never from a second uncommitted
+ * database — must be public all the way down: every dependency root must
+ * itself be held here, complete, signed and permissively licensed, or the
+ * top package is refused. The walk is iterative and bounded by the
+ * dependency lock's node budget, so shared dependencies cost one
+ * evaluation and a cycle cannot spin.
+ *
+ * That is deliberately not "every node stores every package". It is "a
+ * node offers only what it can actually deliver in full".
+ *
  * A refusal is never silence. Every REFUSED verdict comes with a static
- * rule string naming which requirement failed. */
+ * rule string naming which requirement failed. A dependency failure is
+ * reported as the class `dependency-not-public` rather than the
+ * dependency's own rule: the asking peer learns that the graph is not
+ * wholly public, not which private byte this node happens to hold. The
+ * detail goes to the local log. */
 
 #ifndef ZCL_VCS_PACKAGE_PUBLIC_SHAPE_H
 #define ZCL_VCS_PACKAGE_PUBLIC_SHAPE_H
@@ -78,13 +105,32 @@ enum vcs_package_public_shape {
 const char *vcs_package_public_shape_string(
     enum vcs_package_public_shape shape);
 
+/* The shapes that carry source under a license: TRANSPORT and RELEASE.
+ * These are the two the license and closure rules apply to, and the two a
+ * dependency must be for its dependent to stay publicly hostable. */
+bool vcs_package_public_shape_licensed(enum vcs_package_public_shape shape);
+
+struct vcs_package_public_verdict {
+    enum vcs_package_public_shape shape;
+    const char *rule; /* static; never NULL after a classify call */
+    /* True when the verdict also rests on OTHER packages in the store, so
+     * a caller caching it must invalidate on any store mutation, not only
+     * on this package's own. False for every self-contained verdict. */
+    bool dep_scoped;
+    uint32_t dependencies_checked; /* distinct roots in the closure walk */
+    /* On `dependency-not-public`, the dependency's own failed rule — for
+     * the operator on this side of the wire. NULL otherwise. Never sent to
+     * the peer that asked. */
+    const char *dependency_rule;
+};
+
 /* Classify one tracked root against the rule above, reading only bytes the
  * store already holds. Returns REFUSED for an untracked, incomplete or
- * unrecognized root and for a carrier whose closure does not re-derive.
- * `*rule_out` (when non-NULL) always receives a static string: the shape
- * name on admission, the failed requirement on refusal. */
+ * unrecognized root, for a carrier whose closure does not re-derive, and
+ * for a licensed package whose dependency graph is not public here.
+ * `*out` (when non-NULL) receives the full verdict. */
 enum vcs_package_public_shape vcs_package_public_shape_classify(
     struct vcs_package_store *store, const uint8_t package_root[32],
-    const char **rule_out);
+    struct vcs_package_public_verdict *out);
 
 #endif /* ZCL_VCS_PACKAGE_PUBLIC_SHAPE_H */
