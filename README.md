@@ -52,8 +52,8 @@ its own promise and stops at the first that does not.
 - Build and accept an exact result.
 - Another node fetches it and reproduces it peer to peer.
 - Then do all of that again to software that already existed, written by
-  somebody else — and measure the behavior you asked to change, before and
-  after, on both nodes.
+  somebody else — and measure the behavior you asked to change: before on the
+  node that published it, after on the node that fetched and rebuilt it.
 
 Reproduce means what it sounds like: the second node re-derives the identical
 source from content addresses it verified itself, then builds a byte-identical

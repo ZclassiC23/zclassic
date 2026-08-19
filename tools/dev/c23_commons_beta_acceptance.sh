@@ -80,13 +80,21 @@ for product in zclassic23 zcl-rpc zclassic23-package-sign \
         exit 2
     }
 done
+# Unconditional, because DHT_ACCEPTANCE_C23 below points at the install
+# prefix unconditionally and the DHT harness checks that binary before it
+# starts a single node, in every composition — it is that harness's own
+# assertion tool, not arena scenery. Installing it behind the arena flag
+# while redirecting the variable regardless left the default composition
+# dying on its binary precondition before any hook could run.
+make -C "$REPO_ROOT" tools/arena-product-journey-c23 >/dev/null
+install -m 0755 "$REPO_ROOT/build/bin/arena_product_journey_c23" \
+    "$PREFIX/bin/arena_product_journey_c23"
+# arena_runner and the dev binary are read only by the arena journey hook,
+# so they stay behind its flag and cost the default composition nothing.
 if [ "${C23_BETA_INSTALL_ARENA_RUNNER:-0}" = 1 ]; then
-    make -C "$REPO_ROOT" tools/arena-runner \
-        tools/arena-product-journey-c23 dev-bin >/dev/null
+    make -C "$REPO_ROOT" tools/arena-runner dev-bin >/dev/null
     install -m 0755 "$REPO_ROOT/build/bin/arena_runner" \
         "$PREFIX/bin/arena_runner"
-    install -m 0755 "$REPO_ROOT/build/bin/arena_product_journey_c23" \
-        "$PREFIX/bin/arena_product_journey_c23"
     install -m 0755 "$REPO_ROOT/build/bin/zclassic23-dev" \
         "$PREFIX/bin/zclassic23-dev"
 fi

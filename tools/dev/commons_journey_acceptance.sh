@@ -139,36 +139,6 @@ cj_die()  { dht_die "commons-journey: $*"; }
 cj_note() { echo "commons-journey: $*"; }
 cj_step() { echo; echo "commons-journey: ── $* ──"; }
 
-# ── per-phase timing ─────────────────────────────────────────────────────
-# The three headline numbers (ask→visible, remote reproduction, whole
-# journey) say HOW LONG; they do not say WHERE the seconds go, and the
-# mission's speed work needs that split. Millisecond marks at each phase
-# boundary, recorded next to the facts file, summarized into the facts so
-# the recorded proof shows cold sovereign setup apart from the creative
-# loop. Measurement only — no phase boundary moves because of this.
-cj_now_ms() { date +%s%3N; }
-CJ_PHASE_MARK=0
-CJ_PHASE_NAMES=()
-CJ_PHASE_MS=()
-cj_phase_arm()  { CJ_PHASE_MARK="$(cj_now_ms)"; }
-cj_phase_mark() {
-    local now; now="$(cj_now_ms)"
-    [ "$CJ_PHASE_MARK" -gt 0 ] || return 0
-    CJ_PHASE_NAMES+=("$1")
-    CJ_PHASE_MS+=("$((now - CJ_PHASE_MARK))")
-    CJ_PHASE_MARK="$now"
-}
-# Sum the recorded ms for the named phases.
-cj_phase_sum() {
-    local i total=0
-    for i in "${!CJ_PHASE_NAMES[@]}"; do
-        case " $* " in
-            *" ${CJ_PHASE_NAMES[$i]} "*) total=$((total + CJ_PHASE_MS[i])) ;;
-        esac
-    done
-    printf '%s' "$total"
-}
-
 # Every leaf answers with one JSON line, and that line is the contract: a
 # refusal is a named `ok:false` document, not a shell status. `pipefail` would
 # otherwise turn an ordinary refusal into a silent `set -e` abort inside a
@@ -2144,15 +2114,17 @@ cj_strip() {
     # The eight stages above built something from nothing. This last row is the
     # harder half of the same promise: the same eight stages run again on
     # software that already existed and that this journey did not write, and
-    # the thing you asked to change actually changes, by a number measured
-    # before and after on two different machines' builds.
+    # the thing you asked to change actually changes: node A measures the
+    # package as published, node B measures the accepted change it fetched
+    # and rebuilt. One number, two machines, and it moved.
     printf '\n'
     # Every line here stays inside the widest line above it: the README figure
     # is rendered at this width, and a row that overflows shrinks the whole
     # picture for the reader.
     cj_strip_row "CHANGED WHAT EXISTED" \
         "zdogfight — a package this journey did not write, under another key"
-    cj_strip_cont "\"make the aircraft turn faster\": ${CJ_TURN_BEFORE} → ${CJ_TURN_AFTER} deg/s on both nodes"
+    cj_strip_cont "\"make the aircraft turn faster\" — one number, measured twice:"
+    cj_strip_cont "${CJ_TURN_BEFORE} deg/s on node A before → ${CJ_TURN_AFTER} deg/s on node B after"
     cj_strip_cont "its own root ${CJ_ZDOG_APP_ROOT:0:12}… — the original is still exactly itself"
     printf '\n  \033[2mtwo fresh datadirs · %s bytes over the overlay · 1 peer · central services contacted: 0\033[0m\n' \
         "$CJ_APP_BYTES"
@@ -2246,6 +2218,8 @@ cj_write_facts() {
                 "$CJ_TURN_AFTER"
         fi
         printf 'whole_journey         = %s s\n' "$CJ_SECS_TOTAL"
+        printf 'verdict               = %s — %s of %s steps · %s\n' \
+            "$CJ_VERDICT_TOKEN" "$CJ_STEPS_PROVEN" "$CJ_STEPS_TOTAL" "$CJ_VERDICT_SCHEMA"
     } >"$out"
     # Binds this facts body to the strip recorded beside it. Verification
     # removes this one line and recomputes over strip + remaining facts.
@@ -2308,6 +2282,22 @@ fi
 # first broken promise, so reaching this line means all ten held on two
 # fresh datadirs that reached no service outside this machine.
 
+# The verdict this run earned, built BEFORE the recording is written so the
+# recording can bind it. A recording that names its commit, binary, script and
+# roots but not its verdict asks the reader to take the PASS on faith from a
+# terminal line that is not part of the evidence. One set of variables feeds
+# both the facts line and the printed document, so the two cannot disagree.
+CJ_VERDICT_SCHEMA=zcl.commons_journey_acceptance.v1
+CJ_VERDICT_TOKEN=PASS
+CJ_STEPS_PROVEN=10
+CJ_STEPS_TOTAL=10
+CJ_VERDICT="{\"schema\":\"$CJ_VERDICT_SCHEMA\",\"verdict\":\"$CJ_VERDICT_TOKEN\",\"steps_proven\":$CJ_STEPS_PROVEN,\"steps_total\":$CJ_STEPS_TOTAL,\"complete\":true,\"reuse_before_creation\":true,\"no_false_reuse_claim\":true,\"peer_to_peer_fetch\":true,\"fetched_source_inert\":true,\"explicit_local_admission\":true,\"independent_remote_build\":true,\"approved_signer_required\":true,\"explicit_human_acceptance\":true,\"accepted_work_published\":true,\"remote_source_reproduced\":true,\"byte_identical_artifacts\":true,\"tamper_refused_by_name\":[\"source\",\"dependency\",\"receipt\",\"artifact\"],\"application_ran\":true,\"existing_package_changed\":true,\"behavior_change_measured_before_and_after\":true,\"changed_version_is_its_own_root\":true,\"central_services_contacted\":0,\"human_first_terminal_output\":true}"
+# The multi-host leg adds its fact only when it actually ran: the publisher
+# disappeared and node C still reproduced and ran the exact accepted bytes.
+if [ "$CJ_PUBLISHER_SURVIVAL" = 1 ]; then
+    CJ_VERDICT="${CJ_VERDICT%\}},\"publisher_disappearance_survived\":true,\"changed_behavior_survived_publisher\":true}"
+fi
+
 # The strip: the mission's eight stages, printed by the run that just earned
 # them, plus the recording the README figures are rendered from.
 # ZCL_COMMONS_DEMO_RECORD=1 updates the committed recording; without it this
@@ -2325,10 +2315,4 @@ if [ "${ZCL_COMMONS_DEMO_RECORD:-0}" = 1 ]; then
 fi
 
 cj_step "verdict"
-CJ_VERDICT='{"schema":"zcl.commons_journey_acceptance.v1","verdict":"PASS","steps_proven":10,"steps_total":10,"complete":true,"reuse_before_creation":true,"no_false_reuse_claim":true,"peer_to_peer_fetch":true,"fetched_source_inert":true,"explicit_local_admission":true,"independent_remote_build":true,"approved_signer_required":true,"explicit_human_acceptance":true,"accepted_work_published":true,"remote_source_reproduced":true,"byte_identical_artifacts":true,"tamper_refused_by_name":["source","dependency","receipt","artifact"],"application_ran":true,"existing_package_changed":true,"behavior_change_measured_before_and_after":true,"changed_version_is_its_own_root":true,"central_services_contacted":0,"human_first_terminal_output":true}'
-# The multi-host leg adds its fact only when it actually ran: the publisher
-# disappeared and node C still reproduced and ran the exact accepted bytes.
-if [ "$CJ_PUBLISHER_SURVIVAL" = 1 ]; then
-    CJ_VERDICT="${CJ_VERDICT%\}},\"publisher_disappearance_survived\":true,\"changed_behavior_survived_publisher\":true}"
-fi
 printf '%s\n' "$CJ_VERDICT"

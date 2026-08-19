@@ -8877,6 +8877,14 @@ check-live-datadir-isolation:
 	@./tools/lint/check_live_datadir_isolation.sh --selftest
 	@./tools/lint/check_live_datadir_isolation.sh
 
+# The public installed-Commons target must run with every optional variable
+# unset. The DHT harness refuses to start until each binary it names is
+# executable; this proves the installed lane puts every one of those in the
+# prefix outside every conditional, so no undocumented flag is load-bearing.
+check-installed-acceptance-tools:
+	@echo "══ LINT: installed Commons needs no optional flag ══"
+	@./tools/lint/check_installed_acceptance_tools.sh
+
 # wf/dx-scanner-immunity regression proof — plants a transient lint-gate
 # fixture mid-scan and proves: (1) a production scan ignores it, (2) a
 # selftest-style direct invocation still detects it (detection unweakened),
@@ -9069,6 +9077,7 @@ LINT_GATES := \
     check-no-warning-suppression \
     check-fuzz-artifact-ledger \
     check-live-datadir-isolation \
+    check-installed-acceptance-tools \
     check-standalone-tools-link
 
 # The driver execs gate scripts directly, so the two gates backed by a built

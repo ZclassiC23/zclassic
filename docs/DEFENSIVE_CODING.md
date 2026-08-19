@@ -957,6 +957,7 @@ add/remove a gate.
 - `check-no-warning-suppression`
 - `check-fuzz-artifact-ledger`
 - `check-live-datadir-isolation`
+- `check-installed-acceptance-tools`
 - `check-standalone-tools-link`
 - `check-zcc-cache`
 - `check-equihash-params`

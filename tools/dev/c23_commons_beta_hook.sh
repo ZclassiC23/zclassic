@@ -255,11 +255,19 @@ BETA_C="${ORDER[2]}"
 BETA_D="${ORDER[3]}"
 
 beta_assert_installed_process() {
-    local role="$1" exe cwd
+    local role="$1" exe cwd installed
     exe="$(readlink -f "/proc/${PIDS[$role]}/exe" 2>/dev/null || true)"
     cwd="$(readlink -f "/proc/${PIDS[$role]}/cwd" 2>/dev/null || true)"
-    [ "$exe" = "$C23_BETA_INSTALL_BIN/zclassic23" ] ||
-        beta_die "role $role is not running the installed node: $exe"
+    # Resolved on BOTH sides. The installed product ships `z23` as the real
+    # file with `zclassic23` beside it as a compatibility symlink, so
+    # /proc/<pid>/exe resolves to .../bin/z23 whichever name started the
+    # node. Comparing that against the unresolved symlink path failed on a
+    # correctly installed product — the wrong answer to the question this
+    # asks, which is whether the process IS the installed binary, not which
+    # of its two names was typed.
+    installed="$(readlink -f "$C23_BETA_INSTALL_BIN/zclassic23" 2>/dev/null || true)"
+    [ -n "$installed" ] && [ "$exe" = "$installed" ] ||
+        beta_die "role $role is not running the installed node: $exe (want $installed)"
     case "$cwd" in
         "$C23_BETA_FIXTURE_SOURCE"|"$C23_BETA_FIXTURE_SOURCE"/*)
             beta_die "role $role inherited a repository working directory" ;;
