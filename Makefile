@@ -2376,6 +2376,19 @@ commons-demo: zclassic23 zcl-rpc zclassic23-package-sign tools/arena-product-jou
 # The same proof under its acceptance name, for scripts and release notes.
 commons-journey-acceptance: commons-demo
 
+# The SAME journey with nodes B and C on their own physical hosts, plus the
+# leg one host cannot prove: host A disappears, and host C still discovers,
+# fetches, reproduces and runs the exact accepted bytes from B — the original
+# publisher is gone and the software survives. Requires:
+#   CJ_HOST_B=user@hostB  CJ_HOST_C=user@hostC   (BatchMode ssh, cc present)
+#   CJ_PEER_ADDR_A=<this host's LAN address>     (B and C dial it)
+#   optional: CJ_PEER_ADDR_B / CJ_PEER_ADDR_C    (default: ssh host parts)
+# Fails closed without them. Deliberately not part of `make ci` and not the
+# front door: `make commons-demo` stays the fast same-host proof.
+.PHONY: commons-multihost-acceptance
+commons-multihost-acceptance: zclassic23 zcl-rpc zclassic23-package-sign tools/arena-product-journey-c23
+	@ZCL_COMMONS_MULTIHOST=1 bash tools/dev/commons_journey_acceptance.sh
+
 .PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance arena-product-journey
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev

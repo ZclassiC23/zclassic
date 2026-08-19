@@ -119,7 +119,11 @@ Acceptance requires:
 - independent signers and independently reconstructed inputs agree on exact
   artifact bytes where the claim requires reproduction;
 - no GitHub access or central package registry is required by the acceptance;
-- package resource budgets preserve blockchain responsiveness.
+- package resource budgets preserve blockchain responsiveness;
+- the original publisher can disappear: `make commons-multihost-acceptance`
+  runs the same journey with node B and node C on separate physical hosts,
+  then takes host A down and proves host C still discovers, fetches,
+  reproduces and runs the exact accepted bytes from B.
 
 When the aggregate fails, fix the first violated ownership or identity boundary
 and add a permanent regression there. Do not add retries, sleeps, alternate

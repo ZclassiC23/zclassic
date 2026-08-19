@@ -43,12 +43,57 @@ DHT_PARAMS_DIR="${DHT_PARAMS_DIR:-}"
 # The node these helpers mine on. A caller with more than one node names it.
 DHT_MINE_DD=""; DHT_MINE_RPC=""
 DHT_WORK_PREFIX=""
-DHT_WORK=""; DHT_DD_A=""; DHT_DD_B=""; DHT_PGID_A=""; DHT_PGID_B=""
+DHT_WORK=""; DHT_DD_A=""; DHT_DD_B=""; DHT_DD_C=""; DHT_PGID_A=""; DHT_PGID_B=""; DHT_PGID_C=""
 declare -A DHT_OWNED_PGIDS=()
 declare -A DHT_OWNED_START=()
 DHT_OWNED_PORTS=()
 DHT_CLEANED=0
 DHT_KEEP="${DHT_KEEP:-0}"
+# ── remote node operation (multi-host acceptances) ───────────────────────
+# Default: every node is a local process, these maps stay empty, and every
+# function below takes exactly its historical local path. A multi-host
+# caller registers an ssh destination per RPC port (dht_register_remote_node)
+# after shipping sha3-verified binaries there; dht_rpc / dht_native /
+# dht_spawn / dht_kill_group and the wait probes then operate on that host
+# through the same fail-closed ownership rules. Argument quoting goes
+# through printf %q so JSON --input payloads survive ssh re-joining.
+DHT_SSH="${DHT_SSH:-ssh}"
+DHT_SCP="${DHT_SCP:-scp}"
+declare -A DHT_REMOTE_HOST=()   # rpc port -> ssh destination
+declare -A DHT_REMOTE_DIR=()    # rpc port -> remote base dir (bin/, datadirs)
+declare -A DHT_PGID_RPC=()      # owned pgid -> rpc port (remote routing)
+declare -A DHT_OWNED_PORT_RPC=() # claimed port -> rpc port of its host
+
+dht_register_remote_node() {
+    local rpc="$1" host="$2" dir="$3"
+    [ -n "$rpc" ] && [ -n "$host" ] && [ -n "$dir" ] ||
+        dht_die "dht_register_remote_node needs rpc port, ssh host, remote dir"
+    DHT_REMOTE_HOST[$rpc]="$host"
+    DHT_REMOTE_DIR[$rpc]="$dir"
+}
+
+# Run one command where this RPC port's node lives. Local when unregistered.
+dht_node_exec() {
+    local rpc="$1" host; shift
+    host="${DHT_REMOTE_HOST[$rpc]:-}"
+    if [ -z "$host" ]; then "$@";
+    else "$DHT_SSH" -o BatchMode=yes "$host" -- "$(printf '%q ' "$@")"; fi
+}
+
+# Copy one local file to the node's host. Local when unregistered.
+dht_node_put() {
+    local rpc="$1" src="$2" dst="$3" host
+    host="${DHT_REMOTE_HOST[$rpc]:-}"
+    if [ -z "$host" ]; then cp "$src" "$dst";
+    else "$DHT_SCP" -o BatchMode=yes "$src" "$host:$dst"; fi
+}
+
+# -f probe where this RPC port's node lives.
+dht_node_file_exists() {
+    local rpc="$1" path="$2"
+    if [ -z "${DHT_REMOTE_HOST[$rpc]:-}" ]; then [ -f "$path" ];
+    else dht_node_exec "$rpc" test -f "$path"; fi
+}
 # Throwaway passphrases for the wallet-custody recipe (never argv: they
 # ride the wallet-passphrase credential file and --input=- stdin only).
 DHT_WALLET_PASS="zcode-dht-acceptance-wallet-pass"
@@ -78,23 +123,48 @@ dht_make_work() {
 }
 
 dht_assert_port() {
-    local p="$1" live owned
+    local p="$1" owner_rpc="${2:-}" live owned out
     for live in $DHT_LIVE_PORTS; do
         [ "$p" = "$live" ] && dht_die "port $p is in the live refuse-set"
     done
-    ss -tlnH "sport = :$p" 2>/dev/null | grep -q . &&
-        dht_die "port $p is already listening"
+    if [ -n "$owner_rpc" ] && [ -n "${DHT_REMOTE_HOST[$owner_rpc]:-}" ]; then
+        # Fail closed: an unreachable host proves nothing about the port.
+        out="$(dht_node_exec "$owner_rpc" ss -tlnH "sport = :$p")" ||
+            dht_die "port claim check unreachable on ${DHT_REMOTE_HOST[$owner_rpc]}"
+        [ -n "$out" ] &&
+            dht_die "port $p is already listening on ${DHT_REMOTE_HOST[$owner_rpc]}"
+    else
+        ss -tlnH "sport = :$p" 2>/dev/null | grep -q . &&
+            dht_die "port $p is already listening"
+    fi
     for owned in "${DHT_OWNED_PORTS[@]:-}"; do
         [ "$owned" = "$p" ] && return 0
     done
     DHT_OWNED_PORTS+=("$p")
+    [ -z "$owner_rpc" ] || DHT_OWNED_PORT_RPC[$p]="$owner_rpc"
     return 0
 }
 
 dht_kill_group() {
-    local pgid="$1" sig="${2:-TERM}" i state
+    local pgid="$1" sig="${2:-TERM}" i state rpc
     [ -n "$pgid" ] || return 0
     [ "${DHT_OWNED_PGIDS[$pgid]:-0}" = 1 ] || return 0
+    rpc="${DHT_PGID_RPC[$pgid]:-}"
+    if [ -n "$rpc" ] && [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
+        # Remote group: same TERM-then-KILL discipline through ssh.
+        dht_node_exec "$rpc" kill "-$sig" "-$pgid" 2>/dev/null || true
+        for i in $(seq 1 50); do
+            dht_node_exec "$rpc" kill -0 "-$pgid" 2>/dev/null || {
+                unset "DHT_OWNED_PGIDS[$pgid]" "DHT_PGID_RPC[$pgid]"
+                return 0
+            }
+            sleep 0.2
+        done
+        dht_node_exec "$rpc" kill -KILL "-$pgid" 2>/dev/null || true
+        unset "DHT_OWNED_PGIDS[$pgid]" "DHT_PGID_RPC[$pgid]"
+        ! dht_node_exec "$rpc" kill -0 "-$pgid" 2>/dev/null
+        return
+    fi
     kill -"$sig" "-$pgid" 2>/dev/null || true
     for i in $(seq 1 50); do
         if ! kill -0 "-$pgid" 2>/dev/null; then
@@ -124,8 +194,10 @@ dht_register_owned_group() {
 }
 
 dht_assert_no_owned_processes() {
-    local pid expected current
+    local pid expected current rpc
     for pid in "${!DHT_OWNED_START[@]}"; do
+        rpc="${DHT_PGID_RPC[$pid]:-}"
+        [ -n "$rpc" ] && [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ] && continue
         expected="${DHT_OWNED_START[$pid]}"
         current="$(awk '{print $22}' "/proc/$pid/stat" 2>/dev/null || true)"
         [ -z "$current" ] || [ "$current" != "$expected" ] ||
@@ -135,7 +207,21 @@ dht_assert_no_owned_processes() {
 
 dht_assert_ports_rebindable() {
     [ "${#DHT_OWNED_PORTS[@]}" -gt 0 ] || return 0
-    if ! "$DHT_ACCEPTANCE_C23" ports-rebind "${DHT_OWNED_PORTS[@]}"
+    local p rpc local_ports=()
+    for p in "${DHT_OWNED_PORTS[@]}"; do
+        rpc="${DHT_OWNED_PORT_RPC[$p]:-}"
+        if [ -n "$rpc" ] && [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
+            # Same proof on the owning host with the shipped helper.
+            dht_node_exec "$rpc" \
+                "${DHT_REMOTE_DIR[$rpc]}/bin/arena_product_journey_c23" \
+                ports-rebind "$p" ||
+                dht_die "port $p on ${DHT_REMOTE_HOST[$rpc]} could not rebind immediately after cleanup"
+        else
+            local_ports+=("$p")
+        fi
+    done
+    [ "${#local_ports[@]}" -eq 0 ] && return 0
+    if ! "$DHT_ACCEPTANCE_C23" ports-rebind "${local_ports[@]}"
     then
         dht_die "owned ports could not be rebound immediately after cleanup"
     fi
@@ -147,6 +233,22 @@ dht_cleanup() {
     local pgid failed=0
     for pgid in "${!DHT_OWNED_PGIDS[@]}"; do
         dht_kill_group "$pgid" || failed=1
+    done
+    # Remote scratch dirs we registered are ours to remove; anything else is
+    # not, and the guard pattern keeps an rm -rf from ever leaving /tmp.
+    local rpc rdir
+    for rpc in "${!DHT_REMOTE_HOST[@]}"; do
+        rdir="${DHT_REMOTE_DIR[$rpc]:-}"
+        case "$rdir" in
+            /tmp/z23-mh-*)
+                if [ "$DHT_KEEP" = 1 ]; then
+                    dht_note "preserved remote artifacts on ${DHT_REMOTE_HOST[$rpc]}: $rdir"
+                else
+                    dht_node_exec "$rpc" rm -rf -- "$rdir" || failed=1
+                fi ;;
+            "") ;;
+            *) dht_note "WARN refusing to remove non-scratch remote $rdir" ;;
+        esac
     done
     if [ "$DHT_KEEP" = 1 ] && [ -n "$DHT_WORK" ]; then
         dht_note "preserved acceptance artifacts: $DHT_WORK"
@@ -175,6 +277,11 @@ trap 'exit 143' TERM
 
 dht_rpc() {
     local dd="$1" port="$2"; shift 2
+    if [ -n "${DHT_REMOTE_HOST[$port]:-}" ]; then
+        dht_node_exec "$port" env ZCL_DATADIR="$dd" ZCL_RPCPORT="$port" \
+            "${DHT_REMOTE_DIR[$port]}/bin/zcl-rpc" "$@" 2>/dev/null
+        return
+    fi
     ZCL_DATADIR="$dd" ZCL_RPCPORT="$port" "$RPC_BIN" "$@" 2>/dev/null
 }
 dht_result() {
@@ -185,6 +292,11 @@ dht_jget() {
 }
 dht_native() {
     local dd="$1" rpc="$2"; shift 2
+    if [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
+        dht_node_exec "$rpc" "${DHT_REMOTE_DIR[$rpc]}/bin/zclassic23" \
+            "-datadir=$dd" "-rpcport=$rpc" "$@" 2>/dev/null | tail -1
+        return
+    fi
     "$NODE_BIN" -datadir="$dd" -rpcport="$rpc" "$@" 2>/dev/null | tail -1
 }
 dht_status() { dht_native "$1" "$2" zcode network status; }
@@ -204,6 +316,31 @@ dht_spawn() {
     local worker_args=() params_args=()
     [ "$DHT_BUILDWORKERS" = 1 ] && worker_args+=("-buildworker")
     [ -z "$DHT_PARAMS_DIR" ] || params_args+=("-paramsdir=$DHT_PARAMS_DIR")
+    if [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
+        # Same flags, on the node's own host. setsid detaches the group from
+        # the ssh session; the echoed pid IS the remote pgid. The remote
+        # credential directory must already hold wallet-passphrase.
+        local cmd=(env
+            "CREDENTIALS_DIRECTORY=${DHT_REMOTE_DIR[$rpc]}/cred"
+            setsid "${DHT_REMOTE_DIR[$rpc]}/bin/zclassic23"
+            "-datadir=$dd" -regtest "-port=$p2p" "-rpcport=$rpc"
+            "-fsport=$fs" "-httpsport=$https")
+        cmd+=("${args[@]}" "-packagehost=$DHT_PACKAGEHOST" -v2transport)
+        [ "${#worker_args[@]}" -eq 0 ] || cmd+=("${worker_args[@]}")
+        # The params dir is per-host: the remote node gets its own.
+        [ -z "$DHT_PARAMS_DIR" ] ||
+            cmd+=("-paramsdir=${DHT_REMOTE_DIR[$rpc]}/no-zk-params")
+        cmd+=(-operator-lane=dev -wallet-no-phrase-backup
+              -nobgvalidation -nolegacyimport -showmetrics=0)
+        pid="$("$DHT_SSH" -o BatchMode=yes "${DHT_REMOTE_HOST[$rpc]}" -- \
+            "$(printf '%q ' "${cmd[@]}")>>$(printf '%q' "$dd/node.log") 2>&1 </dev/null & echo \$!" </dev/null)" ||
+            dht_die "remote spawn on ${DHT_REMOTE_HOST[$rpc]} failed"
+        case "$pid" in ''|*[!0-9]*) dht_die "remote spawn returned no pid: $pid" ;; esac
+        DHT_OWNED_PGIDS[$pid]=1
+        DHT_PGID_RPC[$pid]="$rpc"
+        printf -v "$out_name" '%s' "$pid"
+        return 0
+    fi
     setsid "$NODE_BIN" -datadir="$dd" -regtest -port="$p2p" \
         -rpcport="$rpc" -fsport="$fs" -httpsport="$https" \
         "${args[@]}" -packagehost="$DHT_PACKAGEHOST" -v2transport \
@@ -257,8 +394,15 @@ dht_wait_rpc() {
     local dd="$1" rpc="$2" pid="$3" deadline
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        kill -0 "$pid" 2>/dev/null || return 1
-        [ -f "$dd/.cookie" ] && dht_height "$dd" "$rpc" >/dev/null 2>&1 && return 0
+        if [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
+            dht_node_exec "$rpc" kill -0 "-$pid" 2>/dev/null || return 1
+            dht_node_file_exists "$rpc" "$dd/.cookie" &&
+                dht_height "$dd" "$rpc" >/dev/null 2>&1 && return 0
+        else
+            kill -0 "$pid" 2>/dev/null || return 1
+            [ -f "$dd/.cookie" ] &&
+                dht_height "$dd" "$rpc" >/dev/null 2>&1 && return 0
+        fi
         sleep 0.5
     done
     return 1

@@ -128,6 +128,20 @@ that you hold it, let a peer **discover** who has it, **fetch** the exact bytes,
 vanish without taking the package with it, because the name was never a URL and
 never an account.
 
+The disappearance claim is also tested, not just asserted. The same journey
+runs with the nodes on separate physical hosts:
+
+```bash
+CJ_HOST_B=user@hostB CJ_HOST_C=user@hostC CJ_PEER_ADDR_A=<this host's LAN address> \
+    make commons-multihost-acceptance
+```
+
+It runs the whole demo with node B and node C on their own machines, then
+takes node A down — and node C still discovers, fetches, reproduces and runs
+the exact accepted bytes from B. **The original publisher is gone and the
+software survives.** It fails closed without two reachable ssh hosts; the
+front door stays the fast same-host `make commons-demo`.
+
 ---
 
 ## What the demo measured

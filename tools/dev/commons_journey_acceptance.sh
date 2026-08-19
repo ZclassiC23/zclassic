@@ -56,11 +56,31 @@ CJ_SIGNER="${ZCL_PACKAGE_SIGN_BIN:-$REPO_ROOT/build/bin/zclassic23-package-sign}
 # arbitrary high port connects once and then silently drops to zero peers.
 A_PORT=20028; A_RPC=29281; A_FS=29282; A_HTTPS=29283
 B_PORT=20027; B_RPC=29291; B_FS=29292; B_HTTPS=29293
+C_PORT=20026; C_RPC=29301; C_FS=29302; C_HTTPS=29303
+
+# ── node locations ───────────────────────────────────────────────────────
+# Default: every node is a local process and this is `make commons-demo` —
+# fast, deterministic, one physical host. ZCL_COMMONS_MULTIHOST=1 runs the
+# SAME journey with node B and node C on their own ssh hosts
+# (CJ_HOST_B/CJ_HOST_C) and adds the leg the single-host demo cannot prove:
+# host A disappears and host C still discovers, fetches, reproduces and runs
+# the exact accepted bytes from B. It fails closed without both hosts.
+CJ_MULTIHOST="${ZCL_COMMONS_MULTIHOST:-0}"
+CJ_HOST_B="${CJ_HOST_B:-}"   # ssh destination of the reproducer/onward provider
+CJ_HOST_C="${CJ_HOST_C:-}"   # ssh destination of the latecomer
+# The P2P addresses nodes dial. Local runs keep loopback; in multi-host mode
+# these are the LAN addresses of the driver (A), B and C. B's and C's default
+# to their ssh host part when unset.
+CJ_PEER_ADDR_A="${CJ_PEER_ADDR_A:-}"
+CJ_PEER_ADDR_B="${CJ_PEER_ADDR_B:-}"
+CJ_PEER_ADDR_C="${CJ_PEER_ADDR_C:-}"
+CJ_RDIR_B=""; CJ_RDIR_C=""   # remote scratch dirs, set by cj_multihost_setup
 
 CJ_WALLET_PASS="commons-journey-wallet-pass"
 CJ_BACKUP_PASS="commons-journey-backup-pass"
 CJ_SEED_A=1212121212121212121212121212121212121212121212121212121212121212
 CJ_SEED_B=3434343434343434343434343434343434343434343434343434343434343434
+CJ_SEED_C=5656565656565656565656565656565656565656565656565656565656565656
 
 # What the person asks for, in plain words. "use <package>" is the deliberately
 # narrow grammar that may prove reuse; the rest is the behavior that is missing.
@@ -134,6 +154,7 @@ cj_step() { echo; echo "commons-journey: ── $* ──"; }
 # dht_native the same way.
 cj_a() { dht_native "$DHT_DD_A" "$A_RPC" -regtest "$@" || true; }
 cj_b() { dht_native "$DHT_DD_B" "$B_RPC" -regtest "$@" || true; }
+cj_c() { dht_native "$DHT_DD_C" "$C_RPC" -regtest "$@" || true; }
 cj_jget() { "$DHT_ACCEPTANCE_C23" json-get "$@"; }
 cj_field() { printf '%s' "$2" | cj_jget "$1" "${3:-}"; }
 
@@ -167,10 +188,117 @@ cj_wait_rpc_or_die() {
     dht_wait_rpc "$1" "$2" "$3" || cj_die "$4 RPC warmup failed"
 }
 
+# Multi-host bring-up, before any node boots. Probes both ssh hosts
+# fail-closed, gives each a scratch dir, and ships the exact local binaries
+# (verified by sha3 after the copy) so every host runs the same bytes the
+# facts file names. Nothing here runs unless ZCL_COMMONS_MULTIHOST=1.
+cj_multihost_setup() {
+    if [ "$CJ_MULTIHOST" != 1 ]; then
+        CJ_PEER_ADDR_A=127.0.0.1; CJ_PEER_ADDR_B=127.0.0.1; CJ_PEER_ADDR_C=127.0.0.1
+        return 0
+    fi
+    [ -n "$CJ_HOST_B" ] && [ -n "$CJ_HOST_C" ] ||
+        cj_die "multi-host acceptance needs CJ_HOST_B and CJ_HOST_C ssh destinations"
+    [ "$CJ_HOST_B" != "$CJ_HOST_C" ] ||
+        cj_die "CJ_HOST_B and CJ_HOST_C must be different hosts"
+    case "$CJ_HOST_B:$CJ_HOST_C" in
+        *localhost*|*127.0.0.1*)
+            cj_die "multi-host hosts must not be loopback; that is make commons-demo" ;;
+    esac
+    if [ "$DHT_SSH" = ssh ]; then
+        [ "$CJ_PEER_ADDR_A" != 127.0.0.1 ] ||
+            cj_die "multi-host needs CJ_PEER_ADDR_A — the LAN address B and C dial to reach this host's node A"
+    else
+        # An overridden DHT_SSH is the local plumbing shim: loopback peer
+        # addresses are exactly what it exists to exercise.
+        [ -n "$CJ_PEER_ADDR_A" ] ||
+            cj_die "multi-host needs CJ_PEER_ADDR_A even with a shimmed DHT_SSH"
+    fi
+    local host rdir bin local_sha3 remote_sha3
+    for host in "$CJ_HOST_B" "$CJ_HOST_C"; do
+        "$DHT_SSH" -o BatchMode=yes -o ConnectTimeout=5 "$host" -- true ||
+            cj_die "cannot reach $host (BatchMode ssh); multi-host acceptance fails closed"
+    done
+    CJ_RDIR_B="$("$DHT_SSH" -o BatchMode=yes "$CJ_HOST_B" -- 'mktemp -d /tmp/z23-mh-XXXXXXXX')" ||
+        cj_die "no scratch dir on $CJ_HOST_B"
+    CJ_RDIR_C="$("$DHT_SSH" -o BatchMode=yes "$CJ_HOST_C" -- 'mktemp -d /tmp/z23-mh-XXXXXXXX')" ||
+        cj_die "no scratch dir on $CJ_HOST_C"
+    for host in "$CJ_HOST_B:$CJ_RDIR_B" "$CJ_HOST_C:$CJ_RDIR_C"; do
+        rdir="${host#*:}"; host="${host%%:*}"
+        "$DHT_SSH" -o BatchMode=yes "$host" -- "mkdir -p '$rdir/bin' '$rdir/cred' '$rdir/no-zk-params' && chmod 700 '$rdir/cred'" ||
+            cj_die "scratch layout failed on $host"
+        for bin in zclassic23 zcl-rpc arena_product_journey_c23; do
+            "$DHT_SCP" -o BatchMode=yes "$REPO_ROOT/build/bin/$bin" "$host:$rdir/bin/$bin" >/dev/null ||
+                cj_die "shipping $bin to $host failed"
+            local_sha3="$(openssl dgst -sha3-256 "$REPO_ROOT/build/bin/$bin" | awk '{print $NF}')"
+            remote_sha3="$("$DHT_SSH" -o BatchMode=yes "$host" -- \
+                "openssl dgst -sha3-256 '$rdir/bin/$bin' | awk '{print \$NF}'")" ||
+                cj_die "sha3 verify of $bin on $host failed"
+            [ "$local_sha3" = "$remote_sha3" ] ||
+                cj_die "$bin on $host is not the local build's bytes"
+        done
+    done
+    dht_register_remote_node "$B_RPC" "$CJ_HOST_B" "$CJ_RDIR_B"
+    dht_register_remote_node "$C_RPC" "$CJ_HOST_C" "$CJ_RDIR_C"
+    if [ "$DHT_SSH" != ssh ]; then
+        # Shimmed plumbing: every "host" is this kernel, so peers dial loopback.
+        [ -n "$CJ_PEER_ADDR_B" ] || CJ_PEER_ADDR_B=127.0.0.1
+        [ -n "$CJ_PEER_ADDR_C" ] || CJ_PEER_ADDR_C=127.0.0.1
+    else
+        [ -n "$CJ_PEER_ADDR_B" ] || CJ_PEER_ADDR_B="${CJ_HOST_B#*@}"
+        [ -n "$CJ_PEER_ADDR_C" ] || CJ_PEER_ADDR_C="${CJ_HOST_C#*@}"
+    fi
+    # Remote hosts build for themselves; that needs a C23 compiler there.
+    for host in "$CJ_HOST_B" "$CJ_HOST_C"; do
+        "$DHT_SSH" -o BatchMode=yes "$host" -- cc --version >/dev/null 2>&1 ||
+            cj_die "$host has no usable cc; multi-host acceptance fails closed"
+    done
+    cj_note "multi-host: B=$CJ_HOST_B ($CJ_RDIR_B), C=$CJ_HOST_C ($CJ_RDIR_C), binaries sha3-verified"
+}
+
+# ── per-node operation seam ──────────────────────────────────────────────
+# Everything below treats a node's files and shell as living WHERE THE NODE
+# LIVES. Same-host that is plain local exec; in multi-host mode it is ssh to
+# the registered host (node_lifecycle owns the routing). No journey step may
+# read another node's datadir through the driver's filesystem.
+cj_node_rpc() {
+    case "$1" in
+        a) printf '%s' "$A_RPC" ;;
+        b) printf '%s' "$B_RPC" ;;
+        c) printf '%s' "$C_RPC" ;;
+        *) cj_die "unknown node '$1'" ;;
+    esac
+}
+cj_on() { local node="$1"; shift; dht_node_exec "$(cj_node_rpc "$node")" "$@"; }
+# A scratch directory on the node's own host.
+cj_node_dir() {
+    case "$1" in
+        a) printf '%s' "$DHT_WORK" ;;
+        b) printf '%s' "${CJ_RDIR_B:-$DHT_WORK}" ;;
+        c) printf '%s' "${CJ_RDIR_C:-$DHT_WORK}" ;;
+        *) cj_die "unknown node '$1'" ;;
+    esac
+}
+cj_sha3_on() { cj_on "$1" openssl dgst -sha3-256 "$2" | awk '{print $NF}'; }
+cj_bytes_on() { cj_on "$1" wc -c "$2" | awk '{print $1}'; }
+# The C23 acceptance helper as the node sees it (shipped in multi-host mode).
+cj_helper_on() {
+    local rpc; rpc="$(cj_node_rpc "$1")"
+    if [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
+        printf '%s' "${DHT_REMOTE_DIR[$rpc]}/bin/arena_product_journey_c23"
+    else
+        printf '%s' "$DHT_ACCEPTANCE_C23"
+    fi
+}
+
 cj_boot() {
     local dd rpc
-    for port in $A_PORT $A_RPC $A_FS $A_HTTPS $B_PORT $B_RPC $B_FS $B_HTTPS; do
-        dht_assert_port "$port"
+    cj_multihost_setup
+    for port in "$A_PORT" "$A_RPC" "$A_FS" "$A_HTTPS"; do
+        dht_assert_port "$port" "$A_RPC"
+    done
+    for port in "$B_PORT" "$B_RPC" "$B_FS" "$B_HTTPS"; do
+        dht_assert_port "$port" "$B_RPC"
     done
     [ -x "$NODE_BIN" ] && [ -x "$RPC_BIN" ] && [ -x "$DHT_ACCEPTANCE_C23" ] &&
     [ -x "$CJ_SIGNER" ] ||
@@ -185,9 +313,18 @@ cj_boot() {
         DHT_PARAMS_DIR="$DHT_WORK/no-zk-params"
         mkdir -p "$DHT_PARAMS_DIR"
     fi
-    DHT_DD_A="$DHT_WORK/node-a"; DHT_DD_B="$DHT_WORK/node-b"
+    # A always runs where the demo runs. B's datadir is a path on B's host;
+    # every read of it routes through the dht_node_* seam.
+    DHT_DD_A="$DHT_WORK/node-a"
+    if [ -n "$CJ_RDIR_B" ]; then DHT_DD_B="$CJ_RDIR_B/node-b"; else DHT_DD_B="$DHT_WORK/node-b"; fi
     DHT_MINE_DD="$DHT_DD_A"; DHT_MINE_RPC="$A_RPC"
-    mkdir -p "$DHT_DD_A" "$DHT_DD_B"
+    mkdir -p "$DHT_DD_A"
+    if [ -n "$CJ_RDIR_B" ]; then
+        dht_node_exec "$B_RPC" mkdir -p "$DHT_DD_B" ||
+            cj_die "could not create node B datadir on $CJ_HOST_B"
+    else
+        mkdir -p "$DHT_DD_B"
+    fi
 
     install -d -m 700 "$DHT_WORK/cred"
     install -m 600 /dev/null "$DHT_WORK/cred/wallet-passphrase"
@@ -199,6 +336,20 @@ cj_boot() {
     done
     printf '%s\n' "$CJ_SEED_A" >"$DHT_WORK/master-a.hex"
     printf '%s\n' "$CJ_SEED_B" >"$DHT_WORK/master-b.hex"
+    # Seed and credential paths AS SEEN BY EACH NODE: local for A, shipped
+    # copies on B's own disk in multi-host mode.
+    CJ_SEED_FILE_A="$DHT_WORK/master-a.hex"
+    CJ_SEED_FILE_B="$DHT_WORK/master-b.hex"
+    if [ -n "$CJ_RDIR_B" ]; then
+        dht_node_put "$B_RPC" "$DHT_WORK/cred/wallet-passphrase" \
+            "$CJ_RDIR_B/cred/wallet-passphrase" ||
+            cj_die "shipping the wallet credential to $CJ_HOST_B failed"
+        dht_node_exec "$B_RPC" chmod 600 "$CJ_RDIR_B/cred/wallet-passphrase" ||
+            cj_die "credential permissions failed on $CJ_HOST_B"
+        dht_node_put "$B_RPC" "$DHT_WORK/master-b.hex" "$CJ_RDIR_B/master-b.hex" ||
+            cj_die "shipping node B's master seed failed"
+        CJ_SEED_FILE_B="$CJ_RDIR_B/master-b.hex"
+    fi
     cj_note "booting two clean regtest nodes (A asks, B proves)"
     cj_note "booting two clean regtest nodes (A hosts packages and builds)"
     DHT_PACKAGEHOST=1
@@ -208,7 +359,7 @@ cj_boot() {
     cj_wait_rpc_or_die "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" "node A"
     DHT_BUILDWORKERS=1
     dht_spawn DHT_PGID_B "$DHT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" \
-        "$B_HTTPS" "127.0.0.1:$A_PORT"
+        "$B_HTTPS" "$CJ_PEER_ADDR_A:$A_PORT"
     cj_wait_rpc_or_die "$DHT_DD_B" "$B_RPC" "$DHT_PGID_B" "node B"
     rpc="$(a_rpc getnewaddress | dht_result)"
     [ -n "$rpc" ] || cj_die "node A produced no funding address"
@@ -244,7 +395,7 @@ cj_identities() {
     cj_wait_rpc_or_die "$DHT_DD_A" "$A_RPC" "$DHT_PGID_A" "node A custody restart"
     dht_wait_fold "$DHT_DD_A" "$A_RPC" 101 ||
         cj_die "node A reducer fold did not survive the restart"
-    a_rpc addnode "\"127.0.0.1:$B_PORT\"" "\"onetry\"" >/dev/null || true
+    a_rpc addnode "\"$CJ_PEER_ADDR_B:$B_PORT\"" "\"onetry\"" >/dev/null || true
     dht_wait_connected "$DHT_DD_A" "$A_RPC" || cj_die "node A never connected outbound"
     dht_wait_sync_live "$DHT_DD_A" "$A_RPC" || cj_die "node A sync never left finding_peers"
     dht_wait_chain_loaded "$DHT_DD_A" "$A_RPC" 101 ||
@@ -279,10 +430,10 @@ cj_identities() {
 
     local del_a del_b
     del_a="$(cj_a zcode network delegate \
-        --input="{\"seed_file\":\"$DHT_WORK/master-a.hex\"}")"
+        --input="{\"seed_file\":\"$CJ_SEED_FILE_A\"}")"
     cj_require_ok "node A delegation" "$del_a"
     del_b="$(cj_b zcode network delegate \
-        --input="{\"seed_file\":\"$DHT_WORK/master-b.hex\"}")"
+        --input="{\"seed_file\":\"$CJ_SEED_FILE_B\"}")"
     cj_require_ok "node B delegation" "$del_b"
     CJ_NODE_A="$(cj_field data.node_id "$del_a")"
     CJ_NODE_B="$(cj_field data.node_id "$del_b")"
@@ -454,21 +605,22 @@ cj_use_package() {
 # written from bytes that verified.
 cj_checkout_accepted() {
     local node="$1" dest="$2" dd cas
-    case "$node" in a) dd="$DHT_DD_A" ;; b) dd="$DHT_DD_B" ;;
+    case "$node" in a) dd="$DHT_DD_A" ;; b) dd="$DHT_DD_B" ;; c) dd="$DHT_DD_C" ;;
         *) cj_die "cj_checkout_accepted: unknown node '$node'" ;; esac
     cas="$dest-cas"
-    rm -rf "$dest" "$cas"
-    mkdir -p "$dest" "$cas"
+    cj_on "$node" rm -rf "$dest" "$cas"
+    cj_on "$node" mkdir -p "$dest" "$cas"
     "cj_$node" zcode workspace source package checkout \
         --input="{\"datadir\":\"$dd\",\"package_root\":\"$CJ_APP_ROOT\",\"source_root\":\"$CJ_ACCEPTED_SOURCE\",\"accepted_work_root\":\"$CJ_ACCEPTED_WORK\",\"workspace\":\"$cas\",\"destination\":\"$dest\"}"
 }
 
 # Build the accepted application out of a checked-out source tree, against
 # the dependency this node admitted for itself. Nothing here reaches into the
-# other node's datadir: each node links only what it holds.
+# other node's datadir: each node links only what it holds, and the compile
+# runs where the node lives.
 cj_build_wordcount() {
-    local src="$1" dd="$2" out="$3"
-    cc -std=c23 -O1 -D_POSIX_C_SOURCE=200809L \
+    local node="$1" src="$2" dd="$3" out="$4"
+    cj_on "$node" cc -std=c23 -O1 -D_POSIX_C_SOURCE=200809L \
         -I"$src/include" \
         -I"$dd/zcode/installed/$CJ_TEXTSTAT_ROOT/include" \
         "$src/app/main.c" "$src/src/wordcount.c" \
@@ -482,7 +634,7 @@ cj_build_wordcount() {
 # says so instead of tampering with something else and calling it a proof.
 cj_source_chunk_file() {
     local node="$1" root="$2" show dd i path size best=0 hits
-    case "$node" in a) dd="$DHT_DD_A" ;; b) dd="$DHT_DD_B" ;;
+    case "$node" in a) dd="$DHT_DD_A" ;; b) dd="$DHT_DD_B" ;; c) dd="$DHT_DD_C" ;;
         *) cj_die "cj_source_chunk_file: unknown node '$node'" ;; esac
     show="$("cj_$node" zcode package show --input="{\"root\":\"$root\"}")"
     cj_require_ok "package show $root" "$show"
@@ -499,7 +651,7 @@ cj_source_chunk_file() {
     done
     [ "$best" -gt 0 ] ||
         cj_die "package $root carries no source shard to alter"
-    hits="$(find "$dd/zcode/cas" -type f -size "${best}c")"
+    hits="$(cj_on "$node" find "$dd/zcode/cas" -type f -size "${best}c")"
     [ -n "$hits" ] && [ "$(printf '%s\n' "$hits" | wc -l)" -eq 1 ] ||
         cj_die "the $best-byte source shard does not name exactly one stored chunk"
     printf '%s\n' "$hits"
@@ -983,8 +1135,8 @@ cj_connect_authenticated() {
     # Both directions. Software travels the same links the chain does, and a
     # node that only ever accepts inbound connections is not a participant in
     # the commons: it has to be able to ask a peer for bytes too.
-    a_rpc addnode "\"127.0.0.1:$B_PORT\"" '"onetry"' >/dev/null || true
-    b_rpc addnode "\"127.0.0.1:$A_PORT\"" '"onetry"' >/dev/null || true
+    a_rpc addnode "\"$CJ_PEER_ADDR_B:$B_PORT\"" '"onetry"' >/dev/null || true
+    b_rpc addnode "\"$CJ_PEER_ADDR_A:$A_PORT\"" '"onetry"' >/dev/null || true
     cj_wait_dht_enabled || cj_die "the two nodes' DHTs never both enabled"
     find="$(cj_a zcode network find begin --input="{\"node_id\":\"$CJ_NODE_B\"}")"
     cj_require_ok "node A lookup of node B" "$find"
@@ -1140,36 +1292,42 @@ cj_journey_publish_accepted() {
 # and signs one SOURCE_REPRODUCTION_ACK for it. The ACK names the source tree
 # root it derived; if that root equals the one node A accepted, two
 # independent nodes built the same bytes from the same evidence.
-cj_journey_remote_reproduction() {
+# cj_reproduce_accepted_source is the leg itself; node C reuses it after the
+# publisher disappears, so the proof has one owner.
+cj_reproduce_accepted_source() {
+    local node="$1" dd="$2"
     local plan commit seq nb exp token derived
+    plan="$("cj_$node" zcode package source reproduce \
+        --input="{\"mode\":\"plan\",\"root\":\"$CJ_APP_ROOT\",\"datadir\":\"$dd\"}")"
+    cj_require_ok "node $node source reproduce plan" "$plan"
+    printf '%s\n' "$plan" >"$DHT_WORK/reproduce-plan-$node.json"
+    [ "$(cj_field data.reconstructed "$plan" False)" = True ] ||
+        cj_die "node $node did not reconstruct the source: $plan"
+    derived="$(cj_field data.source_tree_root "$plan" '')"
+    [ "$derived" = "$CJ_ACCEPTED_SOURCE" ] ||
+        cj_die "node $node reconstructed different source bytes: got $derived want $CJ_ACCEPTED_SOURCE"
+    seq="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget sequence 0)"
+    nb="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget not_before 0)"
+    exp="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget expiry 0)"
+    token="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget plan_token '')"
+    commit="$("cj_$node" zcode package source reproduce \
+        --input="{\"mode\":\"commit\",\"root\":\"$CJ_APP_ROOT\",\"datadir\":\"$dd\",\"sequence\":$seq,\"not_before\":$nb,\"expiry\":$exp,\"plan_token\":\"$token\"}")"
+    cj_require_ok "node $node source reproduce commit" "$commit"
+    printf '%s\n' "$commit" >"$DHT_WORK/reproduce-commit-$node.json"
+    [ "$(cj_field data.evidence_signed "$commit" False)" = True ] ||
+        cj_die "node $node published no signed reproduction evidence: $commit"
+    [ "$(cj_field data.physical_independence_attested "$commit" True)" = False ] ||
+        cj_die "a same-host reproduction claimed physical independence: $commit"
+    cj_note "node ${node^^} reproduced the exact source and signed for it: ${derived:0:16}…"
+}
+
+cj_journey_remote_reproduction() {
     cj_announce_package a "$CJ_APP_ROOT" "$CJ_APP_TRANSPORT" 1
     cj_announce_source  a "$CJ_APP_ROOT" 1
     cj_fetch_package b "$CJ_APP_ROOT" "$CJ_APP_TRANSPORT"
     CJ_APP_BYTES="$CJ_FETCH_BYTES"
     cj_note "node B fetched the accepted application: $CJ_APP_BYTES bytes"
-
-    plan="$(cj_b zcode package source reproduce \
-        --input="{\"mode\":\"plan\",\"root\":\"$CJ_APP_ROOT\",\"datadir\":\"$DHT_DD_B\"}")"
-    cj_require_ok "source reproduce plan" "$plan"
-    printf '%s\n' "$plan" >"$DHT_WORK/reproduce-plan.json"
-    [ "$(cj_field data.reconstructed "$plan" False)" = True ] ||
-        cj_die "node B did not reconstruct the source: $plan"
-    derived="$(cj_field data.source_tree_root "$plan" '')"
-    [ "$derived" = "$CJ_ACCEPTED_SOURCE" ] ||
-        cj_die "node B reconstructed different source bytes: got $derived want $CJ_ACCEPTED_SOURCE"
-    seq="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget sequence 0)"
-    nb="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget not_before 0)"
-    exp="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget expiry 0)"
-    token="$(printf '%s' "$(cj_field data.commit_input "$plan")" | cj_jget plan_token '')"
-    commit="$(cj_b zcode package source reproduce \
-        --input="{\"mode\":\"commit\",\"root\":\"$CJ_APP_ROOT\",\"datadir\":\"$DHT_DD_B\",\"sequence\":$seq,\"not_before\":$nb,\"expiry\":$exp,\"plan_token\":\"$token\"}")"
-    cj_require_ok "source reproduce commit" "$commit"
-    printf '%s\n' "$commit" >"$DHT_WORK/reproduce-commit.json"
-    [ "$(cj_field data.evidence_signed "$commit" False)" = True ] ||
-        cj_die "node B published no signed reproduction evidence: $commit"
-    [ "$(cj_field data.physical_independence_attested "$commit" True)" = False ] ||
-        cj_die "a same-host reproduction claimed physical independence: $commit"
-    cj_note "node B reproduced the exact source and signed for it: ${derived:0:16}…"
+    cj_reproduce_accepted_source b "$DHT_DD_B"
 }
 
 # Four ways to hand a node something that is not what it claims to be. Each
@@ -1196,16 +1354,16 @@ cj_journey_tamper_refusals() {
     # — the store is addressed by hash, so a chunk that no longer hashes to
     # its own name is not the artifact it claims to be.
     chunk="$(cj_source_chunk_file b "$CJ_APP_ROOT")"
-    saved="$DHT_WORK/app-chunk.saved"
-    cp "$chunk" "$saved"
-    "$DHT_ACCEPTANCE_C23" flip-byte "$chunk" last >/dev/null
-    refused="$(cj_checkout_accepted b "$DHT_WORK/tamper-checkout")"
-    cp "$saved" "$chunk"
+    saved="$(cj_node_dir b)/app-chunk.saved"
+    cj_on b cp "$chunk" "$saved"
+    cj_on b "$(cj_helper_on b)" flip-byte "$chunk" last >/dev/null
+    refused="$(cj_checkout_accepted b "$(cj_node_dir b)/tamper-checkout")"
+    cj_on b cp "$saved" "$chunk"
     cj_require_refusal "altered artifact" "$refused" "$CJ_REFUSAL_ARTIFACT"
 
     # And the restored store is whole again: a tamper test that leaves the
     # node broken proves nothing about the node.
-    restored="$(cj_checkout_accepted b "$DHT_WORK/restored-checkout")"
+    restored="$(cj_checkout_accepted b "$(cj_node_dir b)/restored-checkout")"
     cj_require_ok "checkout after the altered bytes were restored" "$restored"
     cj_note "tamper refused by name: source, dependency, receipt, artifact"
 }
@@ -1224,7 +1382,7 @@ cj_journey_use_app() {
 
     # The person on node B admits the accepted application explicitly.
     cj_use_package b "$CJ_APP_ROOT"
-    [ -d "$DHT_DD_B/zcode/installed/$CJ_APP_ROOT" ] ||
+    cj_on b test -d "$DHT_DD_B/zcode/installed/$CJ_APP_ROOT" ||
         cj_die "node B admitted the accepted application but installed nothing"
 
     # Two nodes, one dependency, one set of bytes: node A and node B each
@@ -1232,20 +1390,20 @@ cj_journey_use_app() {
     # obtained separately, and the artifacts match byte for byte.
     ts_a="$DHT_DD_A/zcode/installed/$CJ_TEXTSTAT_ROOT/lib/libtextstat.a"
     ts_b="$DHT_DD_B/zcode/installed/$CJ_TEXTSTAT_ROOT/lib/libtextstat.a"
-    cmp -s "$ts_a" "$ts_b" ||
+    [ "$(cj_sha3_on a "$ts_a")" = "$(cj_sha3_on b "$ts_b")" ] ||
         cj_die "the two nodes built different bytes for the reused package"
-    CJ_LIB_BYTES="$(wc -c <"$ts_b")"
+    CJ_LIB_BYTES="$(cj_bytes_on b "$ts_b")"
     cj_note "both nodes built byte-identical z23/textstat ($CJ_LIB_BYTES bytes)"
 
     # Node B turns the carrier back into the accepted source. The command
     # verifies every shard against the accepted source root and re-resolves
     # the PROVEN authority before it writes a single file.
-    src_b="$DHT_WORK/checkout-b"
+    src_b="$(cj_node_dir b)/checkout-b"
     cj_require_ok "node B accepted-source checkout" \
         "$(cj_checkout_accepted b "$src_b")"
-    [ -f "$src_b/include/wordcount/wordcount.h" ] ||
+    cj_on b test -f "$src_b/include/wordcount/wordcount.h" ||
         cj_die "the accepted source arrived without its public header"
-    grep -q 'wordcount_longest_line' "$src_b/src/wordcount.c" ||
+    cj_on b grep -q wordcount_longest_line "$src_b/src/wordcount.c" ||
         cj_die "the accepted source does not contain the behavior this journey created"
 
     # The visible result: the application, built on node B out of source node
@@ -1255,10 +1413,13 @@ cj_journey_use_app() {
         'the commons is not a registry' \
         'it is whoever happens to hold the bytes right now' \
         'and the name of a thing is what it contains' >"$sample"
-    bin_b="$DHT_WORK/wordcount-b"
-    cj_build_wordcount "$src_b" "$DHT_DD_B" "$bin_b" ||
+    sample_b="$(cj_node_dir b)/sample-b.txt"
+    dht_node_put "$B_RPC" "$sample" "$sample_b" ||
+        cj_die "sample input never reached node B"
+    bin_b="$(cj_node_dir b)/wordcount-b"
+    cj_build_wordcount b "$src_b" "$DHT_DD_B" "$bin_b" ||
         cj_die "the accepted application did not build on node B"
-    out="$("$bin_b" "$sample")"
+    out="$(cj_on b "$bin_b" "$sample_b")"
     # The oracle is deliberately not this project: coreutils wc and awk count
     # the same file independently, so the assertion cannot drift into "what
     # our own code happened to print".
@@ -1270,18 +1431,218 @@ cj_journey_use_app() {
     # And it is the same program on both nodes: node A builds it from the
     # source it accepted, node B from the source it fetched and re-derived,
     # and the two executables are the same bytes.
-    src_a="$DHT_WORK/checkout-a"
+    src_a="$(cj_node_dir a)/checkout-a"
     cj_require_ok "node A accepted-source checkout" \
         "$(cj_checkout_accepted a "$src_a")"
-    bin_a="$DHT_WORK/wordcount-a"
-    cj_build_wordcount "$src_a" "$DHT_DD_A" "$bin_a" ||
+    bin_a="$(cj_node_dir a)/wordcount-a"
+    cj_build_wordcount a "$src_a" "$DHT_DD_A" "$bin_a" ||
         cj_die "the accepted application did not build on node A"
-    cmp -s "$bin_a" "$bin_b" ||
+    [ "$(cj_sha3_on a "$bin_a")" = "$(cj_sha3_on b "$bin_b")" ] ||
         cj_die "the two nodes built different programs from the same accepted source"
-    CJ_APP_BINARY_BYTES="$(wc -c <"$bin_b")"
+    CJ_APP_BINARY_BYTES="$(cj_bytes_on b "$bin_b")"
     cj_note "wordcount sample.txt -> $CJ_APP_OUTPUT"
     cj_note "identical $CJ_APP_BINARY_BYTES-byte program on both nodes"
     cj_note "the longest_line number is the behavior this journey created"
+}
+
+# ── multi-host only: the original publisher disappears ───────────────────
+# One physical host can never prove this leg: node A must actually go away.
+# With B and C on their own hosts (ZCL_COMMONS_MULTIHOST=1) the SAME journey
+# continues past step 9: C boots against B alone, A is killed, and C still
+# discovers, fetches, reproduces and runs the exact accepted bytes — served
+# by B, the only holder left. Reaching the end of this function IS the
+# survival proof: with A dead, only B could have answered.
+cj_boot_c() {
+    local port
+    for port in "$C_PORT" "$C_RPC" "$C_FS" "$C_HTTPS"; do
+        dht_assert_port "$port" "$C_RPC"
+    done
+    DHT_DD_C="$(cj_node_dir c)/node-c"
+    cj_on c mkdir -p "$DHT_DD_C" ||
+        cj_die "could not create node C datadir on ${CJ_HOST_C:-this host}"
+    install -m 600 /dev/null "$DHT_WORK/master-c.hex"
+    printf '%s\n' "$CJ_SEED_C" >"$DHT_WORK/master-c.hex"
+    # Seed and credential paths AS SEEN BY NODE C (the B pattern, one host on).
+    CJ_SEED_FILE_C="$DHT_WORK/master-c.hex"
+    if [ -n "$CJ_RDIR_C" ]; then
+        dht_node_put "$C_RPC" "$DHT_WORK/cred/wallet-passphrase" \
+            "$CJ_RDIR_C/cred/wallet-passphrase" ||
+            cj_die "shipping the wallet credential to $CJ_HOST_C failed"
+        dht_node_exec "$C_RPC" chmod 600 "$CJ_RDIR_C/cred/wallet-passphrase" ||
+            cj_die "credential permissions failed on $CJ_HOST_C"
+        dht_node_put "$C_RPC" "$DHT_WORK/master-c.hex" \
+            "$CJ_RDIR_C/master-c.hex" ||
+            cj_die "shipping node C's master seed failed"
+        CJ_SEED_FILE_C="$CJ_RDIR_C/master-c.hex"
+    fi
+    # C joins while A is still alive, dialing B — the one peer that outlives
+    # the publisher. Its own build worker compiles what it admits.
+    DHT_BUILDWORKERS=1
+    dht_spawn DHT_PGID_C "$DHT_DD_C" "$C_PORT" "$C_RPC" "$C_FS" \
+        "$C_HTTPS" "$CJ_PEER_ADDR_B:$B_PORT"
+    cj_wait_rpc_or_die "$DHT_DD_C" "$C_RPC" "$DHT_PGID_C" "node C"
+}
+
+cj_journey_publisher_disappears() {
+    cj_step "multi-host leg  the publisher disappears and the software survives"
+    local anchor tip del_c
+
+    # C takes its own anchored identity while A is still here to fund it —
+    # the same recipe A and B used, no special role for the latecomer.
+    cj_boot_c
+    # Let C finish its initial sync BEFORE the anchor blocks exist: new-tip
+    # relay (what the next lines exercise) starts from a steady at-tip state,
+    # not from mid-IBD.
+    local pre_tip
+    pre_tip="$(dht_height "$DHT_DD_A" "$A_RPC")"
+    [ -n "$pre_tip" ] || cj_die "node A reported no chain height before C joined"
+    cj_wait_height "$DHT_DD_C" "$C_RPC" "$pre_tip" "node C (initial sync)"
+    # The anchor rides A's wallet, and A was restarted for the overlay phase:
+    # re-arm the custody gates (unlock, fresh current-key backup) exactly as
+    # cj_identities did before the first anchors.
+    DHT_WALLET_PASS="$CJ_WALLET_PASS" dht_unlock_wallet "$DHT_DD_A" "$A_RPC" ||
+        cj_die "node A wallet re-unlock failed"
+    a_rpc getnewaddress | dht_result >/dev/null ||
+        cj_die "node A keypool top-up failed"
+    DHT_BACKUP_PASS="$CJ_BACKUP_PASS" dht_backup_wallet "$DHT_DD_A" "$A_RPC" ||
+        cj_die "node A custody re-backup failed"
+    dht_wait_spendable "$DHT_DD_A" "$A_RPC" ||
+        cj_die "node A vault spendable never became positive again"
+    CJ_PUB_C="$("$DHT_WORK/journey-peer" pubkey "$CJ_SEED_C")"
+    [ "$CJ_PUB_C" != "$CJ_PUB_A" ] && [ "$CJ_PUB_C" != "$CJ_PUB_B" ] ||
+        cj_die "node C's master collided with another identity"
+    anchor="$(dht_anchor "$DHT_DD_A" "$A_RPC" "$CJ_PUB_C" "journey-anchor-c")" ||
+        cj_die "node C anchor failed"
+    # The delegate gate requires tip >= anchor_height + 2*ZCL_FINALITY_DEPTH
+    # (native_zcode_network_command.c BEACON_PROVISIONAL) — the same rule the
+    # 22-block bury gave A and B in cj_identities.
+    dht_mine_empty 21
+    tip="$(dht_height "$DHT_DD_A" "$A_RPC")"
+    [ -n "$tip" ] || cj_die "node A reported no chain height after anchoring C"
+    cj_wait_height "$DHT_DD_B" "$B_RPC" "$tip" "node B"
+    cj_wait_height "$DHT_DD_C" "$C_RPC" "$tip" "node C"
+
+    del_c="$(cj_c zcode network delegate \
+        --input="{\"seed_file\":\"$CJ_SEED_FILE_C\"}")"
+    cj_require_ok "node C delegation" "$del_c"
+    CJ_NODE_C="$(cj_field data.node_id "$del_c")"
+    [ -n "$CJ_NODE_C" ] && [ "$CJ_NODE_C" != "$CJ_NODE_A" ] &&
+    [ "$CJ_NODE_C" != "$CJ_NODE_B" ] ||
+        cj_die "node C did not derive an independent identity"
+    cj_note "node C identity: ${CJ_NODE_C:0:16}…"
+    cj_allow_policy c zclassic23.package
+    cj_allow_policy c zclassic23.source
+    # Policies persist in the datadir; restart C so they govern what it serves
+    # and accepts, exactly as the A/B policy restart did.
+    dht_kill_group "$DHT_PGID_C"; DHT_PGID_C=""
+    DHT_BUILDWORKERS=1
+    dht_spawn DHT_PGID_C "$DHT_DD_C" "$C_PORT" "$C_RPC" "$C_FS" \
+        "$C_HTTPS" "$CJ_PEER_ADDR_B:$B_PORT"
+    cj_wait_rpc_or_die "$DHT_DD_C" "$C_RPC" "$DHT_PGID_C" "node C (policy restart)"
+
+    # The publisher disappears. Not a handoff: the process group is signalled
+    # and node A never comes back. Its RPC must stop answering.
+    dht_kill_group "$DHT_PGID_A"; DHT_PGID_A=""
+    if dht_rpc "$DHT_DD_A" "$A_RPC" getblockcount >/dev/null 2>&1; then
+        cj_die "node A still answers RPC after its disappearance"
+    fi
+    cj_note "host A is gone — node C can now only learn from B"
+
+    # B, the only remaining holder, announces that it serves both packages
+    # and the accepted application's source. These records are B's own; A
+    # never knew about this leg.
+    cj_announce_package b "$CJ_TEXTSTAT_ROOT" "$CJ_TEXTSTAT_TRANSPORT" 2
+    cj_announce_package b "$CJ_APP_ROOT" "$CJ_APP_TRANSPORT" 2
+    cj_announce_source  b "$CJ_APP_ROOT" 2
+
+    # C and B form an authenticated overlay session — the same discipline the
+    # A<->B session had, observed from both ends, with one re-arm for the
+    # capability-learning transport swap.
+    b_rpc addnode "\"$CJ_PEER_ADDR_C:$C_PORT\"" '"onetry"' >/dev/null || true
+    local deadline started rearmed=0 find lookup owner en_b en_c auth_b auth_c
+    deadline=$(( $(date +%s) + DHT_WAIT ))
+    while :; do
+        en_b="$(cj_field data.enabled "$(dht_status "$DHT_DD_B" "$B_RPC")" False)"
+        en_c="$(cj_field data.enabled "$(dht_status "$DHT_DD_C" "$C_RPC")" False)"
+        [ "$en_b" = True ] && [ "$en_c" = True ] && break
+        [ "$(date +%s)" -lt "$deadline" ] ||
+            cj_die "B and C DHTs never both enabled"
+        sleep 0.5
+    done
+    find="$(cj_c zcode network find begin --input="{\"node_id\":\"$CJ_NODE_B\"}")"
+    cj_require_ok "node C lookup of node B" "$find"
+    lookup="$(cj_field data.lookup_id "$find")"
+    owner="$(cj_field data.owner_token "$find")"
+    started="$(date +%s)"; deadline=$((started + DHT_WAIT))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        auth_b="$(cj_field data.connected_authenticated \
+            "$(dht_status "$DHT_DD_B" "$B_RPC")" 0)"
+        auth_c="$(cj_field data.connected_authenticated \
+            "$(dht_status "$DHT_DD_C" "$C_RPC")" 0)"
+        if [ "${auth_b:-0}" -ge 1 ] 2>/dev/null &&
+           [ "${auth_c:-0}" -ge 1 ] 2>/dev/null; then
+            cj_c zcode network find cancel \
+                --input="{\"lookup_id\":\"$lookup\",\"owner_token\":\"$owner\"}" \
+                >/dev/null || true
+            cj_note "authenticated overlay session established B <-> C"
+            break
+        fi
+        if [ "$rearmed" -eq 0 ] && [ "$(date +%s)" -ge $((started + 20)) ]; then
+            rearmed=1
+            find="$(cj_c zcode network find begin \
+                --input="{\"node_id\":\"$CJ_NODE_B\"}")"
+            lookup="$(cj_field data.lookup_id "$find" '')"
+            owner="$(cj_field data.owner_token "$find" '')"
+        fi
+        sleep 0.5
+    done
+    [ "${auth_b:-0}" -ge 1 ] && [ "${auth_c:-0}" -ge 1 ] ||
+        cj_die "B and C never formed an authenticated overlay session"
+
+    # The proof itself: with A gone, C discovers, fetches and reproduces the
+    # exact accepted source from B, then runs the identical program.
+    cj_fetch_package c "$CJ_TEXTSTAT_ROOT" "$CJ_TEXTSTAT_TRANSPORT"
+    cj_use_package c "$CJ_TEXTSTAT_ROOT"
+    cj_fetch_package c "$CJ_APP_ROOT" "$CJ_APP_TRANSPORT"
+    cj_note "node C fetched the accepted application from B ($CJ_FETCH_BYTES bytes) — with A gone"
+    cj_reproduce_accepted_source c "$DHT_DD_C"
+    cj_use_package c "$CJ_APP_ROOT"
+    cj_on c test -d "$DHT_DD_C/zcode/installed/$CJ_APP_ROOT" ||
+        cj_die "node C admitted the accepted application but installed nothing"
+
+    local src_c bin_c sample_c out_c cc_b cc_c ts_c
+    src_c="$(cj_node_dir c)/checkout-c"
+    cj_require_ok "node C accepted-source checkout" \
+        "$(cj_checkout_accepted c "$src_c")"
+    sample_c="$(cj_node_dir c)/sample-c.txt"
+    dht_node_put "$C_RPC" "$DHT_WORK/sample.txt" "$sample_c" ||
+        cj_die "sample input never reached node C"
+    bin_c="$(cj_node_dir c)/wordcount-c"
+    cj_build_wordcount c "$src_c" "$DHT_DD_C" "$bin_c" ||
+        cj_die "the accepted application did not build on node C"
+    out_c="$(cj_on c "$bin_c" "$sample_c")"
+    [ "$out_c" = "$CJ_APP_OUTPUT" ] ||
+        cj_die "node C ran the application but answered '$out_c' instead of '$CJ_APP_OUTPUT'"
+
+    # Byte-identical binaries are only a claim when the two hosts compile with
+    # the same toolchain; a legitimate cross-host cc difference must narrow the
+    # claim, not silently fail it nor silently pass it.
+    cc_b="$(cj_on b sh -c 'cc --version | head -1')"
+    cc_c="$(cj_on c sh -c 'cc --version | head -1')"
+    if [ "$cc_b" = "$cc_c" ]; then
+        [ "$(cj_sha3_on b "$(cj_node_dir b)/wordcount-b")" = \
+          "$(cj_sha3_on c "$bin_c")" ] ||
+            cj_die "B and C built different programs from the same accepted source"
+        ts_c="$DHT_DD_C/zcode/installed/$CJ_TEXTSTAT_ROOT/lib/libtextstat.a"
+        [ "$(cj_sha3_on b "$DHT_DD_B/zcode/installed/$CJ_TEXTSTAT_ROOT/lib/libtextstat.a")" = \
+          "$(cj_sha3_on c "$ts_c")" ] ||
+            cj_die "B and C built different bytes for the reused package"
+        cj_note "identical program and library bytes on B and C (same toolchain)"
+    else
+        cj_note "cc differs between host B and host C; proven here: identical accepted source root, identical carrier, identical behavior"
+    fi
+    CJ_PUBLISHER_SURVIVAL=1
+    cj_note "the original publisher is gone and the software survives: ${CJ_ACCEPTED_SOURCE:0:16}… on C"
 }
 
 # ── the strip and the topology ───────────────────────────────────────────
@@ -1399,6 +1760,9 @@ cj_write_facts() {
         printf 'application_match     = byte-identical program on both nodes (%s bytes)\n' "$CJ_APP_BINARY_BYTES"
         printf 'tamper_refused        = 4 of 4, each by name\n'
         printf 'central_services      = 0\n'
+        if [ "${CJ_PUBLISHER_SURVIVAL:-0}" = 1 ]; then
+            printf 'publisher_survival    = host A killed; host C reproduced and ran the exact accepted bytes from host B\n'
+        fi
         printf 'whole_journey         = %s s\n' "$CJ_SECS_TOTAL"
     } >"$out"
     # Binds this facts body to the strip recorded beside it. Verification
@@ -1445,6 +1809,13 @@ CJ_SECS_REPRO=$(( $(date +%s) - CJ_T_REPRO ))
 cj_journey_tamper_refusals
 cj_journey_use_app
 
+# Multi-host only: the leg one physical host cannot prove. The publisher
+# disappears; the software survives on whoever holds it.
+CJ_PUBLISHER_SURVIVAL=0
+if [ "$CJ_MULTIHOST" = 1 ]; then
+    cj_journey_publisher_disappears
+fi
+
 # The verdict is the whole journey or nothing. Every step above dies on its
 # first broken promise, so reaching this line means all nine held on two
 # fresh datadirs that reached no service outside this machine.
@@ -1466,4 +1837,10 @@ if [ "${ZCL_COMMONS_DEMO_RECORD:-0}" = 1 ]; then
 fi
 
 cj_step "verdict"
-printf '%s\n' '{"schema":"zcl.commons_journey_acceptance.v1","verdict":"PASS","steps_proven":9,"steps_total":9,"complete":true,"reuse_before_creation":true,"no_false_reuse_claim":true,"peer_to_peer_fetch":true,"fetched_source_inert":true,"explicit_local_admission":true,"independent_remote_build":true,"approved_signer_required":true,"explicit_human_acceptance":true,"accepted_work_published":true,"remote_source_reproduced":true,"byte_identical_artifacts":true,"tamper_refused_by_name":["source","dependency","receipt","artifact"],"application_ran":true,"central_services_contacted":0,"human_first_terminal_output":true}'
+CJ_VERDICT='{"schema":"zcl.commons_journey_acceptance.v1","verdict":"PASS","steps_proven":9,"steps_total":9,"complete":true,"reuse_before_creation":true,"no_false_reuse_claim":true,"peer_to_peer_fetch":true,"fetched_source_inert":true,"explicit_local_admission":true,"independent_remote_build":true,"approved_signer_required":true,"explicit_human_acceptance":true,"accepted_work_published":true,"remote_source_reproduced":true,"byte_identical_artifacts":true,"tamper_refused_by_name":["source","dependency","receipt","artifact"],"application_ran":true,"central_services_contacted":0,"human_first_terminal_output":true}'
+# The multi-host leg adds its fact only when it actually ran: the publisher
+# disappeared and node C still reproduced and ran the exact accepted bytes.
+if [ "$CJ_PUBLISHER_SURVIVAL" = 1 ]; then
+    CJ_VERDICT="${CJ_VERDICT%\}},\"publisher_disappearance_survived\":true}"
+fi
+printf '%s\n' "$CJ_VERDICT"
