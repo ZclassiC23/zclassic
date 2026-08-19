@@ -24,6 +24,7 @@
 #include <fcntl.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <dirent.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -122,6 +123,91 @@ static int test_bps_serves_both(void)
 
         free(hs);
         free(b);
+        rom_seed_reset();
+        test_rm_rf_recursive(dir);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+/* Where `want` shows up in this directory's readdir order, or -1 if absent.
+ * The scan walks in exactly this order, so this is the only honest way to
+ * know whether a name sits past the walk cap on THIS filesystem. */
+static long bps_readdir_position(const char *dir, const char *want)
+{
+    DIR *d = opendir(dir);
+    if (!d)
+        return -1;
+    long pos = 0, found = -1;
+    struct dirent *e;
+    while ((e = readdir(d)) != NULL) {
+        if (strcmp(e->d_name, want) == 0) { found = pos; break; }
+        pos++;
+    }
+    closedir(d);
+    return found;
+}
+
+/* (a2) A BIG datadir root still serves the header seed. This is the exact
+ * shape that made MVP C3 unreachable: the canonical node's datadir root held
+ * 5,686 entries with block_index.bin at readdir position 4,499, past
+ * rom_seed's 4,096-entry walk cap. The walk stopped early and silently, the
+ * node advertised the consensus bundle alone, and every fresh node's
+ * checkpoint-bundle install deferred forever waiting for a header chain it
+ * had to crawl from genesis. Exactly-named artifacts are now looked up by
+ * name, so where they land in readdir order cannot matter.
+ *
+ * readdir order is the filesystem's business (ext4 returns hash order, not
+ * creation order), so this fills the directory until the seed is MEASURED to
+ * sit past the cap rather than assuming it will. If it cannot be pushed past
+ * within the file budget the check says so and stops — a test that quietly
+ * stopped reproducing the bug would be worse than no test. */
+static int test_bps_serves_header_seed_in_a_big_datadir(void)
+{
+    int failures = 0;
+    TEST("bundle-publish-serve: header seed survives a datadir past the walk cap") {
+        rom_seed_reset();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "bundle_publish", "big");
+
+        size_t hs_size = 8192;
+        uint8_t *hs = malloc(hs_size);
+        ASSERT(hs != NULL);
+        bps_gen(hs, hs_size, false);
+        ASSERT(bps_write(dir, "block_index.bin", hs, hs_size));
+
+        /* Fill in batches until block_index.bin is measurably past the cap. */
+        const unsigned batch = 4096u, budget = 65536u;
+        unsigned made = 0;
+        long pos = bps_readdir_position(dir, "block_index.bin");
+        while (pos >= 0 && pos <= (long)ROM_SEED_SCAN_ENTRY_CAP &&
+               made < budget) {
+            for (unsigned i = 0; i < batch; i++) {
+                char path[384];
+                snprintf(path, sizeof(path), "%s/blk%06u.dat", dir, made + i);
+                FILE *f = fopen(path, "wb");
+                ASSERT(f != NULL);
+                fputc('x', f);
+                fclose(f);
+            }
+            made += batch;
+            pos = bps_readdir_position(dir, "block_index.bin");
+        }
+        ASSERT(pos > (long)ROM_SEED_SCAN_ENTRY_CAP);
+
+        /* The walk provably cannot reach it; the by-name lookup must. */
+        int reg = rom_seed_scan_datadir(dir);
+        ASSERT(reg >= 1);
+        ASSERT(bps_have_kind(ROM_ARTIFACT_HEADER_SEED));
+
+        /* And the served listing actually offers it, which is what a fresh
+         * node's discovery matches on. */
+        char json[4096];
+        size_t jn = rom_seed_directory_json(json, sizeof(json));
+        ASSERT(jn > 0);
+        ASSERT(strstr(json, "\"header_seed\"") != NULL);
+
+        free(hs);
         rom_seed_reset();
         test_rm_rf_recursive(dir);
         PASS();
@@ -352,6 +438,7 @@ int test_bundle_publish_serve(void)
 {
     int failures = 0;
     failures += test_bps_serves_both();
+    failures += test_bps_serves_header_seed_in_a_big_datadir();
     failures += test_bps_refuses_corrupt();
     failures += test_bx_at_tip_gate();
     failures += test_bx_cadence();

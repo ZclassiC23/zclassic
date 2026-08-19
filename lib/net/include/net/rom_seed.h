@@ -54,6 +54,14 @@
 /* Per-peer accounting table size (bounds memory under an IP flood). */
 #define ROM_SEED_PEER_TABLE_CAP   256u
 
+/* Bounded directory scan: never walk more than this many entries. The cap is
+ * a runaway stop for a pathological directory, NOT a routine limit — when it
+ * fires the scan says so rather than quietly returning a short list, and the
+ * exactly-named artifacts are looked up by name so no walk order can hide
+ * them. Declared here because the acceptance asserts against it; a second
+ * copy in the test would let the two drift. */
+#define ROM_SEED_SCAN_ENTRY_CAP   4096u
+
 /* The ONE datadir subdirectory rom_seed reaches one level into (besides the
  * datadir root): where config/src/boot_bundle_fetch.c lands verified swarm
  * downloads, and where the unified installer deliberately RETAINS the source

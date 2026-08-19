@@ -31,8 +31,11 @@
 
 #define ROM_SUBSYS "rom_seed"
 
-/* Bounded directory scan: never walk more than this many entries. */
-#define ROM_SEED_SCAN_ENTRY_CAP 4096
+/* ROM_SEED_SCAN_ENTRY_CAP lives in net/rom_seed.h — see the note there.
+ * Measured 2026-08-19: the canonical node's datadir root held 5,686 entries
+ * with block_index.bin at readdir position 4,499, so a silent cap of 4,096
+ * hid the header seed from every fresh node and the C3 instant-on install
+ * could never arm. See rom_seed_exact_names below. */
 
 /* ── Registry ───────────────────────────────────────────────────────── */
 
@@ -143,6 +146,28 @@ enum rom_artifact_kind rom_seed_classify(const char *filename)
     if (strcmp(base, "block_index.bin") == 0)
         return ROM_ARTIFACT_HEADER_SEED;
     return ROM_ARTIFACT_UNKNOWN;
+}
+
+/* Artifacts whose name is EXACT, not a pattern. These are looked up by name
+ * instead of being waited for in a directory walk: a datadir root is an
+ * ordinary directory that grows without bound, readdir order is arbitrary,
+ * and an artifact that happens to sort late must not become invisible. The
+ * pattern-named kinds (consensus-state-bundle-*.sqlite) still need the walk.
+ * rom_seed_classify stays the one authority on what a name means; this list
+ * only says which names are worth trying directly. */
+static const char *const rom_seed_exact_names[] = {
+    "block_index.bin",      /* ROM_ARTIFACT_HEADER_SEED */
+};
+
+/* True for a basename the exactly-named pass already owns. The directory walk
+ * uses this to skip those names rather than register them a second time. */
+static bool rom_seed_is_exact_name(const char *base)
+{
+    for (size_t i = 0; i < sizeof(rom_seed_exact_names) /
+                           sizeof(rom_seed_exact_names[0]); i++)
+        if (strcmp(base, rom_seed_exact_names[i]) == 0)
+            return true;
+    return false;
 }
 
 enum rom_artifact_kind rom_seed_kind_from_name(const char *name)
@@ -409,6 +434,19 @@ enum rom_register_result rom_seed_deregister(const char *datadir,
  * swarm. Absence of the bundles/ subdirectory (most nodes, most of the time)
  * is normal, not an error — no LOG_WARN on ENOENT. Bounded by the same
  * per-directory entry cap + ROM_SEED_MAX_ARTIFACTS as the root scan. */
+/* The entry cap fired. An artifact this node holds may be sitting past it, so
+ * the short list is a measurement failure, not an inventory — say which
+ * directory and how far the walk got instead of returning quietly. */
+static void rom_seed_scan_capped(const char *dirpath, unsigned seen)
+{
+    LOG_WARN(ROM_SUBSYS,
+             "scan: '%s' has more than %u entries (stopped after %u) — any "
+             "pattern-named artifact past that point was NOT examined and is "
+             "not being offered; exactly-named artifacts are unaffected "
+             "(they are looked up by name, not walked for)",
+             dirpath, (unsigned)ROM_SEED_SCAN_ENTRY_CAP, seen - 1u);
+}
+
 static int rom_seed_scan_bundles_subdir(const char *datadir)
 {
     char dirpath[1024];
@@ -427,8 +465,10 @@ static int rom_seed_scan_bundles_subdir(const char *datadir)
     while ((e = readdir(d)) != NULL) {
         if (atomic_load(&g_scan_cancel))
             break;
-        if (++seen > ROM_SEED_SCAN_ENTRY_CAP)
+        if (++seen > ROM_SEED_SCAN_ENTRY_CAP) {
+            rom_seed_scan_capped(dirpath, seen);
             break;
+        }
         if (rom_seed_classify(e->d_name) == ROM_ARTIFACT_UNKNOWN)
             continue;
         if (rom_seed_count() >= (int)ROM_SEED_MAX_ARTIFACTS)
@@ -453,22 +493,50 @@ int rom_seed_scan_datadir(const char *datadir)
         LOG_WARN(ROM_SUBSYS, "scan: empty datadir");
         return 0;
     }
+    /* Exactly-named artifacts FIRST, by name. A datadir root grows without
+     * bound and readdir order is arbitrary, so leaving these to the walk means
+     * a node silently stops offering one the day its datadir gets big enough —
+     * which is exactly how the header seed went missing. Registration replaces
+     * by filename, so finding the same name again in the walk below is a
+     * no-op. */
+    int registered = 0;
+    for (size_t i = 0; i < sizeof(rom_seed_exact_names) /
+                           sizeof(rom_seed_exact_names[0]); i++) {
+        if (rom_seed_count() >= (int)ROM_SEED_MAX_ARTIFACTS)
+            break;
+        /* Absent is the normal case on a node that has never synced — check
+         * before asking to register, so an ordinary fresh datadir does not
+         * warn about a file it was never supposed to have. */
+        char probe[1024];
+        int pn = snprintf(probe, sizeof(probe), "%s/%s", datadir,
+                          rom_seed_exact_names[i]);
+        struct stat pst;
+        if (pn <= 0 || (size_t)pn >= sizeof(probe) || stat(probe, &pst) != 0)
+            continue;
+        if (rom_seed_register(datadir, rom_seed_exact_names[i], NULL, NULL) ==
+            ROM_REG_OK)
+            registered++;
+    }
+
     DIR *d = opendir(datadir);
     if (!d) {
         LOG_WARN(ROM_SUBSYS, "scan: opendir '%s' failed errno=%d", datadir, errno);
-        return 0;
+        return registered;
     }
 
-    int registered = 0;
     unsigned seen = 0;
     struct dirent *e;
     while ((e = readdir(d)) != NULL) {
         if (atomic_load(&g_scan_cancel))
             break;
-        if (++seen > ROM_SEED_SCAN_ENTRY_CAP)
+        if (++seen > ROM_SEED_SCAN_ENTRY_CAP) {
+            rom_seed_scan_capped(datadir, seen);
             break;
+        }
         if (rom_seed_classify(e->d_name) == ROM_ARTIFACT_UNKNOWN)
             continue;
+        if (rom_seed_is_exact_name(e->d_name))
+            continue;   /* already looked up by name above */
         if (rom_seed_count() >= (int)ROM_SEED_MAX_ARTIFACTS)
             break;
         if (rom_seed_register(datadir, e->d_name, NULL, NULL) == ROM_REG_OK)
