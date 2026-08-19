@@ -228,10 +228,12 @@ The product front door is one command, and it is how you check that the whole
 Commons journey still holds end to end — a person asks for behavior, the node
 reuses C23 from a peer, creates only what is missing, a second node reproduces
 the exact bytes, tampering is refused by name, the person accepts, and the
-accepted application runs:
+accepted application runs. The last step runs the same journey again against a
+package that already existed and was written by somebody else, and measures the
+behavior it was asked to change before and after:
 
 ```bash
-make commons-demo        # two fresh isolated datadirs; exit 0 means all nine steps held
+make commons-demo        # two fresh isolated datadirs; exit 0 means all ten steps held
 make readme-svg-check    # the README figures still match what this binary prints
 ```
 

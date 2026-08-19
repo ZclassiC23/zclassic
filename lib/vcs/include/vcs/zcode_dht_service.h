@@ -31,7 +31,24 @@
    VCS_ZCODE_DHT_SERVICE_MAX_LOOKUPS + 2u)
 #define VCS_ZCODE_DHT_SERVICE_MAX_OUTBOUND 128u
 #define VCS_ZCODE_DHT_SERVICE_MAX_RECORD_OPERATIONS 8u
-#define VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS 8u
+/* How many records ONE node can keep announced at the same time. Eight is
+ * four packages, because a package needs both a POINTER and a PROVIDER
+ * record, and any package whose source is independently re-derivable needs
+ * a third. `make commons-multihost-acceptance` measured the floor: the host
+ * that ends up serving everything announces textstat, the accepted
+ * application, that application's source, zprng, and the changed package —
+ * eleven records for five things, on a journey with two small libraries and
+ * two small applications. At eight the ninth publish was refused `global-cap`
+ * and the journey could not finish, which is a node too small to host the
+ * product's own demo. Sixteen is still a hard ceiling and still fails closed;
+ * it is dimensioned so a node hosting a handful of packages is not one.
+ *
+ * The cost is fixed-size: this bounds an array of struct service_publication
+ * in the service and one stack copy in the publication store loader, so it
+ * cannot be raised freely. The on-disk store is count-prefixed and its length
+ * is checked against that count, so a file written under the old ceiling
+ * still loads unchanged. */
+#define VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS 16u
 #define VCS_ZCODE_DHT_RECORD_DISCOVERY_MAX_RESULTS 64u
 #define VCS_ZCODE_DHT_SERVICE_MAX_RECORDS_PER_PEER 256u
 #define VCS_ZCODE_DHT_SERVICE_SAVE_DEBOUNCE_S 5u

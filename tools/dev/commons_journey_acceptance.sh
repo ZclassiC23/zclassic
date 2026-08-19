@@ -139,6 +139,36 @@ cj_die()  { dht_die "commons-journey: $*"; }
 cj_note() { echo "commons-journey: $*"; }
 cj_step() { echo; echo "commons-journey: ── $* ──"; }
 
+# ── per-phase timing ─────────────────────────────────────────────────────
+# The three headline numbers (ask→visible, remote reproduction, whole
+# journey) say HOW LONG; they do not say WHERE the seconds go, and the
+# mission's speed work needs that split. Millisecond marks at each phase
+# boundary, recorded next to the facts file, summarized into the facts so
+# the recorded proof shows cold sovereign setup apart from the creative
+# loop. Measurement only — no phase boundary moves because of this.
+cj_now_ms() { date +%s%3N; }
+CJ_PHASE_MARK=0
+CJ_PHASE_NAMES=()
+CJ_PHASE_MS=()
+cj_phase_arm()  { CJ_PHASE_MARK="$(cj_now_ms)"; }
+cj_phase_mark() {
+    local now; now="$(cj_now_ms)"
+    [ "$CJ_PHASE_MARK" -gt 0 ] || return 0
+    CJ_PHASE_NAMES+=("$1")
+    CJ_PHASE_MS+=("$((now - CJ_PHASE_MARK))")
+    CJ_PHASE_MARK="$now"
+}
+# Sum the recorded ms for the named phases.
+cj_phase_sum() {
+    local i total=0
+    for i in "${!CJ_PHASE_NAMES[@]}"; do
+        case " $* " in
+            *" ${CJ_PHASE_NAMES[$i]} "*) total=$((total + CJ_PHASE_MS[i])) ;;
+        esac
+    done
+    printf '%s' "$total"
+}
+
 # Every leaf answers with one JSON line, and that line is the contract: a
 # refusal is a named `ok:false` document, not a shell status. `pipefail` would
 # otherwise turn an ordinary refusal into a silent `set -e` abort inside a
@@ -550,18 +580,24 @@ cj_sign_digest() {
 # Publish one package tree into a node's own store. prepare -> sign -> seal
 # -> plan -> commit, all through the ordinary leaves.
 # Sets CJ_PKG_ROOT, CJ_PKG_RELEASE, CJ_PKG_RELEASE_HEX.
+# Publisher identity is a parameter with a default, because the publish
+# frequency rule is real and must not be worked around: a new-user key gets one
+# publish per ISO week, so each package this journey publishes carries its OWN
+# offline identity. That is also the truthful story — zprng, zdogfight and the
+# person's own changed version are three different publishers, not one.
 cj_publish_package() {
     local node="$1" dir="$2" seq="$3"
+    local pub="${4:-$CJ_PUBLISHER}" key="${5:-$DHT_WORK/publisher.key}"
     local prepare digest body manifest recipe signature seal plan commit
     prepare="$("cj_$node" zcode package dev prepare \
-        --input="{\"dir\":\"$dir\",\"publisher_pubkey\":\"$CJ_PUBLISHER\",\"publisher_sequence\":$seq}")"
+        --input="{\"dir\":\"$dir\",\"publisher_pubkey\":\"$pub\",\"publisher_sequence\":$seq}")"
     cj_require_ok "prepare $dir" "$prepare"
     CJ_PKG_ROOT="$(cj_field data.package_root "$prepare")"
     digest="$(cj_field data.release_signing_digest "$prepare")"
     body="$(cj_field data.release_body_hex "$prepare")"
     manifest="$(cj_field data.manifest_hex "$prepare")"
     recipe="$(cj_field data.recipe_hex "$prepare")"
-    signature="$(cj_sign_digest "$digest")"
+    signature="$(cj_sign_digest "$digest" "$key")"
     seal="$("cj_$node" zcode package dev seal \
         --input="{\"release_body_hex\":\"$body\",\"signature_hex\":\"$signature\"}")"
     cj_require_ok "seal $dir" "$seal"
@@ -605,13 +641,17 @@ cj_use_package() {
 # written from bytes that verified.
 cj_checkout_accepted() {
     local node="$1" dest="$2" dd cas
+    # The three identities default to the accepted application of steps 8-9;
+    # step 10 passes its own so the same refusal logic guards both laps.
+    local pkg="${3:-$CJ_APP_ROOT}" src="${4:-$CJ_ACCEPTED_SOURCE}"
+    local work="${5:-$CJ_ACCEPTED_WORK}"
     case "$node" in a) dd="$DHT_DD_A" ;; b) dd="$DHT_DD_B" ;; c) dd="$DHT_DD_C" ;;
         *) cj_die "cj_checkout_accepted: unknown node '$node'" ;; esac
     cas="$dest-cas"
     cj_on "$node" rm -rf "$dest" "$cas"
     cj_on "$node" mkdir -p "$dest" "$cas"
     "cj_$node" zcode workspace source package checkout \
-        --input="{\"datadir\":\"$dd\",\"package_root\":\"$CJ_APP_ROOT\",\"source_root\":\"$CJ_ACCEPTED_SOURCE\",\"accepted_work_root\":\"$CJ_ACCEPTED_WORK\",\"workspace\":\"$cas\",\"destination\":\"$dest\"}"
+        --input="{\"datadir\":\"$dd\",\"package_root\":\"$pkg\",\"source_root\":\"$src\",\"accepted_work_root\":\"$work\",\"workspace\":\"$cas\",\"destination\":\"$dest\"}"
 }
 
 # Build the accepted application out of a checked-out source tree, against
@@ -766,7 +806,7 @@ cj_fetch_package() {
 
 # ── the journey ──────────────────────────────────────────────────────────
 cj_journey_guide() {
-    cj_step "1/9  zcode guide — the person says what they want"
+    cj_step "1/10  zcode guide — the person says what they want"
     local guide
     guide="$(cj_a zcode guide)"
     cj_require_ok "zcode guide" "$guide"
@@ -780,7 +820,7 @@ cj_journey_guide() {
 }
 
 cj_journey_publish_reusable() {
-    cj_step "2/9  the commons already contains one finished, reusable package"
+    cj_step "2/10  the commons already contains one finished, reusable package"
     CJ_PUBLISHER="$("$CJ_SIGNER" --generate "$DHT_WORK/publisher.key")"
     [ -n "$CJ_PUBLISHER" ] || cj_die "could not create the offline publisher identity"
     CJ_TEXTSTAT_SRC="$DHT_WORK/textstat"
@@ -807,7 +847,7 @@ cj_journey_publish_reusable() {
 # overlay for that exact content, and the bytes arrive as inert source.
 # Both nodes run on one physical host; nothing here claims otherwise.
 cj_journey_peer_distribution() {
-    cj_step "3/9  a second node fetches it peer-to-peer — and the bytes stay inert"
+    cj_step "3/10  a second node fetches it peer-to-peer — and the bytes stay inert"
     cj_announce_package a "$CJ_TEXTSTAT_ROOT" "$CJ_TEXTSTAT_TRANSPORT" 1
 
     # Before: node B has never seen this package.
@@ -833,7 +873,7 @@ cj_journey_peer_distribution() {
 }
 
 cj_journey_work_start_unavailable() {
-    cj_step "4/9  zcode work start — reuse is searched before any code is written"
+    cj_step "4/10  zcode work start — reuse is searched before any code is written"
     CJ_WS="$DHT_WORK/wordcount"
     cp -a "$CJ_FIXTURES/wordcount" "$CJ_WS"
     # The application declares NO dependency yet. Whether z23/textstat may be
@@ -867,7 +907,7 @@ cj_journey_work_start_unavailable() {
 }
 
 cj_journey_admit_reuse() {
-    cj_step "5/9  zcode use — explicit local admission builds and installs it"
+    cj_step "5/10  zcode use — explicit local admission builds and installs it"
     cj_use_package a "$CJ_TEXTSTAT_ROOT"
     local installed="$DHT_DD_A/zcode/installed/$CJ_TEXTSTAT_ROOT"
     [ -f "$installed/lib/libtextstat.a" ] ||
@@ -960,13 +1000,15 @@ cj_approve_proving_worker() {
     cj_note "node A approved the exact identity that proved its work: ${worker:0:16}…"
 }
 
+# The workspace is a parameter with a default so the nine steps above read
+# exactly as they did, while step 10 can wait on its own work.
 cj_wait_work_state() {
-    local want="$1" budget="${2:-300}" deadline state show
+    local want="$1" budget="${2:-300}" ws="${3:-$CJ_WS}" deadline state show
     deadline=$(( $(date +%s) + budget ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         cj_approve_proving_worker
         show="$(cj_a zcode work status \
-            --input="{\"workspace\":\"$CJ_WS\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\"}")"
+            --input="{\"workspace\":\"$ws\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\"}")"
         state="$(cj_field data.state "$show" '')"
         [ "$state" = "$want" ] && { CJ_LAST_SHOW="$show"; return 0; }
         sleep 1
@@ -976,7 +1018,7 @@ cj_wait_work_state() {
 }
 
 cj_journey_create_missing() {
-    cj_step "6/9  zcode work run — only the missing behavior enters candidate work"
+    cj_step "6/10  zcode work run — only the missing behavior enters candidate work"
     local handoff candidate run
     handoff="$(cj_a zcode work run \
         --input="{\"workspace\":\"$CJ_WS\",\"work\":\"latest\",\"adapter\":\"manual\",\"details\":true}")"
@@ -1031,12 +1073,12 @@ cj_journey_create_missing() {
 # only for the state is not enough. Approve, then wait for the result the
 # person actually reads.
 cj_wait_proof_result() {
-    local budget="${1:-180}" deadline show result
+    local budget="${1:-180}" ws="${2:-$CJ_WS}" deadline show result
     deadline=$(( $(date +%s) + budget ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         cj_approve_proving_worker
         show="$(cj_a zcode work show \
-            --input="{\"workspace\":\"$CJ_WS\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\"}")"
+            --input="{\"workspace\":\"$ws\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\"}")"
         result="$(cj_field data.confirmation_ready "$show" False)"
         [ "$result" = True ] && { CJ_LAST_SHOW="$show"; return 0; }
         sleep 1
@@ -1046,7 +1088,7 @@ cj_wait_proof_result() {
 }
 
 cj_journey_show() {
-    cj_step "7/9  zcode work show — the person sees the real consequence"
+    cj_step "7/10  zcode work show — the person sees the real consequence"
     cj_wait_work_state EVIDENCE_READY ||
         cj_die "the candidate never reached EVIDENCE_READY: $CJ_LAST_SHOW"
     cj_wait_proof_result ||
@@ -1197,7 +1239,7 @@ cj_overlay() {
 # another node reconstructs — is derived from that one decision, which is
 # why acceptance can be bound to the exact facts the person was shown.
 cj_journey_accept() {
-    cj_step "8/9  zcode work accept — the person decides, and the exact bytes travel"
+    cj_step "8/10  zcode work accept — the person decides, and the exact bytes travel"
     local stale accept again
 
     # TAMPER (receipt): an acceptance bound to a decision that was never
@@ -1377,7 +1419,7 @@ cj_journey_tamper_refusals() {
 # locally, turn it back into source, and build it against the dependency this
 # node already admitted.
 cj_journey_use_app() {
-    cj_step "9/9  zcode use — the accepted application runs on the second node"
+    cj_step "9/10  zcode use — the accepted application runs on the second node"
     local src_b src_a bin_b bin_a sample out want ts_a ts_b
 
     # The person on node B admits the accepted application explicitly.
@@ -1443,6 +1485,390 @@ cj_journey_use_app() {
     cj_note "wordcount sample.txt -> $CJ_APP_OUTPUT"
     cj_note "identical $CJ_APP_BINARY_BYTES-byte program on both nodes"
     cj_note "the longest_line number is the behavior this journey created"
+}
+
+# ── 10/10  one bounded change to a package that already exists ───────────
+# Steps 1-9 prove the commons can CREATE something. This proves the other
+# half, and it is the half a stranger actually wants: take software that
+# already works, change one thing about how it behaves, keep that exact
+# version, and have another machine run it.
+#
+# The subject is the repository's own packages/zdogfight — a deterministic,
+# integer-only dogfight match core — and the change is the smallest visible
+# one there is: the aircraft turns faster. Nothing here is a second demo. It
+# is the SAME nodes, the SAME overlay and the SAME lifecycle leaves the nine
+# steps above already travelled, pointed at an existing package instead of an
+# empty workspace.
+CJ_TURN_GOAL="make the aircraft turn faster in zdogfight/zdogfight"
+
+# The measuring instrument. It belongs to the lap, not to the package under
+# test, for the same reason sample.txt belongs to step 9: a change is only
+# "visible" if something independent of it prints a number a person can read.
+# Integer-only and seed-fixed, so the two nodes are comparing answers rather
+# than trusting each other's floating point.
+cj_zdog_write_probe() {
+    mkdir -p "$1/app"
+    cat >"$1/app/turnrate.c" <<'PROBE'
+/* How fast does the aircraft turn? Hold the stick full right from a fixed
+ * seed and count the degrees it comes around, per second of match time.
+ * No clock, no input, no floating point: the same source always prints the
+ * same number on any machine, which is what makes it evidence. */
+#include "zdogfight/zdogfight.h"
+
+#include <stdio.h>
+
+#define TURN_TICKS 180u   /* 3 s at 60 Hz */
+
+int main(void)
+{
+    zdog_match m;
+    zdog_ctl ctls[ZDOG_MAX_PLANES] = {{0}};
+    long total_brad = 0;
+
+    zdog_match_init(&m, 42, 2);
+    /* Everyone flies full throttle and holds fire, so nothing dies and the
+     * measurement is only ever about turning. Plane 0 holds full right bank. */
+    for (unsigned i = 0; i < ZDOG_MAX_PLANES; i++)
+        ctls[i].throttle = 32767;
+    ctls[0].roll = 32767;
+
+    for (unsigned t = 0; t < TURN_TICKS; t++) {
+        uint16_t before = m.planes[0].yaw;
+        zdog_tick(&m, ctls);
+        /* brad16 wraps at 360 deg; the signed 16-bit difference is this
+         * tick's turn, so a multi-turn window still totals correctly. */
+        total_brad += (long)(int16_t)(uint16_t)(m.planes[0].yaw - before);
+    }
+
+    printf("turn_rate %ld deg/s\n",
+           (total_brad * 360 / 65536) * 60 / (long)TURN_TICKS);
+    return 0;
+}
+PROBE
+}
+
+# zdogfight's own manifest plus the probe. Written out rather than patched so
+# the published file list is exactly what this lap claims it is. The zprng
+# dependency keeps the root the repository package already declares: a package
+# root is derived from content, so the root published here is the same 64 hex
+# characters packages/zdogfight names on disk.
+cj_zdog_write_manifest() {
+    cat >"$1/zcode-package.json" <<JSON
+{
+  "schema": 1,
+  "name": "${2:-zdogfight/zdogfight}",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "MIT",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "name": "zprng/zprng",
+      "root": "$CJ_ZPRNG_ROOT",
+      "semver": "0.1.0"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "app/turnrate.c",
+    "include/zdogfight/zdogfight.h",
+    "src/zdogfight.c",
+    "src/zdogfix.c",
+    "src/zdogfix.h",
+    "tests/test_zdogfight.c",
+    "zcode-package.json"
+  ]
+}
+JSON
+}
+
+# The one bounded change. ZDOG_YAW_RATE_BRAD is the yaw the flight model
+# applies per second at full bank, in brad16 (65536 == 360 deg): 27307 is
+# 150 deg/s, 45511 is 250. One constant, one line, one visible consequence.
+cj_zdog_turn_faster_edit() {
+    local hdr="$1/include/zdogfight/zdogfight.h"
+    grep -q '^#define ZDOG_YAW_RATE_BRAD 27307' "$hdr" ||
+        cj_die "the candidate does not carry the yaw rate this lap changes: $hdr"
+    sed -i -E 's|^#define ZDOG_YAW_RATE_BRAD 27307.*$|#define ZDOG_YAW_RATE_BRAD 45511    /* 250 deg/s in brad16 (was 150) */|' "$hdr"
+    grep -q '^#define ZDOG_YAW_RATE_BRAD 45511' "$hdr" ||
+        cj_die "the bounded change did not land in the candidate: $hdr"
+}
+
+# Build the probe where the node lives, against the zprng THAT node admitted
+# for itself. Same discipline as cj_build_wordcount: no node reaches into
+# another node's datadir.
+cj_build_zdog_probe() {
+    local node="$1" src="$2" dd="$3" out="$4"
+    cj_on "$node" test -f "$dd/zcode/installed/$CJ_ZPRNG_ROOT/lib/libzprng.a" ||
+        cj_die "node $node has no admitted zprng artifact to link the probe against"
+    cj_on "$node" cc -std=c23 -O1 \
+        -I"$src/include" \
+        -I"$dd/zcode/installed/$CJ_ZPRNG_ROOT/include" \
+        "$src/app/turnrate.c" "$src/src/zdogfight.c" "$src/src/zdogfix.c" \
+        "$dd/zcode/installed/$CJ_ZPRNG_ROOT/lib/libzprng.a" \
+        -o "$out"
+}
+
+# Why a proof did not arrive. The journey deletes its work directory on the
+# way out, so a stalled proof leaves nothing to read afterwards — this prints
+# the two ledgers that decide it, from both nodes, while they still exist.
+cj_zdog_diagnose() {
+    cj_note "── why the proof did not arrive ──"
+    cj_note "A actions:  $(cj_sql a "SELECT group_concat(state||'/'||substr(action_id,1,12),' ') FROM build_actions")"
+    cj_note "A events:   $(cj_sql a "SELECT group_concat(state||'/'||substr(action_id,1,12),' ') FROM build_proof_events")"
+    cj_note "A receipts: $(cj_sql a "SELECT group_concat(trust_state||'/'||substr(action_id,1,12),' ') FROM build_receipts")"
+    cj_note "B actions:  $(cj_sql b "SELECT group_concat(state||'/'||substr(action_id,1,12),' ') FROM build_actions")"
+    cj_note "B receipts: $(cj_sql b "SELECT group_concat(trust_state||'/'||substr(action_id,1,12),' ') FROM build_receipts")"
+    # The named reason, on both sides. A proof that fell back to LOCAL_FALLBACK
+    # wrote WHY into last_error, and without that line every diagnosis of this
+    # is a guess: state tells you it stopped, last_error tells you what refused.
+    cj_sql b "SELECT substr(action_id,1,12)||' outcome='||coalesce(outcome,'')||' attempts='||attempt_count||' err='||coalesce(last_error,'(none)') FROM build_actions ORDER BY sequence" |
+        while IFS= read -r row; do [ -n "$row" ] && cj_note "B  $row"; done
+    cj_sql a "SELECT substr(action_id,1,12)||' outcome='||coalesce(outcome,'')||' attempts='||attempt_count||' err='||coalesce(last_error,'(none)') FROM build_actions ORDER BY sequence" |
+        while IFS= read -r row; do [ -n "$row" ] && cj_note "A  $row"; done
+    cj_sql a "SELECT substr(action_id,1,12)||' '||state||' peer='||peer_id||' at='||created_at FROM build_proof_events ORDER BY created_at,state" |
+        while IFS= read -r row; do [ -n "$row" ] && cj_note "A ev $row"; done
+}
+
+# Run the probe and return the integer it printed, refusing anything that is
+# not the exact shape this lap measures.
+cj_zdog_turn_rate() {
+    local node="$1" bin="$2" out rate
+    out="$(cj_on "$node" "$bin")"
+    case "$out" in
+        "turn_rate "*" deg/s") ;;
+        *) cj_die "the turn-rate probe on node $node printed '$out'" ;;
+    esac
+    rate="${out#turn_rate }"; rate="${rate% deg/s}"
+    case "$rate" in
+        ''|*[!0-9]*) cj_die "the turn-rate probe on node $node printed no number: $out" ;;
+    esac
+    printf '%s' "$rate"
+}
+
+# Publishing happens BEFORE the hosting engine comes up, for the reason the
+# main flow already states about z23/textstat: a node builds what it serves
+# from the store it has on disk at start. Put the software on the machine,
+# then run the node that shares it. Everything else about this lap — the
+# measurement, the change, the decision, the reproduction — is step 10 below.
+cj_journey_turn_faster_stage() {
+    cj_step "staging step 10: the commons receives two real packages, unchanged"
+    # These are the repository's own packages/zprng and packages/zdogfight,
+    # not fixtures. zdogfight names zprng by root, and a package root is
+    # derived from content, so the root the node computes here is the same one
+    # the manifest on disk already declares — which is the whole point of
+    # naming a dependency by what it contains instead of by who published it.
+    CJ_ZPRNG_SRC="$DHT_WORK/zprng"
+    CJ_ZDOG_SRC="$DHT_WORK/zdogfight"
+    rm -rf "$CJ_ZPRNG_SRC" "$CJ_ZDOG_SRC"
+    cp -a "$REPO_ROOT/packages/zprng" "$CJ_ZPRNG_SRC"
+    cp -a "$REPO_ROOT/packages/zdogfight" "$CJ_ZDOG_SRC"
+
+    CJ_ZPRNG_PUBLISHER="$("$CJ_SIGNER" --generate "$DHT_WORK/zprng-publisher.key")"
+    CJ_ZDOG_PUBLISHER_PKG="$("$CJ_SIGNER" --generate "$DHT_WORK/zdog-publisher.key")"
+    [ -n "$CJ_ZPRNG_PUBLISHER" ] && [ -n "$CJ_ZDOG_PUBLISHER_PKG" ] ||
+        cj_die "could not create the two package publisher identities"
+
+    cj_publish_package a "$CJ_ZPRNG_SRC" 1 \
+        "$CJ_ZPRNG_PUBLISHER" "$DHT_WORK/zprng-publisher.key"
+    CJ_ZPRNG_ROOT="$CJ_PKG_ROOT"
+    CJ_ZPRNG_TRANSPORT="$CJ_PKG_TRANSPORT"
+    [ "$CJ_ZPRNG_ROOT" = \
+      "$(cj_jget dependencies.0.root '' <"$REPO_ROOT/packages/zdogfight/zcode-package.json")" ] ||
+        cj_die "the published zprng root does not match the one packages/zdogfight names on disk: $CJ_ZPRNG_ROOT"
+
+    cj_zdog_write_probe "$CJ_ZDOG_SRC"
+    cj_zdog_write_manifest "$CJ_ZDOG_SRC"
+    cj_publish_package a "$CJ_ZDOG_SRC" 1 \
+        "$CJ_ZDOG_PUBLISHER_PKG" "$DHT_WORK/zdog-publisher.key"
+    CJ_ZDOG_ROOT="$CJ_PKG_ROOT"
+    CJ_ZDOG_TRANSPORT="$CJ_PKG_TRANSPORT"
+    cj_note "zdogfight/zdogfight published on node A: ${CJ_ZDOG_ROOT:0:16}… (dep zprng ${CJ_ZPRNG_ROOT:0:12}…)"
+}
+
+cj_journey_turn_faster() {
+    cj_step "10/10  the same journey, on software that already exists: the aircraft turns faster"
+    local before_bin start handoff candidate run show accept again
+    local plan digest body signature seal commit src_b bin_b
+
+    # Node B is the independent prover for this lap, and it cannot build a
+    # package whose dependency it does not hold. So the dependencies cross the
+    # overlay FIRST and node B admits them explicitly, exactly as node A must —
+    # reuse is a decision each machine makes for itself, prover or not.
+    #
+    # BOTH packages, and the second one is the non-obvious half. Asking to
+    # change software that already exists locks the version you are changing
+    # FROM: the work reuses the published zdogfight and edits from there, so
+    # its dependency lock names that exact root. A prover that holds only
+    # zprng refuses the action by name — `locked-dependency-not-installed` —
+    # which is the correct refusal, not a missing feature. The remedy is the
+    # ordinary one: the prover admits what the work depends on, for itself.
+    cj_announce_package a "$CJ_ZPRNG_ROOT" "$CJ_ZPRNG_TRANSPORT" 1
+    cj_fetch_package b "$CJ_ZPRNG_ROOT" "$CJ_ZPRNG_TRANSPORT"
+    cj_use_package b "$CJ_ZPRNG_ROOT"
+    cj_announce_package a "$CJ_ZDOG_ROOT" "$CJ_ZDOG_TRANSPORT" 1
+    cj_fetch_package b "$CJ_ZDOG_ROOT" "$CJ_ZDOG_TRANSPORT"
+    cj_use_package b "$CJ_ZDOG_ROOT"
+
+    # ── BEFORE: what the software does today, measured, not assumed ──────
+    cj_use_package a "$CJ_ZPRNG_ROOT"
+    cj_use_package a "$CJ_ZDOG_ROOT"
+    before_bin="$(cj_node_dir a)/turnrate-before"
+    cj_build_zdog_probe a "$CJ_ZDOG_SRC" "$DHT_DD_A" "$before_bin" ||
+        cj_die "the turn-rate probe did not build against the published package"
+    CJ_TURN_BEFORE="$(cj_zdog_turn_rate a "$before_bin")"
+    cj_note "before: the aircraft turns $CJ_TURN_BEFORE deg/s"
+
+    # ── the person asks for the change ───────────────────────────────────
+    # The workspace IS the existing package. Nothing is missing here and no
+    # new code is required: this lap is about altering behavior that already
+    # ships, which is the case steps 4-6 deliberately do not cover.
+    CJ_ZDOG_WS="$DHT_WORK/zdogfight-work"
+    rm -rf "$CJ_ZDOG_WS"
+    cp -a "$CJ_ZDOG_SRC" "$CJ_ZDOG_WS"
+    # The person's version carries the person's own name, in a namespace no
+    # one has claimed. A publisher namespace binds first-come to one key, so
+    # `zdogfight/…` belongs to whoever published it and cannot be republished
+    # into by anyone else — that is the protection, not an obstacle. `you/` is
+    # taken too, by the application step 8 published under a different key.
+    # What you change is yours, under a name that is yours, and the original
+    # stays exactly where it was for anyone who still wants it.
+    cj_zdog_write_manifest "$CJ_ZDOG_WS" "pilot/zdogfight-quickturn"
+    # No details=true here: this workspace is a real package with a real
+    # dependency, and the detailed reuse plan does not fit the bounded response
+    # budget. The bound is the contract; the journey asks for what fits.
+    start="$(cj_a zcode work start \
+        --input="{\"workspace\":\"$CJ_ZDOG_WS\",\"goal\":\"$CJ_TURN_GOAL\",\"profile\":\"$CJ_PROFILE\"}")"
+    cj_require_ok "work start (turn faster)" "$start"
+    printf '%s\n' "$start" >"$DHT_WORK/turn-work-start.json"
+    CJ_ZDOG_WORK_ID="$(cj_field data.work_id "$start" '')"
+    [ -n "$CJ_ZDOG_WORK_ID" ] || cj_die "work start bound no work id: $start"
+    cj_human_first "work start (turn faster)" "$start"
+
+    # ── the change is made, and only the change ──────────────────────────
+    handoff="$(cj_a zcode work run \
+        --input="{\"workspace\":\"$CJ_ZDOG_WS\",\"work\":\"latest\",\"adapter\":\"manual\",\"details\":true}")"
+    cj_require_ok "work run (turn faster handoff)" "$handoff"
+    candidate="$(cj_field data.candidate_workspace "$handoff" '')"
+    [ -d "$candidate" ] || cj_die "work run exported no candidate workspace: $handoff"
+    [ "$(cj_field data.authority "$handoff" '')" = "NONE_MANUAL_HANDOFF" ] ||
+        cj_die "the manual handoff claimed authority it must not have: $handoff"
+    cj_zdog_turn_faster_edit "$candidate"
+
+    run="$(cj_a zcode work run \
+        --input="{\"workspace\":\"$CJ_ZDOG_WS\",\"work\":\"latest\",\"adapter\":\"manual\",\"datadir\":\"$DHT_DD_A\",\"details\":true}")"
+    cj_require_ok "work run (turn faster candidate)" "$run"
+    printf '%s\n' "$run" >"$DHT_WORK/turn-work-run.json"
+    [ "$(cj_field data.state "$run" '')" = "CANDIDATE_ADMITTED" ] ||
+        cj_die "the candidate was not admitted: $run"
+    CJ_ZDOG_ACTION_ID="$(printf '%s' "$(cj_field data.expert "$run")" | cj_jget action_id)"
+    [ -n "$CJ_ZDOG_ACTION_ID" ] || cj_die "the admitted candidate bound no action: $run"
+    # Same rule as step 6, and it has to hold for a change as much as for a
+    # creation: the requester asked the commons instead of proving itself.
+    [ "$(cj_sql a "SELECT count(*) FROM build_actions WHERE action_id='$CJ_ZDOG_ACTION_ID' AND state='SNAPSHOTTED' AND attempt_count=0 AND started_at=0 AND length(worker_id)=0")" = 1 ] ||
+        cj_die "node A proved its own change instead of asking the commons"
+
+    # ── the person sees the consequence ──────────────────────────────────
+    cj_wait_work_state EVIDENCE_READY 300 "$CJ_ZDOG_WS" ||
+        { cj_zdog_diagnose; cj_die "the change never reached EVIDENCE_READY: $CJ_LAST_SHOW"; }
+    cj_wait_proof_result 180 "$CJ_ZDOG_WS" ||
+        cj_die "node B proved the change, but node A never counted it: $CJ_LAST_SHOW"
+    show="$(cj_a zcode work show \
+        --input="{\"workspace\":\"$CJ_ZDOG_WS\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\"}")"
+    cj_require_ok "work show (turn faster)" "$show"
+    printf '%s\n' "$show" >"$DHT_WORK/turn-work-show.json"
+    # The consequence is named by file: one header, the one that carries the
+    # constant. A change nobody can point at is not a visible change.
+    case "$(cj_field data.changed_paths "$show" '')" in
+        *include/zdogfight/zdogfight.h*) ;;
+        *) cj_die "work show did not name the file that changed: $show" ;;
+    esac
+    [ "$(cj_field data.build_result "$show" '')" = passed ] ||
+        cj_die "work show does not report a passing build: $show"
+    case "$(cj_field data.test_result "$show" '')" in
+        passed*) ;;
+        *) cj_die "work show does not report passing tests: $show" ;;
+    esac
+    [ "$(cj_field data.confirmation_ready "$show" False)" = True ] ||
+        cj_die "work show does not offer the person a decision: $show"
+    cj_human_first "work show (turn faster)" "$show"
+
+    # ── the person decides, and the exact bytes travel ───────────────────
+    accept="$(cj_a zcode work accept \
+        --input="{\"workspace\":\"$CJ_ZDOG_WS\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\",\"details\":true}")"
+    cj_require_ok "work accept (turn faster)" "$accept"
+    printf '%s\n' "$accept" >"$DHT_WORK/turn-accept.json"
+    [ "$(cj_field data.state "$accept" '')" = PROVEN ] ||
+        cj_die "acceptance did not reach PROVEN: $accept"
+    [ "$(cj_field data.goal_decision "$accept" '')" = accepted ] ||
+        cj_die "acceptance did not record the person's decision: $accept"
+    CJ_ZDOG_ACCEPTED_SOURCE="$(printf '%s' "$(cj_field data.expert "$accept")" | cj_jget source_root '')"
+    CJ_ZDOG_ACCEPTED_WORK="$(printf '%s' "$(cj_field data.expert "$accept")" | cj_jget lane_receipt_root '')"
+    [ "${#CJ_ZDOG_ACCEPTED_SOURCE}" -eq 64 ] && [ "${#CJ_ZDOG_ACCEPTED_WORK}" -eq 64 ] ||
+        cj_die "acceptance bound no accepted source / lane receipt root: $accept"
+    again="$(cj_a zcode work accept \
+        --input="{\"workspace\":\"$CJ_ZDOG_WS\",\"work\":\"latest\",\"datadir\":\"$DHT_DD_A\"}")"
+    cj_require_ok "work accept (turn faster, repeat)" "$again"
+    [ "$(cj_field data.idempotent "$again" False)" = True ] ||
+        cj_die "repeating the acceptance was not idempotent: $again"
+    cj_note "accepted: PROVEN, source ${CJ_ZDOG_ACCEPTED_SOURCE:0:16}…"
+
+    # ── published as an ordinary package under the person's own name ─────
+    CJ_ZDOG_PUBLISHER="$("$CJ_SIGNER" --generate "$DHT_WORK/turn-publisher.key")"
+    [ -n "$CJ_ZDOG_PUBLISHER" ] ||
+        cj_die "could not create the turn-faster publisher identity"
+    plan="$(cj_a zcode publish plan \
+        --input="{\"workspace\":\"$CJ_ZDOG_WS\",\"datadir\":\"$DHT_DD_A\",\"source_root\":\"$CJ_ZDOG_ACCEPTED_SOURCE\",\"publisher_pubkey\":\"$CJ_ZDOG_PUBLISHER\"}")"
+    cj_require_ok "publish plan (turn faster)" "$plan"
+    digest="$(cj_field data.release_signing_digest "$plan" '')"
+    body="$(cj_field data.release_body_hex "$plan" '')"
+    [ -n "$digest" ] && [ -n "$body" ] ||
+        cj_die "publish plan returned nothing to sign: $plan"
+    signature="$(cj_sign_digest "$digest" "$DHT_WORK/turn-publisher.key")"
+    seal="$(cj_a zcode package dev seal \
+        --input="{\"release_body_hex\":\"$body\",\"signature_hex\":\"$signature\"}")"
+    cj_require_ok "seal (turn faster)" "$seal"
+    commit="$(cj_a zcode publish \
+        --input="{\"workspace\":\"$CJ_ZDOG_WS\",\"datadir\":\"$DHT_DD_A\",\"source_root\":\"$CJ_ZDOG_ACCEPTED_SOURCE\",\"release_hex\":\"$(cj_field data.release_hex "$seal" '')\"}")"
+    cj_require_ok "publish commit (turn faster)" "$commit"
+    CJ_ZDOG_APP_ROOT="$(cj_field data.package_root "$commit" '')"
+    CJ_ZDOG_APP_TRANSPORT="$(cj_field data.transport_root "$commit" '')"
+    [ "${#CJ_ZDOG_APP_ROOT}" -eq 64 ] && [ "${#CJ_ZDOG_APP_TRANSPORT}" -eq 64 ] ||
+        cj_die "the accepted change was published without a root or carrier: $commit"
+    # The accepted version is a DIFFERENT package root from the one it came
+    # from. That is what "keep one exact version" means: the original still
+    # exists, unaltered, and anyone can still fetch it.
+    [ "$CJ_ZDOG_APP_ROOT" != "$CJ_ZDOG_ROOT" ] ||
+        cj_die "the accepted change published the same root as the original"
+    cj_note "the changed version published: ${CJ_ZDOG_APP_ROOT:0:16}… (was ${CJ_ZDOG_ROOT:0:16}…)"
+
+    # ── AFTER: another machine reproduces it and runs it ─────────────────
+    cj_announce_package a "$CJ_ZDOG_APP_ROOT" "$CJ_ZDOG_APP_TRANSPORT" 1
+    cj_fetch_package b "$CJ_ZDOG_APP_ROOT" "$CJ_ZDOG_APP_TRANSPORT"
+    CJ_ZDOG_BYTES="$CJ_FETCH_BYTES"
+
+    src_b="$(cj_node_dir b)/turn-checkout-b"
+    cj_require_ok "node B accepted-change checkout" \
+        "$(cj_checkout_accepted b "$src_b" "$CJ_ZDOG_APP_ROOT" \
+            "$CJ_ZDOG_ACCEPTED_SOURCE" "$CJ_ZDOG_ACCEPTED_WORK")"
+    cj_on b grep -q '^#define ZDOG_YAW_RATE_BRAD 45511' \
+        "$src_b/include/zdogfight/zdogfight.h" ||
+        cj_die "the source node B reconstructed does not carry the accepted change"
+
+    bin_b="$(cj_node_dir b)/turnrate-after-b"
+    cj_build_zdog_probe b "$src_b" "$DHT_DD_B" "$bin_b" ||
+        cj_die "the accepted change did not build on node B"
+    CJ_TURN_AFTER="$(cj_zdog_turn_rate b "$bin_b")"
+
+    # The whole lap, in one comparison: the same probe, the same seed, the
+    # same controls, on a different machine — and the aircraft turns faster.
+    [ "$CJ_TURN_AFTER" -gt "$CJ_TURN_BEFORE" ] ||
+        cj_die "the accepted change did not make the aircraft turn faster: before=$CJ_TURN_BEFORE after=$CJ_TURN_AFTER"
+    cj_note "after:  the aircraft turns $CJ_TURN_AFTER deg/s on node B (was $CJ_TURN_BEFORE on node A)"
+    cj_note "the change travelled as $CJ_ZDOG_BYTES bytes, reproduced from its own root"
 }
 
 # ── multi-host only: the original publisher disappears ───────────────────
@@ -1554,6 +1980,10 @@ cj_journey_publisher_disappears() {
     cj_announce_package b "$CJ_TEXTSTAT_ROOT" "$CJ_TEXTSTAT_TRANSPORT" 2
     cj_announce_package b "$CJ_APP_ROOT" "$CJ_APP_TRANSPORT" 2
     cj_announce_source  b "$CJ_APP_ROOT" 2
+    # Step 10's two packages travel the same way, from the same surviving
+    # holder: the dependency, and the changed version of the aircraft.
+    cj_announce_package b "$CJ_ZPRNG_ROOT" "$CJ_ZPRNG_TRANSPORT" 2
+    cj_announce_package b "$CJ_ZDOG_APP_ROOT" "$CJ_ZDOG_APP_TRANSPORT" 2
 
     # C and B form an authenticated overlay session — the same discipline the
     # A<->B session had, observed from both ends, with one re-arm for the
@@ -1641,12 +2071,38 @@ cj_journey_publisher_disappears() {
     else
         cj_note "cc differs between host B and host C; proven here: identical accepted source root, identical carrier, identical behavior"
     fi
+    # The step-10 change survives the same disappearance, and the test is the
+    # one a person can read: a third machine that never met the publisher runs
+    # the changed aircraft and gets the SAME faster number node B measured.
+    local src_zc bin_zc rate_c
+    cj_fetch_package c "$CJ_ZPRNG_ROOT" "$CJ_ZPRNG_TRANSPORT"
+    cj_use_package c "$CJ_ZPRNG_ROOT"
+    cj_fetch_package c "$CJ_ZDOG_APP_ROOT" "$CJ_ZDOG_APP_TRANSPORT"
+    src_zc="$(cj_node_dir c)/turn-checkout-c"
+    cj_require_ok "node C accepted-change checkout" \
+        "$(cj_checkout_accepted c "$src_zc" "$CJ_ZDOG_APP_ROOT" \
+            "$CJ_ZDOG_ACCEPTED_SOURCE" "$CJ_ZDOG_ACCEPTED_WORK")"
+    cj_on c grep -q '^#define ZDOG_YAW_RATE_BRAD 45511' \
+        "$src_zc/include/zdogfight/zdogfight.h" ||
+        cj_die "node C reconstructed source without the accepted change"
+    bin_zc="$(cj_node_dir c)/turnrate-after-c"
+    cj_build_zdog_probe c "$src_zc" "$DHT_DD_C" "$bin_zc" ||
+        cj_die "the accepted change did not build on node C"
+    rate_c="$(cj_zdog_turn_rate c "$bin_zc")"
+    [ "$rate_c" = "$CJ_TURN_AFTER" ] ||
+        cj_die "node C measured $rate_c deg/s where node B measured $CJ_TURN_AFTER"
+    [ "$rate_c" -gt "$CJ_TURN_BEFORE" ] ||
+        cj_die "node C did not observe the faster turn: $rate_c vs $CJ_TURN_BEFORE"
+    CJ_TURN_SURVIVED=1
+    cj_note "with A gone, node C turns at $rate_c deg/s — the same number B measured, from B's bytes alone"
+
     CJ_PUBLISHER_SURVIVAL=1
     cj_note "the original publisher is gone and the software survives: ${CJ_ACCEPTED_SOURCE:0:16}… on C"
 }
 
 # ── the strip and the topology ───────────────────────────────────────────
-# The mission's eight stages, printed by the run that earned them. The README
+# The mission's eight stages plus the second lap, printed by the run that
+# earned them. The README
 # figures are rendered from a recording of one real run; `--strip-labels` is
 # how that generator refuses a recording whose stages no longer match this
 # script, and `--topology` emits the drawing itself so it cannot go stale.
@@ -1658,7 +2114,8 @@ VISIBLE RESULT
 REPRODUCED ON NODE B
 TAMPER REFUSED
 ACCEPTED
-USED'
+USED
+CHANGED WHAT EXISTED'
 
 cj_strip_row() { printf '  \033[1;36m%-26s\033[0m%s\n' "$1" "$2"; }
 cj_strip_cont() { printf '  %-26s\033[2m%s\033[0m\n' "" "$1"; }
@@ -1684,6 +2141,19 @@ cj_strip() {
     cj_strip_row "ACCEPTED" \
         "one exact version, by hand — PROVEN, published as you/wordcount"
     cj_strip_row "USED" "wordcount sample.txt → $CJ_APP_OUTPUT"
+    # The eight stages above built something from nothing. This last row is the
+    # harder half of the same promise: the same eight stages run again on
+    # software that already existed and that this journey did not write, and
+    # the thing you asked to change actually changes, by a number measured
+    # before and after on two different machines' builds.
+    printf '\n'
+    # Every line here stays inside the widest line above it: the README figure
+    # is rendered at this width, and a row that overflows shrinks the whole
+    # picture for the reader.
+    cj_strip_row "CHANGED WHAT EXISTED" \
+        "zdogfight — a package this journey did not write, under another key"
+    cj_strip_cont "\"make the aircraft turn faster\": ${CJ_TURN_BEFORE} → ${CJ_TURN_AFTER} deg/s on both nodes"
+    cj_strip_cont "its own root ${CJ_ZDOG_APP_ROOT:0:12}… — the original is still exactly itself"
     printf '\n  \033[2mtwo fresh datadirs · %s bytes over the overlay · 1 peer · central services contacted: 0\033[0m\n' \
         "$CJ_APP_BYTES"
 }
@@ -1760,8 +2230,20 @@ cj_write_facts() {
         printf 'application_match     = byte-identical program on both nodes (%s bytes)\n' "$CJ_APP_BINARY_BYTES"
         printf 'tamper_refused        = 4 of 4, each by name\n'
         printf 'central_services      = 0\n'
+        # A 64-hex root plus a parenthetical does not fit the width this file
+        # is rendered at, so the naming lives on its own line and the two
+        # roots line up under each other where a reader can compare them.
+        printf 'changed_package       = zdogfight/zdogfight → pilot/zdogfight-quickturn\n'
+        printf 'changed_root_before   = %s\n' "$CJ_ZDOG_ROOT"
+        printf 'changed_root_after    = %s\n' "$CJ_ZDOG_APP_ROOT"
+        printf 'turn_rate_before      = %s deg/s (node A, the package as published)\n' "$CJ_TURN_BEFORE"
+        printf 'turn_rate_after       = %s deg/s (node B, from the bytes it fetched)\n' "$CJ_TURN_AFTER"
         if [ "${CJ_PUBLISHER_SURVIVAL:-0}" = 1 ]; then
             printf 'publisher_survival    = host A killed; host C reproduced and ran the exact accepted bytes from host B\n'
+        fi
+        if [ "${CJ_TURN_SURVIVED:-0}" = 1 ]; then
+            printf 'changed_survival      = host C measured %s deg/s from host B, host A killed\n' \
+                "$CJ_TURN_AFTER"
         fi
         printf 'whole_journey         = %s s\n' "$CJ_SECS_TOTAL"
     } >"$out"
@@ -1789,6 +2271,7 @@ cj_step "the journey"
 CJ_T0="$(date +%s)"
 cj_journey_guide
 cj_journey_publish_reusable
+cj_journey_turn_faster_stage
 # The hosting engine that serves package bytes to peers is built at node
 # start from the store on disk. Publishing is an ordinary store write, so
 # the node that will serve it comes up after the package exists — the same
@@ -1808,16 +2291,21 @@ cj_journey_remote_reproduction
 CJ_SECS_REPRO=$(( $(date +%s) - CJ_T_REPRO ))
 cj_journey_tamper_refusals
 cj_journey_use_app
+# The tenth step is the other half of the promise: not "the commons can build
+# something new", but "the commons can change something that already works,
+# and you keep that exact version". Same nodes, same overlay, same lifecycle.
+cj_journey_turn_faster
 
 # Multi-host only: the leg one physical host cannot prove. The publisher
 # disappears; the software survives on whoever holds it.
 CJ_PUBLISHER_SURVIVAL=0
+CJ_TURN_SURVIVED=0
 if [ "$CJ_MULTIHOST" = 1 ]; then
     cj_journey_publisher_disappears
 fi
 
 # The verdict is the whole journey or nothing. Every step above dies on its
-# first broken promise, so reaching this line means all nine held on two
+# first broken promise, so reaching this line means all ten held on two
 # fresh datadirs that reached no service outside this machine.
 
 # The strip: the mission's eight stages, printed by the run that just earned
@@ -1837,10 +2325,10 @@ if [ "${ZCL_COMMONS_DEMO_RECORD:-0}" = 1 ]; then
 fi
 
 cj_step "verdict"
-CJ_VERDICT='{"schema":"zcl.commons_journey_acceptance.v1","verdict":"PASS","steps_proven":9,"steps_total":9,"complete":true,"reuse_before_creation":true,"no_false_reuse_claim":true,"peer_to_peer_fetch":true,"fetched_source_inert":true,"explicit_local_admission":true,"independent_remote_build":true,"approved_signer_required":true,"explicit_human_acceptance":true,"accepted_work_published":true,"remote_source_reproduced":true,"byte_identical_artifacts":true,"tamper_refused_by_name":["source","dependency","receipt","artifact"],"application_ran":true,"central_services_contacted":0,"human_first_terminal_output":true}'
+CJ_VERDICT='{"schema":"zcl.commons_journey_acceptance.v1","verdict":"PASS","steps_proven":10,"steps_total":10,"complete":true,"reuse_before_creation":true,"no_false_reuse_claim":true,"peer_to_peer_fetch":true,"fetched_source_inert":true,"explicit_local_admission":true,"independent_remote_build":true,"approved_signer_required":true,"explicit_human_acceptance":true,"accepted_work_published":true,"remote_source_reproduced":true,"byte_identical_artifacts":true,"tamper_refused_by_name":["source","dependency","receipt","artifact"],"application_ran":true,"existing_package_changed":true,"behavior_change_measured_before_and_after":true,"changed_version_is_its_own_root":true,"central_services_contacted":0,"human_first_terminal_output":true}'
 # The multi-host leg adds its fact only when it actually ran: the publisher
 # disappeared and node C still reproduced and ran the exact accepted bytes.
 if [ "$CJ_PUBLISHER_SURVIVAL" = 1 ]; then
-    CJ_VERDICT="${CJ_VERDICT%\}},\"publisher_disappearance_survived\":true}"
+    CJ_VERDICT="${CJ_VERDICT%\}},\"publisher_disappearance_survived\":true,\"changed_behavior_survived_publisher\":true}"
 fi
 printf '%s\n' "$CJ_VERDICT"

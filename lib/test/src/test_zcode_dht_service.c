@@ -1048,6 +1048,84 @@ _test_next:;
   return failures;
 }
 
+/* The ceiling on how many records ONE node keeps announced is not an abstract
+ * number: it decides whether a node can host the product's own demo. The
+ * multi-host commons journey measured the floor at eleven records for five
+ * things (a library, an application, that application's source, a second
+ * library, and a changed package), because a package costs a POINTER plus a
+ * PROVIDER and an independently re-derivable source costs a third. At eight
+ * the ninth publish was refused `global-cap` and the journey could not finish.
+ *
+ * So this pins BOTH halves: the ceiling is high enough for that measured
+ * floor, and it is still a ceiling that fails closed rather than growing. */
+static int test_publication_ceiling_hosts_a_real_node(void) {
+  int failures = 0;
+  TEST("zcode dht service: the announce ceiling fits a package host, and holds") {
+    /* Not >= 11 by accident: below this a node cannot announce the journey
+     * `make commons-multihost-acceptance` runs, and the refusal would be
+     * correct while the product would be wrong. */
+    ASSERT(VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS >= 11u);
+    char dir[] = "/tmp/zcl_dht_publication_ceiling_XXXXXX";
+    ASSERT(mkdtemp(dir) != NULL);
+    uint8_t genesis[32], noise[32];
+    memset(genesis, 0x11, sizeof(genesis));
+    memset(noise, 0x42, sizeof(noise));
+    ASSERT(fixture_identity(dir, 0x69, genesis, noise));
+    struct vcs_zcode_dht_service *service =
+        fixture_service_at(dir, genesis, noise, 1000);
+    ASSERT(service != NULL);
+    struct vcs_zcode_dht_time now = test_time(1000);
+    /* One distinct record stream per slot: distinct semantic roots, so none
+     * of these is an update of another and each must take its own slot. */
+    for (unsigned i = 0; i < VCS_ZCODE_DHT_SERVICE_MAX_PUBLICATIONS; i++) {
+      struct vcs_zcode_dht_publish_spec spec;
+      uint8_t token[32];
+      struct vcs_zcode_dht_record record;
+      memset(&spec, 0, sizeof(spec));
+      spec.kind = VCS_ZCODE_DHT_RECORD_POINTER;
+      (void)snprintf(spec.namespace_name, sizeof(spec.namespace_name),
+                     "science");
+      memset(spec.semantic_root, (int)(0x80u + i), 32);
+      memset(spec.transport_root, (int)(0xc0u + i), 32);
+      spec.sequence = 1;
+      spec.not_before = 1000;
+      spec.expiry = 1300;
+      ASSERT(vcs_zcode_dht_service_record_publish_plan(
+          service, &spec, token, &record));
+      ASSERT_EQ(vcs_zcode_dht_service_record_publish_commit(
+                    service, &spec, token, now, &record),
+                VCS_ZCODE_DHT_RECORD_STORE_ADDED);
+    }
+    /* The ceiling is still a ceiling, and it still says so by name. */
+    struct vcs_zcode_dht_publish_spec over;
+    uint8_t over_token[32];
+    struct vcs_zcode_dht_record over_record;
+    memset(&over, 0, sizeof(over));
+    over.kind = VCS_ZCODE_DHT_RECORD_POINTER;
+    (void)snprintf(over.namespace_name, sizeof(over.namespace_name),
+                   "science");
+    memset(over.semantic_root, 0x7f, 32);
+    memset(over.transport_root, 0x7e, 32);
+    over.sequence = 1;
+    over.not_before = 1000;
+    over.expiry = 1300;
+    ASSERT(vcs_zcode_dht_service_record_publish_plan(
+        service, &over, over_token, &over_record));
+    ASSERT_EQ(vcs_zcode_dht_service_record_publish_commit(
+                  service, &over, over_token, now, &over_record),
+              VCS_ZCODE_DHT_RECORD_STORE_GLOBAL_CAP);
+    ASSERT_STR_EQ(vcs_zcode_dht_record_store_result_string(
+                      VCS_ZCODE_DHT_RECORD_STORE_GLOBAL_CAP),
+                  "global-cap");
+
+    vcs_zcode_dht_service_free(service, now);
+    cleanup_fixture(dir);
+    PASS();
+  }
+_test_next:;
+  return failures;
+}
+
 static int test_record_churn_fallback(void) {
   int failures = 0;
   TEST("zcode dht service: slow responsible nodes and candidates beyond K") {
@@ -2733,6 +2811,7 @@ space16_cleanup:
 int test_zcode_dht_service(void) {
   int failures = test_disabled_diagnostics();
   failures += test_publication_monotonic_retry();
+  failures += test_publication_ceiling_hosts_a_real_node();
   failures += test_record_churn_fallback();
   failures += test_deep_ancestry();
   failures += test_peer_admission_order();
