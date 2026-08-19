@@ -10,6 +10,7 @@
 #include "json/json.h"
 #include "platform/os_proc.h"
 #include "platform/time_compat.h"
+#include "models/build_proof_event.h"
 #include "models/database.h"
 #include "services/build_fabric_service.h"
 #include "services/build_fabric_worker.h"
@@ -70,6 +71,62 @@ static bool run_open_existing_ledger(
 {
     return ndb && path && path[0] && reason && reason[0] &&
            node_db_open_existing_runtime(ndb, path, reason);
+}
+
+/* CANDIDATE_ADMITTED has exactly one meaning: the candidate is captured and
+ * no signed work receipt exists for it yet.  Whether that is healthy waiting
+ * or an incomplete execution is decided by one further fact — does the node
+ * datadir this invocation is bound to hold an outstanding (not superseded)
+ * async proof chain for the latest candidate?  The chain is keyed by task and
+ * candidate roots because the task index cannot name the action before the
+ * first receipt arrives.  A named or resident node datadir has a supervisor
+ * that consumes that chain, so the wait is real and run must agree with zcode
+ * work status instead of failing closed.  The closed scratch ledger has no
+ * supervisor: a receipt gap there means the prior foreground execution never
+ * finished, which stays CANDIDATE_EXECUTION_INCOMPLETE. */
+static bool run_async_proof_pending(
+    const char *proof_datadir, const char *task_root_hex,
+    const char *candidate_root_hex,
+    char state_out[BUILD_PROOF_EVENT_STATE_MAX + 1])
+{
+    state_out[0] = '\0';
+    if (!proof_datadir || !proof_datadir[0] || !task_root_hex ||
+        strlen(task_root_hex) != BUILD_PROOF_EVENT_ROOT_HEX ||
+        !candidate_root_hex ||
+        strlen(candidate_root_hex) != BUILD_PROOF_EVENT_ROOT_HEX)
+        return false;
+    char db_path[ZWORK_RUN_PATH_MAX];
+    int n = snprintf(db_path, sizeof(db_path), "%s/node.db", proof_datadir);
+    if (n <= 0 || (size_t)n >= sizeof(db_path) ||
+        access(db_path, F_OK) != 0)
+        return false;
+    struct node_db local_ndb = {0};
+    struct node_db *runtime = app_runtime_node_db();
+    bool owned = app_runtime_node_db_handle_open(runtime) &&
+                 strcmp(db_path, runtime->path) == 0;
+    struct node_db *ndb = owned ? runtime : &local_ndb;
+    if (!owned && !run_open_existing_ledger(
+            ndb, db_path, "zcode.work.run.proof_pending"))
+        return false;
+    struct db_build_proof_event events[64];
+    int count = db_build_proof_events_for_task(ndb, task_root_hex, events,
+                                               sizeof(events) /
+                                                   sizeof(events[0]));
+    const struct db_build_proof_event *latest = NULL;
+    bool pending = false;
+    for (int i = 0; i < count; i++) {
+        if (strcmp(events[i].candidate_root_sha3, candidate_root_hex) != 0 ||
+            !events[i].state[0])
+            continue;
+        latest = &events[i];
+        if (strcmp(events[i].state, "SUPERSEDED") != 0)
+            pending = true;
+    }
+    if (pending && latest)
+        (void)snprintf(state_out, BUILD_PROOF_EVENT_STATE_MAX + 1u, "%s",
+                       latest->state);
+    if (!owned) node_db_close(ndb);
+    return pending;
 }
 
 static void run_fail(struct zcl_command_reply *reply, const char *code,
@@ -1672,20 +1729,36 @@ void zcl_native_handle_zcode_work_run(
         memcmp(context.task_root, task_root, 32) == 0 &&
         memcmp(context.source_root, task.source_root, 32) == 0 &&
         memcmp(context.goal_root, task.goal_root, 32) == 0;
-    if (strcmp(entry->state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0) {
+    /* Terminal-for-run states: the candidate's evidence is complete (or the
+     * work is already accepted).  Repeating run is an idempotent observation
+     * of that fact — never a fresh candidate attempt.  This is the same
+     * interpretation zcode work status gives the same lifecycle fact. */
+    if (strcmp(entry->state, VCS_ZCODE_TASK_STATE_EVIDENCE_READY) == 0 ||
+        strcmp(entry->state, VCS_ZCODE_TASK_STATE_CANDIDATE_PROOFS_READY) == 0 ||
+        strcmp(entry->state, VCS_ZCODE_TASK_STATE_PROVEN) == 0) {
+        bool proven =
+            strcmp(entry->state, VCS_ZCODE_TASK_STATE_PROVEN) == 0;
+        bool decision =
+            strcmp(entry->state,
+                   VCS_ZCODE_TASK_STATE_CANDIDATE_PROOFS_READY) == 0;
         char work_id[32];
         (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
                        entry->task_root_hex);
         bool ok = json_push_kv_str(&reply->data, "work_id", work_id) &&
-            json_push_kv_str(&reply->data, "state", "EVIDENCE_READY") &&
-            json_push_kv_str(&reply->data, "stage", "Showing result") &&
+            json_push_kv_str(&reply->data, "state", entry->state) &&
+            json_push_kv_str(&reply->data, "stage",
+                             proven ? "Accepted" :
+                             decision ? "Ready for your decision" :
+                                        "Showing result") &&
             json_push_kv_str(&reply->data, "build_result", "passed") &&
             json_push_kv_str(&reply->data, "next_safe_command",
                              "zcode work status") &&
             json_push_kv_bool(&reply->data, "details_available", true) &&
             run_add_work_next(
                 reply, "zcode.work.status", workspace, work_id, NULL,
-                "show the exact build and reproduction state");
+                proven ? "show the accepted work and its publication state" :
+                decision ? "show the candidate awaiting your acceptance decision" :
+                           "show the exact build and reproduction state");
         if (!ok)
             run_fail(reply, "HANDOFF_OUTPUT_FAILED", "render",
                      "evidence-ready summary could not be rendered",
@@ -1694,8 +1767,42 @@ void zcl_native_handle_zcode_work_run(
         vcs_zcode_task_index_free(index); return;
     }
     if (strcmp(entry->state, VCS_ZCODE_TASK_STATE_CANDIDATE_ADMITTED) == 0) {
+        char pending_state[BUILD_PROOF_EVENT_STATE_MAX + 1];
+        if (run_async_proof_pending(proof_datadir, entry->task_root_hex,
+                                    entry->latest_candidate_root_hex,
+                                    pending_state)) {
+            /* Same lifecycle fact, same interpretation as zcode work status:
+             * the admitted candidate waits on independent proof that is
+             * outstanding in the bound node's ledger.  Repeating run is an
+             * idempotent observation of that wait — not a failure and never
+             * a fresh attempt. */
+            char work_id[32];
+            (void)snprintf(work_id, sizeof(work_id), "work-%.12s",
+                           entry->task_root_hex);
+            bool ok =
+                json_push_kv_str(&reply->data, "work_id", work_id) &&
+                json_push_kv_str(&reply->data, "state", "CANDIDATE_ADMITTED") &&
+                json_push_kv_str(&reply->data, "stage",
+                                 "Waiting for independent reproduction") &&
+                json_push_kv_str(&reply->data, "build_result",
+                                 "background_pending") &&
+                json_push_kv_str(&reply->data, "async_proof_state",
+                                 pending_state) &&
+                json_push_kv_str(&reply->data, "next_safe_command",
+                                 "zcode work status") &&
+                json_push_kv_bool(&reply->data, "details_available", true) &&
+                run_add_work_next(
+                    reply, "zcode.work.status", workspace, work_id, NULL,
+                    "show the admitted candidate while independent proof arrives");
+            if (!ok)
+                run_fail(reply, "HANDOFF_OUTPUT_FAILED", "render",
+                         "admitted-candidate waiting summary could not be rendered",
+                         false, false);
+            free(goal); vcs_zcode_agent_context_free(&context);
+            vcs_zcode_task_index_free(index); return;
+        }
         run_fail(reply, "CANDIDATE_EXECUTION_INCOMPLETE", "build",
-                 "the candidate is captured but its prior package execution produced no signed work receipt; preserve it and diagnose the package prerequisite before starting another attempt",
+                 "the candidate is captured but its prior package execution produced no signed work receipt and no supervised independent proof is outstanding; preserve it and diagnose the package prerequisite before starting another attempt",
                  true, true);
         free(goal); vcs_zcode_agent_context_free(&context);
         vcs_zcode_task_index_free(index); return;

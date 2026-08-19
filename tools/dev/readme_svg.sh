@@ -91,6 +91,29 @@ demo_check() {
         "$BIN" discover describe "$path" >/dev/null 2>&1 ||
             { echo "readme_svg: FAIL — the topology names $path, which this binary does not have" >&2; exit 1; }
     done
+    # 3. the recording was produced by this exact journey script. A script
+    #    change without a re-recording means the committed strip/facts no
+    #    longer describe the journey in the tree: stale by construction.
+    local recorded_script_sha3
+    recorded_script_sha3="$(sed -n 's/^journey_script_sha3[[:space:]]*= //p' "$FACTS_FILE")"
+    [ -n "$recorded_script_sha3" ] ||
+        { echo "readme_svg: FAIL — $FACTS_FILE carries no provenance; re-record: ZCL_COMMONS_DEMO_RECORD=1 make commons-demo" >&2; exit 1; }
+    [ "$recorded_script_sha3" = "$(openssl dgst -sha3-256 "$JOURNEY" | awk '{print $NF}')" ] ||
+        { echo "readme_svg: FAIL — stale recording: $JOURNEY changed after it; re-record: ZCL_COMMONS_DEMO_RECORD=1 make commons-demo" >&2; exit 1; }
+    # 4. the recording is internally intact: evidence_root binds the strip to
+    #    the facts body, so a hand edit to either file breaks the hash.
+    local recorded_evidence recomputed_evidence
+    recorded_evidence="$(sed -n 's/^evidence_root[[:space:]]*= //p' "$FACTS_FILE")"
+    recomputed_evidence="$(cat "$STRIP_FILE" <(grep -v '^evidence_root[[:space:]]*=' "$FACTS_FILE") |
+                           openssl dgst -sha3-256 | awk '{print $NF}')"
+    [ "$recorded_evidence" = "$recomputed_evidence" ] ||
+        { echo "readme_svg: FAIL — $STRIP_FILE and $FACTS_FILE no longer match each other; re-record: ZCL_COMMONS_DEMO_RECORD=1 make commons-demo" >&2; exit 1; }
+    # 5. binary drift is reported, not fatal: the numbers are a recording of
+    #    one real run, and the binary is rebuilt on every source change.
+    local recorded_bin_sha3
+    recorded_bin_sha3="$(sed -n 's/^z23_binary_sha3[[:space:]]*= //p' "$FACTS_FILE")"
+    [ "$recorded_bin_sha3" = "$(openssl dgst -sha3-256 "$REPO_ROOT/build/bin/zclassic23" | awk '{print $NF}')" ] ||
+        echo "readme_svg: note — the recording predates the current build/bin/zclassic23" >&2
 }
 
 # ── ANSI → SVG ────────────────────────────────────────────────────────────

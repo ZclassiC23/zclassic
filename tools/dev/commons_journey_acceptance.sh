@@ -465,7 +465,7 @@ cj_checkout_accepted() {
 
 # Build the accepted application out of a checked-out source tree, against
 # the dependency this node admitted for itself. Nothing here reaches into the
-# other node's datadir: each machine links only what it holds.
+# other node's datadir: each node links only what it holds.
 cj_build_wordcount() {
     local src="$1" dd="$2" out="$3"
     cc -std=c23 -O1 -D_POSIX_C_SOURCE=200809L \
@@ -650,11 +650,12 @@ cj_journey_publish_reusable() {
     esac
 }
 
-# A second, independent machine gets the package over the network. Nothing
+# A second, independent node gets the package over the network. Nothing
 # central is involved: node A announces what it holds, node B asks the
 # overlay for that exact content, and the bytes arrive as inert source.
+# Both nodes run on one physical host; nothing here claims otherwise.
 cj_journey_peer_distribution() {
-    cj_step "3/9  a second machine fetches it peer-to-peer — and the bytes stay inert"
+    cj_step "3/9  a second node fetches it peer-to-peer — and the bytes stay inert"
     cj_announce_package a "$CJ_TEXTSTAT_ROOT" "$CJ_TEXTSTAT_TRANSPORT" 1
 
     # Before: node B has never seen this package.
@@ -664,16 +665,16 @@ cj_journey_peer_distribution() {
     CJ_TEXTSTAT_BYTES="$CJ_FETCH_BYTES"
     cj_note "node B fetched z23/textstat from the overlay: $CJ_TEXTSTAT_BYTES bytes"
 
-    # PROOF: fetched source stays inert. Arriving on this machine executed
+    # PROOF: fetched source stays inert. Arriving at this node executed
     # nothing and produced no evidence; only an explicit local decision can.
     [ "$(cj_sql b "SELECT count(*) FROM build_actions")" = 0 ] &&
     [ "$(cj_sql b "SELECT count(*) FROM build_receipts")" = 0 ] ||
         cj_die "fetching alone executed code or projected evidence on node B"
 
     # PROOF: build requires explicit local admission — and it is the person
-    # on THIS machine who gives it. `zcode use` is that decision.
+    # on THIS node who gives it. `zcode use` is that decision.
     # By content, not by a name anyone controls: node B admits the exact
-    # root it fetched. Two machines agreeing on 64 hex characters is the
+    # root it fetched. Two nodes agreeing on 64 hex characters is the
     # whole trust story.
     cj_use_package b "$CJ_TEXTSTAT_ROOT"
     cj_note "node B admitted z23/textstat explicitly: it is now installed there"
@@ -872,7 +873,7 @@ cj_journey_create_missing() {
 }
 
 # EVIDENCE_READY says the proof arrived, not that it counts. A receipt from
-# another machine lands as REMOTE_OBSERVED: real evidence, no authority. The
+# another node lands as REMOTE_OBSERVED: real evidence, no authority. The
 # operator has to approve that exact signer before the ledger will let it
 # stand as a build result — which is the whole point, and also why polling
 # only for the state is not enough. Approve, then wait for the result the
@@ -926,7 +927,7 @@ cj_journey_show() {
         passed*) ;;
         *) cj_die "work show does not report passing tests: $plain" ;;
     esac
-    # The grade is the whole point of the second machine: node A did not build
+    # The grade is the whole point of the second node: node A did not build
     # this, node B did, and node A counts it only because it approved that
     # exact signer.
     [ "$(cj_field data.reproduction_grade "$plain" '')" != none ] ||
@@ -1041,7 +1042,7 @@ cj_overlay() {
 # ── 8/9  the person decides, and the exact bytes travel ──────────────────
 # CANDIDATE is proof readiness. PROVEN is a human decision, and only this
 # command makes it. Everything downstream — publication, the source carrier
-# another machine reconstructs — is derived from that one decision, which is
+# another node reconstructs — is derived from that one decision, which is
 # why acceptance can be bound to the exact facts the person was shown.
 cj_journey_accept() {
     cj_step "8/9  zcode work accept — the person decides, and the exact bytes travel"
@@ -1080,6 +1081,18 @@ cj_journey_accept() {
         cj_die "repeating an acceptance was not idempotent: $again"
     cj_human_first "work accept" "$again"
     cj_roots_hidden "work accept" "$again" "$accept"
+
+    # One lifecycle fact, one interpretation: with the work PROVEN, run and
+    # status must agree. A repeated run observes the accepted state; it never
+    # opens a fresh candidate attempt on work already accepted.
+    local rerun
+    rerun="$(cj_a zcode work run \
+        --input="{\"workspace\":\"$CJ_WS\",\"work\":\"latest\",\"adapter\":\"manual\",\"datadir\":\"$DHT_DD_A\"}")"
+    cj_require_ok "work run after acceptance" "$rerun"
+    [ "$(cj_field data.state "$rerun" '')" = PROVEN ] ||
+        cj_die "run after acceptance disagreed with status: $rerun"
+    [ -z "$(cj_field data.candidate_workspace "$rerun" '')" ] ||
+        cj_die "run after acceptance opened a fresh candidate: $rerun"
     cj_note "accepted: PROVEN, source ${CJ_ACCEPTED_SOURCE:0:16}…"
 }
 
@@ -1123,10 +1136,10 @@ cj_journey_publish_accepted() {
     cj_note "you/wordcount published from the accepted work: ${CJ_APP_ROOT:0:16}…"
 }
 
-# A second machine reconstructs the exact source from the carrier it fetched
+# A second node reconstructs the exact source from the carrier it fetched
 # and signs one SOURCE_REPRODUCTION_ACK for it. The ACK names the source tree
 # root it derived; if that root equals the one node A accepted, two
-# independent machines built the same bytes from the same evidence.
+# independent nodes built the same bytes from the same evidence.
 cj_journey_remote_reproduction() {
     local plan commit seq nb exp token derived
     cj_announce_package a "$CJ_APP_ROOT" "$CJ_APP_TRANSPORT" 1
@@ -1204,9 +1217,9 @@ cj_journey_tamper_refusals() {
 # act as running it, and nothing a peer sends may build itself on arrival.
 # So the last step is the one a person actually performs: admit the package
 # locally, turn it back into source, and build it against the dependency this
-# machine already admitted.
+# node already admitted.
 cj_journey_use_app() {
-    cj_step "9/9  zcode use — the accepted application runs on the second machine"
+    cj_step "9/9  zcode use — the accepted application runs on the second node"
     local src_b src_a bin_b bin_a sample out want ts_a ts_b
 
     # The person on node B admits the accepted application explicitly.
@@ -1214,15 +1227,15 @@ cj_journey_use_app() {
     [ -d "$DHT_DD_B/zcode/installed/$CJ_APP_ROOT" ] ||
         cj_die "node B admitted the accepted application but installed nothing"
 
-    # Two machines, one dependency, one set of bytes: node A and node B each
+    # Two nodes, one dependency, one set of bytes: node A and node B each
     # built z23/textstat with their own build fabric from source they each
     # obtained separately, and the artifacts match byte for byte.
     ts_a="$DHT_DD_A/zcode/installed/$CJ_TEXTSTAT_ROOT/lib/libtextstat.a"
     ts_b="$DHT_DD_B/zcode/installed/$CJ_TEXTSTAT_ROOT/lib/libtextstat.a"
     cmp -s "$ts_a" "$ts_b" ||
-        cj_die "the two machines built different bytes for the reused package"
+        cj_die "the two nodes built different bytes for the reused package"
     CJ_LIB_BYTES="$(wc -c <"$ts_b")"
-    cj_note "both machines built byte-identical z23/textstat ($CJ_LIB_BYTES bytes)"
+    cj_note "both nodes built byte-identical z23/textstat ($CJ_LIB_BYTES bytes)"
 
     # Node B turns the carrier back into the accepted source. The command
     # verifies every shard against the accepted source root and re-resolves
@@ -1254,7 +1267,7 @@ cj_journey_use_app() {
         cj_die "the application ran but answered '$out' instead of '$want'"
     CJ_APP_OUTPUT="$out"
 
-    # And it is the same program on both machines: node A builds it from the
+    # And it is the same program on both nodes: node A builds it from the
     # source it accepted, node B from the source it fetched and re-derived,
     # and the two executables are the same bytes.
     src_a="$DHT_WORK/checkout-a"
@@ -1264,10 +1277,10 @@ cj_journey_use_app() {
     cj_build_wordcount "$src_a" "$DHT_DD_A" "$bin_a" ||
         cj_die "the accepted application did not build on node A"
     cmp -s "$bin_a" "$bin_b" ||
-        cj_die "the two machines built different programs from the same accepted source"
+        cj_die "the two nodes built different programs from the same accepted source"
     CJ_APP_BINARY_BYTES="$(wc -c <"$bin_b")"
     cj_note "wordcount sample.txt -> $CJ_APP_OUTPUT"
-    cj_note "identical $CJ_APP_BINARY_BYTES-byte program on both machines"
+    cj_note "identical $CJ_APP_BINARY_BYTES-byte program on both nodes"
     cj_note "the longest_line number is the behavior this journey created"
 }
 
@@ -1319,7 +1332,7 @@ cj_strip() {
 # this drawing cannot outlive the commands it names.
 cj_topology() {
     cat <<'TOPO'
-  NODE A — the person's workshop                NODE B — a second machine, nothing installed
+  NODE A — the person's workshop                NODE B — a second node, nothing installed
   ┌───────────────────────────────────┐         ┌───────────────────────────────────┐
   │ workspace  the accepted work      │         │ store      empty at boot          │
   │ store      the bytes it holds     │         │ installed  empty at boot          │
@@ -1341,13 +1354,29 @@ cj_topology() {
 TOPO
 }
 
+# SHA3-256 of a file, hex — the same backend tools/release.sh audits release
+# archives with, so a recording's hashes are comparable to release evidence.
+cj_sha3() {
+    openssl dgst -sha3-256 "$1" | awk '{print $NF}'
+}
+
 # What this run measured, as plain key = value text. The README's proof figure
 # is rendered from this file, so those numbers are a recording of one real run
 # on stated hardware — never a claim typed onto a page.
+#
+# PROVENANCE. Beyond the measurements, the recording names the exact bytes
+# that produced it: the source commit (and whether the tree was dirty), the
+# node binary, this script, and the content roots the journey minted. The
+# final evidence_root binds this file to the strip recorded beside it, so a
+# hand edit to either — or a recording kept after the script changed — is
+# detectable: `make readme-svg-check` recomputes all of it and refuses stale.
 cj_write_facts() {
-    local cpu
+    local out="$1" strip="$2"
+    local cpu commit dirty
     cpu="$(sed -n 's/^model name[[:space:]]*: //p' /proc/cpuinfo | head -1)"
     [ -n "$cpu" ] || cpu="unknown CPU"
+    commit="$(git -C "$REPO_ROOT" rev-parse HEAD)"
+    if [ -n "$(git -C "$REPO_ROOT" status --porcelain)" ]; then dirty=yes; else dirty=no; fi
     {
         printf '# Recorded by `make commons-demo`. Every value was measured by that\n'
         printf '# run on the machine named below; nothing here is typed in by hand.\n'
@@ -1355,7 +1384,13 @@ cj_write_facts() {
         printf 'host_cpu              = %s (%s threads)\n' "$cpu" "$(nproc)"
         printf 'host_os               = %s %s\n' "$(uname -sr)" "$(uname -m)"
         printf 'compiler              = %s\n' "$(${CC:-cc} --version | head -1)"
-        printf 'conditions            = two fresh isolated regtest datadirs, one machine, 1 peer\n'
+        printf 'source_git_commit     = %s (dirty: %s)\n' "$commit" "$dirty"
+        printf 'z23_binary_sha3       = %s\n' "$(cj_sha3 "$NODE_BIN")"
+        printf 'journey_script_sha3   = %s\n' "$(cj_sha3 "$SCRIPT_DIR/commons_journey_acceptance.sh")"
+        printf 'conditions            = two fresh isolated regtest datadirs, one physical host, 1 peer\n'
+        printf 'reused_package_root   = %s\n' "$CJ_TEXTSTAT_ROOT"
+        printf 'accepted_source_root  = %s\n' "$CJ_ACCEPTED_SOURCE"
+        printf 'accepted_app_root     = %s\n' "$CJ_APP_ROOT"
         printf 'ask_to_visible_result = %s s\n' "$CJ_SECS_RESULT"
         printf 'remote_reproduction   = %s s\n' "$CJ_SECS_REPRO"
         printf 'bytes_over_the_wire   = %s (reused package) + %s (accepted application)\n' \
@@ -1365,7 +1400,11 @@ cj_write_facts() {
         printf 'tamper_refused        = 4 of 4, each by name\n'
         printf 'central_services      = 0\n'
         printf 'whole_journey         = %s s\n' "$CJ_SECS_TOTAL"
-    } >"$1"
+    } >"$out"
+    # Binds this facts body to the strip recorded beside it. Verification
+    # removes this one line and recomputes over strip + remaining facts.
+    printf 'evidence_root         = %s\n' \
+        "$(cat "$strip" "$out" | openssl dgst -sha3-256 | awk '{print $NF}')" >>"$out"
 }
 
 # Read-only modes for the README figure generator. They print and exit before
@@ -1417,7 +1456,7 @@ cj_journey_use_app
 CJ_SECS_TOTAL=$(( $(date +%s) - CJ_T0 ))
 cj_step "what just happened"
 cj_strip | tee "$DHT_WORK/commons-demo.strip"
-cj_write_facts "$DHT_WORK/commons-demo.facts"
+cj_write_facts "$DHT_WORK/commons-demo.facts" "$DHT_WORK/commons-demo.strip"
 if [ "${ZCL_COMMONS_DEMO_RECORD:-0}" = 1 ]; then
     cp "$DHT_WORK/commons-demo.strip" \
        "$REPO_ROOT/docs/assets/z23-commons-demo.strip"

@@ -1,15 +1,22 @@
 # Recorded by `make commons-demo`. Every value was measured by that
 # run on the machine named below; nothing here is typed in by hand.
-recorded_utc          = 2026-08-18T17:43:01Z
+recorded_utc          = 2026-08-19T08:03:31Z
 host_cpu              = AMD Ryzen 9 7950X3D 16-Core Processor (32 threads)
 host_os               = Linux 6.8.0-111-generic x86_64
 compiler              = cc (Ubuntu 14.2.0-4ubuntu2~24.04.1) 14.2.0
-conditions            = two fresh isolated regtest datadirs, one machine, 1 peer
-ask_to_visible_result = 47 s
-remote_reproduction   = 29 s
+source_git_commit     = bc7abdf1fef886a2f9649362cdb2d521cf2bd02d (dirty: yes)
+z23_binary_sha3       = c8332e1f235ecad4c984751eb1a6df46f73bb43205e7784aab520c29e323dbd0
+journey_script_sha3   = 0671b309a8aa5a3d4b3adab3fc342b622afd01573dd95e56fe3cd85939088175
+conditions            = two fresh isolated regtest datadirs, one physical host, 1 peer
+reused_package_root   = 7ef55909607130c54004049050628a3eb48908e39681018772a71d75336cbb60
+accepted_source_root  = a2e563bc8c421f1bbaf0618fb4ba12dd9c15e172afb8a18f8a38060e7effbb1f
+accepted_app_root     = 1dfecbe4067b5a3eedcf59b155da7f38b3fa257dacdd097a65db42bb34072e24
+ask_to_visible_result = 46 s
+remote_reproduction   = 28 s
 bytes_over_the_wire   = 14960 (reused package) + 22028 (accepted application)
 reused_package_match  = byte-identical on both nodes (1766 bytes)
 application_match     = byte-identical program on both nodes (16640 bytes)
 tamper_refused        = 4 of 4, each by name
 central_services      = 0
-whole_journey         = 79 s
+whole_journey         = 76 s
+evidence_root         = 94a4ce47af2b86d615da8aad29d80180266ea7cd4995fb027e95e6197e1d4e76

@@ -34,7 +34,7 @@
 <text x="660" y="238" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">6</text>
 <text x="702" y="230" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">Reproduce it on another node</text>
 <text x="702" y="257" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6bd18a">z23 zcode package source reproduce</text>
-<text x="702" y="280" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">Another machine re-derives the bytes, or refuses.</text>
+<text x="702" y="280" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="14" fill="#66788c">A second node re-derives the bytes, or refuses.</text>
 <circle cx="660" cy="336" r="17" fill="#111823" stroke="#243044" stroke-width="2"/>
 <text x="660" y="342" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="16" font-weight="bold" fill="#c3d2e2">7</text>
 <text x="702" y="334" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="bold" fill="#eef4fb">Accept the exact version</text>

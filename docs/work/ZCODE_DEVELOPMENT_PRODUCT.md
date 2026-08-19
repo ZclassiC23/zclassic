@@ -310,7 +310,16 @@ captured but could not execute because its exact base dependency was not
 installed in the scratch worker. A repeated run previously created a fresh
 empty attempt. It now fails closed as `CANDIDATE_EXECUTION_INCOMPLETE`, keeps
 the captured candidate, and names the missing execution receipt instead of
-advancing history.
+advancing history. `CANDIDATE_ADMITTED` has exactly one meaning everywhere —
+candidate captured, no signed work receipt yet — so when the bound datadir
+holds an outstanding (not superseded) async proof chain for that candidate,
+a repeated run is instead an idempotent "waiting for independent
+reproduction" observation identical to `work status`; the fail-closed branch
+remains for receipt gaps no supervisor can still close. The same discipline
+now covers the terminal states: a repeated run on `EVIDENCE_READY`,
+`CANDIDATE_PROOFS_READY`, or `PROVEN` is an idempotent observation of that
+state — it never opens a fresh candidate attempt on work that `work status`
+already calls accepted or ready for decision.
 
 The dependency-free base dogfood task selected 470 of 56,140 source bytes
 (0.84%) in 27,139 us, but ranked `memory_cleanse` above the requested checked

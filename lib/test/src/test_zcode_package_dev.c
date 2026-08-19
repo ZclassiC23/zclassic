@@ -363,6 +363,29 @@ static int zpd_test_twelve_task_benchmark(void)
                               "Accepted") == 0);
                 ASSERT(json_get(&reply.data, "next_safe_command") != NULL);
                 zcl_command_reply_free(&reply); json_free(&input);
+
+                /* One lifecycle fact, one interpretation: with the work
+                 * PROVEN, run is an idempotent observation of the accepted
+                 * state — never a fresh candidate attempt. */
+                json_init(&input); json_set_object(&input);
+                ASSERT(json_push_kv_str(&input, "workspace",
+                                        roots[cases[i].project]));
+                ASSERT(json_push_kv_str(&input, "work", work_id));
+                ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+                request.input = &input;
+                zcl_command_reply_init(&reply,
+                                       "zcl.zcode_benchmark_rerun.v1");
+                zcl_native_handle_zcode_work_run(&request, &reply);
+                ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+                ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                              "PROVEN") == 0);
+                ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                              "Accepted") == 0);
+                ASSERT(strcmp(json_get_str(
+                                  json_get(&reply.data, "build_result")),
+                              "passed") == 0);
+                ASSERT(json_get(&reply.data, "candidate_workspace") == NULL);
+                zcl_command_reply_free(&reply); json_free(&input);
             }
             char *attempt = strrchr(candidate, '/');
             ASSERT(attempt != NULL); *attempt = '\0';
@@ -2139,6 +2162,175 @@ static int zpd_test_standard_profile(void)
     return failures;
 }
 
+static int zpd_test_admitted_single_interpretation(void)
+{
+    int failures = 0;
+    TEST("zcode work: one admitted candidate reads identically from run and status") {
+        char root[256];
+        (void)snprintf(root, sizeof(root),
+                       "test-tmp/zcode-admitted-%ld", (long)getpid());
+        ASSERT(zpd_fixture(root, false));
+        char absolute_root[4400];
+        ASSERT(realpath(root, absolute_root) != NULL);
+        char datadir[256];
+        (void)snprintf(datadir, sizeof(datadir),
+                       "test-tmp/zcode-admitted-node-%ld", (long)getpid());
+        ZCL_IGNORE_RESULT(zcl_tree_remove(datadir), "datadir fixture reset");
+        ASSERT(mkdir(datadir, 0700) == 0);
+        char absolute_datadir[4400];
+        ASSERT(realpath(datadir, absolute_datadir) != NULL);
+
+        struct json_value input;
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "goal", "Fix x"));
+        ASSERT(json_push_kv_str(&input, "profile", "quick"));
+        struct zcl_command_request request = { .input = &input };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_admitted_start_test.v1");
+        zcl_native_handle_zcode_work_start(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        char work_id[32];
+        (void)snprintf(work_id, sizeof(work_id), "%s",
+                       json_get_str(json_get(&reply.data, "work_id")));
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_admitted_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        char candidate[4400];
+        (void)snprintf(candidate, sizeof(candidate), "%s",
+                       json_get_str(json_get(&reply.data,
+                                             "candidate_workspace")));
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        char source[4500];
+        (void)snprintf(source, sizeof(source), "%s/src/x.c", candidate);
+        ASSERT(zpd_write(source, "int x(void) { return 2; }\n"));
+
+        /* Live admission: the named datadir owns the immutable action and
+         * the outstanding REQUESTED proof chain; no receipt exists yet. */
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        ASSERT(json_push_kv_str(&input, "datadir", datadir));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_admitted_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        if (reply.status != ZCL_COMMAND_STATUS_PASSED)
+            printf("admitted async admission failed: %s: %s\n",
+                   reply.error.code, reply.error.message);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                      "CANDIDATE_ADMITTED") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
+                      "background_pending") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "async_proof_state")),
+                      "REQUESTED") == 0);
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        /* Regression: repeating run on the same admitted fact used to fail
+         * CANDIDATE_EXECUTION_INCOMPLETE while status called the same fact
+         * healthy waiting.  One lifecycle fact, one interpretation. */
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        ASSERT(json_push_kv_str(&input, "datadir", datadir));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_admitted_rerun_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                      "CANDIDATE_ADMITTED") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Waiting for independent reproduction") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
+                      "background_pending") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "async_proof_state")),
+                      "REQUESTED") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "next_safe_command")),
+                      "zcode work status") == 0);
+        ASSERT(zpd_next_is(&reply, "zcode.work.status", absolute_root,
+                           work_id, NULL));
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        /* Status through the same datadir agrees: waiting, background build,
+         * identical async proof state. */
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        ASSERT(json_push_kv_str(&input, "datadir", datadir));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_admitted_status_test.v1");
+        zcl_native_handle_zcode_work_status(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                      "CANDIDATE_ADMITTED") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "stage")),
+                      "Waiting for independent reproduction") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
+                      "background_pending") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "test_result")),
+                      "background_pending") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data,
+                                            "async_proof_state")),
+                      "REQUESTED") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "next_action")),
+                      "Keep thinking while the missing proof arrives.") == 0);
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        /* Without the admitting datadir both surfaces stay blind, not
+         * contradictory: status names the missing ledger, and run stays
+         * fail-closed because no supervised proof is visible. */
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_admitted_blind_test.v1");
+        zcl_native_handle_zcode_work_status(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "state")),
+                      "CANDIDATE_ADMITTED") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "build_result")),
+                      "unknown") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "next_action")),
+                      "No proof ledger reachable here shows this candidate's proof; pass the admitting node's datadir.") == 0);
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", work_id));
+        ASSERT(json_push_kv_str(&input, "adapter", "manual"));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.zcode_admitted_blind_run_test.v1");
+        zcl_native_handle_zcode_work_run(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(strcmp(reply.error.code, "CANDIDATE_EXECUTION_INCOMPLETE") == 0);
+        zcl_command_reply_free(&reply); json_free(&input);
+
+        char session_root[4400];
+        (void)snprintf(session_root, sizeof(session_root), "%s", candidate);
+        char *attempt = strrchr(session_root, '/');
+        ASSERT(attempt != NULL);
+        *attempt = '\0';
+        ASSERT(zcl_tree_remove(session_root).ok);
+        ASSERT(zcl_tree_remove(datadir).ok);
+        zpd_fixture_cleanup(root);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_package_dev(void)
 {
     secp256k1_context *ctx = secp256k1_context_create(
@@ -2159,6 +2351,7 @@ int test_zcode_package_dev(void)
                    zpd_test_reuse_plan() +
                    zpd_test_work_start() +
                    zpd_test_standard_profile() +
+                   zpd_test_admitted_single_interpretation() +
                    zpd_test_twelve_task_benchmark();
     secp256k1_context_destroy(ctx);
     return failures;

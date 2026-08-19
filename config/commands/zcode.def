@@ -534,7 +534,12 @@ ZCL_COMMAND_READY_COMMAND(
     "the workspace and short work ID without a forbidden command self-loop or "
     "proof roots. Only an explicitly targeted datadir or the resident node's "
     "already-owned ledger may receive live admission; a one-shot default target "
-    "stays in the closed scratch build lifecycle. The default "
+    "stays in the closed scratch build lifecycle. A repeated run on an admitted "
+    "candidate whose bound datadir still holds outstanding independent proof is "
+    "an idempotent waiting observation identical to work status, never a fresh "
+    "attempt; without that chain it fails closed. A repeated run on a task whose "
+    "candidate already holds complete evidence, or is accepted, is likewise an "
+    "idempotent observation of that state. The default "
     "result is root-free; "
     "details=true exposes "
     "exact proof identities. No adapter receives acceptance or publication authority.",

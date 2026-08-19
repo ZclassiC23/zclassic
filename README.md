@@ -15,7 +15,7 @@
 Z23 is a software workshop that runs on your own machine and is joined to a
 peer-to-peer commons. You describe the behavior you want. Your node reuses C23
 code that peers already published, writes only the part that is missing, and
-shows you it working. Another machine re-derives the exact same bytes. Then
+shows you it working. A second node re-derives the exact same bytes. Then
 *you* decide whether to accept it — and after that it is yours, and it keeps
 working when the agent, the vendor, the registry, or the company is gone.
 
@@ -56,7 +56,7 @@ and the workshop is scoped to it instead of to whatever node you already run.
 | Take a peer's package onto this machine, on purpose | `zcode use` |
 | Build and test only what was missing | `zcode work run` |
 | See the real consequence, in your own words | `zcode work show` |
-| Let a second machine re-derive the exact bytes | `zcode package source reproduce` |
+| Let a second node re-derive the exact bytes | `zcode package source reproduce` |
 | Decide — one exact version, by hand | `zcode work accept` |
 | Run it, or hand it to the next person | `zcode use` |
 
@@ -101,9 +101,10 @@ summary over a failure:
    which re-derives the exact same source and signs for it.
 8. Altered source, an unknown dependency, a stale acceptance, and altered bytes
    in the stored application are each **refused by name** — never by silence.
-9. The second machine turns the carrier back into the accepted source, builds
-   the application and runs it — and the two machines produce byte-identical
-   programs.
+9. The second node turns the carrier back into the accepted source, builds
+   the application and runs it — and the two nodes produce byte-identical
+   programs. Both nodes run on this one physical host; the proof is node
+   independence, not hardware independence.
 
 The demo lives in
 [`tools/dev/commons_journey_acceptance.sh`](tools/dev/commons_journey_acceptance.sh);
@@ -134,6 +135,14 @@ never an account.
 These numbers are a **recording of one real run**, written by the demo itself
 and rendered straight onto this page — not a claim typed into a README. Run it
 and you get your own.
+
+The recording is bound to what produced it.
+[`docs/assets/z23-commons-demo.facts`](docs/assets/z23-commons-demo.facts)
+carries the source commit, the SHA3-256 of the node binary and of the journey
+script, the content roots the run minted, the hardware and compiler, and an
+evidence root that ties the facts to the recorded terminal strip. Change the
+journey script — or hand-edit the recording — and `make readme-svg-check`
+refuses the figures as stale until the demo is re-run.
 
 ![what the demo measured](docs/assets/z23-term-commons-proof.svg)
 
@@ -257,7 +266,7 @@ Altered control byte:      REFUSED (match-incomplete)
 
 ![ZCODE Arena](docs/assets/zcode-arena.svg)
 
-Another machine that builds the same sources prints the same digests — and
+Another node that builds the same sources prints the same digests — and
 names the mismatch when it cannot. Write your own pilot, and read the two-node
 proof plus the honest gaps, in [`docs/ARENA.md`](docs/ARENA.md).
 

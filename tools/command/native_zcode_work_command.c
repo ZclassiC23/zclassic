@@ -16,6 +16,7 @@
 #include "crypto/ed25519.h"
 #include "hotswap/hotswap_service.h"
 #include "models/build_fabric.h"
+#include "models/build_proof_event.h"
 #include "models/database.h"
 #include "platform/time_compat.h"
 #include "services/build_fabric_service.h"
@@ -71,6 +72,19 @@ struct zwork_patch_summary {
 struct zwork_proof_snapshot {
     bool available;
     struct build_fabric_proof_evaluation facts;
+    /* Latest async proof chain event the read ledger holds for the action
+     * ("" when it holds none).  Outstanding means the chain is not
+     * superseded; ledger_supervised means a named or resident node datadir
+     * whose supervisor consumes outstanding chains, as opposed to the closed
+     * scratch ledger.  Together they decide whether CANDIDATE_ADMITTED is a
+     * real wait for independent reproduction or an incomplete execution —
+     * the same fact zcode.work.run classifies. */
+    char async_proof_state[BUILD_PROOF_EVENT_STATE_MAX + 1];
+    bool async_proof_outstanding;
+    bool ledger_supervised;
+    /* Action identity recovered from the durable proof chain when no receipt
+     * can name it yet ("" while nothing is bound). */
+    char action_root[BUILD_PROOF_EVENT_ROOT_HEX + 1];
 };
 
 struct zwork_reuse_candidate {
@@ -1345,14 +1359,21 @@ static bool zwork_policy_load(
 }
 
 /* Human status is a projection only. Re-evaluate the exact action and receipt
- * bytes without storing a proof set or promoting receipt trust. */
+ * bytes without storing a proof set or promoting receipt trust. Before the
+ * first receipt exists the task index cannot name the action, so the durable
+ * proof chain (keyed by task and candidate roots) supplies both the action
+ * identity and the in-flight reading of CANDIDATE_ADMITTED — the same fact
+ * zcode.work.run classifies. */
 static void zwork_proof_snapshot_read(
     const char *workspace, const char *task_root, const char *action_id,
-    const char *proof_datadir, int64_t now, struct zwork_proof_snapshot *out)
+    const char *candidate_root, const char *proof_datadir, int64_t now,
+    struct zwork_proof_snapshot *out)
 {
     memset(out, 0, sizeof(*out));
+    bool action_known = action_id && strlen(action_id) == 64u;
+    bool candidate_known = candidate_root && strlen(candidate_root) == 64u;
     if (!workspace || !task_root || strlen(task_root) != 64u ||
-        !action_id || strlen(action_id) != 64u)
+        (!action_known && !candidate_known))
         return;
     char resolved_datadir[ZWORK_PATH_MAX], db_path[ZWORK_PATH_MAX];
     bool explicit_datadir = proof_datadir && proof_datadir[0];
@@ -1373,8 +1394,39 @@ static void zwork_proof_snapshot_read(
     if (!owned && !node_db_open_existing_runtime(
             ndb, db_path, "zcode.work.status.proof"))
         return;
-    struct zcl_result result = build_fabric_proof_evaluate_readonly(
-        ndb, workspace, action_id, now, &out->facts);
+    char action[BUILD_PROOF_EVENT_ROOT_HEX + 1] = {0};
+    if (action_known)
+        (void)snprintf(action, sizeof(action), "%s", action_id);
+    struct db_build_proof_event events[64];
+    int event_count = db_build_proof_events_for_task(
+        ndb, task_root, events, sizeof(events) / sizeof(events[0]));
+    const struct db_build_proof_event *latest = NULL;
+    bool outstanding = false;
+    for (int i = 0; i < event_count; i++) {
+        if (candidate_known &&
+            strcmp(events[i].candidate_root_sha3, candidate_root) != 0)
+            continue;
+        if (!events[i].state[0])
+            continue;
+        latest = &events[i];
+        if (strcmp(events[i].state, "SUPERSEDED") != 0)
+            outstanding = true;
+    }
+    if (latest) {
+        (void)snprintf(out->async_proof_state,
+                       sizeof(out->async_proof_state), "%s", latest->state);
+        out->async_proof_outstanding = outstanding;
+        if (!action[0] && outstanding)
+            (void)snprintf(action, sizeof(action), "%s", latest->action_id);
+    }
+    out->ledger_supervised = explicit_datadir || owned;
+    if (action[0])
+        (void)snprintf(out->action_root, sizeof(out->action_root), "%s",
+                       action);
+    struct zcl_result result = action[0]
+        ? build_fabric_proof_evaluate_readonly(ndb, workspace, action, now,
+                                               &out->facts)
+        : ZCL_ERR(-1, "no action identity is bound to this task yet");
     if (!owned) node_db_close(ndb);
     out->available = result.ok;
 }
@@ -1465,16 +1517,36 @@ void zcl_native_handle_zcode_work_status(
     struct zwork_proof_snapshot proof;
     zwork_proof_snapshot_read(workspace, entry->task_root_hex,
                               entry->latest_action_root_hex,
+                              entry->latest_candidate_root_hex,
                               proof_datadir, now,
                               &proof);
     char confirmation_identity[65];
     bool confirmation_ready = zwork_confirmation_identity(
         entry, &proof, confirmation_identity);
+    /* One lifecycle fact, one human interpretation — shared with
+     * zcode.work.run.  An admitted candidate whose latest action has an
+     * outstanding async proof chain in a supervised (named or resident)
+     * datadir is really waiting for independent reproduction.  An admitted
+     * candidate whose reachable ledger shows no outstanding chain is an
+     * incomplete execution: nothing is arriving, and run refuses it as
+     * CANDIDATE_EXECUTION_INCOMPLETE.  With no reachable ledger the reader
+     * is blind, not stalled. */
+    bool admitted =
+        strcmp(state, VCS_ZCODE_TASK_STATE_CANDIDATE_ADMITTED) == 0;
+    bool proof_in_flight = admitted && proof.ledger_supervised &&
+                           proof.async_proof_outstanding;
+    bool admitted_stalled = admitted && !proof_in_flight &&
+        (proof.available || proof.async_proof_state[0]);
+    /* latest_action_root_hex is receipt-derived, so it stays empty for an
+     * admitted candidate until the first receipt arrives; "no candidate yet"
+     * must key on the state, not on that proxy. */
+    bool no_candidate = !admitted && !entry->latest_action_root_hex[0];
     const char *stage = entry->expired ? "Understanding request" :
         accepted ? "Accepted" :
-        repair_needed || !entry->latest_action_root_hex[0]
+        repair_needed || no_candidate
             ? "Creating missing code" :
         confirmation_ready ? "Ready for your decision" :
+        admitted_stalled ? "Needs attention" :
         "Waiting for independent reproduction";
     bool compile_required = zwork_proof_required(
         &policy, VCS_ZCODE_PROOF_COMPILE,
@@ -1496,25 +1568,30 @@ void zcl_native_handle_zcode_work_status(
     bool sanitizer_satisfied = standard_evidence && proof.available &&
         proof.facts.compile_satisfied;
     const char *build_summary = repair_needed ? "failed" :
-        !entry->latest_action_root_hex[0] ? "not_started" :
-        !proof.available ? "unknown" : proof.facts.compile_satisfied
-            ? "passed" : proof.facts.compile_receipts > 0
-                ? "pending_policy" : "not_started";
+        no_candidate ? "not_started" :
+        !proof.available ? proof_in_flight ? "background_pending" : "unknown" :
+        proof.facts.compile_satisfied ? "passed" :
+        proof.facts.compile_receipts > 0 ? "pending_policy" :
+        proof_in_flight ? "background_pending" : "not_started";
     const char *test_summary = repair_needed ? "failed_or_not_reached" :
-        !test_required ? "not_required" : !proof.available ? "unknown" :
+        !test_required ? "not_required" :
+        !proof.available ? proof_in_flight ? "background_pending" : "unknown" :
         proof.facts.test_satisfied ? "passed_declared_tests" :
-        proof.facts.test_receipts > 0 ? "pending_policy" : "not_started";
+        proof.facts.test_receipts > 0 ? "pending_policy" :
+        proof_in_flight ? "background_pending" : "not_started";
     const char *fuzz_summary = !fuzz_required ? "not_required" :
-        !proof.available ? "unknown" : proof.facts.fuzz_satisfied
-            ? "passed_declared_fuzz" : proof.facts.fuzz_receipts > 0
-                ? "pending_policy" : "not_started";
+        !proof.available ? proof_in_flight ? "background_pending" : "unknown" :
+        proof.facts.fuzz_satisfied ? "passed_declared_fuzz" :
+        proof.facts.fuzz_receipts > 0 ? "pending_policy" :
+        proof_in_flight ? "background_pending" : "not_started";
     const char *sanitizer_summary = !standard_evidence ? "not_required" :
         repair_needed ? "failed_or_unavailable" :
-        !entry->latest_action_root_hex[0] ? "not_started" :
-        !proof.available ? "unknown" : sanitizer_satisfied
-            ? "passed_asan_ubsan" : sanitizer_receipts > 0
-                ? "pending_policy" : "not_started";
-    const char *reproduction_grade = !entry->latest_action_root_hex[0]
+        no_candidate ? "not_started" :
+        !proof.available ? proof_in_flight ? "background_pending" : "unknown" :
+        sanitizer_satisfied ? "passed_asan_ubsan" :
+        sanitizer_receipts > 0 ? "pending_policy" :
+        proof_in_flight ? "background_pending" : "not_started";
+    const char *reproduction_grade = no_candidate
         ? "none" : !proof.available ? "unknown" :
         proof.facts.local_reproduced ? "clean_shadow_matched" :
         proof.facts.quorum_satisfied ? "approved_signer_threshold" :
@@ -1522,7 +1599,7 @@ void zcl_native_handle_zcode_work_status(
     const char *next_safe_command = entry->expired ? "zcode work start" :
         accepted ? "zcode work accept" :
         repair_needed && entry->candidate_count >= 3u ? "zcode work start" :
-        repair_needed || !entry->latest_action_root_hex[0]
+        repair_needed || no_candidate
             ? "zcode work run" :
         confirmation_ready ? "ask user to confirm exact candidate" :
         proof.available && review_required &&
@@ -1532,9 +1609,13 @@ void zcl_native_handle_zcode_work_status(
     const char *next_action = entry->expired ? "Start a fresh bounded task." :
         accepted ? "Continue publishing this accepted version." :
         repair_needed ? "Repair the named candidate failure." :
-        !entry->latest_action_root_hex[0] ? "Produce one bounded candidate." :
+        no_candidate ? "Produce one bounded candidate." :
         confirmation_ready
             ? "Ask the user to confirm or cancel this exact candidate." :
+        admitted_stalled
+            ? "Preserve the captured candidate and diagnose the package prerequisite before another attempt." :
+        admitted && !proof_in_flight
+            ? "No proof ledger reachable here shows this candidate's proof; pass the admitting node's datadir." :
         proof.available && review_required &&
             proof.facts.compile_satisfied && proof.facts.test_satisfied &&
             proof.facts.fuzz_satisfied && !proof.facts.review_satisfied
@@ -1543,7 +1624,7 @@ void zcl_native_handle_zcode_work_status(
     char continuation_workspace[ZWORK_PATH_MAX] = {0};
     char continuation_datadir[ZWORK_PATH_MAX] = {0};
     bool can_resume_candidate = !entry->expired && !accepted &&
-        (repair_needed || !entry->latest_action_root_hex[0]);
+        (repair_needed || no_candidate);
     bool can_present_confirmation = !entry->expired && !accepted &&
         confirmation_ready;
     bool can_resume_publication = !entry->expired && accepted;
@@ -1563,9 +1644,12 @@ void zcl_native_handle_zcode_work_status(
     else if (accepted)
         (void)snprintf(remaining_risks, sizeof(remaining_risks),
                        "accepted version is not fully published");
-    else if (!entry->latest_action_root_hex[0])
+    else if (no_candidate)
         (void)snprintf(remaining_risks, sizeof(remaining_risks),
                        "candidate not admitted");
+    else if (admitted_stalled)
+        (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                       "candidate execution produced no signed work receipt and no outstanding supervised proof");
     else if (!proof.available)
         (void)snprintf(remaining_risks, sizeof(remaining_risks),
                        "canonical proof ledger is unavailable; no proof result inferred");
@@ -1664,7 +1748,9 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&expert, "toolchain_capsule_root",
                          entry->toolchain_capsule_root_hex) &&
         json_push_kv_str(&expert, "action_id",
-                         entry->latest_action_root_hex) &&
+                         entry->latest_action_root_hex[0]
+                             ? entry->latest_action_root_hex
+                             : proof.action_root) &&
         json_push_kv_str(&expert, "candidate_root",
                          entry->latest_candidate_root_hex) &&
         json_push_kv_str(&expert, "patch_root",
@@ -1700,6 +1786,9 @@ void zcl_native_handle_zcode_work_status(
         json_push_kv_str(&reply->data, "fuzz_result", fuzz_summary) &&
         json_push_kv_str(&reply->data, "reproduction_grade",
                          reproduction_grade) &&
+        (proof.async_proof_state[0] == '\0' ||
+         json_push_kv_str(&reply->data, "async_proof_state",
+                          proof.async_proof_state)) &&
         json_push_kv_str(&reply->data, "review_verdict", review_summary) &&
         json_push_kv_str(&reply->data, "remaining_risks",
                          remaining_risks) &&
