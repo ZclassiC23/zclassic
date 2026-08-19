@@ -11,25 +11,26 @@
 
 # Z23
 
-Imagine opening an application and saying *"make the plane turn faster,"* *"add
-multiplayer,"* or *"change this screen."*
+**A sovereign, peer-to-peer network for creating, owning and preserving
+software.**
 
-Z23 finds reusable C23, creates the missing behavior, builds it on your machine,
-and shows you the result. You choose the version you want to keep. Other
-machines can reproduce that exact source and preserve it, peer to peer.
+Z23 turns the 100% proof-of-work ZClassic network into a global commons of
+reusable C23 software. Describe what you want. Your node searches the commons,
+creates only what is missing, builds and verifies the result locally, and lets
+you keep the exact version you chose.
 
-**Z23 is infrastructure for software that can be changed for the person using
-it.**
+This is not simply an AI agent changing code in one repository. Source is
+content-addressed, releases can be independently reproduced, distribution needs
+no central registry, and the original creator can disappear without taking the
+software with them. AI workers are replaceable; the network, exact source
+history and user ownership remain.
 
-Further out it is an economy, not a tool. A person describes an outcome; their
-node searches a global commons of permissively licensed C23, reuses what exists,
-asks AI workers to create what is missing, hires peer compute when the work is
-heavy, verifies the result locally, and hands back an exact application they
-own. Other nodes reproduce, improve, preserve and serve it. ZCL pays for what
-stays scarce — compute, verification, storage, hosting, bounties, delivery —
-while reusable source stays free. The bar: **asking for useful software should
-be easier than finding an app in a store, and what you get should outlive
-whoever made it.**
+ZClassic provides decentralized payments, durable ordering, names and
+cryptographic anchors. Every node keeps its own keys, policy, software and
+authority.
+
+**Software made for you, owned by you and preserved by the network—not rented
+from a platform.**
 
 ---
 
