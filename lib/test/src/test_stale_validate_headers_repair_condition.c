@@ -9,6 +9,7 @@
 #include "chain/chainparams.h"
 #include "chain/chainparamsbase.h"
 #include "storage/progress_store.h"
+#include "util/blocker.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
 
@@ -390,6 +391,21 @@ static void setup_main_state(struct main_state *ms,
             blocks[i].pprev = &blocks[i - 1];
     }
     active_chain_move_window_tip(&ms->chain_active, &blocks[1]);
+}
+
+
+/* Copy the active header_repair_no_source blocker, if any. */
+static bool svhr_no_source_blocker(struct blocker_snapshot *out)
+{
+    struct blocker_snapshot snaps[BLOCKER_CAP];
+    int n = blocker_snapshot_all(snaps, BLOCKER_CAP);
+    for (int i = 0; i < n; i++) {
+        if (strcmp(snaps[i].id, "header_repair_no_source") == 0) {
+            *out = snaps[i];
+            return true;
+        }
+    }
+    return false;
 }
 
 static bool setup_condition_case(const char *tag, char *dir, size_t dir_n,
@@ -877,6 +893,62 @@ int test_stale_validate_headers_repair_condition(void)
 
         stale_validate_headers_repair_test_set_node_db(NULL);
         if (ndb.db) sqlite3_close(ndb.db);
+        teardown_condition_case(dir, &ms);
+    }
+
+    /* ── A refusal must name the cause that actually held ────────────────────
+     * cure_request_peer_refetch() returns -1 when the repair target is not on
+     * the active chain: there is no canonical block_index entry to clear
+     * HAVE_DATA on and no hash to getdata, so the network was never asked. That
+     * -1 used to fall into the caller's `peers <= 0` test and be reported as
+     * "no connected peer can serve a P2P getdata re-fetch".
+     *
+     * Measured on a real wiped-datadir C3 run (2026-08-20, node.log line
+     * 126894): "no durable repair header h=3193025 via oracle AND no peers
+     * (peers=-1)" while the node was connected to 127.0.0.1:8033 and accepting
+     * headers from it for the next four minutes. The fold sat at H*=3,193,024
+     * and the blocker sent the recovery ladder looking for peers that were
+     * already there.
+     *
+     * Here: peers are present (5) and the target (2) is one above the active
+     * chain tip (1). The blocker must say so, and must NOT claim there is no
+     * peer. ───────────────────────────────────────────────────────────────── */
+    {
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[2];
+        struct uint256 hashes[2];
+        bool ok = setup_condition_case("refusal_names_true_cause", dir,
+                                       sizeof(dir), &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+
+        /* Active chain tip stays at height 1 — target 2 is NOT on it. */
+        stale_validate_headers_repair_test_set_peer_count(5);
+        ok = ok && seed_cursors(db, 5, 5);
+        ok = ok && seed_poison_rows(
+            db, 2, "'no-header-solution-backfill-required'", 0);
+
+        blocker_clear("header_repair_no_source");
+        stale_validate_headers_repair_test_clear_backoff();
+        condition_engine_tick();
+
+        struct blocker_snapshot bs;
+        bool raised = svhr_no_source_blocker(&bs);
+        ok = ok && raised;
+        /* The lie this regression exists to prevent. */
+        ok = ok && raised &&
+             strstr(bs.reason, "no connected peer can serve") == NULL;
+        /* The cause that actually held, and the peer count that was really
+         * there — both readable straight off the blocker. */
+        ok = ok && raised &&
+             strstr(bs.reason, "is not on the active chain") != NULL;
+        ok = ok && raised && strstr(bs.reason, "5 peer(s) connected") != NULL;
+
+        SVHR_CHECK("target off the active chain is named as such, not as "
+                   "\"no connected peer\", and carries the real peer count",
+                   ok);
+
+        blocker_clear("header_repair_no_source");
         teardown_condition_case(dir, &ms);
     }
 

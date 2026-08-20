@@ -148,17 +148,40 @@ void stale_validate_headers_repair_test_set_peer_count(int n)
  * missing input), or -1 if the height is unindexed (nothing to re-fetch). */
 static int cure_request_peer_refetch(int height);
 
+/* Connected-peer count, the single reader both the re-fetch and the refusal
+ * text use so the two can never disagree about how many peers were there. */
+static int connected_peer_count(void);
+
 /* Lane B3 — bounded, once-per-height escalation (defined after the remedy). */
 static void maybe_escalate_runtime_row_quarantine(
     int target, const struct uint256 *canon, struct main_state *ms);
 
-static void raise_stale_header_no_source_blocker(int height)
+/* Name the refusal for the cause that actually held, not for the one that is
+ * easiest to print. cure_request_peer_refetch() returns -1 when it did not even
+ * ASK the network — the height is not on the active chain, so there is no
+ * canonical block_index entry to clear HAVE_DATA on and no hash to getdata.
+ * That -1 used to reach the caller's `peers <= 0` test and be reported as
+ * "no connected peer can serve a P2P getdata re-fetch". Measured on a real
+ * wiped-datadir C3 run (2026-08-20, H* pinned at 3,193,024): the node had a
+ * connected peer that was serving headers the whole time and this blocker still
+ * said there was none, so the recovery ladder and the operator were both sent
+ * looking for peers instead of for the successor the active chain was missing.
+ * A refusal that names the wrong cause is worse than an unnamed one. */
+static void raise_stale_header_no_source_blocker(int height,
+                                                 bool refetch_attempted,
+                                                 int peers)
 {
     struct blocker_record r;
     char reason[BLOCKER_REASON_MAX];
-    snprintf(reason, sizeof(reason),
-             "header-solution repair h=%d: zclassicd oracle unreachable and "
-             "no connected peer can serve a P2P getdata re-fetch", height);
+    if (!refetch_attempted)
+        snprintf(reason, sizeof(reason),
+                 "header-solution repair h=%d: zclassicd oracle unreachable and "
+                 "h=%d is not on the active chain, so no P2P getdata re-fetch "
+                 "was requested (%d peer(s) connected)", height, height, peers);
+    else
+        snprintf(reason, sizeof(reason),
+                 "header-solution repair h=%d: zclassicd oracle unreachable and "
+                 "no connected peer can serve a P2P getdata re-fetch", height);
     if (!blocker_init(&r, STALE_HEADER_NO_SOURCE_BLOCKER_ID, "header_probe",
                       BLOCKER_TRANSIENT, reason))
         return; // raw-return-ok:blocker-init-failed-already-logged
@@ -357,7 +380,13 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
          * never swaps a page for an unverified one. The solution arrives async,
          * so this tick only fires the request and defers; the "solution
          * present" branch above attributes + completes on a later tick. */
-        int peers = cure_request_peer_refetch(target);
+        int refetch = cure_request_peer_refetch(target);
+        /* -1 is "not asked" (height off the active chain), NOT "zero peers".
+         * Keep the two apart from here down: the peer count is read from the
+         * one connman reader either way, so the refusal below can name which
+         * of the two actually held. */
+        bool refetch_attempted = refetch >= 0;
+        int peers = refetch_attempted ? refetch : connected_peer_count();
         atomic_store(&g_repair_pending_source, HEADER_PROBE_SRC_P2P);
         header_probe_note_p2p_request(target, peers);
         /* De-storm: while the oracle is down / no peer can serve, this remedy
@@ -366,26 +395,36 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
          * missing-input episode collapses to first-fire + 60 s keepalive keyed
          * on the (target,peers-available) fingerprint, rather than one WARN per
          * re-arm. The typed blocker (below) remains the authoritative signal. */
+        /* Two bits, because the two causes are different episodes: a target
+         * that goes from "not asked" to "asked but no peer" must re-emit
+         * rather than be swallowed as a repeat of the previous reason. */
         uint64_t defer_key =
-            ((uint64_t)(uint32_t)target << 1) | (uint64_t)(peers > 0 ? 1u : 0u);
+            ((uint64_t)(uint32_t)target << 2) |
+            (uint64_t)(peers > 0 ? 2u : 0u) |
+            (uint64_t)(refetch_attempted ? 1u : 0u);
         uint64_t defer_reps = 0;
         bool emit_defer = log_throttle_should_emit(
             &g_stale_repair_defer_log, defer_key, platform_time_wall_unix(),
             60, &defer_reps);
-        if (peers <= 0) {
+        if (!refetch_attempted || peers <= 0) {
             /* Missing input: no oracle, no peer can serve the repair right now.
              * Name it with a typed blocker and SKIP. condition.c increments
              * attempts unconditionally, but cooldown_secs>0 +
              * cooldown_max_rearms==0 re-arm the remedy forever, so this is an
              * always-terminating remedy on a recoverable cause — never a latch
              * to EV_OPERATOR_NEEDED. */
-            raise_stale_header_no_source_blocker(target);
+            raise_stale_header_no_source_blocker(target, refetch_attempted,
+                                                 peers);
             if (emit_defer)
                 LOG_WARN("condition",
                          "[condition:stale_validate_headers_repair] "
-                         "no durable repair header h=%d via oracle AND no peers "
+                         "no durable repair header h=%d via oracle AND %s "
                          "(peers=%d) — named blocker %s, deferring (cooldown "
                          "re-arms, no operator page) (repeats=%llu)", target,
+                         refetch_attempted
+                             ? "no peer can serve the re-fetch"
+                             : "h is not on the active chain so no re-fetch was "
+                               "requested",
                          peers, STALE_HEADER_NO_SOURCE_BLOCKER_ID,
                          (unsigned long long)defer_reps);
         } else {
@@ -472,6 +511,11 @@ static int cure_request_peer_refetch(int height)
                  "unset; retrying next tick", height, qr.code, qr.message);
 
     /* Connected-peer count = whether P2P can serve the re-fetch at all. */
+    return connected_peer_count();
+}
+
+static int connected_peer_count(void)
+{
     int peers = 0;
     struct connman *cm = sync_monitor_connman();
     if (cm)

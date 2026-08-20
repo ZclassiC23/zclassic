@@ -258,6 +258,99 @@ must stay green. It also runs as a pre-flight inside
 `mvp-coldstart-to-tip-stopwatch`, so the proof lane cannot quietly regain the
 asymmetry between runs.
 
+## Measured 2026-08-20 — the C3 lane needs two services, and where it stops
+
+Three runs of `c3_stopwatch_run_and_record.sh` against binary `e8eaff43b`,
+each a genuinely wiped datadir. They are recorded here because the three
+differ only in which host served which half, and that alone moved the
+result from H\* = 0 to H\* = 3,193,024. <!-- stale-ok: dated 2026-08-20 stopwatch measurement on a throwaway /tmp datadir, not a live-node tip claim -->
+
+A wiped node needs BOTH of these before the instant-on checkpoint install is
+even eligible, and they are separate services:
+
+- a **file service** that advertises a `ROM_ARTIFACT_HEADER_SEED` artifact,
+  so the node's validated header chain reaches the checkpoint height without
+  crawling there from genesis;
+- a **P2P peer** that completes a handshake, so `network_tip` exists at all
+  and bodies can be fetched.
+
+| run | `ZCL_PEER` | `ZCL_CS_FILE_PEER` | verdict | wall | final H\* | network tip |
+|-----|-----------|--------------------|---------|------|-----------|-------------|
+| 1 | `74.50.74.102:39070` | `74.50.74.102:39072` | STALLED-NAMED | 603 s | 0 | never observed (`-1`) |
+| 2 | `127.0.0.1:8033` | `127.0.0.1:18034` | SEAM | 603 s | 192 | 3,222,327 |
+| 3 | `127.0.0.1:8033` | `74.50.74.102:39072` | SEAM | 619 s | 3,193,024 | 3,222,352 |
+
+Run 1 — the fixture host serves files but not P2P. `dumpstate peer_lifecycle`
+recorded `attempted=1 connected=1 version_sent=1 version_received=0`: the TCP
+connection was accepted and the remote never spoke, so no handshake completed
+and `network_tip` stayed `-1` for the whole run. The header seed WAS advertised
+and imported (3,206,819 entries, frontier h=3,206,674), the 513 MB bundle
+validated byte-for-byte against the compiled ROM keystone, and the install then
+refused at chain-binding predicate -3 because the full-Equihash pass record at
+h=3,056,758 needs a header solution only a peer can backfill. The fold fell back
+to genesis and `body_persist` held at height 0.
+
+Run 2 — the live node serves P2P but advertises no header seed: it runs a binary
+that predates `28e1aa1cb`, whose readdir cap hid `block_index.bin`. Discovery
+logged `header-seed manifest not advertised (header chain via P2P)`; the install
+deferred with `validated header chain has not yet reached checkpoint height
+3056758 (header frontier h=0)`. In 603 s `header_admit` reached 194,442, so the
+checkpoint was about 2.6 h of header crawl away. H\* reached 192.
+
+Run 3 — P2P from the live node, header seed and bundle from the fixture host.
+This is the lane that works, and the one that names the bottleneck:
+
+- t = 125 s: H\* = 3,056,949 — bundle and header seed installed. <!-- stale-ok: dated 2026-08-20 stopwatch measurement on a throwaway /tmp datadir, not a live-node tip claim -->
+- t = 125 s → 374 s: H\* climbs 3,056,949 → 3,193,024. That is 136,075 blocks
+  in 249 s; `utxo_apply` reported 564.6–586.9 blocks/s over the same window.
+- t = 374 s → 619 s: **H\* does not move once, for 245 s.**
+
+At the rate it had just sustained, the remaining 29,328 blocks are about 54
+seconds of work. The run does not end short because the fold is slow. It ends
+short because the fold stops.
+
+### The named bottleneck: a rewind ask the frontier is right to refuse
+
+At the stall `dumpstate blocker` carries, in its own words:
+
+- `tip_finalize.rewind_churn` — "tip_finalize cursor asked to rewind
+  3193025->3193024 again with hstar pinned at 3193024 since the first rewind <!-- stale-ok: verbatim quote of the blocker text that one 2026-08-20 run emitted -->
+  (3 consecutive asks) - projection-hole/reconcile livelock; refusing further
+  rewinds so the ladder escalates instead of looping forever"
+- `recovery_coordinator.no_applicable_rung` — "critical inconsistency unresolved
+  but no cheap self-healing condition owns it"
+- `sticky_escalator.resnapshot_no_base` and
+  `sticky_escalator.refold_no_anchor_artifact` — both "A PERSON decides"
+- `sync_rate_below_floor` — "fold rate 0.000 bps below floor 1.000 bps ...
+  while peers connected and pending work exists"
+- `chain.tip_behind_header_chain` — "body-missing-at-successor: tip=3193024
+  best_valid_header=3222364 gap=29340"
+
+and the condition engine reports `operator_needed
+name=reducer_frontier_reconcile_light attempts=5 active_for=191s`. So the
+sequence is: something reconciles the frontier row at 3,193,025 back to
+3,193,024, `tip_finalize` refuses the fourth such ask (correctly — that guard is
+what stops an infinite loop), the ladder escalates, and no rung owns the hole.
+Nothing here is a rate problem and nothing here is fixed by waiting longer.
+
+`reducer_frontier_reconcile_light` is the next owner. It is a separate change,
+and it is not made here.
+
+### One thing that was wrong, and is fixed
+
+While the fold sat pinned, `header_repair_no_source` said "zclassicd oracle
+unreachable and no connected peer can serve a P2P getdata re-fetch" — with
+`peers=-1` in the log line — while the node was connected to `127.0.0.1:8033`
+and accepting headers from it. `cure_request_peer_refetch()` returns `-1` for
+"the target is not on the active chain, so I never asked the network"; the
+caller tested `peers <= 0` and printed that as an absence of peers. The two are
+now kept apart and the blocker names whichever actually held, carrying the real
+connected-peer count. A refusal that names the wrong cause sends the recovery
+ladder and the operator looking in the wrong place.
+`lib/test/src/test_stale_validate_headers_repair_condition.c` holds the
+regression: peers present, target off the active chain, and the blocker must not
+claim there is no peer. Red before the change, green after.
+
 ## Running the reports
 
 ```bash
