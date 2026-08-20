@@ -27,8 +27,11 @@ struct download_manager;
 typedef void (*body_backfill_wake_fn)(void *ctx);
 
 /* Run ONE bounded census pass over [0, tip] and, if the pipeline has room,
- * hand up to BODY_HISTORY_ENQUEUE_MAX missing bodies to the download
- * manager. Returns the number of bodies enqueued.
+ * hand the window's missing bodies to the download manager: up to
+ * BODY_HISTORY_ENQUEUE_MAX of them under the default throttled policy, or up
+ * to BODY_HISTORY_ENQUEUE_MAX_NORMAL (the whole census window, so one
+ * descent suffices) under -bodyhistorybackfill=normal. Returns the number of
+ * bodies enqueued.
  *
  * The census runs on EVERY call so the published coverage verdict never
  * goes stale. Two separate brakes hold back the ENQUEUE half:

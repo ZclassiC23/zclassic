@@ -211,14 +211,21 @@ int body_backfill_pass(struct main_state *ms, struct download_manager *dm,
         if (mode == BB_BACKFILL_NORMAL ||
             (queued <= BODY_HISTORY_QUEUE_HEADROOM &&
              in_flight < dl_get_max_in_flight_total() / 4)) {
-            struct uint256 *eh = zcl_malloc(
-                BODY_HISTORY_ENQUEUE_MAX * sizeof(*eh), "body_history_enq_h");
-            int32_t *ehh = zcl_malloc(
-                BODY_HISTORY_ENQUEUE_MAX * sizeof(*ehh), "body_history_enq_n");
+            /* The throttled drip takes 64 of the window's holes and lets
+             * the cursor descend past the rest, so a window with more than
+             * 64 of them needs another whole sweep to finish. Under the
+             * operator-selected NORMAL policy, drain the window instead:
+             * one descent then requests every missing body exactly once. */
+            size_t enq_cap = (mode == BB_BACKFILL_NORMAL)
+                                 ? BODY_HISTORY_ENQUEUE_MAX_NORMAL
+                                 : BODY_HISTORY_ENQUEUE_MAX;
+            struct uint256 *eh =
+                zcl_malloc(enq_cap * sizeof(*eh), "body_history_enq_h");
+            int32_t *ehh =
+                zcl_malloc(enq_cap * sizeof(*ehh), "body_history_enq_n");
             if (eh && ehh) {
                 size_t want = body_history_census_collect_missing(
-                    lo, classes, hashes, n, eh, ehh,
-                    BODY_HISTORY_ENQUEUE_MAX);
+                    lo, classes, hashes, n, eh, ehh, enq_cap);
                 /* Drop anything already in flight so a slow peer's
                  * outstanding request is not duplicated. */
                 size_t keep = 0;

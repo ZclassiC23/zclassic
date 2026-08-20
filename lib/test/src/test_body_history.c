@@ -1186,6 +1186,97 @@ static int test_bh_a_verdict_expires_when_the_index_goes_bad(void)
     return failures;
 }
 
+/* The 64-per-pass drip could not drain a window it had already measured.
+ *
+ * The census measures BODY_HISTORY_CENSUS_BUDGET heights per pass and then
+ * ADVANCES past them: whatever the pass declines to request is not looked at
+ * again until the cursor has walked the whole chain and come back around. So
+ * a cap below the window size is not "slower", it is "needs one more full
+ * sweep per 64 holes" — on the owner's node, 2.5M missing bodies at 64 per
+ * 5 s tick meant ~64 sweeps and ~70 hours. This pins the cap that an
+ * operator gets when they ask for the hole to actually close.
+ */
+static int test_bh_normal_backfill_drains_the_window_it_measured(void)
+{
+    int failures = 0;
+    TEST("one NORMAL pass requests every hole the same pass measured") {
+        /* One window's worth of chain, holed far past the throttled cap. */
+        const int64_t budget = BODY_HISTORY_CENSUS_BUDGET;
+        const int64_t n_holes = BODY_HISTORY_ENQUEUE_MAX * 4 + 7;
+        struct bh_fake_chain chain;
+        ASSERT(bh_fake_chain_init(&chain, budget));
+        for (int64_t h = 0; h < n_holes; h++)
+            chain.have_data[h] = 0;
+
+        struct body_coverage_map held, measured;
+        body_coverage_init(&held);
+        body_coverage_init(&measured);
+        struct body_history_census census;
+        body_history_census_init(&census);
+
+        uint8_t *classes = malloc((size_t)budget);
+        struct uint256 *hashes = malloc((size_t)budget * sizeof(*hashes));
+        ASSERT(classes && hashes);
+
+        /* Exactly ONE pass, the way body_backfill_pass runs one per tick. */
+        int64_t lo = 0, hi = 0;
+        ASSERT(body_history_census_plan(&census, 0, budget - 1, budget,
+                                        &lo, &hi));
+        ASSERT(lo == 0 && hi == budget - 1);
+        size_t n = body_history_census_probe_window(lo, hi, bh_fake_probe,
+                                                    &chain, classes, hashes,
+                                                    (size_t)budget);
+        struct body_history_pass_result res;
+        ASSERT(body_history_census_fold(&census, &held, &measured, lo,
+                                        classes, n, &res));
+        ASSERT(res.missing == n_holes);
+
+        struct uint256 *out_h =
+            malloc((size_t)budget * sizeof(*out_h));
+        int32_t *out_n = malloc((size_t)budget * sizeof(*out_n));
+        ASSERT(out_h && out_n);
+
+        /* The throttled default takes its 64 and leaves the rest of the
+         * measured window unrequested — that is the drip, working as
+         * designed, and also the reason the hole never closed. */
+        size_t drip = body_history_census_collect_missing(
+            lo, classes, hashes, n, out_h, out_n,
+            BODY_HISTORY_ENQUEUE_MAX);
+        ASSERT(drip == BODY_HISTORY_ENQUEUE_MAX);
+        ASSERT((int64_t)drip < n_holes);
+
+        /* The operator-selected cap drains the same window in that one
+         * pass, so a single descent of the chain is enough. */
+        size_t drain = body_history_census_collect_missing(
+            lo, classes, hashes, n, out_h, out_n,
+            BODY_HISTORY_ENQUEUE_MAX_NORMAL);
+        ASSERT(drain == (size_t)n_holes);
+        ASSERT((int64_t)drain == res.missing);
+
+        /* Structural, not incidental: the cap must cover a whole window,
+         * or the cursor once again advances past holes it just counted. */
+        ASSERT(BODY_HISTORY_ENQUEUE_MAX_NORMAL >= BODY_HISTORY_CENSUS_BUDGET);
+
+        /* What it collected is the real work: the lowest hole first, and
+         * every entry a height the pass actually marked missing. */
+        struct uint256 want0;
+        bh_fake_hash(&want0, 0);
+        ASSERT(uint256_eq(&out_h[0], &want0));
+        ASSERT(out_n[0] == 0);
+        ASSERT(out_n[drain - 1] == (int32_t)(n_holes - 1));
+
+        free(out_h);
+        free(out_n);
+        free(classes);
+        free(hashes);
+        body_coverage_free(&held);
+        body_coverage_free(&measured);
+        bh_fake_chain_free(&chain);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_body_history(void)
 {
     int failures = 0;
@@ -1199,6 +1290,7 @@ int test_body_history(void)
     failures += test_bh_partial_read_does_not_certify();
     failures += test_bh_evaluate_failure_paths_are_unknown();
     failures += test_bh_below_tip_hole_found_and_enqueued();
+    failures += test_bh_normal_backfill_drains_the_window_it_measured();
     failures += test_bh_one_contiguous_hole_from_height_one();
     failures += test_bh_census_is_bounded_and_resumable();
     failures += test_bh_at_tip_requires_proven_history();

@@ -196,14 +196,33 @@ typedef enum body_history_probe (*body_history_probe_fn)(
  * enqueue, so a burst is a measurement and cannot become a download surge. */
 #define BODY_HISTORY_CENSUS_BURST_MS 250
 
-/* Bound on how many missing bodies one pass hands to the download manager.
- * The queue is height-sorted and below-tip work sorts AHEAD of tip-chasing
- * work, so an unbounded backfill would starve live sync outright. 64 per
- * pass is ~13 blocks/second of steady drip, enough to close a 3.1M-block
- * hole in the background without ever occupying more than a small fraction
- * of the in-flight window (DL_MAX_IN_FLIGHT_TOTAL is 1024 at tip). The
- * caller additionally gates on download-queue headroom. */
+/* Bound on how many missing bodies one pass hands to the download manager
+ * under the DEFAULT (throttled) policy: a ~13 blocks/second steady drip that
+ * closes a hole in the background without ever occupying more than a small
+ * fraction of the in-flight window (DL_MAX_IN_FLIGHT_TOTAL is 1024 at tip).
+ * The caller additionally gates on download-queue headroom.
+ *
+ * This file used to justify the bound as "below-tip work sorts AHEAD of
+ * tip-chasing work, so an unbounded backfill would starve live sync". That
+ * is no longer how the queue orders: dl_queue_order compares CLASS FIRST, so
+ * every DL_WORK_FORWARD entry sorts ahead of every DL_WORK_HISTORY entry
+ * regardless of height, and dl_assign_to_peer charges history against its
+ * own subordinate lane (DL_MAX_HISTORY_IN_FLIGHT / DL_MAX_HISTORY_PER_PEER)
+ * which "never charge[s] forward work". Live sync is protected structurally,
+ * by ordering and by the lane budget — not by this producer-side cap. */
 #define BODY_HISTORY_ENQUEUE_MAX 64
+
+/* ...and under the explicit -bodyhistorybackfill=normal policy, where an
+ * operator has asked for the history hole to actually close.
+ *
+ * A pass examines BODY_HISTORY_CENSUS_BUDGET heights but the throttled cap
+ * takes only 64 of them, so a window holding more than 64 holes is left
+ * partly unfilled and the cursor descends past it: closing a 2.5M-body gap
+ * needs ~64 full sweeps (~70 hours) instead of one. Draining the whole
+ * window in a single pass makes ONE descent sufficient. The real fetch rate
+ * stays governed by DL_MAX_HISTORY_IN_FLIGHT (16 concurrent), which the 64
+ * cap could not even keep busy — 64 per 5 s tick offers 12.8 blocks/s. */
+#define BODY_HISTORY_ENQUEUE_MAX_NORMAL BODY_HISTORY_CENSUS_BUDGET
 
 /* Resumable descending cursor. Zero-initialized state is "nothing measured,
  * no sweep completed", i.e. UNKNOWN. */
