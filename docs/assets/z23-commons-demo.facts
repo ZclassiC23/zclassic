@@ -1,18 +1,18 @@
 # Recorded by `make commons-demo`. Every value was measured by that
 # run on the machine named below; nothing here is typed in by hand.
-recorded_utc          = 2026-08-19T23:29:12Z
+recorded_utc          = 2026-08-20T02:58:47Z
 host_cpu              = AMD Ryzen 9 7950X3D 16-Core Processor (32 threads)
 host_os               = Linux 6.8.0-111-generic x86_64
 compiler              = cc (Ubuntu 14.2.0-4ubuntu2~24.04.1) 14.2.0
-source_git_commit     = 89ea2fd4956d75edeaaa9572f6c79acc6600a11d (dirty: no)
-z23_binary_sha3       = ec67d034de5cf50be5c99da1659d14e84fc0394196264ca2ee0f5f3ac38349c5
+source_git_commit     = 2314faffee9c0826f4727f9d1db040d5fdce8952 (dirty: no)
+z23_binary_sha3       = 9787b7fbdaeb9b56b007edc2be63532eeaa55fe3e9291d18c8326dca95712694
 journey_script_sha3   = f438246b882e9f2b45f7a1f1d7b7ccc3b5ed1eb121be1ab893d881dc79f63874
 conditions            = two fresh isolated regtest datadirs, one physical host, 1 peer
 reused_package_root   = 7ef55909607130c54004049050628a3eb48908e39681018772a71d75336cbb60
 accepted_source_root  = a2e563bc8c421f1bbaf0618fb4ba12dd9c15e172afb8a18f8a38060e7effbb1f
-accepted_app_root     = fa02676caa6e3cf2855a1e036e34496a3e70b0186a09d76c4aa935293c097dc8
-ask_to_visible_result = 46 s
-remote_reproduction   = 28 s
+accepted_app_root     = af3a9cb4c0a6eacb158cd239fdb5a4c1762574d4f76f77a43f1038f262420e7e
+ask_to_visible_result = 51 s
+remote_reproduction   = 30 s
 bytes_over_the_wire   = 14960 (reused package) + 22028 (accepted application)
 reused_package_match  = byte-identical on both nodes (1766 bytes)
 application_match     = byte-identical program on both nodes (16640 bytes)
@@ -20,9 +20,9 @@ tamper_refused        = 4 of 4, each by name
 central_services      = 0
 changed_package       = zdogfight/zdogfight → pilot/zdogfight-quickturn
 changed_root_before   = 73b04d99b39a631569293b925e0357a8f2540ff0963c75a96d330025052b340b
-changed_root_after    = abf4027181d6f187e79b6721591bd9db3e358250e03aad9f18d539a8a9b95795
+changed_root_after    = ed81805955efd7a0000db0f5a37673400cdfa336caeb71093e29b06b631dfddc
 turn_rate_before      = 143 deg/s (node A, the package as published)
 turn_rate_after       = 239 deg/s (node B, from the bytes it fetched)
-whole_journey         = 166 s
+whole_journey         = 170 s
 verdict               = PASS — 10 of 10 steps · zcl.commons_journey_acceptance.v1
-evidence_root         = 46eefb5648698084d259f99664e47d62471abacf54bf592e7763e49b80f4043f
+evidence_root         = 86e7b6d2ddd7ed6a176149d70330f50c3154cb0bcda1e52a206d8c3b0830bc56
