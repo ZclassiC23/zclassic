@@ -649,6 +649,70 @@ static char *status_brief_mock_rpc(const char *method,
     return strdup("null");
 }
 
+static bool g_status_journey_plaintext;
+
+static char *status_journey_mock_rpc(const char *method,
+                                     const char *params_json)
+{
+    (void)params_json;
+    if (strcmp(method, "agent") == 0)
+        return strdup(
+            "{\"schema\":\"zcl.public_status.v2\","
+            "\"partial_result\":false,"
+            "\"served_height\":3117074,\"header_height\":3117074,"
+            "\"served_height_known\":true,\"header_height_known\":true,"
+            "\"gap\":0,\"peer_best_height\":3117074,"
+            "\"peer_best_height_known\":true,"
+            "\"target_height\":3117074,\"target_height_known\":true,"
+            "\"chain_evidence_consistent\":true,"
+            "\"sync_state\":\"at_tip\",\"serving\":true,\"healthy\":true,"
+            "\"primary_blocker\":\"none\",\"tip_follow\":true,"
+            "\"wallet_view_ready\":true,\"wallet_spend_allowed\":true,"
+            "\"archive_complete\":\"incomplete\","
+            "\"full_replay_verified\":false,"
+            "\"first_call\":{\"schema\":\"zcl.first_call_contract.v1\","
+                "\"budget_ms\":250,\"partial_result\":false,"
+                "\"budget_exceeded\":false},"
+            "\"peers\":{\"total\":3},"
+            "\"conditions\":{\"schema\":\"zcl.condition_engine_summary.v2\","
+                "\"active_count\":0},"
+            "\"resources\":{\"schema\":\"zcl.node_resources.v1\","
+                "\"rss_mb\":64},"
+            "\"reducer\":{\"tip_advance_age_seconds\":2},"
+            "\"security_posture\":{\"schema\":\"zcl.security_posture.v1\","
+                "\"anchor_backfill_gap\":false,"
+                "\"nullifier_backfill_gap\":false}}"
+        );
+    if (strcmp(method, "agentsession") == 0)
+        return strdup(
+            "{\"ok\":true,\"snapshot\":{\"status\":\"CURRENT\","
+            "\"complete\":true,\"confirmed_zat\":10000000,"
+            "\"transparent_spendable_zat\":0,"
+            "\"shielded_spendable_zat\":10000000,\"pending_zat\":0,"
+            "\"encumbered_zat\":0,\"intent_reserved_zat\":0,"
+            "\"agent_available_zat\":10000000,"
+            "\"wallet_instance_id\":\"must-not-cross-front-door\"}}"
+        );
+    if (strcmp(method, "getwalletinfo") == 0)
+        return strdup(g_status_journey_plaintext
+            ? "{\"persistence\":{\"healthy\":true},"
+              "\"lock\":{\"encrypted_at_rest\":false,\"unlocked\":true},"
+              "\"sapling\":{\"prover_ready\":true,"
+              "\"checkpoint_healthy\":true}}"
+            : "{\"persistence\":{\"healthy\":true},"
+              "\"lock\":{\"encrypted_at_rest\":true,\"unlocked\":true},"
+              "\"sapling\":{\"prover_ready\":true,"
+              "\"checkpoint_healthy\":true}}");
+    if (strcmp(method, "walletbackupstatus") == 0)
+        return strdup(
+            "{\"healthy\":true,\"encrypted_backup_available\":true,"
+            "\"last_path\":\"must-not-cross-front-door\"}"
+        );
+    if (strcmp(method, "getmempoolinfo") == 0)
+        return strdup("{\"size\":1}");
+    return strdup("null");
+}
+
 /* core.status.brief exists so an operator/AI never has to pipe the ~15KB
  * core.status body through grep/tr for the handful of fields that answer
  * "is the node serving and caught up" — see docs/NATIVE_COMMAND_INTERFACE.md
@@ -671,7 +735,7 @@ static int test_status_brief_flat_lean_envelope(void)
         ASSERT_EQ(root_status->availability, ZCL_COMMAND_READY);
         ASSERT(root_status->handler == zcl_native_bridge_command);
         ASSERT_STR_EQ(root_status->output_schema,
-                      "zcl.core_status_brief.v1");
+                      "zcl.status_journey.v1");
         ASSERT((root_status->allowed_lanes & ZCL_COMMAND_LANE_LOCAL) != 0);
         ASSERT(bridge_has_exact_binding("status"));
         ASSERT(zcl_native_bridge_body_for_path("status") != NULL);
@@ -682,14 +746,8 @@ static int test_status_brief_flat_lean_envelope(void)
 
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
         enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
-        enum zcl_command_exit root_code = ZCL_COMMAND_EXIT_INTERNAL;
-        char root_out[ZCL_COMMAND_RESULT_BUDGET + 1];
-        bool root_dispatched = exec_leaf(reg, root_status, root_out,
-                                         sizeof(root_out), &root_code);
         bool dispatched = exec_leaf(reg, s, out, sizeof(out), &code);
         node_rpc_client_set_test_hook(NULL);
-        ASSERT(root_dispatched);
-        ASSERT_EQ(root_code, ZCL_COMMAND_EXIT_OK);
         ASSERT(dispatched);
         ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
 
@@ -746,6 +804,79 @@ static int test_status_brief_flat_lean_envelope(void)
         json_free(&root);
         PASS();
     } _test_next:;
+    node_rpc_client_set_test_hook(NULL);
+    return failures;
+}
+
+static int test_status_journey_safe_money_frontdoor(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    const struct zcl_command_spec *s = find_spec(reg, "status");
+    char out[ZCL_COMMAND_RESULT_BUDGET + 1];
+    TEST("root status answers the money journey and emits no sensitive fields") {
+        ASSERT(s != NULL);
+        ASSERT_STR_EQ(s->output_schema, "zcl.status_journey.v1");
+        node_rpc_client_set_test_hook(status_journey_mock_rpc);
+        g_status_journey_plaintext = false;
+        enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+
+        struct json_value root;
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        const struct json_value *data = json_get(&root, "data");
+        ASSERT(data && data->type == JSON_OBJ);
+        ASSERT(json_get_bool(json_get(data, "node_healthy")));
+        ASSERT(json_get_bool(json_get(data, "synced")));
+        ASSERT(json_get_bool(json_get(data, "wallet_ready")));
+        ASSERT(json_get_bool(json_get(data, "can_receive")));
+        ASSERT(json_get_bool(json_get(data, "can_send")));
+        ASSERT(!json_get_bool(json_get(data, "can_send_transparent")));
+        ASSERT(json_get_bool(json_get(data, "can_send_sapling")));
+        ASSERT_EQ(json_get_int(json_get(data, "spendable_zat")),
+                  (int64_t)10000000);
+        ASSERT_EQ(json_get_int(json_get(data, "pending_zat")), (int64_t)0);
+        ASSERT_EQ(json_get_int(json_get(data, "reserved_zat")), (int64_t)0);
+        ASSERT_EQ(json_get_int(json_get(data, "mempool_transactions")),
+                  (int64_t)1);
+        ASSERT(json_is_null(json_get(data, "sapling_witness_ready")));
+        ASSERT_STR_EQ(json_get_str(json_get(data, "sapling_witness_state")),
+                      "plan_required");
+        ASSERT_STR_EQ(json_get_str(json_get(data, "error_code")), "NONE");
+        ASSERT_STR_EQ(json_get_str(json_get(data, "operator_status")),
+                      "healthy");
+        ASSERT_STR_EQ(json_get_str(json_get(data, "summary")),
+                      "node healthy at served frontier");
+        ASSERT(!json_get_bool(json_get(data, "human_action_required")));
+        ASSERT_STR_EQ(json_get_str(json_get(data, "next_action")),
+                      "z23 vault intent plan");
+        ASSERT(strstr(out, "wallet_instance_id") == NULL);
+        ASSERT(strstr(out, "last_path") == NULL);
+        ASSERT(strstr(out, "must-not-cross-front-door") == NULL);
+        json_free(&root);
+
+        g_status_journey_plaintext = true;
+        code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        data = json_get(&root, "data");
+        ASSERT(!json_get_bool(json_get(data, "can_receive")));
+        ASSERT(!json_get_bool(json_get(data, "can_send")));
+        ASSERT_STR_EQ(json_get_str(json_get(data, "error_code")),
+                      "WALLET_PLAINTEXT");
+        ASSERT_STR_EQ(json_get_str(json_get(data, "operator_status")),
+                      "blocked");
+        ASSERT_STR_EQ(json_get_str(json_get(data, "summary")),
+                      "consensus-state trust posture requires review");
+        ASSERT(json_get_bool(json_get(data, "human_action_required")));
+        ASSERT_STR_EQ(json_get_str(json_get(data, "next_action")),
+                      "z23 core wallet security encrypt --input=-");
+        json_free(&root);
+        PASS();
+    } _test_next:;
+    g_status_journey_plaintext = false;
     node_rpc_client_set_test_hook(NULL);
     return failures;
 }
@@ -1127,9 +1258,9 @@ static int test_status_brief_composite_fails_closed(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    const struct zcl_command_spec *s = find_spec(reg, "status");
+    const struct zcl_command_spec *s = find_spec(reg, "core.status.brief");
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("root status rejects RPC errors, unrecognized schemas, and wrong "
+    TEST("core.status.brief rejects RPC errors, unrecognized schemas, and wrong "
         "field types") {
         static const char *const cases[] = {
             "{\"code\":-32601,\"message\":\"Method not found\"}",
@@ -1192,9 +1323,9 @@ static int test_status_brief_schema_skew_degrades_gracefully(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    const struct zcl_command_spec *s = find_spec(reg, "status");
+    const struct zcl_command_spec *s = find_spec(reg, "core.status.brief");
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("root status degrades a present-but-different zcl.public_status.vN "
+    TEST("core.status.brief degrades a different zcl.public_status.vN "
         "schema instead of hard-failing") {
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
@@ -1329,10 +1460,10 @@ static int test_status_brief_valid_unknown_and_partial_contracts(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    const struct zcl_command_spec *s = find_spec(reg, "status");
+    const struct zcl_command_spec *s = find_spec(reg, "core.status.brief");
     char fixture[2048];
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("root status preserves valid boot/no-peer/partial unknowns") {
+    TEST("core.status.brief preserves valid boot/no-peer/partial unknowns") {
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
 
@@ -1438,10 +1569,10 @@ static int test_status_brief_rejects_contract_contradictions(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    const struct zcl_command_spec *s = find_spec(reg, "status");
+    const struct zcl_command_spec *s = find_spec(reg, "core.status.brief");
     char fixture[2048];
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("root status rejects known/sentinel, gap, and partial contract faults") {
+    TEST("core.status.brief rejects known/sentinel, gap, and partial faults") {
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
         /* budget_exceeded=true with partial_result=false is NOT a
@@ -1530,9 +1661,9 @@ static int test_status_brief_names_first_failing_field(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    const struct zcl_command_spec *s = find_spec(reg, "status");
+    const struct zcl_command_spec *s = find_spec(reg, "core.status.brief");
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
-    TEST("root status names the first failing public-status field") {
+    TEST("core.status.brief names the first failing public-status field") {
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
 
@@ -1672,11 +1803,11 @@ int command_registry_status_latency_contract(void)
 {
     int failures = 0;
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    const struct zcl_command_spec *s = find_spec(reg, "status");
+    const struct zcl_command_spec *s = find_spec(reg, "core.status.brief");
     char fixture[2048];
     char out[ZCL_COMMAND_RESULT_BUDGET + 1];
 
-    TEST("status is ok:true, schema-valid, and well under budget on both a "
+    TEST("core.status.brief is schema-valid and fast on both a "
          "healthy node and a fresh not-yet-synced node") {
         ASSERT(s != NULL);
         node_rpc_client_set_test_hook(status_brief_mock_rpc);
@@ -3121,6 +3252,7 @@ int test_command_registry_catalog(void)
     failures += test_raw_transaction_error_string();
     failures += test_bridge_rpc_success_shapes_fail_closed();
     failures += test_status_brief_flat_lean_envelope();
+    failures += test_status_journey_safe_money_frontdoor();
     failures += test_wallet_utxo_list_envelope();
     failures += test_status_brief_overdue_transient_surfaces();
     failures += test_status_brief_overdue_transient_absent_when_zero();

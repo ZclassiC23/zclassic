@@ -61,6 +61,9 @@ static inline struct wallet_rpc_context *wallet_ctx(void)
 
 /* ── Handlers (grouped into sibling .c files) ─────────────── */
 
+/* wallet_readiness_controller.c — safe spend-capability posture */
+void wallet_readiness_append_sapling(struct json_value *result);
+
 /* wallet_controller_keys.c — key/address import-export */
 
 /* Mint a receive address that is PERSISTED before it is returned. The one

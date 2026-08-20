@@ -40,6 +40,7 @@
 #include "models/wallet_identity.h"
 #include "platform/time_compat.h"
 #include "rpc/server.h"
+#include "services/vault_read.h"
 #include "wallet/wallet.h"
 
 #include <stdlib.h>
@@ -60,6 +61,28 @@ static bool g_vd_rpc_ready;
 
 static char *vd_rpc_hook(const char *method, const char *params_json)
 {
+    if (strcmp(method, "dumpstate") == 0 && params_json &&
+        strstr(params_json, "\"vault\"") != NULL) {
+        struct json_value envelope, state;
+        json_init(&envelope);
+        json_set_object(&envelope);
+        json_init(&state);
+        if (!vault_read_dump_state_json(&state, NULL)) {
+            json_free(&state);
+            json_free(&envelope);
+            return strdup("{\"code\":-32603,\"message\":\"vault\"}");
+        }
+        (void)json_push_kv_str(&envelope, "subsystem", "vault");
+        (void)json_push_kv(&envelope, "state", &state);
+        json_free(&state);
+        char *out = malloc(16384);
+        if (!out || json_write(&envelope, out, 16384) == 0) {
+            free(out);
+            out = NULL;
+        }
+        json_free(&envelope);
+        return out;
+    }
     if (strcmp(method, "agentsession") != 0 || !g_vd_rpc_ready)
         return strdup("null");
     struct json_value params;
@@ -138,6 +161,21 @@ static void vd_run_send_shielded(const struct zcl_command_spec *spec,
     zcl_native_handle_vault_send_shielded(&request, reply);
 }
 
+static void vd_run_list(const struct zcl_command_spec *spec,
+                        const struct zcl_command_context *ctx,
+                        struct json_value *input,
+                        struct zcl_command_reply *reply)
+{
+    struct zcl_command_request request = {
+        .spec = spec,
+        .context = ctx,
+        .input = input,
+        .view = "normal",
+    };
+    zcl_command_reply_init(reply, spec->output_schema);
+    zcl_native_handle_vault_list(&request, reply);
+}
+
 static struct json_value vd_send_input(bool confirm)
 {
     struct json_value input;
@@ -193,9 +231,12 @@ int test_vault_dispatch(void)
     const struct zcl_command_spec *send_shielded =
         reg ? zcl_command_registry_find(reg, "vault.send-shielded", NULL)
             : NULL;
+    const struct zcl_command_spec *list =
+        reg ? zcl_command_registry_find(reg, "vault.list", NULL) : NULL;
     VD_CHECK("vault.send leaf", send != NULL);
     VD_CHECK("vault.send-shielded leaf", send_shielded != NULL);
-    if (!send || !send_shielded)
+    VD_CHECK("vault.list leaf", list != NULL);
+    if (!send || !send_shielded || !list)
         return failures + 1;
 
     struct zcl_command_context owner =
@@ -369,13 +410,53 @@ int test_vault_dispatch(void)
             runtime.db_service = &dbsvc;
             runtime.wallet = &wallet;
             app_runtime_set_current(&runtime);
+            node_rpc_client_set_test_hook(vd_rpc_hook);
+
+            /* The native vault vocabulary is intentionally shorter than the
+             * read model's primitive names.  Prove that the adapter maps the
+             * live model rather than reporting all six known rows absent. */
+            {
+                struct json_value input;
+                json_init(&input);
+                json_set_object(&input);
+                struct zcl_command_reply reply;
+                vd_run_list(list, &owner, &input, &reply);
+                const struct json_value *classes =
+                    json_get(&reply.data, "classes");
+                const struct json_value *first =
+                    classes && classes->type == JSON_ARR &&
+                            json_size(classes) > 0
+                        ? json_at(classes, 0) : NULL;
+                const char *first_class =
+                    json_get_str(json_get(first, "class"));
+                const char *first_source =
+                    json_get_str(json_get(first, "source"));
+                VD_CHECK("vault.list maps all live read-model classes",
+                         classes && classes->type == JSON_ARR &&
+                         json_size(classes) == 6 &&
+                         json_get_int(json_get(&reply.data,
+                                               "classes_available")) > 0 &&
+                         json_get_int(json_get(&reply.data,
+                                               "classes_available")) +
+                         json_get_int(json_get(&reply.data,
+                                               "classes_unavailable")) == 6);
+                VD_CHECK("vault.list maps transparent_zcl to transparent",
+                         first_class &&
+                         strcmp(first_class, "transparent") == 0 &&
+                         first_source && first_source[0] != '\0' &&
+                         json_get(first, "spendable_zat") != NULL);
+                VD_CHECK("vault.list no false unavailable blocker",
+                         strcmp(reply.error.code,
+                                "VAULT_READ_UNAVAILABLE") != 0);
+                zcl_command_reply_free(&reply);
+                json_free(&input);
+            }
+
             rpc_table_init(&g_vd_rpc_table);
             register_agent_session_rpc_commands(&g_vd_rpc_table);
             if (rpc_is_in_warmup(NULL, 0))
                 set_rpc_warmup_finished();
             g_vd_rpc_ready = true;
-            node_rpc_client_set_test_hook(vd_rpc_hook);
-
             /* (a) over the session's per-tx cap: refused with
              * POLICY_TX_LIMIT before the target runs. */
             {

@@ -2,12 +2,14 @@
  *
  * The node used to answer one blurry question ("are you ready?") when an
  * operator was really asking four different ones. These tests pin the four
- * facts apart on the `status` surface, and pin the one thing that makes the
+ * facts apart on the chain-only `core status brief` surface, and pin the one
+ * thing that makes the
  * cold-sync target reachable at all: a node that is following the network
  * tip while still missing old block bodies must say exactly that.
  *
- * Everything here drives the real `status` leaf through the registry, with
- * the `agent` RPC answered from a fixture — no live node is contacted.
+ * Everything here drives the real `core.status.brief` leaf through the
+ * registry, with the `agent` RPC answered from a fixture — no live node is
+ * contacted. Root `status` composes these facts with custody readiness.
  */
 
 #include "test/test_core.h"
@@ -91,7 +93,7 @@ static bool rt_status_data(const char *fixture, char *out, size_t out_size,
                            const struct json_value **data)
 {
     const struct zcl_command_registry *reg = zcl_command_catalog();
-    const struct zcl_command_spec *s = rt_find_spec(reg, "status");
+    const struct zcl_command_spec *s = rt_find_spec(reg, "core.status.brief");
     enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
 
     if (!s)

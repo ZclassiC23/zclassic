@@ -317,6 +317,10 @@ static int test_money_freshness_fails_closed(void)
         ASSERT_STR_EQ(wallet_money_scope_expected_lane("prod"), "canonical");
         ASSERT_STR_EQ(wallet_money_scope_expected_lane("test"), "test");
         ASSERT(wallet_money_scope_expected_lane("other") == NULL);
+        ASSERT_STR_EQ(wallet_money_scope_for_lane("canonical"), "prod");
+        ASSERT_STR_EQ(wallet_money_scope_for_lane("dev"), "dev");
+        ASSERT_STR_EQ(wallet_money_scope_for_lane("test"), "test");
+        ASSERT(wallet_money_scope_for_lane("other") == NULL);
         PASS();
     }
     TEST("money freshness is current only at a published fully reduced tip") {

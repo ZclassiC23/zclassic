@@ -23,11 +23,14 @@
 #include "keys/key_io.h"
 #include "models/block.h"
 #include "models/database.h"
+#include "models/tx_index.h"
 #include "net/connman.h"
 #include "rpc/server.h"
 #include "storage/coins_kv.h"
+#include "storage/disk_block_io.h"
 #include "storage/progress_store.h"
 #include "support/cleanse.h"
+#include "util/safe_alloc.h"
 #include "validation/main_state.h"
 #include "validation/txmempool.h"
 #include "wallet/wallet.h"
@@ -320,6 +323,32 @@ int test_rpc_safety(void)
         else    { printf("FAIL\n"); failures++; }
     }
 
+    printf("rpc_safety: wallet backup status never exposes local paths... ");
+    {
+        ensure_rpc_warmup_finished_once();
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        register_wallet_diagnostic_rpc_commands(&tbl);
+
+        struct json_value params, result;
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        bool ok = rpc_table_execute(&tbl, "walletbackupstatus", &params,
+                                    &result) &&
+                  json_get(&result, "last_path") == NULL &&
+                  json_get(&result, "last_encrypted_path") == NULL &&
+                  json_get(&result, "last_error") == NULL &&
+                  json_get(&result, "backup_available") != NULL &&
+                  json_get(&result, "encrypted_backup_available") != NULL &&
+                  json_get(&result, "next_action") != NULL;
+        json_free(&params);
+        json_free(&result);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
     printf("rpc_safety: getrawmempool returns live transaction ids... ");
     {
         ensure_rpc_warmup_finished_once();
@@ -373,6 +402,170 @@ int test_rpc_safety(void)
             mempool_entry_free(&entry);
         transaction_free(&tx);
         tx_mempool_free(&pool);
+
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
+    printf("rpc_safety: confirmed shielded tx uses verified node-db locator... ");
+    {
+        ensure_rpc_warmup_finished_once();
+        char dir[256];
+        test_make_tmpdir(dir, sizeof(dir), "rpc_safety", "rawtx_node_db");
+
+        struct transaction shielded;
+        transaction_init(&shielded);
+        shielded.overwintered = true;
+        shielded.version = SAPLING_TX_VERSION;
+        shielded.version_group_id = SAPLING_VERSION_GROUP_ID;
+        shielded.expiry_height = 100;
+        shielded.v_shielded_spend = zcl_calloc(
+            1, sizeof(*shielded.v_shielded_spend),
+            "rpc_safety.shielded_spend");
+        bool ok = shielded.v_shielded_spend != NULL;
+        if (ok) {
+            shielded.num_shielded_spend = 1;
+            memset(shielded.v_shielded_spend[0].nullifier.data, 0x73, 32);
+            transaction_compute_hash(&shielded);
+        }
+
+        struct block body;
+        block_init(&body);
+        body.header.nVersion = 4;
+        body.header.nTime = 1700000000;
+        body.header.nBits = 0x2000ffff;
+        if (ok) {
+            body.vtx = zcl_calloc(1, sizeof(*body.vtx),
+                                  "rpc_safety.rawtx_block");
+            ok = body.vtx != NULL;
+        }
+        if (ok) {
+            body.num_vtx = 1;
+            transaction_init(&body.vtx[0]);
+            ok = transaction_copy(&body.vtx[0], &shielded);
+        }
+
+        struct uint256 body_hash;
+        uint256_set_null(&body_hash);
+        struct disk_block_pos pos;
+        disk_block_pos_init(&pos);
+        const unsigned char msg_start[4] = { 0x24, 0xe9, 0x27, 0x64 };
+        if (ok) {
+            block_get_hash(&body, &body_hash);
+            ok = write_block_to_disk(&body, &pos, dir, msg_start);
+        }
+
+        struct main_state ms;
+        main_state_init(&ms);
+        struct block_index *bi = NULL;
+        if (ok) {
+            bi = chainstate_insert_block_index((struct chainstate *)&ms,
+                                               &body_hash);
+            ok = bi != NULL;
+        }
+        if (ok) {
+            bi->nHeight = 0;
+            bi->nFile = pos.nFile;
+            bi->nDataPos = pos.nPos;
+            bi->nStatus = BLOCK_HAVE_DATA | BLOCK_VALID_SCRIPTS;
+            bi->nTx = 1;
+            bi->nChainTx = 1;
+            ok = active_chain_move_window_tip(&ms.chain_active, bi);
+        }
+
+        struct node_db ndb;
+        memset(&ndb, 0, sizeof(ndb));
+        if (ok)
+            ok = node_db_open(&ndb, ":memory:");
+        if (ok) {
+            struct db_tx_index row;
+            memset(&row, 0, sizeof(row));
+            memcpy(row.txid, shielded.hash.data, sizeof(row.txid));
+            memcpy(row.block_hash, body_hash.data, sizeof(row.block_hash));
+            row.block_height = 0;
+            row.tx_index = 0;
+            row.file_num = pos.nFile;
+            row.file_pos = (int)pos.nPos;
+            ok = db_tx_save(&ndb, &row);
+        }
+
+        struct rpc_table tbl;
+        rpc_table_init(&tbl);
+        if (ok) {
+            rpc_rawtx_set_state(&ms, NULL, NULL, dir);
+            wallet_rpc_context_set_node_db(&ndb);
+            register_rawtransaction_rpc_commands(&tbl);
+            rpc_blockchain_set_state(&ms, NULL, dir);
+            register_blockchain_rpc_commands(&tbl);
+        }
+
+        struct json_value params, result, txid_arg, verbose_arg;
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        json_init(&txid_arg);
+        json_init(&verbose_arg);
+        char txid_hex[65] = "";
+        if (ok) {
+            uint256_get_hex(&shielded.hash, txid_hex);
+            json_set_str(&txid_arg, txid_hex);
+            json_set_int(&verbose_arg, 1);
+            (void)json_push_back(&params, &txid_arg);
+            (void)json_push_back(&params, &verbose_arg);
+            ok = rpc_table_execute(&tbl, "getrawtransaction", &params,
+                                   &result);
+        }
+        const char *got_txid = json_get_str(json_get(&result, "txid"));
+        const char *got_block = json_get_str(json_get(&result, "blockhash"));
+        char block_hex[65] = "";
+        uint256_get_hex(&body_hash, block_hex);
+        ok = ok && got_txid && strcmp(got_txid, txid_hex) == 0 &&
+             got_block && strcmp(got_block, block_hex) == 0;
+
+        json_free(&params);
+        json_free(&result);
+        json_free(&txid_arg);
+        json_free(&verbose_arg);
+
+        /* The sibling block lookup must expose the exact transaction ids,
+         * not only a count.  This is the recovery path when an operator has
+         * a confirmed block identity but not a working transaction index. */
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        json_init(&txid_arg);
+        json_init(&verbose_arg);
+        if (ok) {
+            reducer_frontier_provable_tip_set(0);
+            json_set_str(&txid_arg, block_hex);
+            json_set_int(&verbose_arg, 1);
+            (void)json_push_back(&params, &txid_arg);
+            (void)json_push_back(&params, &verbose_arg);
+            ok = rpc_table_execute(&tbl, "getblock", &params, &result);
+        }
+        const struct json_value *block_txids = json_get(&result, "tx");
+        const char *block_txid =
+            block_txids && block_txids->type == JSON_ARR &&
+                    json_size(block_txids) == 1
+                ? json_get_str(json_at(block_txids, 0)) : NULL;
+        ok = ok && json_get_int(json_get(&result, "size")) > 0 &&
+             json_get_int(json_get(&result, "tx_count")) == 1 &&
+             block_txid && strcmp(block_txid, txid_hex) == 0;
+        json_free(&params);
+        json_free(&result);
+        json_free(&txid_arg);
+        json_free(&verbose_arg);
+        reducer_frontier_provable_tip_reset();
+
+        wallet_rpc_context_set_node_db(NULL);
+        rpc_rawtx_set_state(NULL, NULL, NULL, NULL);
+        rpc_blockchain_set_state(NULL, NULL, NULL);
+        if (ndb.open)
+            node_db_close(&ndb);
+        main_state_free(&ms);
+        block_free(&body);
+        transaction_free(&shielded);
+        test_rm_rf(dir);
 
         if (ok) printf("OK\n");
         else    { printf("FAIL\n"); failures++; }
@@ -467,9 +660,9 @@ int test_rpc_safety(void)
 
         init_single_str_param(&params, hstar_hex);
         json_init(&result);
-        ok = ok && rpc_table_execute(&tbl, "getblock", &params, &result);
-        const struct json_value *block_height = json_get(&result, "height");
-        ok = ok && block_height && json_get_int(block_height) == 1;
+        ok = ok && !rpc_table_execute(&tbl, "getblock", &params, &result) &&
+             result.type == JSON_STR &&
+             strstr(json_get_str(&result), "body unavailable") != NULL;
         json_free(&result);
         json_free(&params);
 

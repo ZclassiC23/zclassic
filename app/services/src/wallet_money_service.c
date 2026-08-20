@@ -27,9 +27,10 @@
 
 static void money_root(struct wallet_money_snapshot *s)
 {
+    static const char domain[] = "zcl.wallet_money.v2";
     struct sha3_256_ctx c;
     sha3_256_init(&c);
-    sha3_256_write(&c, (const uint8_t *)"zcl.wallet_money.v1", 19);
+    sha3_256_write(&c, (const uint8_t *)domain, strlen(domain));
     sha3_256_write(&c, (const uint8_t *)s->wallet_scope,
                    strlen(s->wallet_scope));
     sha3_256_write(&c, (const uint8_t *)s->status, strlen(s->status));
@@ -37,9 +38,10 @@ static void money_root(struct wallet_money_snapshot *s)
                    WALLET_INSTANCE_ID_HEX_LEN);
     sha3_256_write(&c, s->identity.network_genesis, 32);
     sha3_256_write(&c, s->tip_hash, 32);
-    uint8_t nums[8][8];
-    const int64_t values[8] = {
-        s->confirmed_zat, s->pending_zat, s->encumbered_zat,
+    uint8_t nums[10][8];
+    const int64_t values[10] = {
+        s->confirmed_zat, s->transparent_spendable_zat,
+        s->shielded_spendable_zat, s->pending_zat, s->encumbered_zat,
         s->intent_reserved_zat, s->lifetime_lab_spent_zat,
         s->agent_available_zat, s->tip_height, s->network_tip_height,
     };
@@ -87,6 +89,19 @@ const char *wallet_money_scope_expected_lane(const char *wallet_scope)
     if (!wallet_money_scope_valid(wallet_scope))
         return NULL;
     return strcmp(wallet_scope, "prod") == 0 ? "canonical" : wallet_scope;
+}
+
+const char *wallet_money_scope_for_lane(const char *operator_lane)
+{
+    if (!operator_lane)
+        return NULL;
+    if (strcmp(operator_lane, "canonical") == 0)
+        return "prod";
+    if (strcmp(operator_lane, "dev") == 0)
+        return "dev";
+    if (strcmp(operator_lane, "test") == 0)
+        return "test";
+    return NULL;
 }
 
 struct money_chain_view {
@@ -233,6 +248,10 @@ struct zcl_result wallet_money_snapshot_build(
         return ZCL_OK;
     }
     out->confirmed_zat = vault.zcl_spendable;
+    out->transparent_spendable_zat =
+        vault.rows[VAULT_CLASS_TRANSPARENT].spendable;
+    out->shielded_spendable_zat =
+        vault.rows[VAULT_CLASS_SHIELDED].spendable;
     out->pending_zat = vault.zcl_pending;
     out->encumbered_zat = vault.zcl_encumbered + vault.zcl_immature;
     out->intent_reserved_zat = vault_intent_reserved_total_at(
@@ -323,6 +342,24 @@ struct zcl_result wallet_money_snapshot_build(
     return ZCL_OK;
 }
 
+struct zcl_result wallet_money_snapshot_build_current(
+    struct node_db *ndb, struct main_state *main_state,
+    struct wallet_money_snapshot *out)
+{
+    if (!ndb || !ndb->open || !main_state || !out)
+        return ZCL_ERR(-1, "open node_db, main_state, and output are required");
+
+    struct wallet_identity_row identity;
+    if (!wallet_identity_find(ndb, &identity))
+        return ZCL_ERR(-2, "wallet identity is not initialized");
+
+    const char *scope = wallet_money_scope_for_lane(identity.operator_lane);
+    if (!scope)
+        return ZCL_ERR(-3, "wallet operator lane has no custody scope");
+
+    return wallet_money_snapshot_build(ndb, main_state, scope, out);
+}
+
 static void amount_text(int64_t zat, char out[32])
 {
     (void)snprintf(out, 32, "%lld.%08lld",
@@ -356,12 +393,19 @@ struct zcl_result wallet_money_snapshot_to_json(
         (void)json_push_kv_str(out, (key_), amount);                         \
 } while (0)
         PUSH_AMOUNT("confirmed_zcl", s->confirmed_zat);
+        PUSH_AMOUNT("transparent_spendable_zcl",
+                    s->transparent_spendable_zat);
+        PUSH_AMOUNT("shielded_spendable_zcl", s->shielded_spendable_zat);
         PUSH_AMOUNT("pending_zcl", s->pending_zat);
         PUSH_AMOUNT("encumbered_zcl", s->encumbered_zat);
         PUSH_AMOUNT("intent_reserved_zcl", s->intent_reserved_zat);
         PUSH_AMOUNT("agent_available_zcl", s->agent_available_zat);
 #undef PUSH_AMOUNT
         (void)json_push_kv_int(out, "confirmed_zat", s->confirmed_zat);
+        (void)json_push_kv_int(out, "transparent_spendable_zat",
+                               s->transparent_spendable_zat);
+        (void)json_push_kv_int(out, "shielded_spendable_zat",
+                               s->shielded_spendable_zat);
         (void)json_push_kv_int(out, "pending_zat", s->pending_zat);
         (void)json_push_kv_int(out, "encumbered_zat", s->encumbered_zat);
         (void)json_push_kv_int(out, "intent_reserved_zat",
@@ -370,6 +414,8 @@ struct zcl_result wallet_money_snapshot_to_json(
                                s->agent_available_zat);
     } else {
         (void)json_push_kv_str(out, "confirmed_zcl", "UNKNOWN");
+        (void)json_push_kv_str(out, "transparent_spendable_zcl", "UNKNOWN");
+        (void)json_push_kv_str(out, "shielded_spendable_zcl", "UNKNOWN");
         (void)json_push_kv_str(out, "pending_zcl", "UNKNOWN");
         (void)json_push_kv_str(out, "encumbered_zcl", "UNKNOWN");
         (void)json_push_kv_str(out, "intent_reserved_zcl", "UNKNOWN");

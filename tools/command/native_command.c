@@ -106,7 +106,7 @@ static const struct {
     const char *path;
     zcl_native_body_fn body;
 } g_bridge_native_body[] = {
-    { "status", zcl_native_status_brief_body },
+    { "status", zcl_native_status_journey_body },
     { "core.status", zcl_native_status_body },
     { "core.status.brief", zcl_native_status_brief_body },
     { "core.chain.block.get", zcl_native_getblock_body },
@@ -3107,6 +3107,66 @@ void zcl_native_status_brief_render(const struct json_value *d, char *buf,
     }
 }
 
+/* Root money-journey status has a different contract from the chain brief.
+ * Keep its default rendering equally bounded and scannable, but name the
+ * questions a user is actually asking before a payment. */
+static const char *nc_bool_answer(const struct json_value *d, const char *key,
+                                  const char *yes, const char *no)
+{
+    const struct json_value *v = d ? json_get(d, key) : NULL;
+    return v && v->type == JSON_BOOL
+        ? (json_get_bool(v) ? yes : no) : "unknown";
+}
+
+void zcl_native_status_journey_render(const struct json_value *d, char *buf,
+                                      size_t cap)
+{
+    if (!buf || cap == 0)
+        return;
+    const char *primary = d
+        ? json_get_str(json_get(d, "primary_blocker")) : NULL;
+    const char *error_code = d
+        ? json_get_str(json_get(d, "error_code")) : NULL;
+    const char *blocker = primary && primary[0] &&
+                                  strcmp(primary, "none") != 0 &&
+                                  strcmp(primary, "unknown") != 0
+        ? primary : error_code;
+    const struct json_value *spendable = d
+        ? json_get(d, "spendable_zat") : NULL;
+    const struct json_value *pending = d ? json_get(d, "pending_zat") : NULL;
+    const struct json_value *reserved = d
+        ? json_get(d, "reserved_zat") : NULL;
+    char spendable_text[32] = "unknown";
+    char pending_text[32] = "unknown";
+    char reserved_text[32] = "unknown";
+    if (spendable && spendable->type == JSON_INT)
+        (void)snprintf(spendable_text, sizeof(spendable_text), "%lld",
+                       (long long)json_get_int(spendable));
+    if (pending && pending->type == JSON_INT)
+        (void)snprintf(pending_text, sizeof(pending_text), "%lld",
+                       (long long)json_get_int(pending));
+    if (reserved && reserved->type == JSON_INT)
+        (void)snprintf(reserved_text, sizeof(reserved_text), "%lld",
+                       (long long)json_get_int(reserved));
+    (void)snprintf(
+        buf, cap,
+        "node=%s synced=%s wallet=%s receive=%s send=%s "
+        "spendable_zat=%s pending_zat=%s reserved_zat=%s blocker=%s",
+        nc_bool_answer(d, "node_healthy", "healthy", "blocked"),
+        nc_bool_answer(d, "synced", "yes", "no"),
+        nc_bool_answer(d, "wallet_ready", "ready", "not_ready"),
+        nc_bool_answer(d, "can_receive", "yes", "no"),
+        nc_bool_answer(d, "can_send", "yes", "no"),
+        spendable_text, pending_text, reserved_text,
+        blocker && blocker[0] ? blocker : "unknown");
+    if (strlen(buf) > 200) {
+        size_t cut = 200;
+        while (cut > 0 && buf[cut - 1] != ' ')
+            cut--;
+        buf[cut > 0 ? cut - 1 : 200] = '\0';
+    }
+}
+
 /* Pick one short, deterministic next step from the same brief body: a named
  * blocker outranks "still behind" outranks the native health leaf. Never
  * allocates. */
@@ -3324,8 +3384,11 @@ static bool nc_prose_text(const char *path, const struct json_value *data,
         (void)snprintf(buf, cap, "%s", text);
         return true;
     }
-    if (strcmp(path, "status") == 0 ||
-        strcmp(path, "core.status.brief") == 0) {
+    if (strcmp(path, "status") == 0) {
+        zcl_native_status_journey_render(data, buf, cap);
+        return true;
+    }
+    if (strcmp(path, "core.status.brief") == 0) {
         zcl_native_status_brief_render(data, buf, cap);
         return true;
     }
@@ -3926,7 +3989,10 @@ int zcl_native_command_main(const char *root_word, const char *const *args,
                     (strcmp(spec->path, "status") == 0 ||
                      strcmp(spec->path, "core.status.brief") == 0))
                     printf("next: %s\n",
-                          zcl_native_status_brief_next_command(data));
+                           strcmp(spec->path, "status") == 0
+                               ? json_get_str_or(data, "next_action",
+                                                 "z23 core status brief")
+                               : zcl_native_status_brief_next_command(data));
                 json_free(&env);
                 return (int)exit_code;
             }

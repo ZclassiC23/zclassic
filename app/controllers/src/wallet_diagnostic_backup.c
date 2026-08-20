@@ -12,24 +12,41 @@
 static void wallet_backup_status_to_json(struct json_value *result,
                                          const struct wallet_backup_status *s)
 {
+    bool backup_available = s->last_run_unix > 0 && s->last_path[0] != '\0';
+    bool encrypted_backup_available =
+        s->last_encrypted_run_unix > 0 &&
+        s->last_encrypted_path[0] != '\0';
+
     json_set_object(result);
     json_push_kv_bool(result, "running", s->running);
+    json_push_kv_bool(result, "healthy", s->total_failures == 0 &&
+                                        s->last_error[0] == '\0');
+    json_push_kv_bool(result, "backup_available", backup_available);
+    json_push_kv_bool(result, "encrypted_backup_available",
+                      encrypted_backup_available);
     json_push_kv_int(result, "total_runs", s->total_runs);
     json_push_kv_int(result, "total_failures", s->total_failures);
     json_push_kv_int(result, "last_run_unix", s->last_run_unix);
     json_push_kv_int(result, "last_size_bytes", s->last_size_bytes);
     json_push_kv_int(result, "last_key_count", s->last_key_count);
     json_push_kv_int(result, "last_duration_ms", s->last_duration_ms);
-    json_push_kv_str(result, "last_path", s->last_path);
+    json_push_kv_int(result, "last_tables_verified",
+                     s->last_tables_verified);
+    json_push_kv_int(result, "wallet_table_count", s->wallet_table_count);
+    json_push_kv_str(result, "last_missing_tables",
+                     s->last_missing_tables);
     json_push_kv_int(result, "last_encrypted_run_unix",
                      s->last_encrypted_run_unix);
     json_push_kv_int(result, "last_encrypted_key_count",
                      s->last_encrypted_key_count);
     json_push_kv_int(result, "last_encrypted_tables_verified",
                      s->last_encrypted_tables_verified);
-    json_push_kv_str(result, "last_encrypted_path",
-                     s->last_encrypted_path);
-    json_push_kv_str(result, "last_error", s->last_error);
+    json_push_kv_bool(result, "last_error_present", s->last_error[0] != '\0');
+    json_push_kv_str(result, "next_action",
+                     encrypted_backup_available
+                         ? "none"
+                         : "run core.wallet.backup.now with encryption before "
+                           "enabling real-money sends");
 }
 
 bool rpc_walletbackupstatus(const struct json_value *params, bool help,

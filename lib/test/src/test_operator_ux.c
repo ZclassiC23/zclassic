@@ -985,6 +985,46 @@ static int test_brief_status_unknown_fields_render_unknown(void)
     return failures;
 }
 
+static int test_money_journey_status_one_line_contract(void)
+{
+    int failures = 0;
+    TEST("money journey status renders the user questions in one safe line") {
+        struct json_value d;
+        json_init(&d);
+        json_set_object(&d);
+        json_push_kv_bool(&d, "node_healthy", true);
+        json_push_kv_bool(&d, "synced", true);
+        json_push_kv_bool(&d, "wallet_ready", true);
+        json_push_kv_bool(&d, "can_receive", true);
+        json_push_kv_bool(&d, "can_send", false);
+        json_push_kv_int(&d, "spendable_zat", 10000000);
+        json_push_kv_int(&d, "pending_zat", 1000);
+        json_push_kv_int(&d, "reserved_zat", 2000);
+        json_push_kv_str(&d, "primary_blocker",
+                         "review_required_bootstrap_trust");
+        json_push_kv_str(&d, "error_code", "WALLET_LOCKED");
+
+        char buf[1024];
+        zcl_native_status_journey_render(&d, buf, sizeof(buf));
+        ASSERT(strchr(buf, '\n') == NULL);
+        ASSERT(strlen(buf) <= 200);
+        ASSERT(strstr(buf, "node=healthy") != NULL);
+        ASSERT(strstr(buf, "synced=yes") != NULL);
+        ASSERT(strstr(buf, "wallet=ready") != NULL);
+        ASSERT(strstr(buf, "receive=yes") != NULL);
+        ASSERT(strstr(buf, "send=no") != NULL);
+        ASSERT(strstr(buf, "spendable_zat=10000000") != NULL);
+        ASSERT(strstr(buf, "pending_zat=1000") != NULL);
+        ASSERT(strstr(buf, "reserved_zat=2000") != NULL);
+        ASSERT(strstr(buf, "blocker=review_required_bootstrap_trust") != NULL);
+        ASSERT(strstr(buf, "address") == NULL);
+        ASSERT(strstr(buf, "path") == NULL);
+        json_free(&d);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── CLI UX contract: next-command hint ──────────────────────────────── */
 
 static int test_next_command_prioritizes_blocker_over_gap(void)
@@ -1155,6 +1195,7 @@ int test_operator_ux(void)
     failures += test_brief_status_one_line_contract();
     failures += test_brief_status_registry_fields_agree();
     failures += test_brief_status_unknown_fields_render_unknown();
+    failures += test_money_journey_status_one_line_contract();
     failures += test_next_command_prioritizes_blocker_over_gap();
     failures += test_field_selection_selects_requested_fields();
     failures += test_field_selection_unknown_field_is_typed_error();

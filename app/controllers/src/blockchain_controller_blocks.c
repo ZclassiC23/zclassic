@@ -16,12 +16,16 @@
 #include "chain/chain.h"
 #include "chain/pow.h"
 #include "core/arith_uint256.h"
+#include "core/serialize.h"
 #include "core/uint256.h"
+#include "encoding/utilstrencodings.h"
 #include "jobs/reducer_frontier.h"
 #include "json/json.h"
 #include "models/block.h"
 #include "primitives/block.h"
+#include "storage/disk_block_io.h"
 #include "util/log_macros.h"
+#include "util/safe_alloc.h"
 #include "validation/main_state.h"
 
 #include <stdint.h>
@@ -314,6 +318,7 @@ bool rpc_getblock(const struct json_value *params, bool help,
     rpc_params_init(&p, params);
     rpc_params_expect(&p, 1, 2);
     const char *hash_str = rpc_require_str(&p, 0, "hash");
+    int verbose = (int)rpc_permit_int(&p, 1, "verbose", 1);
     if (rpc_params_invalid(&p)) {
         rpc_params_error(&p, result);
         LOG_FAIL("blockchain", "getblock: invalid params");
@@ -338,10 +343,93 @@ bool rpc_getblock(const struct json_value *params, bool help,
                  hash_str, bi->nHeight, hstar);
     }
 
+    if (!ctx->datadir) {
+        json_set_str(result, "Block body unavailable");
+        LOG_FAIL("blockchain", "getblock: datadir is not initialized");
+    }
+
+    struct block block;
+    block_init(&block);
+    if (!read_block_from_disk_index(&block, bi, ctx->datadir)) {
+        block_free(&block);
+        json_set_str(result, "Block body unavailable");
+        LOG_FAIL("blockchain", "getblock: body unavailable for block %s "
+                 "at height %d", hash_str, bi->nHeight);
+    }
+
+    struct uint256 body_hash;
+    block_header_get_hash(&block.header, &body_hash);
+    if (!bi->phashBlock || uint256_cmp(&body_hash, bi->phashBlock) != 0) {
+        block_free(&block);
+        json_set_str(result, "Block body failed identity verification");
+        LOG_FAIL("blockchain", "getblock: body hash mismatch for block %s "
+                 "at height %d", hash_str, bi->nHeight);
+    }
+
+    struct byte_stream serialized;
+    stream_init(&serialized, 4096);
+    if (!block_serialize(&block, &serialized)) {
+        stream_free(&serialized);
+        block_free(&block);
+        json_set_str(result, "Block serialization failed");
+        LOG_FAIL("blockchain", "getblock: serialization failed for block %s",
+                 hash_str);
+    }
+
+    if (verbose == 0) {
+        if (serialized.size > (SIZE_MAX - 1) / 2) {
+            stream_free(&serialized);
+            block_free(&block);
+            json_set_str(result, "Block serialization too large");
+            LOG_FAIL("blockchain", "getblock: hex size overflow for block %s",
+                     hash_str);
+        }
+        size_t hex_cap = serialized.size * 2 + 1;
+        char *hex = zcl_malloc(hex_cap, "getblock raw hex");
+        if (!hex) {
+            stream_free(&serialized);
+            block_free(&block);
+            json_set_str(result, "Out of memory");
+            LOG_FAIL("blockchain", "getblock: raw hex allocation failed "
+                     "for %zu bytes", serialized.size);
+        }
+        HexStr(serialized.data, serialized.size, false, hex, hex_cap);
+        json_set_str(result, hex);
+        free(hex);
+        stream_free(&serialized);
+        block_free(&block);
+        return true;
+    }
+
     block_header_to_json(bi, result);
 
-    json_push_kv_int(result, "size", 0);
-    json_push_kv_int(result, "tx", (int64_t)bi->nTx);
+    json_push_kv_int(result, "size", (int64_t)serialized.size);
+    json_push_kv_int(result, "tx_count", (int64_t)block.num_vtx);
+    struct json_value txids;
+    json_init(&txids);
+    json_set_array(&txids);
+    for (size_t i = 0; i < block.num_vtx; i++) {
+        char txid[65];
+        uint256_get_hex(&block.vtx[i].hash, txid);
+        struct json_value item;
+        json_init(&item);
+        json_set_str(&item, txid);
+        (void)json_push_back(&txids, &item);
+        json_free(&item);
+    }
+    (void)json_push_kv(result, "tx", &txids);
+    json_free(&txids);
+
+    struct block_index *next = active_chain_at(
+        &ctx->main_state->chain_active, bi->nHeight + 1);
+    if (next && next->phashBlock && next->nHeight <= hstar) {
+        char next_hex[65];
+        uint256_get_hex(next->phashBlock, next_hex);
+        json_push_kv_str(result, "nextblockhash", next_hex);
+    }
+
+    stream_free(&serialized);
+    block_free(&block);
 
     return true;
 }

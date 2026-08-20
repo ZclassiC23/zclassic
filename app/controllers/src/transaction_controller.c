@@ -4,6 +4,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "controllers/transaction_controller_internal.h"
+#include "models/tx_index.h"
 #include "services/txindex_projection_service.h"
 
 struct rawtx_context g_rawtx_ctx = {0};
@@ -27,6 +28,64 @@ void rpc_rawtx_set_keystore(struct basic_keystore *ks)
 void rpc_rawtx_set_connman(struct connman *cm)
 {
     rawtx_ctx()->connman = cm;
+}
+
+/* The canonical node database already records every transaction's active-
+ * chain height and index while a block is finalized.  Treat that row only as
+ * a locator: the block hash, body position, and transaction hash are all
+ * checked against the active chain before bytes are returned.  This makes a
+ * confirmed shielded-only transaction findable even when the optional legacy
+ * txindex is disabled and no transparent coin exists to locate it. */
+static bool rawtx_find_in_node_db(struct rawtx_context *ctx,
+                                  const struct uint256 *hash,
+                                  struct transaction *tx,
+                                  struct uint256 *hash_block)
+{
+    struct node_db *ndb = rawtx_node_db();
+    struct db_tx_index row;
+    if (!ctx || !hash || !tx || !hash_block || !ctx->main_state ||
+        !ctx->datadir || !ndb || !ndb->open ||
+        !db_tx_find(ndb, hash->data, &row))
+        return false;
+
+    if (row.block_height < 0 || row.tx_index < 0) {
+        LOG_WARN("rawtx", "node-db locator rejected negative position "
+                 "(height=%d tx_index=%d)", row.block_height, row.tx_index);
+        return false;
+    }
+
+    struct block_index *bi = active_chain_at(
+        &ctx->main_state->chain_active, row.block_height);
+    if (!bi || !bi->phashBlock ||
+        memcmp(row.block_hash, bi->phashBlock->data,
+               sizeof(row.block_hash)) != 0) {
+        LOG_WARN("rawtx", "node-db locator is not on the active chain "
+                 "(height=%d tx_index=%d)", row.block_height, row.tx_index);
+        return false;
+    }
+
+    struct block blk;
+    block_init(&blk);
+    bool found = false;
+    if (read_block_from_disk_index(&blk, bi, ctx->datadir) &&
+        (size_t)row.tx_index < blk.num_vtx &&
+        uint256_cmp(&blk.vtx[row.tx_index].hash, hash) == 0) {
+        struct uint256 body_hash;
+        block_header_get_hash(&blk.header, &body_hash);
+        if (uint256_cmp(&body_hash, bi->phashBlock) == 0) {
+            transaction_free(tx);
+            transaction_init(tx);
+            transaction_copy(tx, &blk.vtx[row.tx_index]);
+            *hash_block = body_hash;
+            found = true;
+        } else {
+            LOG_WARN("rawtx", "node-db locator body hash mismatch "
+                     "(height=%d tx_index=%d)", row.block_height,
+                     row.tx_index);
+        }
+    }
+    block_free(&blk);
+    return found;
 }
 
 static bool rpc_getrawtransaction(const struct json_value *params, bool help,
@@ -64,6 +123,13 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
     if (ctx->mempool && tx_mempool_lookup(ctx->mempool, &hash, &tx)) {
         found = true;
     }
+
+    /* 1a. The canonical finalized-block projection is the normal confirmed
+     * lookup path.  The independent indexes below remain useful fallbacks,
+     * but a snapshot-seeded node need not rebuild from genesis before it can
+     * answer for a transaction already present in its verified chain. */
+    if (!found)
+        found = rawtx_find_in_node_db(ctx, &hash, &tx, &hash_block);
 
     /* 1b. Check the txindex projection when present (first-class, integrity-
      * tagged). A hit locates (height, tx_n) directly; a behind/absent/busy

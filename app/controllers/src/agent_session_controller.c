@@ -259,6 +259,29 @@ static bool ags_custody(const struct json_value *in, struct json_value *result)
     return true;
 }
 
+/* Same aggregate-only custody answer, with the scope derived from the
+ * wallet's persisted identity.  This is the status/front-door route: a
+ * caller must never probe dev/prod/test in turn to find the wallet it hit. */
+static bool ags_custody_current(struct json_value *result)
+{
+    struct wallet_money_snapshot snapshot;
+    struct zcl_result r = wallet_money_snapshot_build_current(
+        app_runtime_node_db(), app_runtime_main_state(), &snapshot);
+    if (!r.ok)
+        return ags_refuse(result, "CUSTODY_UNAVAILABLE");
+    struct json_value body;
+    json_init(&body);
+    if (!wallet_money_snapshot_to_json(&snapshot, &body).ok) {
+        json_free(&body);
+        return ags_refuse(result, "CUSTODY_UNAVAILABLE");
+    }
+    json_set_object(result);
+    (void)json_push_kv_bool(result, "ok", true);
+    (void)json_push_kv(result, "snapshot", &body);
+    json_free(&body);
+    return true;
+}
+
 /* Read-only execution-readiness planner. It sees exactly the confirmed,
  * reservation-filtered, non-ZSLP coin inventory used by wallet builders, but
  * returns only aggregate counts and amounts. No address or outpoint crosses
@@ -423,6 +446,8 @@ static bool rpc_agentsession(const struct json_value *params, bool help,
         "               debit whose spend never happened\n"
         "  custody   {wallet_scope} -> {ok, snapshot}; identity-bound money\n"
         "               state with no endpoint/path/address/key fields\n"
+        "  custody_current {} -> {ok, snapshot}; same aggregate, with scope\n"
+        "               derived from the persisted wallet operator lane\n"
         "  liquidity {wallet_scope, recipient_value_zat, maximum_fee_zat,\n"
         "             concurrency} -> {ok, status, fanout}; aggregate-only\n"
         "               parallel-spend readiness with no automatic transfer\n"
@@ -448,6 +473,8 @@ static bool rpc_agentsession(const struct json_value *params, bool help,
         return ags_release(in, result);
     if (strcmp(action, "custody") == 0)
         return ags_custody(in, result);
+    if (strcmp(action, "custody_current") == 0)
+        return ags_custody_current(result);
     if (strcmp(action, "liquidity") == 0)
         return ags_liquidity(in, result);
     return ags_fail(result, "agentsession: unknown action");

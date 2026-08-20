@@ -47,38 +47,12 @@
  * function is the whole integration surface: if the read model lands with a
  * different signature, this one function body is the only edit.
  *
- * The contract this file consumes:
- *
- *   bool vault_read_snapshot(const char *class_filter,
- *                            struct json_value *out,
- *                            char *why, size_t why_cap);
- *
- *   `out` is an initialized, caller-owned JSON value; the callee sets it to an
- *   object. `class_filter` is one canonical class name or NULL for all.
- *   Returns false and fills `why` with a short human reason on failure.
- *
- * The document it is expected to fill (every field optional — a field this
- * file cannot find is rendered as an explicit unknown, never as a zero):
- *
- *   { "as_of_height": int, "as_of_unix": int, "source": str,
- *     "classes": [ { "class": str, "complete": bool, "source": str,
- *                    "total_zat": int, "spendable_zat": int,
- *                    "encumbered_zat": int, "item_count": int,
- *                    "items": [ { "id": str, "amount_zat": int,
- *                                 "encumbered": bool,
- *                                 "encumbered_reason": str } ] } ] }
- *
- * Until the read model is in the tree the seam reports unavailable with that
- * reason, and every read leaf says so out loud rather than answering zero. */
-#if defined(__has_include)
-#  if __has_include("services/vault_read.h")
-#    include "services/vault_read.h"
-#    define ZCL_VAULT_READ_LINKED 1
-#  endif
-#endif
-#ifndef ZCL_VAULT_READ_LINKED
-#define ZCL_VAULT_READ_LINKED 0
-#endif
+ * The read model is a required node service.  Its wire class names deliberately
+ * describe the underlying primitive (for example `transparent_zcl`), while
+ * this command keeps the shorter user vocabulary (`transparent`).
+ * k_vault_routes below is the explicit translation between those contracts.
+ * The CLI fetches the projection from the target node's `dumpstate vault`
+ * RPC; it never tries to open or aggregate a second wallet database locally. */
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -103,6 +77,7 @@ enum {
  * the route is missing, which is the one thing this file may not do. */
 struct vault_route {
     const char *name;
+    const char *read_class;
     const char *kind;          /* fungible_zat | contract | record */
     const char *route_kind;    /* native_command | node_rpc | none */
     const char *route_owner;
@@ -112,34 +87,34 @@ struct vault_route {
 };
 
 static const struct vault_route k_vault_routes[] = {
-    { "transparent", "fungible_zat", "native_command",
+    { "transparent", "transparent_zcl", "fungible_zat", "native_command",
       "core.wallet.transaction.send",
       "app/controllers/src/wallet_native_handlers.c -> sendtoaddress",
       "vault.send",
       "the wallet's own send builds, signs and broadcasts" },
-    { "shielded", "fungible_zat", "native_command",
+    { "shielded", "shielded_zcl", "fungible_zat", "native_command",
       "core.wallet.shielded.send",
       "app/controllers/src/wallet_native_handlers.c -> z_sendmany",
       "vault.send-shielded",
       "requires Sapling parameters loaded and a passing prover self-test" },
-    { "tokens", "record", "native_command", "app.tokens.send",
+    { "tokens", "zslp_tokens", "record", "native_command", "app.tokens.send",
       "app/services/src/zslp_command_service.c",
       "vault.send-token",
       "the ZSLP owner explicitly spends token outputs and returns token "
       "change; ordinary wallet selection reserves every token/baton output" },
-    { "names", "record", "node_rpc",
+    { "names", "znam_names", "record", "node_rpc",
       "name_register,name_update,name_transfer,name_renew",
       "app/controllers/src/name_controller.c", "",
       "the ZNAM writes are reachable as their own typed leaves "
       "(app names register/update/transfer/renew/set-record/set-text, each "
       "plan/commit gated); the vault mints no second verb over them because "
       "a name is a record, not a vault balance" },
-    { "market", "record", "node_rpc", "zmarket_offer,zmarket_buy",
+    { "market", "file_market_offers", "record", "node_rpc", "zmarket_offer,zmarket_buy",
       "app/controllers/src/file_market_controller.c", "",
       "app.market.* write leaves are PLANNED: nothing announces a locally "
       "created offer to peers, and no code path builds the purchase payment "
       "transaction, so on-chain settlement is not wired end to end" },
-    { "swaps", "contract", "node_rpc", "swap_redeem,swap_refund",
+    { "swaps", "swap_encumbered", "contract", "node_rpc", "swap_redeem,swap_refund",
       "app/controllers/src/swap_controller.c",
       "vault.swap.redeem,vault.swap.refund",
       "the swap controller builds, signs, broadcasts and persists state" },
@@ -243,11 +218,55 @@ static void vault_copy_int(struct json_value *dst, const struct json_value *src,
     (void)json_push_kv_bool(dst, flag, false);
 }
 
+static void vault_copy_int_as(struct json_value *dst,
+                              const struct json_value *src,
+                              const char *source_key, const char *output_key)
+{
+    const struct json_value *v = src ? json_get(src, source_key) : NULL;
+    if (v && v->type == JSON_INT) {
+        (void)json_push_kv_int(dst, output_key, json_get_int(v));
+        return;
+    }
+    char flag[64];
+    (void)snprintf(flag, sizeof(flag), "%s_known", output_key);
+    (void)json_push_kv_bool(dst, flag, false);
+}
+
+static void vault_push_total_as(struct json_value *dst,
+                                const struct json_value *row,
+                                const char *output_key)
+{
+    static const char *const columns[] = {
+        "spendable", "pending", "immature", "encumbered"
+    };
+    int64_t total = 0;
+    for (size_t i = 0; i < sizeof(columns) / sizeof(columns[0]); i++) {
+        const struct json_value *v = row ? json_get(row, columns[i]) : NULL;
+        if (!v || v->type != JSON_INT) {
+            char flag[64];
+            (void)snprintf(flag, sizeof(flag), "%s_known", output_key);
+            (void)json_push_kv_bool(dst, flag, false);
+            return;
+        }
+        total += json_get_int(v);
+    }
+    (void)json_push_kv_int(dst, output_key, total);
+}
+
 static void vault_copy_str(struct json_value *dst, const struct json_value *src,
                            const char *key, const char *dflt)
 {
     const char *v = src ? json_get_str(json_get(src, key)) : NULL;
     (void)json_push_kv_str(dst, key, (v && v[0]) ? v : dflt);
+}
+
+static void vault_copy_str_as(struct json_value *dst,
+                              const struct json_value *src,
+                              const char *source_key, const char *output_key,
+                              const char *dflt)
+{
+    const char *v = src ? json_get_str(json_get(src, source_key)) : NULL;
+    (void)json_push_kv_str(dst, output_key, (v && v[0]) ? v : dflt);
 }
 
 /* ── THE READ SEAM (see the header block) ───────────────────────────────────
@@ -256,30 +275,49 @@ static void vault_copy_str(struct json_value *dst, const struct json_value *src,
 static bool vault_read_seam(const char *class_filter, struct json_value *out,
                             char *why, size_t why_cap)
 {
-    if (!out || !why || why_cap == 0)
+    if (!out || !why || why_cap == 0) {
         LOG_FAIL(VAULT_TAG, "read seam called without an output buffer");
-#if ZCL_VAULT_READ_LINKED
-    /* vault_read_dump_state_json() is the read model's own class-filtered JSON
-     * projection — NULL/empty key for every class, a class name for one row —
-     * which is exactly this seam's contract. Going through it rather than
-     * building a snapshot and rendering it here keeps the projection in one
-     * place: the diagnostics dumper and this command cannot disagree about
-     * what a row looks like, because they are the same call. */
-    if (!vault_read_dump_state_json(out, class_filter)) {
-        (void)snprintf(why, why_cap,
-                       "the vault read model could not build a snapshot%s%s",
-                       (class_filter && class_filter[0]) ? " for class " : "",
-                       (class_filter && class_filter[0]) ? class_filter : "");
         return false;
     }
-    return true;
-#else
     (void)class_filter;
-    (void)snprintf(why, why_cap,
-                   "the vault read model is not linked into this build "
-                   "(services/vault_read.h is absent)");
-    return false;
-#endif
+
+    zcl_native_bridge_ensure_rpc();
+    char *raw = node_rpc_call("dumpstate", "[\"vault\"]");
+    if (!raw) {
+        (void)snprintf(why, why_cap,
+                       "the target node did not return its vault projection");
+        return false;
+    }
+
+    struct json_value envelope;
+    json_init(&envelope);
+    bool parsed = json_read(&envelope, raw, strlen(raw));
+    free(raw);
+    if (!parsed || envelope.type != JSON_OBJ) {
+        json_free(&envelope);
+        (void)snprintf(why, why_cap,
+                       "the target node returned an invalid vault projection");
+        return false;
+    }
+
+    const struct json_value *code = json_get(&envelope, "code");
+    const struct json_value *message = json_get(&envelope, "message");
+    const struct json_value *state = json_get(&envelope, "state");
+    const struct json_value *available = state
+        ? json_get(state, "available") : NULL;
+    if ((code && code->type == JSON_INT && message) || !state ||
+        state->type != JSON_OBJ ||
+        (available && available->type == JSON_BOOL &&
+         !json_get_bool(available))) {
+        json_free(&envelope);
+        (void)snprintf(why, why_cap,
+                       "the target node's vault projection is unavailable");
+        return false;
+    }
+
+    json_copy(out, state);
+    json_free(&envelope);
+    return true;
 }
 
 /* Locate one class's object inside a snapshot document. NULL when the
@@ -357,7 +395,7 @@ void zcl_native_handle_vault_list(const struct zcl_command_request *request,
         if (filter && strcmp(filter, c->name) != 0)
             continue;
         const struct json_value *row =
-            linked ? vault_snapshot_class(&snap, c->name) : NULL;
+            linked ? vault_snapshot_class(&snap, c->read_class) : NULL;
 
         struct json_value o;
         json_init(&o);
@@ -367,18 +405,29 @@ void zcl_native_handle_vault_list(const struct zcl_command_request *request,
         (void)json_push_kv_str(&o, "custody_command",
                                c->vault_verb[0] ? c->vault_verb : "none");
         if (row) {
-            (void)json_push_kv_str(&o, "status", "ok");
-            vault_copy_str(&o, row, "source", "vault_read_snapshot");
-            const struct json_value *complete = json_get(row, "complete");
+            const struct json_value *complete = json_get(row, "determined");
+            bool determined = complete && complete->type == JSON_BOOL &&
+                              json_get_bool(complete);
+            (void)json_push_kv_str(&o, "status",
+                                   determined ? "ok" : "undetermined");
+            vault_copy_str_as(&o, row, "source_primitive", "source",
+                              "vault_read_snapshot");
             (void)json_push_kv_bool(&o, "complete",
-                                    complete && complete->type == JSON_BOOL
-                                        ? json_get_bool(complete)
-                                        : false);
-            vault_copy_int(&o, row, "total_zat");
-            vault_copy_int(&o, row, "spendable_zat");
-            vault_copy_int(&o, row, "encumbered_zat");
+                                    determined);
+            vault_push_total_as(&o, row, "total_zat");
+            vault_copy_int_as(&o, row, "spendable", "spendable_zat");
+            vault_copy_int_as(&o, row, "pending", "pending_zat");
+            vault_copy_int_as(&o, row, "immature", "immature_zat");
+            vault_copy_int_as(&o, row, "encumbered", "encumbered_zat");
             vault_copy_int(&o, row, "item_count");
-            available++;
+            if (!determined) {
+                const char *reason = json_get_str(json_get(row, "reason"));
+                (void)json_push_kv_str(&o, "reason",
+                                       reason ? reason : "reader incomplete");
+                unavailable++;
+            } else {
+                available++;
+            }
         } else {
             (void)json_push_kv_str(&o, "status", "unavailable");
             (void)json_push_kv_str(&o, "source", "none");
@@ -510,7 +559,8 @@ static void vault_render_items(const struct zcl_command_request *request,
             const struct vault_route *c = &k_vault_routes[ci];
             if (filter && strcmp(filter, c->name) != 0)
                 continue;
-            const struct json_value *row = vault_snapshot_class(&snap, c->name);
+            const struct json_value *row = vault_snapshot_class(&snap,
+                                                                 c->read_class);
             if (!row) {
                 classes_missing++;
                 continue;
@@ -913,12 +963,15 @@ static void vault_attach_preflight(struct zcl_command_reply *reply,
     (void)json_push_kv_str(&pf, "authority", "advisory only — the routed "
                                              "command decides fundability");
     if (vault_read_seam(class_name, &snap, why, sizeof(why))) {
-        const struct json_value *row = vault_snapshot_class(&snap, class_name);
+        const struct vault_route *route = vault_class_find(class_name);
+        const struct json_value *row = route
+            ? vault_snapshot_class(&snap, route->read_class) : NULL;
         if (row) {
             (void)json_push_kv_str(&pf, "status", "ok");
-            vault_copy_int(&pf, row, "spendable_zat");
-            vault_copy_int(&pf, row, "encumbered_zat");
-            vault_copy_str(&pf, row, "source", "vault_read_snapshot");
+            vault_copy_int_as(&pf, row, "spendable", "spendable_zat");
+            vault_copy_int_as(&pf, row, "encumbered", "encumbered_zat");
+            vault_copy_str_as(&pf, row, "source_primitive", "source",
+                              "vault_read_snapshot");
         } else {
             (void)json_push_kv_str(&pf, "status", "unknown");
             (void)json_push_kv_str(&pf, "reason",

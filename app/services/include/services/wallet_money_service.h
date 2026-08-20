@@ -32,6 +32,8 @@ struct wallet_money_snapshot {
     char reason[WALLET_MONEY_REASON_MAX + 1];
 
     int64_t confirmed_zat;
+    int64_t transparent_spendable_zat;
+    int64_t shielded_spendable_zat;
     int64_t pending_zat;
     int64_t encumbered_zat;
     int64_t intent_reserved_zat;
@@ -62,12 +64,21 @@ enum wallet_money_freshness wallet_money_freshness_classify(
  * dev/prod portfolio and its own confirmed balance is its hard envelope. */
 bool wallet_money_scope_valid(const char *wallet_scope);
 const char *wallet_money_scope_expected_lane(const char *wallet_scope);
+const char *wallet_money_scope_for_lane(const char *operator_lane);
 
 /* Compose identity + vault readers + intent reservations + chain tip. No
  * independent balance arithmetic is stored; every call re-reads authorities. */
 struct zcl_result wallet_money_snapshot_build(
     struct node_db *ndb, struct main_state *main_state,
     const char *wallet_scope, struct wallet_money_snapshot *out);
+
+/* Build for the wallet identity already bound to this node.  The persisted
+ * operator lane is the authority for the scope: canonical -> prod, dev ->
+ * dev, test -> test.  Callers must not guess a scope or probe several scopes
+ * to discover which wallet they reached. */
+struct zcl_result wallet_money_snapshot_build_current(
+    struct node_db *ndb, struct main_state *main_state,
+    struct wallet_money_snapshot *out);
 
 struct zcl_result wallet_money_snapshot_to_json(
     const struct wallet_money_snapshot *snapshot, struct json_value *out);

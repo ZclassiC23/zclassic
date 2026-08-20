@@ -259,7 +259,16 @@ bool wallet_backup_dump_state_json(struct json_value *out, const char *key)
 
     struct wallet_backup_status st;
     wallet_backup_status_snapshot(&st);
+    bool backup_available = st.last_run_unix > 0 && st.last_path[0] != '\0';
+    bool encrypted_backup_available =
+        st.last_encrypted_run_unix > 0 &&
+        st.last_encrypted_path[0] != '\0';
     json_push_kv_bool(out, "running", st.running);
+    json_push_kv_bool(out, "healthy", st.total_failures == 0 &&
+                                      st.last_error[0] == '\0');
+    json_push_kv_bool(out, "backup_available", backup_available);
+    json_push_kv_bool(out, "encrypted_backup_available",
+                      encrypted_backup_available);
     json_push_kv_int(out, "total_runs", st.total_runs);
     json_push_kv_int(out, "total_failures", st.total_failures);
     json_push_kv_int(out, "last_run_unix", st.last_run_unix);
@@ -274,15 +283,18 @@ bool wallet_backup_dump_state_json(struct json_value *out, const char *key)
     json_push_kv_int(out, "last_tables_verified", st.last_tables_verified);
     json_push_kv_int(out, "wallet_table_count", st.wallet_table_count);
     json_push_kv_str(out, "last_missing_tables", st.last_missing_tables);
-    json_push_kv_str(out, "last_path", st.last_path);
     json_push_kv_int(out, "last_encrypted_run_unix",
                      st.last_encrypted_run_unix);
     json_push_kv_int(out, "last_encrypted_key_count",
                      st.last_encrypted_key_count);
     json_push_kv_int(out, "last_encrypted_tables_verified",
                      st.last_encrypted_tables_verified);
-    json_push_kv_str(out, "last_encrypted_path", st.last_encrypted_path);
-    json_push_kv_str(out, "last_error", st.last_error);
+    json_push_kv_bool(out, "last_error_present", st.last_error[0] != '\0');
+    json_push_kv_str(out, "next_action",
+                     encrypted_backup_available
+                         ? "none"
+                         : "run core.wallet.backup.now with encryption before "
+                           "enabling real-money sends");
     return true;
 }
 

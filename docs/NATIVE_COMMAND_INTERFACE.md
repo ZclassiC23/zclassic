@@ -1000,20 +1000,24 @@ hstar=3176325
 served_floor=3176325
 ```
 
-`status field=...` selects out of the same flat brief body as the one-line
-render (real field names: `hstar`, `served_height`, `header_height`, `gap`,
-`peer_best`, `sync_state`, `serving`, `healthy`, `peer_count`,
-`primary_blocker`, `blocker_age_s`, `active_conditions`, `rss_mb`,
-`tip_advance_age_seconds`). `dumpstate <subsystem> field=...` selects out of
+`status field=...` selects out of the same flat real-money journey body as its
+one-line render (including `node_healthy`, `synced`, `wallet_ready`,
+`can_receive`, `can_send`, `spendable_zat`, `pending_zat`, `reserved_zat`,
+`error_code`, and `next_action`). `core status brief field=...` selects the
+chain-only fields (`hstar`, `header_height`, `gap`, `peer_best`, `sync_state`,
+`serving`, `healthy`, `peer_count`, `primary_blocker`, `blocker_age_s`,
+`active_conditions`, `rss_mb`, `tip_advance_age_seconds`).
+`dumpstate <subsystem> field=...` selects out of
 that subsystem's own `.state` object (whatever top-level keys that subsystem
 publishes — see `dumpstate <subsystem>` with no `field=` to see them all).
 An unknown field name is a typed error (below) naming the bad field and up
 to 12 known field names; nothing is printed on partial failure. `field=` also
 works as a normal dashed flag (`--field=a,b`) on any native registry leaf.
 
-**Terse by construction.** `status` always uses the compact native body;
-`--format=json` returns that same bounded body in `zcl.result.v1`. The large
-diagnostic document is explicit as `z23 core status --format=json`.
+**Terse by construction.** `status` always uses the bounded money-journey
+body; `--format=json` returns it in `zcl.result.v1`. The strict chain-only
+brief is `z23 core status brief`; the large diagnostic document is explicit as
+`z23 core status --format=json`.
 `ZCL_BRIEF=1` remains only as a compatibility formatting option for raw
 `dumpstate` output.
 
@@ -1024,8 +1028,8 @@ suggested next command, never a wall of text:
 
 ```
 $ z23
-hstar=3176325 gap=0 peer_best=3176325 sync=synced blocker=none blocker_age=unknown conditions=0 peers=8 rss_mb=512
-next: z23 ops health
+node=healthy synced=yes wallet=ready receive=yes send=no spendable_zat=0 pending_zat=0 reserved_zat=0 blocker=NO_SPENDABLE_BALANCE
+next: z23 core wallet address new
 ```
 
 The next-command hint is deterministic: a named dominant blocker wins

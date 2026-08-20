@@ -1092,7 +1092,7 @@ int t_native_agent_api_contract(void)
         ASSERT(strstr(agent_doc_buf, "z23 agentinterface") != NULL);
         ASSERT(strstr(agent_doc_buf, "z23 status") != NULL);
         ASSERT(strstr(agent_doc_buf,
-                      "registry-owned native first check") != NULL);
+                      "operator-gated real-money first check") != NULL);
         ASSERT(strstr(agent_doc_buf, "z23 agentops") != NULL);
         ASSERT(strstr(agent_doc_buf, "zcl.agent_ops.v2") != NULL);
         ASSERT(strstr(agent_doc_buf, "z23 agentdiagnose") != NULL);

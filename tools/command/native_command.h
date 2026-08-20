@@ -1413,6 +1413,8 @@ void zcl_native_handle_ops_rom(
 struct json_value;
 void zcl_native_status_brief_render(const struct json_value *data, char *buf,
                                     size_t cap);
+void zcl_native_status_journey_render(const struct json_value *data,
+                                      char *buf, size_t cap);
 
 /* Pick one short, deterministic next-step command from the same brief body
  * (dominant blocker present -> explain it; still behind -> explain sync;

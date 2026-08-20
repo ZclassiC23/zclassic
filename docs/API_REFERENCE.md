@@ -158,7 +158,7 @@ The root order below is a wire contract, not a presentation choice.
 
 | Root | CLI | Kind | Avail | Summary |
 |---|---|---|---|---|
-| `status` | `status` | leaf | ready | Compact node status and next action |
+| `status` | `status` | leaf | ready | Node and wallet readiness with one next action |
 | `core` | `core` | branch | ready | Consensus-bound node capabilities |
 | `app` | `app` | branch | ready | Capability-scoped sovereign applications |
 | `dev` | `dev` | branch | ready | Native edit, proof, and publication loop |
@@ -177,11 +177,11 @@ Sections follow catalog declaration order. A branch appears only when it owns
 at least one direct leaf; a branch that exists purely to nest other branches is
 represented by its children's sections.
 
-### `status` — Compact node status and next action
+### `status` — Node and wallet readiness with one next action
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `status` | ready | read / read / public · fast/low | none | `zcl.core_status_brief.v1` | `z23 status` | Compact node status and next action |
+| `status` | ready | read / read / operator · fast/low | none | `zcl.status_journey.v1` | `z23 status` | Node and wallet readiness with one next action |
 
 ### `core` — Consensus-bound node capabilities
 
@@ -1563,7 +1563,6 @@ promise the same document shape.
 
 | Output schema | Leaves |
 |---|---|
-| `zcl.core_status_brief.v1` | `status`, `core.status.brief` |
 | `zcl.wallet_security.v1` | `core.wallet.security.status`, `core.wallet.security.encrypt`, `core.wallet.security.unlock`, `core.wallet.security.lock` |
 | `zcl.wait_result.v1` | `core.chain.wait.height`, `core.chain.wait.blocker`, `core.chain.wait.halt` |
 | `zcl.block_mutation.v1` | `core.consensus.block.invalidate`, `core.consensus.block.reconsider` |
