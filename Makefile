@@ -2389,9 +2389,15 @@ commons-journey-acceptance: commons-demo
 commons-multihost-acceptance: zclassic23 zcl-rpc zclassic23-package-sign tools/arena-product-journey-c23
 	@ZCL_COMMONS_MULTIHOST=1 bash tools/dev/commons_journey_acceptance.sh
 
-.PHONY: zcode-development-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance arena-product-journey
+.PHONY: zcode-development-acceptance zcode-adapter-readiness-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance arena-product-journey
 zcode-development-acceptance:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY=test_zcode_package_dev
+
+# No-model proof that the native CLI can independently check every prerequisite
+# for the fixed, confined Codex adapter across the frozen twelve-task corpus.
+zcode-adapter-readiness-acceptance: $(BIN_DIR)/z23 \
+		$(BIN_DIR)/zclassic23-zcode-adapter-runner
+	@tools/dev/zcode_adapter_benchmark.sh preflight
 
 # One product proof for the C23 Commons Alpha. The two exact groups remain the
 # owners of their generic, data-driven scenarios: package_registry proves all
@@ -3669,7 +3675,7 @@ $(BIN_DIR)/zclassic23-package-verify: $(VIEW_GEN_HEADERS) \
 # never executes a caller-supplied command.
 ZCODE_ADAPTER_RUNNER_SRCS = tools/zcode_adapter_runner.c \
 	lib/platform/src/os_sandbox_linux.c lib/base/src/cleanse.c \
-	lib/base/src/log_level.c lib/base/src/result.c
+	lib/base/src/log_level.c lib/base/src/result.c lib/sha3/src/sha3.c
 .PHONY: zclassic23-zcode-adapter-runner
 zclassic23-zcode-adapter-runner: $(BIN_DIR)/zclassic23-zcode-adapter-runner
 $(BIN_DIR)/zclassic23-zcode-adapter-runner: $(BUILD_IDENTITY_STAMP) \
@@ -3679,6 +3685,7 @@ $(BIN_DIR)/zclassic23-zcode-adapter-runner: $(BUILD_IDENTITY_STAMP) \
 	tmp="$$(mktemp "$@.link.XXXXXX")"; \
 	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
 	$(CC) $(DEV_RESTART_CFLAGS) -Wno-deprecated-declarations \
+		$(BUILD_IDENTITY_CPPFLAGS) \
 		$(DEV_RESTART_LDFLAGS) -o "$$tmp" \
 		$(ZCODE_ADAPTER_RUNNER_SRCS); \
 	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" "$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \

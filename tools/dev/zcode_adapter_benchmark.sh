@@ -6,9 +6,9 @@ set -euo pipefail
 
 arm=${1:-}
 case "$arm" in
-    control|packet-analysis|ephemeral-full|ephemeral-index|ephemeral-hybrid|ephemeral-hybrid-stable|appserver-hybrid-stable) ;;
+    control|preflight|packet-analysis|ephemeral-full|ephemeral-index|ephemeral-hybrid|ephemeral-hybrid-stable|appserver-hybrid-stable) ;;
     *)
-    echo "usage: $0 {control|packet-analysis|ephemeral-full|ephemeral-index|ephemeral-hybrid|ephemeral-hybrid-stable|appserver-hybrid-stable}" >&2
+    echo "usage: $0 {control|preflight|packet-analysis|ephemeral-full|ephemeral-index|ephemeral-hybrid|ephemeral-hybrid-stable|appserver-hybrid-stable}" >&2
     exit 64
     ;;
 esac
@@ -95,6 +95,7 @@ first_pass_success=0
 exact_reproduction=0
 model_failures=0
 sandbox_failures=0
+preflight_verified=0
 full_packet_bytes=0
 index_packet_bytes=0
 hybrid_packet_bytes=0
@@ -263,6 +264,34 @@ for row in "${cases[@]}"; do
         exit 1
     fi
     work_id=$(jq -r '.data.work_id' <<<"$start_output")
+    if [[ $arm == preflight ]]; then
+        preflight_input=$(jq -cn --arg workspace "$workspace" \
+            --arg work "$work_id" '{workspace:$workspace,work:$work}')
+        preflight_output=$("$z23_bin" zcode work preflight \
+            --input="$preflight_input")
+        native_calls=$((native_calls + 1))
+        tool_output_bytes=$((tool_output_bytes + ${#preflight_output}))
+        if jq -e '
+            .ok == true and
+            .data.model_request_attempted == false and
+            (.data.checks.executable_binding.runner_bound | type == "boolean") and
+            (.data.checks.executable_binding.codex_bound | type == "boolean") and
+            (.data.checks.credential_capability.ready | type == "boolean") and
+            .data.checks.credential_capability.value_exposed == false and
+            .data.checks.filesystem_sandbox.ready == true and
+            .data.checks.filesystem_sandbox.model_request_attempted == false and
+            .data.checks.packet.ready == true and
+            .data.checks.packet.bytes > 0 and
+            .data.blocker == .data.error_code and
+            (.data.next_action | length > 0)' \
+            >/dev/null <<<"$preflight_output"; then
+            preflight_verified=$((preflight_verified + 1))
+        else
+            echo "benchmark: native adapter preflight contract failed" >&2
+            exit 1
+        fi
+        continue
+    fi
     if [[ $arm == control ]]; then
         run_input=$(jq -cn --arg workspace "$workspace" --arg work "$work_id" \
             '{workspace:$workspace,work:$work,adapter:"codex"}')
@@ -423,6 +452,17 @@ for row in "${cases[@]}"; do
 done
 
 elapsed_us=$((($(date +%s%N) - started_ns) / 1000))
+if [[ $arm == preflight ]]; then
+    jq -cn \
+        --arg schema zcl.zcode_adapter_preflight_acceptance.v1 \
+        --argjson tasks "$task_limit" \
+        --argjson verified "$preflight_verified" \
+        --argjson calls "$native_calls" \
+        --argjson output_bytes "$tool_output_bytes" \
+        --argjson elapsed_us "$elapsed_us" \
+        '{schema:$schema,tasks:$tasks,preflight_verified:$verified,model_requests:0,native_tool_calls:$calls,native_tool_output_bytes:$output_bytes,elapsed_us:$elapsed_us}'
+    exit 0
+fi
 if [[ $arm == packet-analysis ]]; then
     hybrid_prefix=$(common_prefix "${hybrid_packets[@]}")
     stable_prefix=$(common_prefix "${stable_packets[@]}")

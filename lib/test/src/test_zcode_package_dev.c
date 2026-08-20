@@ -1989,6 +1989,53 @@ static int zpd_test_work_start(void)
         zcl_command_reply_free(&reply);
         json_free(&input);
 
+        json_init(&input); json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "workspace", root));
+        ASSERT(json_push_kv_str(&input, "work", saved_work_id));
+        {
+            const struct zcl_command_registry *registry =
+                zcl_command_catalog();
+            const struct zcl_command_spec *spec =
+                zcl_command_registry_find(
+                    registry, "zcode.work.preflight", NULL);
+            struct zcl_command_context command_context = {
+                .registry = registry,
+                .granted_capabilities = ~(uint64_t)0,
+                .authority_ceiling = ZCL_COMMAND_AUTH_OWNER,
+            };
+            char rendered[ZCL_COMMAND_RESULT_BUDGET + 1u];
+            enum zcl_command_exit exit_code = ZCL_COMMAND_EXIT_OK;
+            ASSERT(spec != NULL);
+            size_t rendered_bytes = zcl_command_registry_execute_json(
+                registry, spec, &command_context, &input, false, spec->path,
+                "normal", 0, 0, NULL, rendered, sizeof(rendered),
+                &exit_code);
+            ASSERT(rendered_bytes > 0);
+            ASSERT(exit_code == ZCL_COMMAND_EXIT_OK);
+            struct json_value envelope;
+            json_init(&envelope);
+            ASSERT(json_read(&envelope, rendered, rendered_bytes));
+            const struct json_value *data = json_get(&envelope, "data");
+            const struct json_value *checks = json_get(data, "checks");
+            const struct json_value *packet = json_get(checks, "packet");
+            const struct json_value *sandbox = json_get(
+                checks, "filesystem_sandbox");
+            ASSERT(strcmp(json_get_str(json_get(&envelope, "data_schema")),
+                          "zcl.zcode_work_preflight.v1") == 0);
+            ASSERT(!json_get_bool(json_get(
+                data, "model_request_attempted")));
+            ASSERT(packet && json_get_bool(json_get(packet, "ready")));
+            ASSERT(json_get_int(json_get(packet, "bytes")) > 0);
+            ASSERT(sandbox && !json_get_bool(json_get(
+                sandbox, "model_request_attempted")));
+            ASSERT(strcmp(json_get_str(json_get(data, "blocker")),
+                          json_get_str(json_get(data, "error_code"))) == 0);
+            ASSERT(json_get_str(json_get(data, "current_state"))[0]);
+            ASSERT(json_get_str(json_get(data, "next_action"))[0]);
+            json_free(&envelope);
+        }
+        json_free(&input);
+
         ASSERT(unlink(zbuild_db) == 0);
         json_init(&input); json_set_object(&input);
         ASSERT(json_push_kv_str(&input, "workspace", root));

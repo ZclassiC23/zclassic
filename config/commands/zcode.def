@@ -417,6 +417,27 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_context)
 
+ZCL_COMMAND_READY_READ(
+    "zcode.work.preflight", "zcode.work", "",
+    "Check Codex adapter readiness before a model request",
+    "Read-only preflight for one exact work item. It independently verifies "
+    "the source-bound confined runner and fixed Codex executable, exactly one "
+    "supported credential capability without exposing its value, actual "
+    "filesystem-sandbox startup in a disposable directory, and bounded packet "
+    "construction. It never starts a model request and returns one typed "
+    "blocker with one exact next action.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,work,codex,adapter,readiness,preflight,sandbox,packet",
+    "zcl.zcode_work_preflight.input.v1", "zcl.zcode_work_preflight.v1",
+    "workspace,work,datadir", "",
+    "z23 zcode work preflight --input='{\"workspace\":\".\",\"work\":\"latest\"}'",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FAST,
+    ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_work_preflight)
+
 ZCL_COMMAND_READY_COMMAND(
     "zcode.project.init.commit", "zcode.project", "", "Initialize one C23 project",
     "Re-derives the exact plan, refuses stale input and overwrite, and creates "

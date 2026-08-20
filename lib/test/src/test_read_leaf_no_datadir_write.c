@@ -191,6 +191,8 @@ static const struct rlw_leaf g_rlw_leaves[] = {
       "workspace", ".",         "source_root", RLW_ZID_PUBKEY, NULL },
     { "zcode.work.status", zcl_native_handle_zcode_work_status,
       "workspace", RLW_DATADIR_VALUE, "work", RLW_ZID_PUBKEY, NULL },
+    { "zcode.work.preflight", zcl_native_handle_zcode_work_preflight,
+      "workspace", RLW_DATADIR_VALUE, "work", RLW_ZID_PUBKEY, NULL },
     /* The same handler under its discoverable name. It is listed
      * separately on purpose: the coverage check keys on the leaf path, and
      * an alias that quietly took `datadir` without being exercised is
@@ -813,13 +815,15 @@ static bool rlw_seed_node_db(const char *dir, const char *db_path)
  * still told a lie — and two fee-spending pre-flights key on exactly that
  * distinction, so the lie costs money.
  *
- * There are two honest shapes, and which one is right depends on whether the
+ * There are three honest shapes, and which one is right depends on whether the
  * chain read is the leaf's payload or an optional enrichment:
  *   - refuse outright (error code set), for the leaves whose whole answer
  *     comes out of node.db; or
  *   - answer the rest and mark the section "read": false with a reason, for
  *     zcode.contributor.show, where the package index is the real payload
- *     and the ZNAM pointer is a garnish. Degrading is fine. Degrading
+ *     and the ZNAM pointer is a garnish; or
+ *   - readiness surfaces answer "ready": false with a typed blocker, current
+ *     state, and next action. Degrading is fine. Degrading
  *     silently is not: "read": true with "found": false over a database
  *     nobody could open is indistinguishable from "nobody claims this key".
  * Both count as disclosure. A bare empty answer counts as neither. */
@@ -843,6 +847,17 @@ static bool rlw_invoke_refused(const struct rlw_leaf *lf, const char *datadir,
     zcl_command_reply_init(&reply, "zcl.read_leaf_probe.v1");
     lf->fn(&request, &reply);
     bool refused = reply.exit_code != 0 || reply.error.code[0] != '\0';
+    if (!refused && reply.data.type == JSON_OBJ) {
+        const struct json_value *ready = json_get(&reply.data, "ready");
+        const char *blocker = json_get_str(json_get(&reply.data, "blocker"));
+        const char *current = json_get_str(
+            json_get(&reply.data, "current_state"));
+        const char *next = json_get_str(json_get(&reply.data, "next_action"));
+        refused = ready && ready->type == JSON_BOOL &&
+            !json_get_bool(ready) && blocker && blocker[0] &&
+            strcmp(blocker, "NONE") != 0 && current && current[0] &&
+            next && next[0];
+    }
     /* The degrade-and-disclose shape: any section that carries an explicit
      * "read": false is a leaf saying, in the reply body, that it did not
      * look. Walk the top-level sections rather than naming one, so a leaf

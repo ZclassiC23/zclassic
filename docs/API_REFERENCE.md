@@ -74,11 +74,11 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 698 |
+| Registry entries (branches + leaves) | 699 |
 | Top-level roots | 11 |
 | Branches | 162 |
-| Leaves (dispatchable command paths) | 536 |
-| … `ready` (live handler in this build) | 482 |
+| Leaves (dispatchable command paths) | 537 |
+| … `ready` (live handler in this build) | 483 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `z23-dev`) | 24 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 214 | 51 | 163 |
+| `config/commands/zcode.def` | 215 | 51 | 164 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -995,6 +995,7 @@ represented by its children's sections.
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
 | `zcode work context` | ready | read / read / public · instant/tiny | none | `zcl.zcode_work_context.v1` | `z23 zcode work context` | Show goal-context selection readiness |
+| `zcode work preflight` | ready | read / read / operator · fast/low | `workspace`, `work`, `datadir` | `zcl.zcode_work_preflight.v1` | `z23 zcode work preflight --input='{"workspace":".","work":"latest"}'` | Check Codex adapter readiness before a model request |
 | `zcode work start` | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`goal`**, `profile`, `context_symbol`, `max_cpu_seconds`, `datadir`, `details` | `zcl.zcode_work_start.v1` | `z23-dev zcode work start --input='{"workspace":".","goal":"Make the parser reject overflowing lengths","profile":"standard"}'` | Start reuse-first C23 work |
 | `zcode work status` | ready | read / read / operator · fast/low | `workspace`, `work`, `datadir`, `details` | `zcl.zcode_work_status.v1` | `z23-dev zcode work status --input='{"work":"latest"}'` | Show one human-first work status |
 | `zcode work show` | ready | read / read / operator · fast/low | `workspace`, `work`, `datadir`, `details` | `zcl.zcode_work_status.v1` | `z23-dev zcode work show --input='{"work":"latest"}'` | Show one human-first work result |

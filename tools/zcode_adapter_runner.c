@@ -5,6 +5,7 @@
 
 #include "base/cleanse.h"
 #include "platform/os_sandbox.h"
+#include "sha3/sha3.h"
 #include "util/result.h"
 
 #include <dirent.h>
@@ -22,6 +23,10 @@
 #include <unistd.h>
 
 #define ADAPTER_PACKET_MAX (512u * 1024u)
+
+#ifndef ZCL_BUILD_SOURCE_ID
+#define ZCL_BUILD_SOURCE_ID "unknown"
+#endif
 
 volatile sig_atomic_t g_shutdown_requested = 0;
 
@@ -46,6 +51,35 @@ static bool adapter_codex_path(char out[PATH_MAX])
     return stat(out, &st) == 0 && S_ISREG(st.st_mode) &&
            st.st_uid == getuid() && (st.st_mode & 0111u) != 0 &&
            (st.st_mode & 0022u) == 0;
+}
+
+static bool adapter_file_sha3(const char *path, char out[65])
+{
+    int fd = open(path, O_RDONLY | O_CLOEXEC | O_NOFOLLOW);
+    if (fd < 0) return false;
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    uint8_t buffer[8192];
+    bool ok = true;
+    while (ok) {
+        ssize_t got = read(fd, buffer, sizeof(buffer));
+        if (got < 0 && errno == EINTR) continue;
+        if (got < 0) ok = false;
+        if (got <= 0) break;
+        sha3_256_write(&sha, buffer, (size_t)got);
+    }
+    uint8_t digest[32];
+    if (ok) sha3_256_finalize(&sha, digest);
+    if (close(fd) != 0) ok = false;
+    static const char hex[] = "0123456789abcdef";
+    if (ok) {
+        for (size_t i = 0; i < sizeof(digest); i++) {
+            out[i * 2u] = hex[digest[i] >> 4u];
+            out[i * 2u + 1u] = hex[digest[i] & 15u];
+        }
+        out[64] = '\0';
+    }
+    return ok;
 }
 
 static bool adapter_mkdir(const char *path)
@@ -106,13 +140,33 @@ static bool adapter_nproc_limit(uint64_t *out)
 
 int main(int argc, char **argv)
 {
-    if (argc != 3) {
+    if (argc == 2 && strcmp(argv[1], "--identity") == 0) {
+        printf("{\"schema\":\"zcl.zcode_adapter_runner_identity.v1\","
+               "\"source_id\":\"%s\"}\n", ZCL_BUILD_SOURCE_ID);
+        return 0;
+    }
+    if (argc == 2 && strcmp(argv[1], "--binding") == 0) {
+        char codex_path[PATH_MAX], digest[65];
+        if (!adapter_codex_path(codex_path) ||
+            !adapter_file_sha3(codex_path, digest)) {
+            fprintf(stderr, "adapter_runner: fixed Codex binding unavailable\n");
+            return 69;
+        }
+        printf("{\"schema\":\"zcl.zcode_adapter_executable_binding.v1\","
+               "\"ready\":true,\"artifact_sha3\":\"%s\"}\n", digest);
+        return 0;
+    }
+    bool preflight = argc == 4 && strcmp(argv[1], "--preflight") == 0;
+    if ((!preflight && argc != 3) || (preflight && argc != 4)) {
         fprintf(stderr, "adapter_runner: candidate and packet required\n");
         return 64;
     }
+    const char *candidate_arg = argv[preflight ? 2 : 1];
+    const char *packet_arg = argv[preflight ? 3 : 2];
     char candidate[PATH_MAX], packet[PATH_MAX], codex[PATH_MAX];
-    if (!realpath(argv[1], candidate) || !realpath(argv[2], packet) ||
-        !adapter_beneath(candidate, packet) || !adapter_codex_path(codex)) {
+    if (!realpath(candidate_arg, candidate) || !realpath(packet_arg, packet) ||
+        !adapter_beneath(candidate, packet) ||
+        (!preflight && !adapter_codex_path(codex))) {
         fprintf(stderr, "adapter_runner: fixed adapter or paths unavailable\n");
         return 69;
     }
@@ -126,44 +180,49 @@ int main(int argc, char **argv)
         return 65;
     }
     const char *credential_name = "CODEX_API_KEY";
-    const char *inherited_key = getenv(credential_name);
-    const char *access_token = getenv("CODEX_ACCESS_TOKEN");
-    if ((!inherited_key || !inherited_key[0]) && access_token &&
+    const char *inherited_key = preflight ? NULL : getenv(credential_name);
+    const char *access_token = preflight ? NULL : getenv("CODEX_ACCESS_TOKEN");
+    if (!preflight && (!inherited_key || !inherited_key[0]) && access_token &&
         access_token[0]) {
         credential_name = "CODEX_ACCESS_TOKEN";
         inherited_key = access_token;
     }
-    if (!inherited_key || !inherited_key[0] || strlen(inherited_key) > 16384u ||
-        (getenv("CODEX_API_KEY") && getenv("CODEX_API_KEY")[0] &&
-         access_token && access_token[0])) {
+    if (!preflight &&
+        (!inherited_key || !inherited_key[0] ||
+         strlen(inherited_key) > 16384u ||
+         (getenv("CODEX_API_KEY") && getenv("CODEX_API_KEY")[0] &&
+          access_token && access_token[0]))) {
         close(packet_fd);
         fprintf(stderr, "adapter_runner: one supported Codex credential required\n");
         return 69;
     }
-    char *api_key = strdup(inherited_key);
+    char *api_key = preflight ? NULL : strdup(inherited_key);
     char adapter_home[PATH_MAX], adapter_tmp[PATH_MAX];
     int hn = snprintf(adapter_home, sizeof(adapter_home),
                       "%s/.zcode-adapter-home", candidate);
     int tn = snprintf(adapter_tmp, sizeof(adapter_tmp),
                       "%s/.zcode-adapter-tmp", candidate);
-    if (!api_key || hn <= 0 || (size_t)hn >= sizeof(adapter_home) ||
+    if ((!preflight && !api_key) || hn <= 0 ||
+        (size_t)hn >= sizeof(adapter_home) ||
         tn <= 0 || (size_t)tn >= sizeof(adapter_tmp) ||
         !adapter_mkdir(adapter_home) || !adapter_mkdir(adapter_tmp)) {
         free(api_key); close(packet_fd);
         fprintf(stderr, "adapter_runner: private adapter directories unavailable\n");
         return 73;
     }
-    if (clearenv() != 0 || setenv(credential_name, api_key, 1) != 0 ||
+    if (clearenv() != 0 ||
+        (!preflight && setenv(credential_name, api_key, 1) != 0) ||
         setenv("HOME", adapter_home, 1) != 0 ||
         setenv("CODEX_HOME", adapter_home, 1) != 0 ||
         setenv("TMPDIR", adapter_tmp, 1) != 0 ||
         setenv("PATH", "/usr/bin:/bin", 1) != 0 ||
         setenv("SSL_CERT_FILE", "/etc/ssl/certs/ca-certificates.crt", 1) != 0) {
-        memory_cleanse(api_key, strlen(api_key)); free(api_key); close(packet_fd);
+        if (api_key) memory_cleanse(api_key, strlen(api_key));
+        free(api_key); close(packet_fd);
         fprintf(stderr, "adapter_runner: environment scrub failed\n");
         return 70;
     }
-    memory_cleanse(api_key, strlen(api_key));
+    if (api_key) memory_cleanse(api_key, strlen(api_key));
     free(api_key);
 
     uint64_t nproc_limit = 0;
@@ -189,7 +248,8 @@ int main(int argc, char **argv)
     struct os_sandbox_path_rule rules[20];
     size_t count = 0;
     adapter_rule_add(rules, &count, candidate, true, false, true);
-    adapter_rule_add(rules, &count, codex, false, true, false);
+    if (!preflight)
+        adapter_rule_add(rules, &count, codex, false, true, false);
     adapter_rule_add(rules, &count, "/usr", false, true, false);
     adapter_rule_add(rules, &count, "/bin", false, true, false);
     adapter_rule_add(rules, &count, "/lib", false, true, false);
@@ -211,13 +271,33 @@ int main(int argc, char **argv)
         return 70;
     }
     if (chdir(candidate) != 0 || dup2(packet_fd, STDIN_FILENO) < 0 ||
-        dup2(STDOUT_FILENO, STDERR_FILENO) < 0) {
+        (!preflight && dup2(STDOUT_FILENO, STDERR_FILENO) < 0)) {
         close(packet_fd);
         fprintf(stderr, "adapter_runner: confined I/O setup failed\n");
         return 70;
     }
     if (packet_fd > STDERR_FILENO)
         close(packet_fd);
+    if (preflight) {
+        const char sentinel[] = ".zcode-adapter-preflight";
+        int fd = open(sentinel, O_WRONLY | O_CREAT | O_EXCL | O_CLOEXEC |
+                                O_NOFOLLOW, 0600);
+        bool ok = fd >= 0;
+        if (fd >= 0) {
+            ok = close(fd) == 0;
+            fd = -1;
+        }
+        if (ok) ok = unlink(sentinel) == 0;
+        if (!ok) {
+            (void)unlink(sentinel);
+            fprintf(stderr, "adapter_runner: sandbox write probe failed\n");
+            return 70;
+        }
+        printf("{\"schema\":\"zcl.zcode_adapter_sandbox_preflight.v1\","
+               "\"sandbox_started\":true,"
+               "\"model_request_attempted\":false}\n");
+        return 0;
+    }
     const char *const codex_argv[] = {
         codex, "exec", "--sandbox", "workspace-write", "-C", candidate,
         "--skip-git-repo-check", "--ephemeral", "--ignore-user-config",

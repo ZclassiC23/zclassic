@@ -130,3 +130,33 @@ be adopted under the original rule: materially lower uncached tokens or
 verified goal-to-result time, with no reduction in first-pass success, scope
 safety, or exact reproduction. A general external tool server and a registry
 export through that protocol remain explicitly out of scope.
+
+## Bounded readiness repair and freeze
+
+The one permitted follow-up is now the native read-only
+`zcode.work.preflight` leaf. It checks the source-bound confined runner and
+fixed Codex executable, exactly one credential capability without returning a
+value, real filesystem-sandbox startup in a disposable directory, and packet
+construction for the exact work item. The runner's preflight mode exits after
+the sandbox write probe and reports `model_request_attempted=false`; it cannot
+start a model request.
+
+The frozen twelve-task acceptance reported:
+
+```json
+{"schema":"zcl.zcode_adapter_preflight_acceptance.v1","tasks":12,"preflight_verified":12,"model_requests":0,"native_tool_calls":24,"native_tool_output_bytes":26146,"elapsed_us":5287630}
+```
+
+Reproduce it with `make zcode-adapter-readiness-acceptance`.
+
+On this host the command independently proves that the runner is source-bound,
+the filesystem sandbox starts, and an exact packet can be built. It names
+`CODEX_EXECUTABLE_UNBOUND` as the single primary blocker because the fixed
+owner-approved Codex executable binding is absent; credential capability is
+also reported separately as unavailable. No model request is made and the
+existing `zcode.work.run` behavior is unchanged.
+
+Adapter and benchmark development is frozen after this repair. The next work
+belongs to public-node V1 acceptance: full binaries, real transaction builders,
+real P2P, persistent wallet state, application behavior, C3 cold start, and C8
+from-genesis parity.
