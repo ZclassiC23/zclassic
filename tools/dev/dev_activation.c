@@ -790,6 +790,15 @@ static int dev_activate_candidate(struct dev_activation_txn *txn)
         (void)dev_activation_link_generation(txn, "last-good",
                                              txn->previous_generation);
 
+    if (ops->service_prepare && ops->service_prepare(ops->ctx) != 0) {
+        dev_set_status(r, "prepare_failed", "activation_failed",
+                       "could not install the exact dev unit before activation");
+        snprintf(r->failure_capsule, sizeof(r->failure_capsule),
+                 "dev unit preparation failed; generation links and running "
+                 "process untouched");
+        return DEV_ACTIVATION_E_ACTIVATE;
+    }
+
     if (ops->service_stop(ops->ctx) != 0) {
         dev_set_status(r, "stop_failed", "activation_failed",
                        "could not stop the unit within the bounded stop window");

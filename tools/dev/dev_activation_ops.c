@@ -37,6 +37,43 @@ static int dev_run_argv(const char *cwd, const char *const argv[],
     return out->exit_code;
 }
 
+static int dev_op_daemon_reload(void *ctx);
+
+static int dev_op_prepare(void *ctx)
+{
+    const struct dev_activation_request *req = ctx;
+    const char *home = getenv("HOME");
+    if (!home || !home[0] || !req || !req->repo_root || !req->unit)
+        return -1;
+
+    char unit_dir[PATH_MAX];
+    char source[PATH_MAX];
+    char target[PATH_MAX];
+    int n1 = snprintf(unit_dir, sizeof(unit_dir),
+                      "%s/.config/systemd/user", home);
+    int n2 = snprintf(source, sizeof(source), "%s/deploy/%s",
+                      req->repo_root, req->unit);
+    int n3 = snprintf(target, sizeof(target), "%s/%s", unit_dir, req->unit);
+    if (n1 <= 0 || (size_t)n1 >= sizeof(unit_dir) ||
+        n2 <= 0 || (size_t)n2 >= sizeof(source) ||
+        n3 <= 0 || (size_t)n3 >= sizeof(target))
+        return -1;
+
+    const char *mkdir_argv[] = { "mkdir", "-p", "--", unit_dir, NULL };
+    struct zcl_devloop_process_result mkdir_res = {0};
+    if (dev_run_argv(req->repo_root, mkdir_argv, 30000, &mkdir_res) != 0)
+        return -1;
+
+    const char *install_argv[] = {
+        "install", "-m", "0644", "--", source, target, NULL
+    };
+    struct zcl_devloop_process_result install_res = {0};
+    if (dev_run_argv(req->repo_root, install_argv, 30000, &install_res) != 0)
+        return -1;
+
+    return dev_op_daemon_reload(ctx);
+}
+
 static int dev_op_stop(void *ctx)
 {
     const struct dev_activation_request *req = ctx;
@@ -214,6 +251,7 @@ void dev_activation_default_ops(const struct dev_activation_request *req,
                                 struct dev_activation_ops *out)
 {
     memset(out, 0, sizeof(*out));
+    out->service_prepare = dev_op_prepare;
     out->service_stop = dev_op_stop;
     out->service_start = dev_op_start;
     out->service_daemon_reload = dev_op_daemon_reload;

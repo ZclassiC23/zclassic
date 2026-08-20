@@ -51,11 +51,20 @@ struct fake_ctx {
     bool protect_identity_on_failed_start;
     char identity_path[PATH_MAX];
     bool service_up;
-    int stop_calls, start_calls, reload_calls, probe_calls, preflight_calls;
+    int prepare_result;
+    int prepare_calls, stop_calls, start_calls, reload_calls, probe_calls;
+    int preflight_calls;
     int source_cas_calls;
     char preflight_source_id[65];
     char probe_source_id[65];
 };
+
+static int fk_prepare(void *ctx)
+{
+    struct fake_ctx *c = ctx;
+    c->prepare_calls++;
+    return c->prepare_result;
+}
 
 /* Read the generation id the `current` link points at into out. */
 static bool fake_current_gen(struct fake_ctx *c, char *out, size_t out_sz)
@@ -172,6 +181,7 @@ static int fk_source_cas(void *ctx)
 static void fake_ops_init(struct dev_activation_ops *ops, struct fake_ctx *c)
 {
     memset(ops, 0, sizeof(*ops));
+    ops->service_prepare = fk_prepare;
     ops->service_stop = fk_stop;
     ops->service_start = fk_start;
     ops->service_daemon_reload = fk_reload;
@@ -389,6 +399,7 @@ static int test_happy_activation(void)
         ASSERT_STR_EQ(r.running_generation, expect_gen);
         ASSERT_STR_EQ(c.preflight_source_id, TEST_SOURCE_ID);
         ASSERT_STR_EQ(c.probe_source_id, TEST_SOURCE_ID);
+        ASSERT_EQ(c.prepare_calls, 1);
 
         /* current symlink resolves to the candidate generation */
         char cur[PATH_MAX], link[PATH_MAX];
@@ -425,6 +436,39 @@ static int test_happy_activation(void)
         ASSERT(json_get_bool(json_get(&v, "rollback_available")));
         json_free(&v);
 
+        sandbox_exit(&sb);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_unit_prepare_failure(void)
+{
+    int failures = 0;
+    TEST("dev_activation: unit preparation fails before stop or generation flip") {
+        struct sandbox sb;
+        sandbox_enter(&sb, "unit_prepare_failure");
+        char artifact[PATH_MAX];
+        snprintf(artifact, sizeof(artifact), "%s/cand", sb.home);
+        ASSERT(write_fake_binary(artifact, 'A'));
+
+        struct fake_ctx c = { .prepare_result = 1, .service_up = true };
+        snprintf(c.gen_root, sizeof(c.gen_root), "%s", sb.gen_root);
+        struct dev_activation_ops ops;
+        fake_ops_init(&ops, &c);
+        struct dev_activation_request req;
+        base_request(&req, &sb, artifact);
+        struct dev_activation_result r;
+
+        ASSERT_EQ(dev_activation_run(&req, &ops, &r),
+                  DEV_ACTIVATION_E_ACTIVATE);
+        ASSERT_STR_EQ(r.activation_status, "prepare_failed");
+        ASSERT_EQ(c.prepare_calls, 1);
+        ASSERT_EQ(c.stop_calls, 0);
+        ASSERT(c.service_up);
+        char current[PATH_MAX];
+        snprintf(current, sizeof(current), "%s/current", sb.gen_root);
+        ASSERT(!file_exists(current));
         sandbox_exit(&sb);
         PASS();
     } _test_next:;
@@ -1282,6 +1326,7 @@ int test_dev_activation(void)
     int failures = 0;
     failures += test_null_result_refused();
     failures += test_happy_activation();
+    failures += test_unit_prepare_failure();
     failures += test_stage_rejects_hash_copy_race();
     failures += test_source_id_required();
     failures += test_source_epoch_cas_refuses_before_stop();

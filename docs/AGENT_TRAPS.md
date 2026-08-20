@@ -47,7 +47,10 @@ historical fixture passes, then deploy/restart intentionally.
   preflights an immutable dev generation, then returns the exact
   `commit_input` required to activate it. The commit binds the candidate,
   source identity + ABA mutation + CAS root, resident generation, and expiry;
-  the engine verifies the exact running executable and rolls back on failure.
+  the engine installs or updates the exact source-controlled dev unit before
+  its first service action, verifies the exact running executable, and rolls
+  back on failure. Fresh hosts do not need a contained legacy deploy command
+  to install the unit first.
   All other broad paths remain contained: `dev.change.apply`, watcher modes,
   `make hotswap`, `deploy-dev*`, `agent-deploy-fast`, `agent-stage-dev`, and
   the direct deploy/hot-swap scripts all hard-refuse. Remote update/install/

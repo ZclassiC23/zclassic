@@ -76,6 +76,11 @@ enum dev_activation_mode {
  * ZCL_DEV_*_COMMAND seams of the shell script one-for-one.
  */
 struct dev_activation_ops {
+    /* Install/update the exact source-controlled unit before the first
+     * service action. This makes an owner-approved activation sufficient on a
+     * fresh host instead of depending on an older deploy path having run. */
+    int (*service_prepare)(void *ctx);
+
     /* Stop / start / reload the unit. */
     int (*service_stop)(void *ctx);
     int (*service_start)(void *ctx);

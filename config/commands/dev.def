@@ -717,6 +717,7 @@ ZCL_COMMAND_DEV_COMMAND(
     "generation and returns exact commit_input. The confirmed call requires "
     "the same candidate, source identity, ABA mutation token, source CAS root, "
     "resident generation, expiry, idempotency key, and effect digest. It then "
+    "installs the exact source-controlled dev unit (including on a fresh host), "
     "uses the native activation engine's exact-process verification and "
     "rollback-on-failure transaction. It is confined to zcl23-dev.service.", 0,
     "generation,activate,plan,commit,rollback,dev",
