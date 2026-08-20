@@ -351,6 +351,40 @@ ladder and the operator looking in the wrong place.
 regression: peers present, target off the active chain, and the blocker must not
 claim there is no peer. Red before the change, green after.
 
+### The external prerequisite, in the node's own words
+
+The mission recipe for C3 starts with "mint a fresh near-tip bundle from a
+producer session whose source identity matches the candidate". Asked directly,
+on 2026-08-20, the canonical node says it cannot open that session at all:
+
+```bash
+zclassic23 -rpcport=18232 -datadir=~/.zclassic-c23 dumpstate bundle_exporter
+```
+```json
+{"session_open":false,"qualified":false,
+ "degradation_reason":"producer receipt begin: datadir session does not exactly
+   match current running binary / source claim / source epoch / profile",
+ "exports_ok":0,"exports_failed":0,
+ "last_export_height":3056758,"generations":[3056758]}
+```
+
+That is the standing exporter refusing by name, not a missing feature. The
+running process was started on 2026-08-15 07:48 from a binary built at 07:47,
+so its source claim cannot equal any candidate committed since; the session
+`config/src/consensus_state_producer_receipt.c` demands is exact, and it is
+right to be. The one generation it has ever produced is the bundle it already
+serves, and `dumpstate rom_seed` confirms that is the only artifact it
+advertises — a 513,867,776-byte `consensus_bundle`, and no
+`ROM_ARTIFACT_HEADER_SEED`, which is why the runs above had to take their
+header seed from a second host.
+
+So a cold client fetching from this node inherits a bundle whose height is
+about 166,000 blocks behind where the node itself is, and must fold the
+difference — which is the path that livelocks above. Re-opening the exporter
+means restarting the canonical node onto a matching binary. That is the
+operator's decision under AGENTS.md P0, not this lane's, and it is the exact
+prerequisite C3 is waiting on.
+
 ## Running the reports
 
 ```bash
