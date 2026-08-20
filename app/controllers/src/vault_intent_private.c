@@ -4,7 +4,6 @@
 #include "controllers/vault_intent_private.h"
 
 #include "base/serialize_le.h"
-#include "chain/chain.h"
 #include "controllers/vault_intent_controller.h"
 #include "controllers/wallet_helpers.h"
 #include "controllers/wallet_shielded_controller.h"
@@ -34,8 +33,6 @@
 #define VIP_ADDR_MAX 127
 #define VIP_TTL 600
 #define VIP_APP_KIND "vault_multi"
-#define VIP_SNAPSHOT_BIND_ATTEMPTS 60
-#define VIP_SNAPSHOT_BIND_RETRY_MS 250
 
 enum vip_memo_kind { VIP_MEMO_NONE = 0, VIP_MEMO_TEXT = 1, VIP_MEMO_HEX = 2 };
 
@@ -518,9 +515,11 @@ bool vault_intent_private_plan(const struct json_value *input,
             ctx, scope, reservation, &money, result))
         goto plan_clean;
 
-    struct block_index *anchor = active_chain_tip(&ctx->main_state->chain_active);
-    if (!anchor) {
-        vip_error(result, "CHAIN_ANCHOR_UNAVAILABLE", "active chain has no tip");
+    struct wallet_money_snapshot reserved_money;
+    if (!wallet_money_snapshot_after_reservation(
+            &money, reservation, &reserved_money)) {
+        vip_error(result, "MONEY_STATE_NOT_CURRENT",
+                  "current money snapshot cannot include this reservation");
         goto plan_clean;
     }
     struct vault_intent_row row; memset(&row, 0, sizeof(row));
@@ -531,13 +530,14 @@ bool vault_intent_private_plan(const struct json_value *input,
     row.state = VAULT_INTENT_PLANNED; row.route = p.route;
     row.created_at = (int64_t)platform_time_wall_time_t();
     row.expires_at = row.created_at + VIP_TTL; row.updated_at = row.created_at;
-    row.anchor_height = anchor->nHeight;
-    memcpy(row.anchor_hash, anchor->hashBlock.data, 32);
+    row.anchor_height = money.tip_height;
+    memcpy(row.anchor_hash, money.tip_hash, 32);
     (void)snprintf(row.wallet_scope, sizeof(row.wallet_scope), "%s", scope);
     (void)snprintf(row.wallet_instance_id, sizeof(row.wallet_instance_id),
                    "%s", money.identity.wallet_instance_id);
     wallet_identity_genesis_hex(&money.identity, row.wallet_genesis);
-    memcpy(row.snapshot_root, money.snapshot_root, 32); row.has_snapshot_root = true;
+    memcpy(row.snapshot_root, reserved_money.snapshot_root, 32);
+    row.has_snapshot_root = true;
     row.recipient_value_zat = target; row.max_fee_zat = p.fee;
     row.reserved_zat = reservation;
     (void)snprintf(row.application_kind, sizeof(row.application_kind), "%s",
@@ -548,43 +548,32 @@ bool vault_intent_private_plan(const struct json_value *input,
     bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
         plain, plain_len, row.encrypted_payload, sizeof(row.encrypted_payload),
         &row.encrypted_payload_len);
-    bool stored = encrypted && vault_intent_reserve(
-        ctx->node_db, &row, money.confirmed_zat);
-    if (stored) {
-        /* The reservation is itself part of the canonical money root.  A
-         * reducer transition can make the first post-insert observation
-         * transiently STALE even though the reservation is valid.  Wait a
-         * bounded 15 seconds for one fully current observation rather than
-         * failing every plan whose proof straddled a block. */
-        struct wallet_money_snapshot reserved;
-        bool bound = false;
-        for (int attempt = 0; attempt < VIP_SNAPSHOT_BIND_ATTEMPTS; attempt++) {
-            struct zcl_result refreshed = wallet_money_snapshot_build(
-                ctx->node_db, ctx->main_state, scope, &reserved);
-            bound = refreshed.ok && reserved.complete &&
-                strcmp(reserved.status, "CURRENT") == 0;
-            if (bound)
-                break;
-            if (attempt + 1 < VIP_SNAPSHOT_BIND_ATTEMPTS)
-                platform_sleep_ms(VIP_SNAPSHOT_BIND_RETRY_MS);
-        }
-        stored = bound;
-        if (stored) {
-            row.anchor_height = reserved.tip_height;
-            memcpy(row.anchor_hash, reserved.tip_hash,
-                   sizeof(row.anchor_hash));
-            memcpy(row.snapshot_root, reserved.snapshot_root, 32);
-            vault_intent_digest_payload(plain, plain_len, &row, row.digest);
-            stored = vault_intent_save(ctx->node_db, &row);
-        }
-        if (!stored)
-            (void)vault_intent_set_state(ctx->node_db, row.plan_id,
-                VAULT_INTENT_FAILED, NULL, "SNAPSHOT_BIND_FAILED",
-                (int64_t)platform_time_wall_time_t());
-    }
+    /* The post-reservation root is a pure transform of the post-proof CURRENT
+     * snapshot.  The database compares its reservation total and inserts this
+     * exact row under one BEGIN IMMEDIATE, so no poll or second save is part
+     * of correctness. */
+    bool stored = encrypted && vault_intent_reserve_bound(
+        ctx->node_db, &row, money.confirmed_zat,
+        money.intent_reserved_zat);
     if (!stored) {
+        if (vault_intent_find_application_idempotency(
+                ctx->node_db, scope, VIP_APP_KIND, idem, &existing)) {
+            bool same = existing.has_request_digest &&
+                memcmp(existing.request_digest, request_digest, 32) == 0;
+            if (!same) {
+                vip_error(result, "IDEMPOTENCY_CONFLICT",
+                          "that idempotency key already names a different request");
+                goto plan_clean;
+            }
+            json_set_object(result);
+            (void)json_push_kv_bool(result, "ok", true);
+            vault_intent_render_row(ctx, result, &existing);
+            vip_render_plan_details(&p, &existing, result);
+            (void)json_push_kv_bool(result, "idempotent_plan", true);
+            goto plan_clean;
+        }
         vip_error(result, "PLAN_PERSIST_FAILED",
-                  "encrypted plan could not be reserved and snapshot-bound");
+                  "plan was not reserved; retry the same idempotency_key");
         goto plan_clean;
     }
     json_set_object(result); (void)json_push_kv_bool(result, "ok", true);

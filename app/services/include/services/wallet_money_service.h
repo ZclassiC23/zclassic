@@ -80,6 +80,14 @@ struct zcl_result wallet_money_snapshot_build_current(
     struct node_db *ndb, struct main_state *main_state,
     struct wallet_money_snapshot *out);
 
+/* Purely derive the exact money document after adding one durable intent
+ * reservation.  This is valid only for a complete CURRENT snapshot and never
+ * reads or writes storage.  The caller must bind the insert atomically to the
+ * input snapshot's intent_reserved_zat before publishing the derived root. */
+bool wallet_money_snapshot_after_reservation(
+    const struct wallet_money_snapshot *before, int64_t reservation_zat,
+    struct wallet_money_snapshot *after);
+
 struct zcl_result wallet_money_snapshot_to_json(
     const struct wallet_money_snapshot *snapshot, struct json_value *out);
 

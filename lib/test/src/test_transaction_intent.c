@@ -1229,7 +1229,13 @@ int test_transaction_intent(void)
         ti_bound_row(&b, 0x21, &identity, 2000000);
         ti_bound_row(&over, 0x31, &identity, 1);
         ASSERT(vault_intent_reserve(&ndb, &a, 30000000));
-        ASSERT(vault_intent_reserve(&ndb, &b, 30000000));
+        ASSERT(!vault_intent_reserve_bound(&ndb, &b, 30000000, 0));
+        struct vault_intent_row absent;
+        ASSERT(!vault_intent_find(&ndb, b.plan_id, &absent));
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "dev", identity.wallet_instance_id), 3000000);
+        ASSERT(vault_intent_reserve_bound(
+            &ndb, &b, 30000000, 3000000));
         ASSERT_EQ(vault_intent_reserved_total(
                       &ndb, "dev", identity.wallet_instance_id), 5000000);
         ASSERT_EQ(vault_intent_reserved_total_at(

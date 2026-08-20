@@ -10,7 +10,6 @@
 #include "controllers/sync_controller.h"
 #include "controllers/wallet_helpers.h"
 #include "base/serialize_le.h"
-#include "chain/chain.h"
 #include "core/serialize.h"
 #include "core/amount.h"
 #include "crypto/sha3.h"
@@ -391,8 +390,13 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
         p.inputs[i].vout = (uint32_t)chosen[i].i;
     }
     free(avail);
-    struct block_index *anchor = active_chain_tip(&ctx->main_state->chain_active);
-    if (!anchor) { vi_error(result, "CHAIN_ANCHOR_UNAVAILABLE", "active chain has no tip"); return true; }
+    struct wallet_money_snapshot reserved_money;
+    if (!wallet_money_snapshot_after_reservation(
+            &money, reservation, &reserved_money)) {
+        vi_error(result, "MONEY_STATE_NOT_CURRENT",
+                 "current money snapshot cannot include this reservation");
+        return true;
+    }
     uint8_t plain[WALLET_METADATA_PLAINTEXT_MAX]; size_t plen = 0;
     if (!vi_encode(&p, plain, sizeof(plain), &plen)) {
         vi_error(result, "PLAN_ENCODING_FAILED", "could not encode exact plan"); return true;
@@ -407,13 +411,13 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
     row.created_at = (int64_t)platform_time_wall_time_t();
     row.expires_at = row.created_at + VI_TTL;
     row.updated_at = row.created_at;
-    row.anchor_height = anchor->nHeight;
-    memcpy(row.anchor_hash, anchor->hashBlock.data, 32);
+    row.anchor_height = money.tip_height;
+    memcpy(row.anchor_hash, money.tip_hash, 32);
     snprintf(row.wallet_scope, sizeof(row.wallet_scope), "%s", wallet_scope);
     snprintf(row.wallet_instance_id, sizeof(row.wallet_instance_id), "%s",
              money.identity.wallet_instance_id);
     wallet_identity_genesis_hex(&money.identity, row.wallet_genesis);
-    memcpy(row.snapshot_root, money.snapshot_root, 32);
+    memcpy(row.snapshot_root, reserved_money.snapshot_root, 32);
     row.has_snapshot_root = true;
     row.recipient_value_zat = target;
     row.max_fee_zat = p.fee;
@@ -427,27 +431,9 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
     bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
         plain, plen, row.encrypted_payload, sizeof(row.encrypted_payload),
         &row.encrypted_payload_len);
-    bool stored = encrypted && vault_intent_reserve(
-        ctx->node_db, &row, money.confirmed_zat);
-    if (stored) {
-        /* The canonical root includes reservations. Capture the state after
-         * this plan's atomic reservation, then bind the exact plan digest to
-         * that stable root. observed_at is freshness metadata, not root data. */
-        struct wallet_money_snapshot reserved_money;
-        struct zcl_result refreshed = wallet_money_snapshot_build(
-            ctx->node_db, ctx->main_state, wallet_scope, &reserved_money);
-        stored = refreshed.ok && reserved_money.complete &&
-            strcmp(reserved_money.status, "CURRENT") == 0;
-        if (stored) {
-            memcpy(row.snapshot_root, reserved_money.snapshot_root, 32);
-            vault_intent_digest_payload(plain, plen, &row, row.digest);
-            stored = vault_intent_save(ctx->node_db, &row);
-        }
-        if (!stored)
-            (void)vault_intent_set_state(ctx->node_db, row.plan_id,
-                VAULT_INTENT_FAILED, NULL, "SNAPSHOT_BIND_FAILED",
-                (int64_t)platform_time_wall_time_t());
-    }
+    bool stored = encrypted && vault_intent_reserve_bound(
+        ctx->node_db, &row, money.confirmed_zat,
+        money.intent_reserved_zat);
     memory_cleanse(plain, sizeof(plain));
     if (!stored) {
         /* A concurrent request with the same key can win the unique insert
@@ -458,7 +444,7 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
             return vi_render_idempotent(ctx, result, &existing,
                                         request_digest);
         vi_error(result, "PLAN_PERSIST_FAILED",
-                 "encrypted plan could not be atomically reserved and snapshot-bound");
+                 "plan was not reserved; retry the same idempotency_key");
         return true;
     }
     json_set_object(result); json_push_kv_bool(result, "ok", true);

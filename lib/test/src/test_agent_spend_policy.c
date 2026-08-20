@@ -357,6 +357,52 @@ static int test_money_freshness_fails_closed(void)
                       true, 100, 100, 100, 0, SYNC_AT_TIP),
                   WALLET_MONEY_FRESHNESS_UNKNOWN);
         PASS();
+    }
+    TEST("post-reservation money roots are deterministic and fail closed") {
+        struct wallet_money_snapshot before, after;
+        memset(&before, 0, sizeof(before));
+        snprintf(before.wallet_scope, sizeof(before.wallet_scope), "dev");
+        snprintf(before.status, sizeof(before.status), "CURRENT");
+        before.complete = true;
+        before.confirmed_zat = 30000000;
+        before.intent_reserved_zat = 1000000;
+        before.lifetime_lab_spent_zat = 500000;
+        before.agent_available_zat = 3500000;
+        before.tip_height = 100;
+        before.network_tip_height = 100;
+        memset(before.snapshot_root, 0x51, sizeof(before.snapshot_root));
+        ASSERT(wallet_money_snapshot_after_reservation(
+            &before, 2000000, &after));
+        ASSERT_EQ(after.confirmed_zat, 30000000);
+        ASSERT_EQ(after.intent_reserved_zat, 3000000);
+        ASSERT_EQ(after.lifetime_lab_spent_zat, 500000);
+        ASSERT_EQ(after.agent_available_zat, 1500000);
+        ASSERT_EQ(after.tip_height, 100);
+        ASSERT(memcmp(after.snapshot_root, before.snapshot_root, 32) != 0);
+
+        snprintf(before.wallet_scope, sizeof(before.wallet_scope), "test");
+        before.confirmed_zat = 600000;
+        before.intent_reserved_zat = 20000;
+        before.lifetime_lab_spent_zat = 0;
+        before.agent_available_zat = 580000;
+        ASSERT(wallet_money_snapshot_after_reservation(
+            &before, 21000, &after));
+        ASSERT_EQ(after.intent_reserved_zat, 41000);
+        ASSERT_EQ(after.agent_available_zat, 559000);
+
+        snprintf(before.status, sizeof(before.status), "STALE");
+        ASSERT(!wallet_money_snapshot_after_reservation(
+            &before, 1, &after));
+        snprintf(before.status, sizeof(before.status), "CURRENT");
+        ASSERT(!wallet_money_snapshot_after_reservation(
+            &before, 600000, &after));
+        before.intent_reserved_zat = INT64_MAX;
+        before.confirmed_zat = INT64_MAX;
+        ASSERT(!wallet_money_snapshot_after_reservation(
+            &before, 1, &after));
+        ASSERT(!wallet_money_snapshot_after_reservation(
+            &before, 1, &before));
+        PASS();
     } _test_next:;
     return failures;
 }

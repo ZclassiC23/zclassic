@@ -54,6 +54,57 @@ static void money_root(struct wallet_money_snapshot *s)
     sha3_256_finalize(&c, s->snapshot_root);
 }
 
+static void money_agent_available(struct wallet_money_snapshot *s)
+{
+    int64_t liquid = s->confirmed_zat - s->intent_reserved_zat;
+    if (liquid < 0)
+        liquid = 0;
+    if (strcmp(s->wallet_scope, "dev") == 0) {
+        int64_t above_reserve = liquid > DEV_RESERVE_ZAT
+            ? liquid - DEV_RESERVE_ZAT : 0;
+        int64_t allocated = s->lifetime_lab_spent_zat;
+        if (allocated <= INT64_MAX - s->intent_reserved_zat)
+            allocated += s->intent_reserved_zat;
+        else
+            allocated = INT64_MAX;
+        int64_t lab_left = allocated < DEV_LAB_CAP_ZAT
+            ? DEV_LAB_CAP_ZAT - allocated : 0;
+        s->agent_available_zat =
+            above_reserve < lab_left ? above_reserve : lab_left;
+    } else if (strcmp(s->wallet_scope, "prod") == 0) {
+        /* Production is deliberately unfunded/unallocated in this rollout.
+         * A later owner grant may define a non-zero production policy. */
+        s->agent_available_zat = 0;
+    } else {
+        /* Isolated test custody is bounded by its own liquid balance. */
+        s->agent_available_zat = liquid;
+    }
+}
+
+bool wallet_money_snapshot_after_reservation(
+    const struct wallet_money_snapshot *before, int64_t reservation_zat,
+    struct wallet_money_snapshot *after)
+{
+    if (!before || !after || before == after || reservation_zat <= 0 ||
+        !before->complete || strcmp(before->status, "CURRENT") != 0 ||
+        !wallet_money_scope_valid(before->wallet_scope) ||
+        before->intent_reserved_zat < 0 ||
+        before->intent_reserved_zat > INT64_MAX - reservation_zat ||
+        before->confirmed_zat <
+            before->intent_reserved_zat + reservation_zat ||
+        (strcmp(before->wallet_scope, "dev") == 0 &&
+         reservation_zat > before->agent_available_zat))
+        return false;
+
+    *after = *before;
+    after->intent_reserved_zat += reservation_zat;
+    money_agent_available(after);
+    (void)snprintf(after->reason, sizeof(after->reason),
+                   "all money authorities read; reservation included");
+    money_root(after);
+    return true;
+}
+
 enum wallet_money_freshness wallet_money_freshness_classify(
     bool hstar_published, int32_t hstar, int32_t money_tip,
     int32_t network_tip, size_t peer_count, enum sync_state state)
@@ -271,32 +322,7 @@ struct zcl_result wallet_money_snapshot_build(
         return ZCL_OK;
     }
 
-    int64_t liquid = out->confirmed_zat - out->intent_reserved_zat;
-    if (liquid < 0)
-        liquid = 0;
-    if (strcmp(wallet_scope, "dev") == 0) {
-        int64_t above_reserve = liquid > DEV_RESERVE_ZAT
-            ? liquid - DEV_RESERVE_ZAT : 0;
-        int64_t allocated = out->lifetime_lab_spent_zat;
-        if (allocated <= INT64_MAX - out->intent_reserved_zat)
-            allocated += out->intent_reserved_zat;
-        else
-            allocated = INT64_MAX;
-        int64_t lab_left = allocated < DEV_LAB_CAP_ZAT
-            ? DEV_LAB_CAP_ZAT - allocated : 0;
-        out->agent_available_zat =
-            above_reserve < lab_left ? above_reserve : lab_left;
-    } else if (strcmp(wallet_scope, "prod") == 0) {
-        /* Production is deliberately unfunded/unallocated in this rollout.
-         * A later owner grant may define a non-zero production policy. */
-        out->agent_available_zat = 0;
-    } else {
-        /* An isolated test wallet can spend only value explicitly transferred
-         * into that wallet. It is outside the dev/prod portfolio and cannot
-         * draw from either custody domain; its liquid balance is the complete
-         * envelope for chained shielded transaction demonstrations. */
-        out->agent_available_zat = liquid;
-    }
+    money_agent_available(out);
 
     /* The authoritative readers live in separate stores. Re-read both chain
      * witnesses after the vault/intent reads and publish numbers only when the

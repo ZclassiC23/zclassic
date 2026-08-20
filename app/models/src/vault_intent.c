@@ -197,29 +197,14 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *r)
         else AR_BIND_NULL(s, 24));
 }
 
-bool vault_intent_reserve(struct node_db *ndb,
-                          const struct vault_intent_row *r,
-                          int64_t confirmed_zat)
-{
-    return vault_intent_reserve_with_raw(ndb, r, confirmed_zat, NULL, 0);
-}
-
-bool vault_intent_reserve_with_raw(struct node_db *ndb,
-                                   const struct vault_intent_row *r,
-                                   int64_t confirmed_zat,
-                                   const uint8_t *raw_tx,
-                                   size_t raw_tx_len)
-{
-    return vault_intent_reserve_with_raw_inputs(
-        ndb, r, confirmed_zat, raw_tx, raw_tx_len, NULL, 0);
-}
-
-bool vault_intent_reserve_with_raw_inputs(
+static bool vault_intent_reserve_internal(
     struct node_db *ndb, const struct vault_intent_row *r,
     int64_t confirmed_zat, const uint8_t *raw_tx, size_t raw_tx_len,
-    const struct vault_intent_input *inputs, size_t input_count)
+    const struct vault_intent_input *inputs, size_t input_count,
+    bool require_expected_reserved, int64_t expected_reserved_zat)
 {
     if (!ndb || !ndb->open || !r || confirmed_zat < 0 ||
+        (require_expected_reserved && expected_reserved_zat < 0) ||
         r->reserved_zat <= 0 || (raw_tx && (raw_tx_len == 0 ||
         raw_tx_len > VAULT_INTENT_RAW_MAX)) || (!raw_tx && raw_tx_len != 0) ||
         (input_count > 0 && !inputs) || input_count > 4096)
@@ -232,6 +217,7 @@ bool vault_intent_reserve_with_raw_inputs(
     int64_t lifetime = agent_session_scope_lifetime_spent(
         ndb, r->wallet_scope);
     bool allowed = reserved >= 0 && lifetime >= 0 &&
+        (!require_expected_reserved || reserved == expected_reserved_zat) &&
         reserved <= INT64_MAX - r->reserved_zat;
     if (allowed && strcmp(r->wallet_scope, "dev") == 0) {
         const int64_t next = reserved + r->reserved_zat;
@@ -251,6 +237,44 @@ bool vault_intent_reserve_with_raw_inputs(
         return false; /* raw-return-ok:nothing was reserved */
     }
     return true;
+}
+
+bool vault_intent_reserve(struct node_db *ndb,
+                          const struct vault_intent_row *r,
+                          int64_t confirmed_zat)
+{
+    return vault_intent_reserve_internal(
+        ndb, r, confirmed_zat, NULL, 0, NULL, 0, false, 0);
+}
+
+bool vault_intent_reserve_bound(struct node_db *ndb,
+                                const struct vault_intent_row *r,
+                                int64_t confirmed_zat,
+                                int64_t expected_reserved_zat)
+{
+    return vault_intent_reserve_internal(
+        ndb, r, confirmed_zat, NULL, 0, NULL, 0, true,
+        expected_reserved_zat);
+}
+
+bool vault_intent_reserve_with_raw(struct node_db *ndb,
+                                   const struct vault_intent_row *r,
+                                   int64_t confirmed_zat,
+                                   const uint8_t *raw_tx,
+                                   size_t raw_tx_len)
+{
+    return vault_intent_reserve_internal(
+        ndb, r, confirmed_zat, raw_tx, raw_tx_len, NULL, 0, false, 0);
+}
+
+bool vault_intent_reserve_with_raw_inputs(
+    struct node_db *ndb, const struct vault_intent_row *r,
+    int64_t confirmed_zat, const uint8_t *raw_tx, size_t raw_tx_len,
+    const struct vault_intent_input *inputs, size_t input_count)
+{
+    return vault_intent_reserve_internal(
+        ndb, r, confirmed_zat, raw_tx, raw_tx_len, inputs, input_count,
+        false, 0);
 }
 
 static void intent_read(struct vault_intent_row *r, sqlite3_stmt *s)

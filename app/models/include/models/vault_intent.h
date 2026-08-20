@@ -90,6 +90,13 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *row);
 bool vault_intent_reserve(struct node_db *ndb,
                           const struct vault_intent_row *row,
                           int64_t confirmed_zat);
+/* Reserve only if the active wallet-wide reservation total still equals the
+ * CURRENT money snapshot used to construct row->snapshot_root.  The compare
+ * and insert share one BEGIN IMMEDIATE transaction. */
+bool vault_intent_reserve_bound(struct node_db *ndb,
+                                const struct vault_intent_row *row,
+                                int64_t confirmed_zat,
+                                int64_t expected_reserved_zat);
 /* Application workflows that prepare an exact signed transaction during the
  * plan leg use this variant so the reservation and restart-safe raw bytes
  * become durable in one SQLite transaction. */
