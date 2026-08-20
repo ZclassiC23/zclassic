@@ -3685,6 +3685,25 @@ $(BIN_DIR)/zclassic23-zcode-adapter-runner: $(BUILD_IDENTITY_STAMP) \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
 
+# Measurement-only Codex app-server client. It exposes no command or external
+# tool surface and drives exactly one candidate-rooted thread over JSON-RPC.
+ZCODE_APP_SERVER_BENCHMARK_SRCS = tools/zcode_app_server_benchmark.c \
+	lib/json/src/json.c lib/base/src/safe_alloc.c lib/platform/src/clock.c
+.PHONY: zcode-app-server-benchmark
+zcode-app-server-benchmark: $(BIN_DIR)/zclassic23-zcode-app-server-benchmark
+$(BIN_DIR)/zclassic23-zcode-app-server-benchmark: $(BUILD_IDENTITY_STAMP) \
+		$(ZCODE_APP_SERVER_BENCHMARK_SRCS)
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(DEV_RESTART_CFLAGS) $(DEV_RESTART_LDFLAGS) -o "$$tmp" \
+		$(ZCODE_APP_SERVER_BENCHMARK_SRCS); \
+	tools/dev/source-identity.sh verify-record "$(BUILD_SOURCE_ID)" \
+		"$(BUILD_CLEAN)" "$(BUILD_MUTATION)" >/dev/null; \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
 .PHONY: sim dump check-wallet
 sim: wallet_sim
 	$(BIN_DIR)/wallet_sim
