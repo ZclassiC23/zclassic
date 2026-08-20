@@ -44,6 +44,7 @@
 
 #include "config/boot.h"
 #include "config/boot_internal.h"  /* boot_full_fold_is_armed/_finish (-full-fold) */
+#include "config/boot_mint_anchor_drive.h"
 #include "config/mint_anchor_progress.h"
 #include "config/consensus_state_producer_receipt.h"
 #include "config/consensus_state_snapshot_export.h"  /* consensus_state_snapshot_export */
@@ -345,18 +346,6 @@ bool boot_mint_anchor_stamp_sovereign_markers(sqlite3 *pdb)
     return true;
 }
 
-/* Set progress.kv's WAL auto-checkpoint threshold (pages; 0 disables SQLite's
- * automatic checkpoints). PRAGMA-only, under the progress-store tx lock. */
-static void mint_wal_autocheckpoint(sqlite3 *pdb, int pages)
-{
-    if (!pdb) return;
-    char sql[64];
-    snprintf(sql, sizeof(sql), "PRAGMA wal_autocheckpoint=%d", pages);
-    progress_store_tx_lock();
-    (void)sqlite3_exec(pdb, sql, NULL, NULL, NULL);
-    progress_store_tx_unlock();
-}
-
 bool boot_mint_anchor_run(const char *datadir)
 {
     const struct sha3_utxo_checkpoint *cp = get_sha3_utxo_checkpoint();
@@ -476,6 +465,7 @@ bool boot_mint_anchor_run(const char *datadir)
     if (last_through < 0)
         last_through = mint_applied_through(pdb);  /* pre-init fallback */
     int stall_kicks = 0;
+    struct mint_rebuild_wait_state rebuild_wait = {0};
     const int kStallLimit = 64;   /* consecutive no-progress kicks → walled */
     char progress_log[1200];
     boot_mint_anchor_progress_log_path(datadir, progress_log, sizeof(progress_log));
@@ -551,25 +541,35 @@ bool boot_mint_anchor_run(const char *datadir)
         if (now > last_through) {
             last_through = now;
             stall_kicks = 0;
+            rebuild_wait = (struct mint_rebuild_wait_state){0};
             if (boot_mint_anchor_should_log_progress(now, anchor))
                 fprintf(stderr, "[mint-anchor] applied-through=%d / %d\n",
                         now, anchor);
-        } else if (++stall_kicks >= kStallLimit) {
+        } else if (utxo_apply_sapling_rebuild_paused() &&
+                   mint_rebuild_wait_max_s() > 0) {
+            /* NOT a stall — the deferred Sapling rebuild holds utxo_apply
+             * paused on purpose. Hold the stall counter and nap; the fold
+             * resumes by itself once the rebuild publishes its frontier. */
+            if (boot_mint_anchor_drive_rebuild_wait(&rebuild_wait) ==
+                MINT_REBUILD_WAIT_TIMEOUT) {
+                mint_drive_stop(pdb, mint_sync_off, wal_manual, lookahead);
+                boot_mint_anchor_report_frontier_walled(pdb, now, anchor,
+                                                        stall_kicks);
+                return false;
+            }
+        } else if (++stall_kicks < kStallLimit) {
+            /* No progress and nothing legitimately paused. Nap before the
+             * next round: without it the 64-kick budget is spent in about a
+             * second, so a fold that merely needs a moment to warm up reads
+             * as permanently walled. */
+            mint_drive_nap_ms(200);
+        } else {
             /* Fail CLOSED with a named blocker: register
              * mint_fold.frontier_walled (all eight stage cursors in the
              * reason), page EV_OPERATOR_NEEDED, and print a diagnosis that
              * names the walled stage — "bodies incomplete" only when
              * body_fetch really is the wall. */
-            /* Restore durability first so the blocker/report writes land
-             * under NORMAL and are checkpointed into the main db. */
-            if (mint_sync_off) {
-                progress_store_set_sync_mode(/*ibd=*/false);
-                (void)progress_store_checkpoint();
-            }
-            if (wal_manual) mint_wal_autocheckpoint(pdb, 1000);  /* restore default */
-            if (lookahead)
-                proof_validate_lookahead_stop();
-            coins_ram_mint_drive_exit();
+            mint_drive_stop(pdb, mint_sync_off, wal_manual, lookahead);
             boot_mint_anchor_report_frontier_walled(pdb, now, anchor,
                                                     kStallLimit);
             return false;

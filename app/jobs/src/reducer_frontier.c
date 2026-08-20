@@ -265,7 +265,7 @@ static bool log_ok_at(sqlite3 *db, const char *log_table, int32_t height,
         if (row_ok && profile_bound)
             row_ok = status &&
                 mint_validation_evidence_parse(status, status_len) ==
-                    MINT_VALIDATION_EVIDENCE_VERIFIED;
+                    reducer_frontier_required_evidence();
         /* Integrity tag (only for a row that would otherwise count): a MISMATCH
          * forces FAIL (corruption LOWERS H*); ABSENT trusts ok but WARNs+counts.
          * UNTAGGED-ROW POLICY lives in reducer_frontier_itag.[ch]. */
@@ -369,7 +369,7 @@ static bool log_contiguous_prefix(sqlite3 *db, const char *log_table,
             if (row_ok && profile_bound)
                 row_ok = status &&
                     mint_validation_evidence_parse(status, status_len) ==
-                        MINT_VALIDATION_EVIDENCE_VERIFIED;
+                        reducer_frontier_required_evidence();
             /* Integrity tag: verify rows above the per-boot watermark. A
              * MISMATCH terminates contiguity exactly like an ok=0 row (caps H*,
              * never raises it); an ABSENT (NULL) tag is trusted but WARNed +

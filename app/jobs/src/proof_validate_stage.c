@@ -12,6 +12,7 @@
 #include "jobs/stage_body_index.h"
 #include "proof_validate_log_store.h"
 #include "proof_validate_stage_internal.h"
+#include "proof_validate_trace.h"
 #include "jobs/proof_validate_verify.h"
 #include "script_validate_log_store.h"
 #include "chain/chain.h"
@@ -245,10 +246,32 @@ static job_result_t step_validate(struct stage_step_ctx *c)
 {
     atomic_store(&g_last_step_unix, platform_time_wall_unix());
     const int64_t t_step = platform_time_monotonic_us();
+    /* ZCL_PV_TRACE=1 narrates every reason this stage declines to advance.
+     * proof_validate has several early returns that are deliberately silent
+     * (they are normal "not yet" waits in a live sync), but on an OFFLINE
+     * mint the same silence is indistinguishable from a wedge — and because
+     * every downstream stage is pinned behind this cursor, the mint's stall
+     * report blames whichever stage sits lowest instead of this one. */
+    const bool pv_trace = pv_trace_enabled();
+    if (pv_trace) {
+        static _Atomic uint64_t entries;
+        uint64_t n = atomic_fetch_add(&entries, 1u);
+        if (n < 3u || n % 5000u == 0u)
+            LOG_WARN(STAGE_NAME, "[pv-trace] step entered (call #%llu)",
+                     (unsigned long long)n);
+    }
     struct main_state *ms = g_ms;
-    if (!ms) return JOB_IDLE;
+    if (!ms) {
+        if (pv_trace)
+            LOG_WARN(STAGE_NAME, "[pv-trace] declined: main_state is NULL");
+        return JOB_IDLE;
+    }
     sqlite3 *db = progress_store_db();
-    if (!db) return JOB_IDLE;
+    if (!db) {
+        if (pv_trace)
+            LOG_WARN(STAGE_NAME, "[pv-trace] declined: progress_store_db NULL");
+        return JOB_IDLE;
+    }
     int next_h = (int)c->cursor_in;
     if (next_h < 0) return JOB_FATAL;
     bool skip_crypto = mint_skip_crypto_get();
@@ -261,12 +284,26 @@ static job_result_t step_validate(struct stage_step_ctx *c)
         return JOB_FATAL;
     pv_profile_us(RPF_UPSTREAM_US, t_upstream);
     if ((uint64_t)next_h >= sv_cursor) {
+        if (pv_trace)
+            LOG_WARN(STAGE_NAME,
+                     "[pv-trace] height=%d declined: upstream script_validate "
+                     "derived frontier=%llu (raw stage_cursor=%llu, "
+                     "script_validate_log rows=%lld) is not above it",
+                     next_h, (unsigned long long)sv_cursor,
+                     (unsigned long long)stage_cursor_persisted(
+                         db, "script_validate", STAGE_NAME),
+                     (long long)pv_trace_log_rows(db));
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
     struct script_validate_row upstream;
     int found = proof_validate_script_validate_log_at(db, next_h, &upstream);
     if (found < 0) return JOB_FATAL;
+    if (found == 0 && pv_trace)
+        LOG_WARN(STAGE_NAME,
+                 "[pv-trace] height=%d declined: no script_validate_log row "
+                 "despite frontier=%llu", next_h,
+                 (unsigned long long)sv_cursor);
     if (found == 0) {
         /* Row missing despite floor — a durable upstream-log hole, not
          * "not yet" (see stage_upstream_log_hole_note). JOB_IDLE, never
@@ -278,6 +315,25 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     stage_upstream_log_hole_clear(STAGE_NAME);
     struct block_index *bi = stage_body_index_at(ms, next_h);
     if (!bi || !(bi->nStatus & BLOCK_HAVE_DATA)) {
+        /* SAY SO. This was a silent JOB_IDLE, and a silent idle here wedges
+         * the whole pipeline without leaving a trace: proof_validate holds its
+         * cursor, utxo_apply can never pass it, and the offline mint's stall
+         * detector reports the LOWEST cursor — utxo_apply — as "the walled
+         * stage", so the log accuses the one stage that is working correctly.
+         * Deduplicated on height so a long wait costs one line, not a flood. */
+        static _Atomic int64_t last_noted_h = -1;
+        int64_t prev = atomic_exchange(&last_noted_h, (int64_t)next_h);
+        if (prev != (int64_t)next_h)
+            LOG_WARN(STAGE_NAME,
+                     "[proof_validate] holding at height=%d: %s. Upstream "
+                     "script_validate is at cursor=%llu, so this is not a "
+                     "'not yet' — the selected block carries no readable body "
+                     "in the in-memory index. proof_validate cannot advance, "
+                     "and every downstream stage is pinned behind it.",
+                     next_h,
+                     !bi ? "no block_index entry for the selected height"
+                         : "block_index entry has no BLOCK_HAVE_DATA",
+                     (unsigned long long)sv_cursor);
         atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
         return JOB_IDLE;
     }
@@ -292,9 +348,17 @@ static job_result_t step_validate(struct stage_step_ctx *c)
     }
     if (!verdict_canonical)
         return proof_validate_upstream_verdict_refuse(c, next_h, upstream.ok);
-    if (upstream.ok == 1 && upstream.evidence != expected_evidence)
+    if (upstream.ok == 1 && upstream.evidence != expected_evidence) {
+        if (pv_trace)
+            LOG_WARN(STAGE_NAME,
+                     "[pv-trace] height=%d declined: evidence mismatch "
+                     "got=%s expected=%s (skip_crypto=%d)",
+                     next_h, mint_validation_evidence_status(upstream.evidence),
+                     mint_validation_evidence_status(expected_evidence),
+                     (int)skip_crypto);
         return proof_validate_upstream_evidence_refuse(
             c, next_h, expected_evidence, upstream.evidence);
+    }
     proof_validate_upstream_evidence_clear();
     if (upstream.ok == 0) {
         if (!proof_validate_log_insert(db, next_h, "upstream_failed", false,

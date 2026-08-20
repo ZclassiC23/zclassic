@@ -6,6 +6,9 @@
 #include "core/uint256.h"
 #include "jobs/proof_validate_stage.h"
 #include "util/blocker.h"
+#include "util/log_macros.h"
+
+#include <stdatomic.h>
 
 #include <stdio.h>
 
@@ -38,6 +41,14 @@ bool proof_validate_upstream_hash_ready(
                  "re-run script_validate for selected block hash");
         (void)blocker_set(&rec);
     }
+    /* A blocker alone is in-process state: it dies with the node and never
+     * reaches the log an operator actually reads. This hold pins
+     * proof_validate, and everything downstream behind it, so it has to be
+     * legible after the fact. Deduplicated on height — a long hold costs one
+     * line, not a flood. */
+    static _Atomic int64_t last_noted_h = -1;
+    if (atomic_exchange(&last_noted_h, (int64_t)height) != (int64_t)height)
+        LOG_WARN("proof_validate", "[proof_validate] %s", reason);
     return false;
 }
 

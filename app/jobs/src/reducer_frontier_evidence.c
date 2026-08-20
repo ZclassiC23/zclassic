@@ -3,6 +3,7 @@
 
 #include "reducer_frontier_evidence.h"
 
+#include "jobs/mint_skip_crypto.h"
 #include "jobs/reducer_frontier.h"
 #include "platform/time_compat.h"
 #include "storage/progress_store.h"
@@ -215,4 +216,35 @@ bool reducer_frontier_log_hash_at(sqlite3 *progress_db,
                           out, found);
     progress_store_tx_unlock();
     return ok;
+}
+
+/* The evidence a *_log success row must carry to COUNT toward a frontier.
+ *
+ * The three profile-bound logs (script_validate, proof_validate, utxo_apply)
+ * used to demand MINT_VALIDATION_EVIDENCE_VERIFIED literally. That is right for
+ * every normal boot and wrong for exactly one caller: the OFFLINE FAST-MINT.
+ * `-mint-anchor-fast` deliberately runs script_validate/proof_validate as a
+ * crypto PASS-THROUGH and writes `checkpoint_fold` rows, so under the literal
+ * rule NONE of its rows ever counted. The contiguous prefix therefore ended at
+ * the scan floor, script_validate's derived frontier was pinned at 1 no matter
+ * how far its raw cursor ran, proof_validate could never find a height above
+ * that floor, utxo_apply could never pass proof_validate, and the mint drive
+ * reported the LOWEST cursor — utxo_apply — as "the walled stage". The fold
+ * died at height 1 every time, and the stall report named the wrong stage.
+ *
+ * mint_validation_evidence_expected(mint_skip_crypto_get()) is the SAME
+ * predicate the stages themselves apply when they accept an upstream row
+ * (proof_validate_stage.c, utxo_apply_stage.c), so the frontier walk now agrees
+ * with the stages instead of contradicting them. mint_skip_crypto is settable
+ * ONLY by the -mint-anchor driver and reads false everywhere else, so on any
+ * normal boot this returns VERIFIED and the behaviour is bit-identical to the
+ * literal constant it replaces. A checkpoint_fold row still never counts on a
+ * normally-booted node.
+ *
+ * The artifact's safety does not rest on these rows in either case: the mint
+ * hard-asserts the finished set's SHA3+count against the compiled checkpoint
+ * and unlinks + _exit(1)s on any mismatch. */
+enum mint_validation_evidence reducer_frontier_required_evidence(void)
+{
+    return mint_validation_evidence_expected(mint_skip_crypto_get());
 }

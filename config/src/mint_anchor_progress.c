@@ -362,6 +362,24 @@ bool mint_anchor_progress_can_resume(sqlite3 *db,
                      through, cp->height);
             return false;
         }
+        /* A marker with NO applied progress is not a resumable fold. Nothing
+         * was ever folded, so resuming preserves nothing — but it DOES skip
+         * the genesis reset, and that reset is what truncates coins_kv. The
+         * datadir is then left carrying the node.db mirror's coin set at the
+         * SOURCE datadir's tip while coins_applied_height is 0, and
+         * utxo_apply's stage init refuses that contradiction outright
+         * ("future coin repair refused range=[1,<source tip>] cap=4096" ->
+         * "staged.utxo_apply init failed" -> "FATAL: -mint-anchor: offline
+         * reducer stage init failed"). The mint dies before the fold starts,
+         * and every re-run resumes the same dead marker. Reset instead. */
+        if (!have_frontier || through < 0) {
+            LOG_WARN("mint_anchor",
+                     "[mint-anchor] progress marker found but nothing has been "
+                     "applied (applied-through=%d) — resetting from genesis "
+                     "rather than resuming a fold that never started",
+                     through);
+            return false;
+        }
         if (applied_through_out)
             *applied_through_out = through;
         return true;
@@ -372,7 +390,10 @@ bool mint_anchor_progress_can_resume(sqlite3 *db,
      * durable refold signal is active and the frontier is within the
      * genesis..anchor mint span. A contaminated or wrong fold cannot publish:
      * boot_mint_anchor_run still hard-asserts SHA3/count before writing. */
-    if (!refold_in_progress() || !have_frontier || through < -1 ||
+    /* through < 0 (nothing applied) is refused for the same reason as the
+     * matching-marker branch above: adopting it would skip the genesis reset
+     * and strand a seeded coins_kv against coins_applied_height=0. */
+    if (!refold_in_progress() || !have_frontier || through < 0 ||
         through > cp->height)
         return false;
 
