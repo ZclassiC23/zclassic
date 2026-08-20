@@ -396,6 +396,14 @@ the node's current shielded view. Other stable codes distinguish invalid
 proof/script data, transparent missing inputs, conflicts, insufficient relay
 fee, non-final locktime, near expiry, and internal admission failure. Agents
 must branch on `error_code`, never parse log prose or resubmit a terminal plan.
+Every failure from plan, commit, submit, fanout, and exact-byte publication has
+the same recovery envelope: `error_code`, `current_state`, `retryable`,
+`human_action_required`, and `next_action`. The legacy `code` field remains an
+alias of `error_code`. `retryable: true` means only the stated same
+`idempotency_key` or same `plan_id` operation is safe; it never authorizes a
+new payment. `RECOVERY_REQUIRED` and `STATUS_REQUIRED` explicitly require an
+intent-status lookup before any new plan, so a persistence or RPC-response
+failure cannot turn into a duplicate send.
 
 Report states literally. `proving` means background construction or retry is
 active; `mempool_accepted` means the node admitted the transaction;

@@ -4,6 +4,7 @@
 #include "controllers/vault_intent_publish.h"
 
 #include "controllers/sync_controller.h"
+#include "controllers/vault_intent_controller.h"
 #include "controllers/wallet_helpers.h"
 #include "core/serialize.h"
 #include "json/json.h"
@@ -52,10 +53,7 @@ const char *vault_intent_mempool_error_code(int result_code,
 static void vipub_error(struct json_value *out, const char *code,
                         const char *message)
 {
-    json_set_object(out);
-    (void)json_push_kv_bool(out, "ok", false);
-    (void)json_push_kv_str(out, "code", code);
-    (void)json_push_kv_str(out, "message", message);
+    vault_intent_error_response(out, code, message);
 }
 
 static bool vipub_preflight_sapling_notes(struct wallet_rpc_context *ctx,

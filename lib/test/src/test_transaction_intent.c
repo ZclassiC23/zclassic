@@ -305,6 +305,52 @@ int test_transaction_intent(void)
         PASS();
     }
 
+    TEST("vault intent errors expose stable recovery contracts") {
+        struct json_value error;
+        json_init(&error);
+        vault_intent_error_response(&error, "COMMIT_BUSY", "claimed");
+        ASSERT_STR_EQ(json_get_str(json_get(&error, "code")),
+                      "COMMIT_BUSY");
+        ASSERT_STR_EQ(json_get_str(json_get(&error, "error_code")),
+                      "COMMIT_BUSY");
+        ASSERT_STR_EQ(json_get_str(json_get(&error, "current_state")),
+                      "PLAN_UNCHANGED");
+        ASSERT(json_get_bool(json_get(&error, "retryable")));
+        ASSERT(!json_get_bool(json_get(&error, "human_action_required")));
+        ASSERT(strstr(json_get_str(json_get(&error, "next_action")),
+                      "same plan_id") != NULL);
+        json_free(&error); json_init(&error);
+
+        vault_intent_error_response(
+            &error, "PERSISTENCE_FAILED", "durability uncertain");
+        ASSERT_STR_EQ(json_get_str(json_get(&error, "current_state")),
+                      "RECOVERY_REQUIRED");
+        ASSERT(!json_get_bool(json_get(&error, "retryable")));
+        ASSERT(json_get_bool(json_get(&error, "human_action_required")));
+        ASSERT(strstr(json_get_str(json_get(&error, "next_action")),
+                      "do not resend") != NULL);
+        json_free(&error); json_init(&error);
+
+        vault_intent_error_response(&error, "INVALID_EFFECT", "invalid");
+        ASSERT_STR_EQ(json_get_str(json_get(&error, "current_state")),
+                      "REQUEST_REFUSED");
+        ASSERT(!json_get_bool(json_get(&error, "retryable")));
+        ASSERT(json_get_bool(json_get(&error, "human_action_required")));
+        ASSERT(json_get_str(json_get(&error, "next_action")) != NULL);
+        json_free(&error); json_init(&error);
+
+        vault_intent_error_response(
+            &error, "PLAN_LOOKUP_FAILED", "lookup interrupted");
+        ASSERT_STR_EQ(json_get_str(json_get(&error, "current_state")),
+                      "STATUS_REQUIRED");
+        ASSERT(json_get_bool(json_get(&error, "retryable")));
+        ASSERT(!json_get_bool(json_get(&error, "human_action_required")));
+        ASSERT(strstr(json_get_str(json_get(&error, "next_action")),
+                      "same idempotency_key") != NULL);
+        json_free(&error);
+        PASS();
+    }
+
     TEST("private intent planning types stale shielded anchor authority") {
         struct transaction tx;
         transaction_init(&tx);
@@ -332,6 +378,14 @@ int test_transaction_intent(void)
             &ctx, &tx, &result));
         ASSERT_STR_EQ(json_get_str(json_get(&result, "code")),
                       "WITNESS_RESCAN_REQUIRED");
+        ASSERT_STR_EQ(json_get_str(json_get(&result, "error_code")),
+                      "WITNESS_RESCAN_REQUIRED");
+        ASSERT_STR_EQ(json_get_str(json_get(&result, "current_state")),
+                      "REPLAN_REQUIRED");
+        ASSERT(!json_get_bool(json_get(&result, "retryable")));
+        ASSERT(json_get_bool(json_get(&result, "human_action_required")));
+        ASSERT(strstr(json_get_str(json_get(&result, "next_action")),
+                      "rescan-witnesses") != NULL);
         json_free(&result); json_init(&result);
 
         backing.verdict = COINS_ANCHOR_HISTORY_INCOMPLETE;

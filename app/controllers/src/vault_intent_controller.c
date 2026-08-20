@@ -60,10 +60,7 @@ struct vi_payload {
 
 static void vi_error(struct json_value *out, const char *code, const char *msg)
 {
-    json_set_object(out);
-    json_push_kv_bool(out, "ok", false);
-    json_push_kv_str(out, "code", code);
-    json_push_kv_str(out, "message", msg);
+    vault_intent_error_response(out, code, msg);
 }
 
 static void vi_hex(const uint8_t in[32], char out[65])

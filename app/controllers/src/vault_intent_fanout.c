@@ -30,10 +30,7 @@ static pthread_mutex_t g_vif_mutex = PTHREAD_MUTEX_INITIALIZER;
 static void vif_error(struct json_value *result, const char *code,
                       const char *message)
 {
-    json_set_object(result);
-    (void)json_push_kv_bool(result, "ok", false);
-    (void)json_push_kv_str(result, "code", code);
-    (void)json_push_kv_str(result, "message", message);
+    vault_intent_error_response(result, code, message);
 }
 
 static bool vif_continue_plan(const struct json_value *plan,

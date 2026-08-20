@@ -22,10 +22,7 @@
 static void via_error(struct json_value *out, const char *code,
                       const char *message)
 {
-    json_set_object(out);
-    (void)json_push_kv_bool(out, "ok", false);
-    (void)json_push_kv_str(out, "code", code);
-    (void)json_push_kv_str(out, "message", message);
+    vault_intent_error_response(out, code, message);
 }
 
 static bool via_unhex(const char *text, uint8_t out[32])

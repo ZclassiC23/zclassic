@@ -55,10 +55,7 @@ struct vip_payload {
 static void vip_error(struct json_value *out, const char *code,
                       const char *message)
 {
-    json_set_object(out);
-    (void)json_push_kv_bool(out, "ok", false);
-    (void)json_push_kv_str(out, "code", code);
-    (void)json_push_kv_str(out, "message", message);
+    vault_intent_error_response(out, code, message);
 }
 
 bool vault_intent_private_requirements_current(
@@ -78,8 +75,8 @@ bool vault_intent_private_requirements_current(
         return true;
     if (verdict == COINS_SHIELDED_REQUIREMENTS_MISSING_ANCHOR) {
         vip_error(result, "WITNESS_RESCAN_REQUIRED",
-                  "shielded witness anchor is not current; run "
-                  "core.wallet.rescan-witnesses before planning again");
+                  "shielded witness anchor is not current; run z23 core "
+                  "wallet rescan-witnesses before planning again");
         LOG_ERROR("vault_intent",
                   "private requirement preflight requires witness rescan");
         return false;

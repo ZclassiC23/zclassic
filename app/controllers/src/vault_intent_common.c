@@ -19,6 +19,164 @@
 #include <stdio.h>
 #include <string.h>
 
+struct vic_error_contract {
+    const char *code;
+    const char *current_state;
+    bool retryable;
+    bool human_action_required;
+    const char *next_action;
+};
+
+static const char k_repeat_plan[] =
+    "repeat commit with the same plan_id";
+static const char k_repeat_idempotency[] =
+    "repeat the same call with the same idempotency_key";
+static const char k_wait_status[] =
+    "run z23 status; after the blocker clears, repeat the same call with the same identity";
+static const char k_wallet_repair[] =
+    "run z23 status and complete its wallet next_action before repeating the same call";
+static const char k_replan[] =
+    "inspect intent status, then create a fresh plan with a new idempotency_key";
+static const char k_recover[] =
+    "do not resend; recover by plan_id and transaction status before any new payment";
+static const char k_status_first[] =
+    "inspect intent status by plan_id before deciding whether a fresh plan is safe";
+static const char k_stop[] =
+    "stop and inspect intent status; do not commit or resend this payment";
+
+#define VIC_ERROR(code_, state_, retry_, human_, action_) \
+    { (code_), (state_), (retry_), (human_), (action_) }
+static const struct vic_error_contract k_vic_error_contracts[] = {
+    VIC_ERROR("COMMIT_BUSY", "PLAN_UNCHANGED", true, false, k_repeat_plan),
+    VIC_ERROR("PLAN_PERSIST_FAILED", "NOT_CREATED", true, false,
+              k_repeat_idempotency),
+    VIC_ERROR("DURABLE_ADDRESS_FAILED", "NOT_CREATED", true, false,
+              k_repeat_idempotency),
+    VIC_ERROR("PLAN_LOOKUP_FAILED", "STATUS_REQUIRED", true, false,
+              "repeat the same fanout call with the same idempotency_key; do not use a new key"),
+    VIC_ERROR("QUEUE_PERSIST_FAILED", "PLAN_UNCHANGED", true, false,
+              "repeat submit with the same plan_id"),
+    VIC_ERROR("ASYNC_CAPACITY", "PLAN_UNCHANGED", true, false,
+              "repeat submit with the same plan_id"),
+    VIC_ERROR("MONEY_STATE_NOT_CURRENT", "BLOCKED", true, false,
+              k_wait_status),
+    VIC_ERROR("OUT_OF_MEMORY", "BLOCKED", true, false, k_wait_status),
+    VIC_ERROR("WALLET_UNAVAILABLE", "BLOCKED", true, false, k_wait_status),
+    VIC_ERROR("DATABASE_UNAVAILABLE", "BLOCKED", true, false,
+              k_wait_status),
+    VIC_ERROR("WALLET_LOCKED", "BLOCKED", true, true,
+              "unlock the wallet through stdin, then repeat the same call with the same identity"),
+    VIC_ERROR("WITNESS_RESCAN_REQUIRED", "REPLAN_REQUIRED", false, true,
+              "run z23 core wallet rescan-witnesses, inspect intent status, then create a fresh plan with a new idempotency_key"),
+    VIC_ERROR("WALLET_NOT_ENCRYPTED", "BLOCKED", true, true,
+              k_wallet_repair),
+    VIC_ERROR("WALLET_PERSISTENCE_UNHEALTHY", "BLOCKED", true, true,
+              k_wallet_repair),
+    VIC_ERROR("ENCRYPTED_BACKUP_REQUIRED", "BLOCKED", true, true,
+              k_wallet_repair),
+    VIC_ERROR("SOVEREIGNTY_GATE", "BLOCKED", true, true, k_wallet_repair),
+    VIC_ERROR("SHIELDED_HISTORY_INCOMPLETE", "REPLAN_REQUIRED", false, true,
+              "repair shielded history, inspect intent status, then create a fresh plan with a new idempotency_key"),
+    VIC_ERROR("SHIELDED_AUTHORITY_UNAVAILABLE", "REPLAN_REQUIRED", false,
+              true,
+              "repair shielded history, inspect intent status, then create a fresh plan with a new idempotency_key"),
+    VIC_ERROR("PLAN_EXPIRED", "EXPIRED", false, true,
+              "create and review a fresh plan with a new idempotency_key"),
+    VIC_ERROR("MONEY_SNAPSHOT_CHANGED", "CONFLICTED", false, true,
+              k_replan),
+    VIC_ERROR("WALLET_IDENTITY_CHANGED", "CONFLICTED", false, true,
+              k_replan),
+    VIC_ERROR("INPUT_CONFLICT", "CONFLICTED", false, true, k_replan),
+    VIC_ERROR("PREPARED_NOTE_CONFLICT", "CONFLICTED", false, true,
+              k_replan),
+    VIC_ERROR("PERSISTENCE_FAILED", "RECOVERY_REQUIRED", false, true,
+              k_recover),
+    VIC_ERROR("PRE_RELAY_DURABILITY_FAILED", "RECOVERY_REQUIRED", false,
+              true, k_recover),
+    VIC_ERROR("INTENT_STATE_FAILED", "RECOVERY_REQUIRED", true, true,
+              "repeat commit with the same plan_id; never create a replacement payment"),
+    VIC_ERROR("NOTE_RESERVATION_FAILED", "RECOVERY_REQUIRED", true, true,
+              "repeat commit with the same plan_id; never create a replacement payment"),
+    VIC_ERROR("SHIELDED_REQUIREMENTS_MISSING", "STATUS_REQUIRED", false,
+              true, k_status_first),
+    VIC_ERROR("TRANSPARENT_SCRIPT_INVALID", "STATUS_REQUIRED", false, true,
+              k_status_first),
+    VIC_ERROR("INPUT_VALUE_INVALID", "STATUS_REQUIRED", false, true,
+              k_status_first),
+    VIC_ERROR("VALUE_BALANCE_INVALID", "STATUS_REQUIRED", false, true,
+              k_status_first),
+    VIC_ERROR("PLAN_TAMPERED", "FAILED", false, true, k_stop),
+    VIC_ERROR("PLAN_DECRYPT_FAILED", "FAILED", false, true, k_stop),
+    VIC_ERROR("RAW_TX_CORRUPT", "FAILED", false, true, k_stop),
+    VIC_ERROR("TXID_MISMATCH", "FAILED", false, true, k_stop),
+    VIC_ERROR("PREPARED_NOTE_MISMATCH", "FAILED", false, true, k_stop),
+    VIC_ERROR("EXACT_BUILD_FAILED", "FAILED", false, true, k_stop),
+    VIC_ERROR("RECIPIENT_REVALIDATION_FAILED", "FAILED", false, true,
+              k_stop),
+    VIC_ERROR("PLAN_NOT_FOUND", "NOT_FOUND", false, true,
+              "verify wallet_scope and plan_id; do not create a replacement payment until identity is resolved"),
+    VIC_ERROR("PLAN_NOT_COMMITTABLE", "PLAN_UNCHANGED", false, true,
+              "inspect intent status by plan_id and follow its next_action"),
+    VIC_ERROR("PLAN_NOT_SUBMITTABLE", "PLAN_UNCHANGED", false, true,
+              "inspect intent status by plan_id and follow its next_action"),
+    VIC_ERROR("CANCEL_UNSAFE", "PLAN_UNCHANGED", false, true,
+              "inspect intent status by plan_id and follow its next_action"),
+    VIC_ERROR("INTENT_NOT_REPUBLISHABLE", "PLAN_UNCHANGED", false, true,
+              "inspect intent status by plan_id and follow its next_action"),
+    VIC_ERROR("CONFIRM_REQUIRED", "REQUEST_REFUSED", false, true,
+              "review the exact plan, then commit with wallet_scope, plan_id, and confirm:true"),
+    VIC_ERROR("IDEMPOTENCY_CONFLICT", "REQUEST_REFUSED", false, true,
+              "use the original request for that idempotency_key or choose a new key for a different payment"),
+};
+#undef VIC_ERROR
+
+static const struct vic_error_contract k_vic_default_error = {
+    .code = NULL,
+    .current_state = "REQUEST_REFUSED",
+    .retryable = false,
+    .human_action_required = true,
+    .next_action = "correct the request and repeat the same call",
+};
+
+static const struct vic_error_contract k_vic_mempool_error = {
+    .code = NULL,
+    .current_state = "STATUS_REQUIRED",
+    .retryable = false,
+    .human_action_required = true,
+    .next_action = k_status_first,
+};
+
+void vault_intent_error_response(struct json_value *out, const char *code,
+                                 const char *message)
+{
+    const char *safe_code = code && code[0] ? code : "INTERNAL_ERROR";
+    const char *safe_message = message
+        ? message : "vault intent request failed";
+    const struct vic_error_contract *contract = &k_vic_default_error;
+    for (size_t i = 0;
+         i < sizeof(k_vic_error_contracts) / sizeof(k_vic_error_contracts[0]);
+         i++) {
+        if (strcmp(safe_code, k_vic_error_contracts[i].code) == 0) {
+            contract = &k_vic_error_contracts[i];
+            break;
+        }
+    }
+    if (contract == &k_vic_default_error &&
+        strncmp(safe_code, "MEMPOOL_", 8) == 0)
+        contract = &k_vic_mempool_error;
+
+    json_set_object(out);
+    (void)json_push_kv_bool(out, "ok", false);
+    (void)json_push_kv_str(out, "code", safe_code);
+    (void)json_push_kv_str(out, "error_code", safe_code);
+    (void)json_push_kv_str(out, "message", safe_message);
+    (void)json_push_kv_str(out, "current_state", contract->current_state);
+    (void)json_push_kv_bool(out, "retryable", contract->retryable);
+    (void)json_push_kv_bool(out, "human_action_required",
+                            contract->human_action_required);
+    (void)json_push_kv_str(out, "next_action", contract->next_action);
+}
+
 static void vic_hex(const uint8_t in[32], char out[65])
 {
     HexStr(in, 32, false, out, 65);
