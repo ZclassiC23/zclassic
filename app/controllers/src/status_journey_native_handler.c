@@ -65,7 +65,7 @@ static const struct journey_reason_row g_journey_reasons[] = {
         "z23 core status brief", true,
         ZCL_STATUS_REASON_HEALTHCHECK_UNHEALTHY },
     [JOURNEY_NODE_TYPED_BLOCKER] = {
-        "NODE_TYPED_BLOCKER", "NODE_BLOCKED", "z23 core sync diagnose",
+        "NODE_TYPED_BLOCKER", "NODE_BLOCKED", "z23 ops snapshot",
         false, ZCL_STATUS_REASON_TYPED_BLOCKER },
     [JOURNEY_NODE_NOT_READY] = {
         "NODE_NOT_READY", "NODE_BLOCKED", "z23 core sync diagnose", true,
