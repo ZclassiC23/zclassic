@@ -665,7 +665,8 @@ static char *status_journey_mock_rpc(const char *method,
             "\"peer_best_height_known\":true,"
             "\"target_height\":3117074,\"target_height_known\":true,"
             "\"chain_evidence_consistent\":true,"
-            "\"sync_state\":\"at_tip\",\"serving\":true,\"healthy\":true,"
+            "\"sync_state\":\"blocks_download\",\"serving\":true,"
+            "\"healthy\":true,"
             "\"primary_blocker\":\"none\",\"tip_follow\":true,"
             "\"wallet_view_ready\":true,\"wallet_spend_allowed\":true,"
             "\"archive_complete\":\"incomplete\","
@@ -829,6 +830,8 @@ static int test_status_journey_safe_money_frontdoor(void)
         ASSERT(data && data->type == JSON_OBJ);
         ASSERT(json_get_bool(json_get(data, "node_healthy")));
         ASSERT(json_get_bool(json_get(data, "synced")));
+        ASSERT_STR_EQ(json_get_str(json_get(data, "sync_state")),
+                      "blocks_download");
         ASSERT(json_get_bool(json_get(data, "wallet_ready")));
         ASSERT(json_get_bool(json_get(data, "can_receive")));
         ASSERT(json_get_bool(json_get(data, "can_send")));

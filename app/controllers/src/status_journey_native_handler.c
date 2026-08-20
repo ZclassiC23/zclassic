@@ -187,8 +187,10 @@ char *zcl_native_status_journey_body(const struct json_value *args,
         ? json_get_str(json_get(&brief, "sync_state")) : NULL;
     const char *primary_blocker = brief_ok
         ? json_get_str(json_get(&brief, "primary_blocker")) : NULL;
-    bool synced = chain_fields && gap == 0 && tip_follow &&
-                  sync_state && strcmp(sync_state, "at_tip") == 0;
+    /* Payment readiness follows the authoritative served frontier, not the
+     * background archive FSM.  A node may keep fetching historical bodies
+     * in blocks_download while H* has zero network gap and tip_follow=true. */
+    bool synced = chain_fields && gap == 0 && tip_follow;
 
     const struct json_value *persistence = wallet_ok
         ? json_get(&wallet, "persistence") : NULL;
