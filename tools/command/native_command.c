@@ -3129,6 +3129,28 @@ static const char *nc_bool_answer(const struct json_value *d, const char *key,
         ? (json_get_bool(v) ? yes : no) : "unknown";
 }
 
+static void nc_status_journey_text(const char *src, char *dst, size_t cap,
+                                   const char *oversized)
+{
+    if (!dst || cap == 0)
+        return;
+    if (!src || !src[0]) {
+        (void)snprintf(dst, cap, "unknown");
+        return;
+    }
+    size_t i = 0;
+    for (; src[i] && i + 1 < cap; i++) {
+        unsigned char ch = (unsigned char)src[i];
+        dst[i] = ch == '\n' || ch == '\r' || ch == '\t'
+            ? ' ' : (ch < 0x20 || ch == 0x7f ? '?' : (char)ch);
+    }
+    if (src[i]) {
+        (void)snprintf(dst, cap, "%s", oversized);
+        return;
+    }
+    dst[i] = '\0';
+}
+
 void zcl_native_status_journey_render(const struct json_value *d, char *buf,
                                       size_t cap)
 {
@@ -3147,9 +3169,13 @@ void zcl_native_status_journey_render(const struct json_value *d, char *buf,
     const struct json_value *pending = d ? json_get(d, "pending_zat") : NULL;
     const struct json_value *reserved = d
         ? json_get(d, "reserved_zat") : NULL;
+    const char *next_action = d
+        ? json_get_str(json_get(d, "next_action")) : NULL;
     char spendable_text[32] = "unknown";
     char pending_text[32] = "unknown";
     char reserved_text[32] = "unknown";
+    char blocker_text[48] = "unknown";
+    char next_action_text[80] = "unknown";
     if (spendable && spendable->type == JSON_INT)
         (void)snprintf(spendable_text, sizeof(spendable_text), "%lld",
                        (long long)json_get_int(spendable));
@@ -3159,23 +3185,29 @@ void zcl_native_status_journey_render(const struct json_value *d, char *buf,
     if (reserved && reserved->type == JSON_INT)
         (void)snprintf(reserved_text, sizeof(reserved_text), "%lld",
                        (long long)json_get_int(reserved));
-    (void)snprintf(
-        buf, cap,
+    nc_status_journey_text(blocker, blocker_text, sizeof(blocker_text),
+                           "status_detail_too_long");
+    nc_status_journey_text(next_action, next_action_text,
+                           sizeof(next_action_text),
+                           "z23 status --format=json");
+    char line[321];
+    int n = snprintf(
+        line, sizeof(line),
         "node=%s synced=%s wallet=%s receive=%s send=%s "
-        "spendable_zat=%s pending_zat=%s reserved_zat=%s blocker=%s",
+        "spendable_zat=%s pending_zat=%s reserved_zat=%s blocker=%s "
+        "next_action=%s",
         nc_bool_answer(d, "node_healthy", "healthy", "blocked"),
         nc_bool_answer(d, "synced", "yes", "no"),
         nc_bool_answer(d, "wallet_ready", "ready", "not_ready"),
         nc_bool_answer(d, "can_receive", "yes", "no"),
         nc_bool_answer(d, "can_send", "yes", "no"),
         spendable_text, pending_text, reserved_text,
-        blocker && blocker[0] ? blocker : "unknown");
-    if (strlen(buf) > 200) {
-        size_t cut = 200;
-        while (cut > 0 && buf[cut - 1] != ' ')
-            cut--;
-        buf[cut > 0 ? cut - 1 : 200] = '\0';
-    }
+        blocker_text, next_action_text);
+    if (n < 0 || (size_t)n >= sizeof(line))
+        (void)snprintf(line, sizeof(line),
+                       "node=blocked blocker=status_render_overflow "
+                       "next_action=%s", next_action_text);
+    (void)snprintf(buf, cap, "%s", line);
 }
 
 /* Pick one short, deterministic next step from the same brief body: a named

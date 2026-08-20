@@ -1015,7 +1015,12 @@ to 12 known field names; nothing is printed on partial failure. `field=` also
 works as a normal dashed flag (`--field=a,b`) on any native registry leaf.
 
 **Terse by construction.** `status` always uses the bounded money-journey
-body; `--format=json` returns it in `zcl.result.v1`. The strict chain-only
+body. Its default one-line render is at most 320 bytes and ends with the exact
+`next_action`; control whitespace is collapsed so an action cannot inject a
+second output line. An unexpectedly oversized action is never rendered as a
+partial command; the line directs the operator to `z23 status --format=json`
+instead. `--format=json` returns the same fields in `zcl.result.v1`.
+The strict chain-only
 brief is `z23 core status brief`; the large diagnostic document is explicit as
 `z23 core status --format=json`.
 `ZCL_BRIEF=1` remains only as a compatibility formatting option for raw

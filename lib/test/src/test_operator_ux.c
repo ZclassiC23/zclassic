@@ -1003,11 +1003,12 @@ static int test_money_journey_status_one_line_contract(void)
         json_push_kv_str(&d, "primary_blocker",
                          "review_required_bootstrap_trust");
         json_push_kv_str(&d, "error_code", "WALLET_LOCKED");
+        json_push_kv_str(&d, "next_action", "z23 core sync diagnose");
 
         char buf[1024];
         zcl_native_status_journey_render(&d, buf, sizeof(buf));
         ASSERT(strchr(buf, '\n') == NULL);
-        ASSERT(strlen(buf) <= 200);
+        ASSERT(strlen(buf) <= 320);
         ASSERT(strstr(buf, "node=healthy") != NULL);
         ASSERT(strstr(buf, "synced=yes") != NULL);
         ASSERT(strstr(buf, "wallet=ready") != NULL);
@@ -1017,8 +1018,54 @@ static int test_money_journey_status_one_line_contract(void)
         ASSERT(strstr(buf, "pending_zat=1000") != NULL);
         ASSERT(strstr(buf, "reserved_zat=2000") != NULL);
         ASSERT(strstr(buf, "blocker=review_required_bootstrap_trust") != NULL);
+        ASSERT(strstr(buf, "next_action=z23 core sync diagnose") != NULL);
         ASSERT(strstr(buf, "address") == NULL);
         ASSERT(strstr(buf, "path") == NULL);
+        json_free(&d);
+        PASS();
+    }
+    TEST("money journey next action cannot inject another output line") {
+        struct json_value d;
+        json_init(&d);
+        json_set_object(&d);
+        json_push_kv_str(&d, "next_action", "first\nsecond\tstep");
+        char buf[1024];
+        zcl_native_status_journey_render(&d, buf, sizeof(buf));
+        ASSERT(strchr(buf, '\n') == NULL);
+        ASSERT(strstr(buf, "next_action=first second step") != NULL);
+        json_free(&d);
+        PASS();
+    }
+    TEST("money journey preserves a complete action under oversized input") {
+        struct json_value d;
+        json_init(&d);
+        json_set_object(&d);
+        char oversized[256];
+        memset(oversized, 'x', sizeof(oversized) - 1);
+        oversized[sizeof(oversized) - 1] = '\0';
+        json_push_kv_str(&d, "primary_blocker", oversized);
+        json_push_kv_str(&d, "next_action", "z23 core sync diagnose");
+        char buf[1024];
+        zcl_native_status_journey_render(&d, buf, sizeof(buf));
+        ASSERT(strlen(buf) <= 320);
+        ASSERT(strstr(buf, "blocker=status_detail_too_long") != NULL);
+        ASSERT(strstr(buf, "next_action=z23 core sync diagnose") != NULL);
+        json_free(&d);
+        PASS();
+    }
+    TEST("money journey never renders a partial oversized action") {
+        struct json_value d;
+        json_init(&d);
+        json_set_object(&d);
+        char oversized[256];
+        memset(oversized, 'x', sizeof(oversized) - 1);
+        oversized[sizeof(oversized) - 1] = '\0';
+        json_push_kv_str(&d, "next_action", oversized);
+        char buf[1024];
+        zcl_native_status_journey_render(&d, buf, sizeof(buf));
+        ASSERT(strlen(buf) <= 320);
+        ASSERT(strstr(buf, "next_action=z23 status --format=json") != NULL);
+        ASSERT(strstr(buf, "xxxxxxxx") == NULL);
         json_free(&d);
         PASS();
     } _test_next:;
