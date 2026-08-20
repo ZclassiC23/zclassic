@@ -22,11 +22,12 @@
  * frontier went stale while the upstream raced ahead". */
 long long pv_trace_log_rows(sqlite3 *db)
 {
-    if (!db) return -1;
+    if (!db)
+        return -1; // raw-return-ok:trace-only-sentinel-no-db
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM script_validate_log",
                            -1, &st, NULL) != SQLITE_OK)
-        return -1;
+        return -1; // raw-return-ok:trace-only-sentinel-unreadable
     long long n = AR_STEP_ROW(st) ? AR_COL_INT(st, 0) : -1;
     sqlite3_finalize(st);
     return n;
