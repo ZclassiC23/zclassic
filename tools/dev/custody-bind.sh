@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Owner-only provisioning for the private dev/prod custody binding.
+# Owner-only provisioning for a private custody binding.
 #
 # The command discovers wallet identities through each node's typed custody
 # reader, writes the endpoint-bearing grant spec under a mode-0700 directory,
@@ -23,6 +23,7 @@ DEV_RPCPORT="${ZCL_CUSTODY_DEV_RPCPORT:-18252}"
 PROD_RPCPORT="${ZCL_CUSTODY_PROD_RPCPORT:-18232}"
 NODE_BIN="${ZCL_CUSTODY_BIN:-build/bin/zclassic23-dev}"
 RPC_BIN="${ZCL_CUSTODY_RPC_BIN:-build/bin/zcl-rpc}"
+WALLET_SCOPE="portfolio"
 
 while [ $# -gt 0 ]; do
     case "$1" in
@@ -31,6 +32,13 @@ while [ $# -gt 0 ]; do
         --prod-datadir=*) PROD_DATADIR="${1#*=}" ;;
         --dev-rpcport=*) DEV_RPCPORT="${1#*=}" ;;
         --prod-rpcport=*) PROD_RPCPORT="${1#*=}" ;;
+        --wallet-scope=dev|--wallet-scope=prod|--wallet-scope=portfolio)
+            WALLET_SCOPE="${1#*=}"
+            ;;
+        --wallet-scope=*)
+            echo "custody-bind: --wallet-scope must be dev, prod, or portfolio" >&2
+            exit 2
+            ;;
         -h|--help)
             cat <<'USAGE'
 usage: tools/dev/custody-bind.sh {setup|selftest} [options]
@@ -41,11 +49,13 @@ Options:
   --prod-datadir=ABSOLUTE_DIR
   --dev-rpcport=PORT
   --prod-rpcport=PORT
+  --wallet-scope=dev|prod|portfolio
 
-Discovers both persistent wallet identities from their local typed readers,
-creates an owner-private broker binding, and verifies both money snapshots are
-CURRENT. No key, address, wallet id, endpoint or path is printed. No funds are
-reserved, signed, broadcast or moved.
+Discovers only the requested persistent wallet identity (both identities when
+portfolio is selected), creates an owner-private broker binding, and verifies
+the requested money snapshot is CURRENT. The default is portfolio. No key,
+address, wallet id, endpoint or path is printed. No funds are reserved, signed,
+broadcast or moved.
 USAGE
             exit 0
             ;;
@@ -82,14 +92,22 @@ assert_private_target() {
             fail "broker directory is too broad"
             ;;
     esac
-    case "$DEV_DATADIR:$PROD_DATADIR" in
-        /*:/*) ;;
-        *) fail "both wallet datadirs must be absolute" ;;
+    case "$WALLET_SCOPE" in
+        dev|portfolio)
+            case "$DEV_DATADIR" in /*) ;; *) fail "development wallet datadir must be absolute" ;; esac
+            is_port "$DEV_RPCPORT" || fail "development RPC port is invalid"
+            ;;
     esac
-    is_port "$DEV_RPCPORT" || fail "development RPC port is invalid"
-    is_port "$PROD_RPCPORT" || fail "production RPC port is invalid"
-    [ "$DEV_DATADIR:$DEV_RPCPORT" != "$PROD_DATADIR:$PROD_RPCPORT" ] ||
-        fail "development and production endpoints must be distinct"
+    case "$WALLET_SCOPE" in
+        prod|portfolio)
+            case "$PROD_DATADIR" in /*) ;; *) fail "production wallet datadir must be absolute" ;; esac
+            is_port "$PROD_RPCPORT" || fail "production RPC port is invalid"
+            ;;
+    esac
+    if [ "$WALLET_SCOPE" = portfolio ]; then
+        [ "$DEV_DATADIR:$DEV_RPCPORT" != "$PROD_DATADIR:$PROD_RPCPORT" ] ||
+            fail "development and production endpoints must be distinct"
+    fi
 }
 
 custody_snapshot() {
@@ -118,34 +136,49 @@ custody_snapshot() {
 
 write_spec() {
     local dev_snapshot="$1" prod_snapshot="$2" candidate="$3"
-    local dev_id prod_id dev_genesis prod_genesis
-    dev_id="$(jq -er '.wallet_instance_id' <<<"$dev_snapshot")"
-    prod_id="$(jq -er '.wallet_instance_id' <<<"$prod_snapshot")"
-    dev_genesis="$(jq -er '.network_genesis' <<<"$dev_snapshot")"
-    prod_genesis="$(jq -er '.network_genesis' <<<"$prod_snapshot")"
-    [ "$dev_id" != "$prod_id" ] ||
-        fail "duplicate wallet identity across active endpoints"
-    [ "$dev_genesis" = "$prod_genesis" ] ||
-        fail "development and production wallets report different networks"
+    local dev_id prod_id dev_genesis prod_genesis dev_rpc_arg prod_rpc_arg
+    dev_id=""
+    prod_id=""
+    dev_genesis=""
+    prod_genesis=""
+    if [ -n "$dev_snapshot" ]; then
+        dev_id="$(jq -er '.wallet_instance_id' <<<"$dev_snapshot")"
+        dev_genesis="$(jq -er '.network_genesis' <<<"$dev_snapshot")"
+    fi
+    if [ -n "$prod_snapshot" ]; then
+        prod_id="$(jq -er '.wallet_instance_id' <<<"$prod_snapshot")"
+        prod_genesis="$(jq -er '.network_genesis' <<<"$prod_snapshot")"
+    fi
+    if [ "$WALLET_SCOPE" = portfolio ]; then
+        [ "$dev_id" != "$prod_id" ] ||
+            fail "duplicate wallet identity across active endpoints"
+        [ "$dev_genesis" = "$prod_genesis" ] ||
+            fail "development and production wallets report different networks"
+    fi
+    dev_rpc_arg=1
+    prod_rpc_arg=1
+    case "$WALLET_SCOPE" in dev|portfolio) dev_rpc_arg="$DEV_RPCPORT" ;; esac
+    case "$WALLET_SCOPE" in prod|portfolio) prod_rpc_arg="$PROD_RPCPORT" ;; esac
 
-    jq -n \
+    jq -n --arg requested_scope "$WALLET_SCOPE" \
         --arg dev_id "$dev_id" --arg prod_id "$prod_id" \
-        --arg genesis "$dev_genesis" \
+        --arg dev_genesis "$dev_genesis" --arg prod_genesis "$prod_genesis" \
         --arg dev_datadir "$DEV_DATADIR" \
         --arg prod_datadir "$PROD_DATADIR" \
-        --argjson dev_rpcport "$DEV_RPCPORT" \
-        --argjson prod_rpcport "$PROD_RPCPORT" '
+        --argjson dev_rpcport "$dev_rpc_arg" \
+        --argjson prod_rpcport "$prod_rpc_arg" '
         {holder:"local-owner-custody",issuer:"local-owner-custody",
          scope:"kinds",kinds:"content",queries:"inspect_property",
          max_value_zat:0,
-         wallets:[
+         wallets:([
            {scope:"dev",wallet_instance_id:$dev_id,
-            network_genesis:$genesis,node_datadir:$dev_datadir,
+            network_genesis:$dev_genesis,node_datadir:$dev_datadir,
             rpc_port:$dev_rpcport},
            {scope:"prod",wallet_instance_id:$prod_id,
-            network_genesis:$genesis,node_datadir:$prod_datadir,
+            network_genesis:$prod_genesis,node_datadir:$prod_datadir,
             rpc_port:$prod_rpcport}
-         ]}' >"$candidate"
+         ] | if $requested_scope == "portfolio" then .
+              else map(select(.scope == $requested_scope)) end)}' >"$candidate"
     chmod 600 "$candidate"
 }
 
@@ -172,19 +205,23 @@ verify_money_current() {
            ! str_contains "$money" 'rpc_port' &&
            ! str_contains "$money" "$DEV_DATADIR" &&
            ! str_contains "$money" "$PROD_DATADIR" &&
-           printf '%s\n' "$money" | jq -e '
+           printf '%s\n' "$money" | jq -e --arg scope "$WALLET_SCOPE" '
                .ok == true and
-               ((.data.wallets // []) |
-                 ([.[] | select(.wallet_scope == "dev" and
-                                .status == "CURRENT")] | length) == 1 and
-                 ([.[] | select(.wallet_scope == "prod" and
-                                .status == "CURRENT")] | length) == 1)' \
+               ((.data.wallets // []) | if $scope == "portfolio" then
+                 (([.[] | select(.wallet_scope == "dev" and
+                                 .status == "CURRENT")] | length) == 1 and
+                  ([.[] | select(.wallet_scope == "prod" and
+                                 .status == "CURRENT")] | length) == 1)
+                else
+                  ([.[] | select(.wallet_scope == $scope and
+                                 .status == "CURRENT")] | length) == 1
+                end)' \
                >/dev/null 2>&1; then
             return 0
         fi
         [ "$attempt" -eq 3 ] || sleep 2
     done
-    fail "one or both identity-bound wallet snapshots are not CURRENT"
+    fail "the requested identity-bound wallet snapshot is not CURRENT"
 }
 
 setup_binding() {
@@ -195,8 +232,18 @@ setup_binding() {
 
     local dev_snapshot prod_snapshot spec candidate log generation gen_spec
     local binding_candidate
-    dev_snapshot="$(custody_snapshot dev "$DEV_DATADIR" "$DEV_RPCPORT")"
-    prod_snapshot="$(custody_snapshot prod "$PROD_DATADIR" "$PROD_RPCPORT")"
+    dev_snapshot=""
+    prod_snapshot=""
+    case "$WALLET_SCOPE" in
+        dev|portfolio)
+            dev_snapshot="$(custody_snapshot dev "$DEV_DATADIR" "$DEV_RPCPORT")"
+            ;;
+    esac
+    case "$WALLET_SCOPE" in
+        prod|portfolio)
+            prod_snapshot="$(custody_snapshot prod "$PROD_DATADIR" "$PROD_RPCPORT")"
+            ;;
+    esac
 
     umask 077
     install -d -m 700 "$BROKER_DIR"
@@ -246,11 +293,17 @@ setup_binding() {
         fail "persisted money binding differs from the owner specification"
     verify_money_current
 
-    echo "custody-bind: ready dev=CURRENT prod=CURRENT identities=bound endpoints=private funds_moved=false"
+    case "$WALLET_SCOPE" in
+        dev) readiness="dev=CURRENT prod=not_required" ;;
+        prod) readiness="dev=not_required prod=CURRENT" ;;
+        portfolio) readiness="dev=CURRENT prod=CURRENT" ;;
+    esac
+    echo "custody-bind: ready scope=$WALLET_SCOPE $readiness identities=bound endpoints=private funds_moved=false"
 }
 
 selftest() {
-    local temp fake_rpc fake_node call_log out rerun_out rotate_out duplicate_out
+    local temp fake_rpc fake_node call_log rpc_log out rerun_out rotate_out
+    local duplicate_out dev_out dev_rerun_out
     temp="$(mktemp -d /tmp/zcl23-custody-bind-selftest-XXXXXX)"
     case "$temp" in
         /tmp/zcl23-custody-bind-selftest-*) ;;
@@ -260,6 +313,7 @@ selftest() {
     fake_rpc="$temp/fake-rpc"
     fake_node="$temp/fake-node"
     call_log="$temp/broker-calls"
+    rpc_log="$temp/rpc-calls"
     printf '%s\n' \
         '#!/bin/sh' \
         'id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
@@ -267,6 +321,7 @@ selftest() {
         '[ "${ZCL_CUSTODY_BIND_DUPLICATE_FIXTURE:-0}" = 1 ] && id=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
         'scope=dev' \
         '[ "${ZCL_RPCPORT:-}" != 1 ] && scope=prod' \
+        '[ -z "${ZCL_CUSTODY_BIND_RPC_LOG:-}" ] || printf '\''%s\n'\'' "$scope" >>"$ZCL_CUSTODY_BIND_RPC_LOG"' \
         'printf '\''{"result":{"ok":true,"snapshot":{"wallet_scope":"%s","wallet_instance_id":"%s","network_genesis":"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc","status":"CURRENT","complete":true,"confirmed_zcl":"0.00000000"}}}\n'\'' "$scope" "$id"' \
         >"$fake_rpc"
     printf '%s\n' \
@@ -286,13 +341,13 @@ selftest() {
         'exit 1' >"$fake_node"
     chmod 700 "$fake_rpc" "$fake_node"
 
-    out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" \
+    out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" ZCL_CUSTODY_BIND_RPC_LOG="$rpc_log" \
         ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
         ZCL_CUSTODY_DEV_DATADIR="$temp/dev" \
         ZCL_CUSTODY_PROD_DATADIR="$temp/prod" \
         ZCL_CUSTODY_DEV_RPCPORT=1 ZCL_CUSTODY_PROD_RPCPORT=2 \
         "$0" setup --broker-dir="$temp/broker")"
-    str_contains "$out" 'ready dev=CURRENT prod=CURRENT' || return 1
+    str_contains "$out" 'ready scope=portfolio dev=CURRENT prod=CURRENT' || return 1
     verify_private_file "$temp/broker/grant-spec.json" || return 1
     verify_private_file "$temp/broker/money-bindings.json" || return 1
     [ "$(wc -c <"$call_log")" = 1 ] || return 1
@@ -301,25 +356,49 @@ selftest() {
         return 1
     fi
 
-    rerun_out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" \
+    rerun_out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" ZCL_CUSTODY_BIND_RPC_LOG="$rpc_log" \
         ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
         ZCL_CUSTODY_DEV_DATADIR="$temp/dev" \
         ZCL_CUSTODY_PROD_DATADIR="$temp/prod" \
         ZCL_CUSTODY_DEV_RPCPORT=1 ZCL_CUSTODY_PROD_RPCPORT=2 \
         "$0" setup --broker-dir="$temp/broker")"
-    str_contains "$rerun_out" 'ready dev=CURRENT prod=CURRENT' || return 1
+    str_contains "$rerun_out" 'ready scope=portfolio dev=CURRENT prod=CURRENT' || return 1
     [ "$(wc -c <"$call_log")" = 1 ] || return 1
 
-    rotate_out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" \
+    rotate_out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" ZCL_CUSTODY_BIND_RPC_LOG="$rpc_log" \
         ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
         ZCL_CUSTODY_DEV_DATADIR="$temp/dev" \
         ZCL_CUSTODY_PROD_DATADIR="$temp/prod" \
         ZCL_CUSTODY_DEV_RPCPORT=1 ZCL_CUSTODY_PROD_RPCPORT=3 \
         "$0" setup --broker-dir="$temp/broker")"
-    str_contains "$rotate_out" 'ready dev=CURRENT prod=CURRENT' || return 1
+    str_contains "$rotate_out" 'ready scope=portfolio dev=CURRENT prod=CURRENT' || return 1
     [ "$(wc -c <"$call_log")" = 2 ] || return 1
     [ "$(jq -r '.wallets[] | select(.scope == "prod") | .rpc_port' \
         "$temp/broker/money-bindings.json")" = 3 ] || return 1
+
+    : >"$rpc_log"
+    dev_out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" ZCL_CUSTODY_BIND_RPC_LOG="$rpc_log" \
+        ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
+        ZCL_CUSTODY_DEV_DATADIR="$temp/dev" \
+        ZCL_CUSTODY_PROD_DATADIR=relative-prod-must-not-be-read \
+        ZCL_CUSTODY_DEV_RPCPORT=1 ZCL_CUSTODY_PROD_RPCPORT=invalid \
+        "$0" setup --wallet-scope=dev --broker-dir="$temp/dev-broker")"
+    str_contains "$dev_out" 'ready scope=dev dev=CURRENT prod=not_required' || return 1
+    [ "$(jq -r '.wallets | length' "$temp/dev-broker/money-bindings.json")" = 1 ] || return 1
+    [ "$(jq -r '.wallets[0].scope' "$temp/dev-broker/money-bindings.json")" = dev ] || return 1
+    [ "$(cat "$rpc_log")" = dev ] || return 1
+    if str_contains "$dev_out" 'aaaaaaaa' || str_contains "$dev_out" "$temp" ||
+       str_contains "$dev_out" 'rpc_port'; then
+        return 1
+    fi
+    dev_rerun_out="$(ZCL_CUSTODY_BIND_CALL_LOG="$call_log" ZCL_CUSTODY_BIND_RPC_LOG="$rpc_log" \
+        ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \
+        ZCL_CUSTODY_DEV_DATADIR="$temp/dev" \
+        ZCL_CUSTODY_PROD_DATADIR=relative-prod-must-not-be-read \
+        ZCL_CUSTODY_DEV_RPCPORT=1 ZCL_CUSTODY_PROD_RPCPORT=invalid \
+        "$0" setup --wallet-scope=dev --broker-dir="$temp/dev-broker")"
+    str_contains "$dev_rerun_out" 'ready scope=dev dev=CURRENT prod=not_required' || return 1
+    [ "$(grep -c '^dev$' "$rpc_log")" = 2 ] || return 1
 
     if duplicate_out="$(ZCL_CUSTODY_BIND_DUPLICATE_FIXTURE=1 \
         ZCL_CUSTODY_BIN="$fake_node" ZCL_CUSTODY_RPC_BIN="$fake_rpc" \

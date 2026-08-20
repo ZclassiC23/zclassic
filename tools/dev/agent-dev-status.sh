@@ -160,11 +160,6 @@ quality_freshness_selftest() {
     printf '%s\n' 'agent-dev-status: source-ID freshness selftest PASS'
 }
 
-if [ "${ZCL_AGENT_DEV_STATUS_SELFTEST:-0}" = "1" ]; then
-    quality_freshness_selftest
-    exit $?
-fi
-
 file_state_json() {
     local path="$1" executable="false" size="" mtime="" source_id=""
     local build_commit="" identity="" source_id_valid=false
@@ -456,19 +451,27 @@ staged_matches() {
 
 next_action() {
     local rpc_status="$1" active_state="$2" auto_pending="$3"
-    local stale_candidate="$4"
+    local stale_candidate="$4" installed_matches_source="$5" source_id="$6"
+    local source_prefix
     if [ "$auto_pending" = "true" ]; then
         if [ "$stale_candidate" = "true" ]; then
             printf 'make agent-clear-stale-dev-reindex'
         else
             printf 'make agent-dev-recover'
         fi
+    elif [ "$installed_matches_source" != "true" ]; then
+        if ! is_source_id_sha256 "$source_id"; then
+            printf 'make dev-bin'
+            return
+        fi
+        source_prefix="${source_id:0:16}"
+        printf "%s" "build/bin/z23-dev dev generation activate --input='{\"idempotency_key\":\"dev-activate-$source_prefix\"}'"
     elif [ "$rpc_status" = "ok" ]; then
         printf 'z23-dev status'
     elif [ "$active_state" = "active" ]; then
         printf 'wait; tail -f %s' "$NODE_LOG"
     else
-        printf "%s" "build/bin/z23-dev dev change apply --input='{\"files\":[\"<complete-dirty-set>\"]}'"
+        printf 'build/bin/z23-dev dev generation history'
     fi
 }
 
@@ -524,7 +527,7 @@ emit_json() {
     agent_ready="${agent_ready:-not_checked}"
     agent_reason="${agent_reason:-not_checked}"
     action="$(next_action "$rpc_status" "$active_state" "$auto_pending" \
-        "$stale_candidate")"
+        "$stale_candidate" "$staged" "$source_id")"
     printf '{\n'
     printf '  "schema": "%s",\n' "$SCHEMA"
     printf '  "worker_lane": %s,\n' "$worker"
@@ -552,6 +555,22 @@ emit_json() {
     printf '  "auto_reindex_stale_candidate": %s,\n' "$stale_candidate"
     printf '  "next_action": "%s"\n' "$(json_escape "$action")"
     printf '}\n'
+}
+
+next_action_selftest() {
+    local source_id action
+    source_id="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    action="$(next_action ok active false false false "$source_id")"
+    [ "$action" = \
+        "build/bin/z23-dev dev generation activate --input='{\"idempotency_key\":\"dev-activate-aaaaaaaaaaaaaaaa\"}'" ] || {
+        echo "agent-dev-status selftest: stale runtime action is not exact activation plan" >&2
+        return 1
+    }
+    [ "$(next_action down inactive false false false invalid)" = "make dev-bin" ] || {
+        echo "agent-dev-status selftest: invalid source identity did not fail closed" >&2
+        return 1
+    }
+    printf '%s\n' 'agent-dev-status: activation next-action selftest PASS'
 }
 
 emit_text() {
@@ -614,6 +633,12 @@ emit_text() {
         printf '%s\n' "$json"
     fi
 }
+
+if [ "${ZCL_AGENT_DEV_STATUS_SELFTEST:-0}" = "1" ]; then
+    quality_freshness_selftest
+    next_action_selftest
+    exit $?
+fi
 
 case "$MODE" in
     --json|json)

@@ -65,7 +65,7 @@ Do not create a plan, reserve funds, or broadcast while any item is false:
 2. The installed dev binary identifies the source being reviewed; the node's
    typed `status` and `dumpstate reducer_frontier` reads are current.
 3. `make custody-status ARGS='--broker-dir=<owner-private-absolute-dir>
-   --wallet-scope=dev'` reports `[#####] 5/5 status=ready scope=dev`.
+   --wallet-scope=dev'` reports `status=ready scope=dev`.
 4. `metaverse agent money` reports the explicitly targeted dev wallet as
    `CURRENT` with a current snapshot root. The independent portfolio may remain
    partial when production is unavailable; that never turns production into
@@ -89,13 +89,15 @@ z23 metaverse agent money --dir=<owner-private-absolute-dir>
 make transaction-lab-status
 ```
 
-On a new operator host, create the binding once with `make custody-bind` before
-those reads. The command discovers both wallet identities from their typed
-local readers and keeps identifiers, endpoints and paths in the owner-private
-broker directory; it never moves funds. This replaces hand-authored grant JSON
-and is safe to rerun when the assigned wallet endpoint changes: unchanged
-bindings are idempotent, while a changed binding is minted in a fresh private
-generation and atomically promoted without forking an older receipt chain.
+On a new operator host, create only the development binding once with
+`make custody-bind ARGS='--wallet-scope=dev'` before those reads. The command
+does not probe or require production. It keeps identifiers, endpoints and paths
+in the owner-private broker directory and never moves funds. This replaces
+hand-authored grant JSON and is safe to rerun when the assigned wallet endpoint
+changes: unchanged bindings are idempotent, while a changed binding is minted
+in a fresh private generation and atomically promoted without forking an older
+receipt chain. Omit `--wallet-scope` only when the complete two-wallet portfolio
+is intentionally being bound.
 
 Never substitute a remembered `0.30000000 ZCL` development observation for a
 current identity-bound snapshot. Never infer the wallet scope from default CLI

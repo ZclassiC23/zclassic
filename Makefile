@@ -2032,10 +2032,10 @@ custody-check:
 	@$(MAKE) --no-print-directory t-fast-exact ONLY='$(CUSTODY_FOCUSED_TESTS)'
 	@echo "custody-check: PASS — no live wallet or funds were touched"
 
-# Owner-only, value-free provisioning for the private dev/prod money binding.
-# The setup discovers both identities through typed custody readers, writes
-# endpoint-bearing state outside Git under mode 0600, and proves both snapshots
-# CURRENT. It never reserves, signs, broadcasts or moves funds.
+# Owner-only, value-free provisioning for private money bindings. ARGS may set
+# --wallet-scope=dev|prod|portfolio; portfolio is the default. A scoped setup
+# never probes or requires the other wallet. Endpoint-bearing state stays
+# outside Git under mode 0600. No funds are moved.
 custody-bind:
 	@tools/dev/custody-bind.sh setup $(ARGS)
 

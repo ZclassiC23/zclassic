@@ -89,12 +89,15 @@ fixture_probe() {
             printf '{"path":"metaverse.agent.money"}\n'
             ;;
         dev_status:ready|dev_status:dev-ready)
-            printf '{"installed_matches_source":true,"deploy_blocker":false}\n'
+            printf '%s\n' '{"installed_matches_source":true,"deploy_blocker":false,"next_action":"activate --input={\"id\":\"exact\"}"}'
+            ;;
+        dev_status:stale-dev)
+            printf '%s\n' '{"installed_matches_source":false,"deploy_blocker":false,"next_action":"activate --input={\"id\":\"exact\"}"}'
             ;;
         dev_status:*)
             printf '{"installed_matches_source":false,"deploy_blocker":false}\n'
             ;;
-        canonical:ready|canonical:dev-ready)
+        canonical:ready)
             printf '%s\n' "argv[]=zclassic23 -datadir=$PROD_DATADIR -operator-lane=canonical"
             ;;
         canonical:*)
@@ -180,7 +183,13 @@ start_probe() {
     ) &
     probe_pids="$probe_pids $!"
 }
-for probe_kind in schema dev_status canonical dev_balance prod_balance; do
+probe_kinds="schema dev_status"
+case "$WALLET_SCOPE" in
+    dev) probe_kinds="$probe_kinds dev_balance" ;;
+    prod) probe_kinds="$probe_kinds canonical prod_balance" ;;
+    portfolio) probe_kinds="$probe_kinds canonical dev_balance prod_balance" ;;
+esac
+for probe_kind in $probe_kinds; do
     start_probe "$probe_kind"
 done
 [ "$broker_state" = present ] && start_probe money
@@ -202,14 +211,22 @@ fi
 
 dev_current=false
 dev_body="$(probe_output dev_status)"
+dev_next_action=""
+if command -v jq >/dev/null 2>&1; then
+    dev_next_action="$(printf '%s\n' "$dev_body" |
+        jq -r '.next_action // empty' 2>/dev/null || true)"
+fi
 if [ "$(json_bool_field "$dev_body" installed_matches_source)" = true ] &&
    [ "$(json_bool_field "$dev_body" deploy_blocker)" = false ]; then
     dev_current=true
 fi
 
-canonical_target="unknown"
+canonical_target="not_required"
 canonical_body="$(probe_output canonical)"
-if [ -n "$canonical_body" ]; then
+if [ "$WALLET_SCOPE" != dev ]; then
+    canonical_target="unknown"
+fi
+if [ "$WALLET_SCOPE" != dev ] && [ -n "$canonical_body" ]; then
     # Compare the complete argv token. A benchmark path such as
     # ~/.zclassic-c23-cold-bench-* deliberately must not match the assigned
     # ~/.zclassic-c23 production wallet by prefix.
@@ -232,8 +249,22 @@ balance_status() {
     fi
 }
 
-IFS='|' read -r dev_balance_status dev_balance < <(balance_status dev_balance)
-IFS='|' read -r prod_balance_status prod_balance < <(balance_status prod_balance)
+dev_balance_status="NOT_REQUESTED"
+dev_balance="UNKNOWN"
+prod_balance_status="NOT_REQUESTED"
+prod_balance="UNKNOWN"
+case "$WALLET_SCOPE" in
+    dev)
+        IFS='|' read -r dev_balance_status dev_balance < <(balance_status dev_balance)
+        ;;
+    prod)
+        IFS='|' read -r prod_balance_status prod_balance < <(balance_status prod_balance)
+        ;;
+    portfolio)
+        IFS='|' read -r dev_balance_status dev_balance < <(balance_status dev_balance)
+        IFS='|' read -r prod_balance_status prod_balance < <(balance_status prod_balance)
+        ;;
+esac
 
 money_status="UNKNOWN"
 portfolio_known=false
@@ -269,23 +300,32 @@ case "$WALLET_SCOPE" in
 esac
 
 completed=0
+total=5
 [ "$source_ready" = true ] && completed=$((completed + 1))
 [ "$dev_current" = true ] && completed=$((completed + 1))
-[ "$canonical_target" = expected_prod ] && completed=$((completed + 1))
+if [ "$WALLET_SCOPE" = dev ]; then
+    total=4
+else
+    [ "$canonical_target" = expected_prod ] && completed=$((completed + 1))
+fi
 [ "$broker_state" = present ] && completed=$((completed + 1))
 [ "$target_money_status" = CURRENT ] && completed=$((completed + 1))
 
 status="blocked"
-[ "$completed" -eq 5 ] && status="ready"
+[ "$completed" -eq "$total" ] && status="ready"
 
 if [ "$source_ready" != true ]; then
     next_action="run make dev-bin"
 elif [ "$dev_current" != true ]; then
-    next_action="owner-activate the current build on the dev lane"
-elif [ "$canonical_target" != expected_prod ]; then
+    if [ -n "$dev_next_action" ]; then
+        next_action="$dev_next_action"
+    else
+        next_action="owner-activate the current build on the dev lane"
+    fi
+elif [ "$WALLET_SCOPE" != dev ] && [ "$canonical_target" != expected_prod ]; then
     next_action="restore canonical to the assigned production datadir"
 elif [ "$broker_state" != present ]; then
-    next_action="create the owner custody binding after both wallet identities exist"
+    next_action="create the owner custody binding for ${WALLET_SCOPE} after the requested wallet identity exists"
 elif [ "$target_money_status" != CURRENT ]; then
     next_action="inspect the identity-bound ${WALLET_SCOPE} wallet reader; never substitute zero"
 else
@@ -297,7 +337,7 @@ emit_json() {
     printf '"schema":"zcl.custody_rollout_status.v1",'
     printf '"status":"%s",' "$status"
     printf '"requested_wallet_scope":"%s",' "$WALLET_SCOPE"
-    printf '"progress":{"completed":%d,"total":5},' "$completed"
+    printf '"progress":{"completed":%d,"total":%d},' "$completed" "$total"
     printf '"source":{"ready":%s},' "$source_ready"
     printf '"dev_runtime":{"current":%s},' "$dev_current"
     printf '"canonical":{"target":"%s"},' "$canonical_target"
@@ -315,11 +355,11 @@ emit_json() {
 
 emit_text() {
     local bar="" i
-    for ((i = 0; i < 5; i++)); do
+    for ((i = 0; i < total; i++)); do
         if [ "$i" -lt "$completed" ]; then bar+="#"; else bar+="-"; fi
     done
-    printf 'custody-status: [%s] %d/5 status=%s scope=%s\n' \
-        "$bar" "$completed" "$status" "$WALLET_SCOPE"
+    printf 'custody-status: [%s] %d/%d status=%s scope=%s\n' \
+        "$bar" "$completed" "$total" "$status" "$WALLET_SCOPE"
     printf '  source_support=%s dev_runtime_current=%s canonical_target=%s\n' \
         "$source_ready" "$dev_current" "$canonical_target"
     printf '  broker=%s money=%s target_money=%s dev=%s prod=%s portfolio=%s\n' \
@@ -332,7 +372,7 @@ emit_text() {
 }
 
 custody_status_selftest() {
-    local ready dev_ready portfolio_partial blocked combined
+    local ready dev_ready portfolio_partial blocked stale_dev combined
     ready="$(ZCL_CUSTODY_STATUS_SELFTEST=0 ZCL_CUSTODY_FIXTURE=ready \
         "$0" --json --broker-dir=/fixture)"
     blocked="$(ZCL_CUSTODY_STATUS_SELFTEST=0 ZCL_CUSTODY_FIXTURE=blocked \
@@ -341,6 +381,8 @@ custody_status_selftest() {
         "$0" --json --broker-dir=/fixture --wallet-scope=dev)"
     portfolio_partial="$(ZCL_CUSTODY_STATUS_SELFTEST=0 ZCL_CUSTODY_FIXTURE=dev-ready \
         "$0" --json --broker-dir=/fixture)"
+    stale_dev="$(ZCL_CUSTODY_STATUS_SELFTEST=0 ZCL_CUSTODY_FIXTURE=stale-dev \
+        "$0" --json --wallet-scope=dev)"
     str_contains "$ready" '"status":"ready"' || return 1
     str_contains "$ready" '"completed":5' || return 1
     str_contains "$ready" \
@@ -349,12 +391,19 @@ custody_status_selftest() {
     str_contains "$blocked" \
         '"portfolio_confirmed_zcl":"UNKNOWN"' || return 1
     str_contains "$dev_ready" '"status":"ready"' || return 1
+    str_contains "$dev_ready" '"completed":4,"total":4' || return 1
     str_contains "$dev_ready" '"requested_wallet_scope":"dev"' || return 1
+    str_contains "$dev_ready" '"canonical":{"target":"not_required"}' || return 1
     str_contains "$dev_ready" '"target_status":"CURRENT"' || return 1
+    str_contains "$dev_ready" '"prod":{"status":"NOT_REQUESTED"' || return 1
     str_contains "$dev_ready" '"portfolio_total_known":false' || return 1
+    [ "$(printf '%s\n' "$dev_ready" | jq -r '.next_action')" = \
+        'custody rollout is current; no fund movement is required' ] || return 1
     str_contains "$portfolio_partial" '"status":"blocked"' || return 1
     str_contains "$portfolio_partial" '"requested_wallet_scope":"portfolio"' || return 1
-    combined="$ready$dev_ready$portfolio_partial$blocked"
+    [ "$(printf '%s\n' "$stale_dev" | jq -r '.next_action')" = \
+        'activate --input={"id":"exact"}' ] || return 1
+    combined="$ready$dev_ready$portfolio_partial$blocked$stale_dev"
     if str_contains "$combined" '/private/' ||
        str_contains "$combined" 'rpcport' ||
        str_contains "$combined" 'node_datadir'; then
