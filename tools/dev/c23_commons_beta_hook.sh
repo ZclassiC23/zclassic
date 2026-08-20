@@ -754,8 +754,39 @@ beta_pin() {
     beta_ok "role $role pin commit $root" "$commit"
 }
 
+# `zcode network publish --mode=commit` returns when the AUTHOR node has
+# signed and stored the record and started replicating it — not when a
+# different node's bounded lookup can route it. `zcode package fetch` gives
+# its discover phase exactly one bounded lookup, so asserting the fetch in
+# the same breath as the publish asserts a network-wide fact one instant
+# after one node learned it. A run of the public target measured that as
+# PROVIDER_DISCOVERY_FAILED (records=0 authenticated=0 denied=0 pending=0)
+# on the journey's first fetch, which was the consumer honestly reporting a
+# network that had not finished, charged to the fetch.
+#
+# So observe the exact precondition, from the exact node that is about to
+# rely on it: the consumer's own bounded lookup returns at least one
+# provider record for this exact carrier root. That is a named observable,
+# not a clock, and it leaves every fetch assertion below untouched — a
+# consumer that never discovers the record still fails, by that name.
+beta_wait_provider_record() {
+    local role="$1" transport="$2" deadline out count
+    deadline=$(( $(date +%s) + ${C23_BETA_RECORD_WAIT:-120} ))
+    while [ "$(date +%s)" -lt "$deadline" ]; do
+        out="$(beta_native "$role" zcode network records \
+            --input="{\"kind\":\"provider\",\"namespace\":\"$BETA_NAMESPACE\",\"transport_root\":\"$transport\"}" || true)"
+        count="$(printf '%s' "$out" |
+            beta_jget 'd.get("data",{}).get("count",0)' 2>/dev/null || true)"
+        [ "${count:-0}" -ge 1 ] 2>/dev/null && return 0
+        sleep 1
+    done
+    return 1
+}
+
 beta_fetch_pin() {
     local role="$1" root="$2" transport="$3" fetched imported
+    beta_wait_provider_record "$role" "$transport" ||
+        beta_die "role $role never discovered a provider record for $transport"
     fetched="$(beta_native "$role" zcode package fetch \
         --input="{\"root\":\"$transport\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}" || true)"
     beta_ok "role $role fetch $transport" "$fetched"
@@ -1303,6 +1334,8 @@ REVERT_COMMIT="$("$NODE_BIN" -regtest zcode create \
 beta_ok "exact revert carrier commit" "$REVERT_COMMIT"
 [ "$(printf '%s' "$REVERT_COMMIT" | beta_jget 'd["data"]["transport_root"]')" = "$BETA_PACKAGE_TRANSPORT" ] ||
     beta_die "exact revert did not recreate the original carrier root"
+beta_wait_provider_record "$BETA_C" "$BETA_PACKAGE_TRANSPORT" ||
+    beta_die "C never discovered a provider record for the original carrier"
 REVERT_FETCH="$(beta_native "$BETA_C" zcode package fetch \
     --input="{\"root\":\"$BETA_PACKAGE_TRANSPORT\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}")"
 beta_ok "C exact revert fetch" "$REVERT_FETCH"
