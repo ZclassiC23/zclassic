@@ -22,6 +22,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
+MKT_HELPER="${ZCL_MARKET_HELPER:-$REPO_ROOT/build/bin/zclassic23-market-acceptance-helper}"
 
 MKT_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
@@ -107,15 +108,10 @@ mkt_rpc() {
 a_rpc() { mkt_rpc "$MKT_DD_A" "$A_RPC" "$@"; }
 b_rpc() { mkt_rpc "$MKT_DD_B" "$B_RPC" "$@"; }
 mkt_result() {
-    python3 -c 'import json,sys
-d=json.load(sys.stdin)
-if d.get("error") is not None: raise SystemExit(2)
-v=d.get("result")
-print(json.dumps(v,separators=(",",":")) if isinstance(v,(dict,list)) else v)'
+    "$MKT_HELPER" rpc-result
 }
 mkt_jget() {
-    local expr="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); print($expr)"
+    "$MKT_HELPER" get "$1"
 }
 mkt_native() {
     local dd="$1" rpc="$2"; shift 2
@@ -200,7 +196,7 @@ mkt_wait_sync_live() {
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         state="$(mkt_rpc "$dd" "$rpc" downloadstats 2>/dev/null \
-            | mkt_jget 'd["result"]["sync_state"]' 2>/dev/null || true)"
+            | mkt_jget 'result.sync_state' 2>/dev/null || true)"
         case "$state" in
             blocks_download|connecting_blocks|at_tip) return 0 ;;
         esac
@@ -218,7 +214,7 @@ mkt_wait_at_tip() {
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         state="$(mkt_rpc "$dd" "$rpc" downloadstats 2>/dev/null \
-            | mkt_jget 'd["result"]["sync_state"]' 2>/dev/null || true)"
+            | mkt_jget 'result.sync_state' 2>/dev/null || true)"
         [ "$state" = "at_tip" ] && return 0
         sleep 0.5
     done
@@ -231,8 +227,8 @@ mkt_wait_fold() {
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         dump="$(mkt_native "$dd" "$rpc" dumpstate reducer_frontier || true)"
-        coins="$(printf '%s' "$dump" | mkt_jget 'd["state"]["coins_best_height"]' 2>/dev/null || true)"
-        hstar="$(printf '%s' "$dump" | mkt_jget 'd["state"]["hstar"]' 2>/dev/null || true)"
+        coins="$(printf '%s' "$dump" | mkt_jget 'state.coins_best_height' 2>/dev/null || true)"
+        hstar="$(printf '%s' "$dump" | mkt_jget 'state.hstar' 2>/dev/null || true)"
         [ "$coins" = "$tip" ] && [ "$hstar" = "$tip" ] && return 0
         sleep 1
     done
@@ -242,19 +238,13 @@ mkt_wait_fold() {
 # RPC-ready != chain-loaded: the money gate needs the active chain index,
 # which loads after the RPC starts serving.
 mkt_wait_chain_loaded() {
-    local dd="$1" rpc="$2" tip="$3" deadline loaded
+    local dd="$1" rpc="$2" tip="$3" deadline chain blocks ibd
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        loaded="$(mkt_rpc "$dd" "$rpc" getblockchaininfo 2>/dev/null | python3 -c '
-import json,sys
-tip = int(sys.argv[1])
-try:
-    d = json.load(sys.stdin).get("result")
-except Exception:
-    d = None
-print(isinstance(d, dict) and d.get("blocks") == tip and d.get("initialblockdownload") is not True)' \
-            "$tip" 2>/dev/null || true)"
-        [ "$loaded" = "True" ] && return 0
+        chain="$(mkt_rpc "$dd" "$rpc" getblockchaininfo 2>/dev/null || true)"
+        blocks="$(printf '%s' "$chain" | mkt_jget 'result.blocks' 2>/dev/null || true)"
+        ibd="$(printf '%s' "$chain" | mkt_jget 'result.initialblockdownload' 2>/dev/null || true)"
+        [ "$blocks" = "$tip" ] && [ "$ibd" != "True" ] && return 0
         sleep 1
     done
     return 1
@@ -267,7 +257,7 @@ mkt_wait_spendable() {
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         spend="$(mkt_native "$dd" "$rpc" dumpstate vault 2>/dev/null \
-            | mkt_jget 'd["state"]["zcl"]["spendable"]' 2>/dev/null || true)"
+            | mkt_jget 'state.zcl.spendable' 2>/dev/null || true)"
         case "$spend" in
             ''|*[!0-9]*) ;;
             *) [ "$spend" -gt 0 ] && return 0 ;;
@@ -279,12 +269,12 @@ mkt_wait_spendable() {
 mkt_unlock_wallet() {
     local dd="$1" rpc="$2" status unlock
     status="$(mkt_native "$dd" "$rpc" core wallet security status || true)"
-    [ "$(printf '%s' "$status" | mkt_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+    [ "$(printf '%s' "$status" | mkt_jget 'ok' 2>/dev/null || true)" = "True" ] || {
         printf '%s\n' "$status" >&2; return 1; }
-    if [ "$(printf '%s' "$status" | mkt_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" != "True" ]; then
+    if [ "$(printf '%s' "$status" | mkt_jget 'data.unlocked' 2>/dev/null || true)" != "True" ]; then
         unlock="$(printf '%s' "{\"passphrase\":\"$MKT_WALLET_PASS\",\"timeout_seconds\":3600}" \
             | mkt_native "$dd" "$rpc" core wallet security unlock --input=- || true)"
-        [ "$(printf '%s' "$unlock" | mkt_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" = "True" ] || {
+        [ "$(printf '%s' "$unlock" | mkt_jget 'data.unlocked' 2>/dev/null || true)" = "True" ] || {
             printf '%s\n' "$unlock" >&2; return 1; }
     fi
     return 0
@@ -293,14 +283,15 @@ mkt_backup_wallet() {
     local dd="$1" rpc="$2" out
     out="$(printf '%s' "{\"confirm\":true,\"password\":\"$MKT_BACKUP_PASS\"}" \
         | mkt_native "$dd" "$rpc" core wallet backup now --input=- || true)"
-    [ "$(printf '%s' "$out" | mkt_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+    [ "$(printf '%s' "$out" | mkt_jget 'ok' 2>/dev/null || true)" = "True" ] || {
         printf '%s\n' "$out" >&2; return 1; }
 }
 
 for port in $A_PORT $A_RPC $A_FS $A_HTTPS $B_PORT $B_RPC $B_FS $B_HTTPS; do
     mkt_assert_port "$port"
 done
-[ -x "$NODE_BIN" ] && [ -x "$RPC_BIN" ] || mkt_die "build node and RPC binaries first"
+[ -x "$NODE_BIN" ] && [ -x "$RPC_BIN" ] && [ -x "$MKT_HELPER" ] ||
+    mkt_die "build node, RPC, and market acceptance helper binaries first"
 mkdir -p "$REPO_ROOT/test-tmp"
 MKT_WORK="$(mktemp -d "$REPO_ROOT/test-tmp/zcl23-mktacc-XXXXXX")"
 MKT_DD_A="$MKT_WORK/a"; MKT_DD_B="$MKT_WORK/b"
@@ -313,30 +304,9 @@ DESTINATION="$MKT_DOWNLOADS/bought-copy.bin"
 # Deterministic three-chunk fixture (2 x 50 MiB + tail), plus the exact
 # manifest root the offer must commit (sha3-256 over the concatenated
 # per-chunk sha3-256 digests) and the exact total price.
-read -r FIXTURE_SIZE EXPECT_ROOT EXPECT_TOTAL_ZAT <<<"$(python3 - "$FIXTURE" "$PRICE_PER_MB_ZAT" "$FIXTURE_TAIL_BYTES" <<'PY'
-import hashlib,sys
-path, price, tail = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-chunk = 50 * 1024 * 1024
-digests = []
-written = 0
-with open(path, "wb") as f:
-    for index in range(2):
-        block = bytes(((index * 131 + i * 7) & 0xFF) for i in range(65536))
-        h = hashlib.sha3_256()
-        for _ in range(chunk // len(block)):
-            f.write(block); h.update(block)
-        digests.append(h.digest()); written += chunk
-    tail_bytes = bytes(((5 + i * 11) & 0xFF) for i in range(tail))
-    f.write(tail_bytes); digests.append(hashlib.sha3_256(tail_bytes).digest())
-    written += tail
-root = hashlib.sha3_256(b"".join(digests)).hexdigest()
-mb = 1024 * 1024
-whole, rem = divmod(written, mb)
-pw, pr = divmod(price, mb)
-total = whole * price + rem * pw + (rem * pr + mb - 1) // mb
-print(written, root, total)
-PY
-)" || mkt_die "fixture build failed"
+read -r FIXTURE_SIZE EXPECT_ROOT EXPECT_TOTAL_ZAT \
+    <<<"$("$MKT_HELPER" fixture-create "$FIXTURE" "$PRICE_PER_MB_ZAT" \
+        "$FIXTURE_TAIL_BYTES")" || mkt_die "fixture build failed"
 EXPECTED_CHUNKS=3
 
 # Wallet custody: boot both nodes with a passphrase credential so key writes
@@ -406,49 +376,32 @@ mkt_wait_spendable "$MKT_DD_B" "$B_RPC" || mkt_die "B vault spendable never beca
 mkt_note "seller plans the offer (non-mutating preview)"
 OFFER_PLAN="$(printf '%s' "{\"filepath\":\"$FIXTURE\",\"price_per_mb_zat\":$PRICE_PER_MB_ZAT}" \
     | mkt_native "$MKT_DD_A" "$A_RPC" app market offer --input=- || true)"
-python3 - "$OFFER_PLAN" "$EXPECT_ROOT" "$FIXTURE_SIZE" "$EXPECTED_CHUNKS" "$EXPECT_TOTAL_ZAT" <<'PY' || mkt_die "offer plan preview mismatch: $OFFER_PLAN"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="plan" and data["committed"] is False and data["spends_funds"] is False,data
-assert data["root_hash"]==sys.argv[2],data
-assert data["size_bytes"]==int(sys.argv[3]) and data["num_chunks"]==int(sys.argv[4]),data
-assert data["total_zat"]==int(sys.argv[5]),data
-assert data["price_per_mb_zat"]>0 and "commit_input" in data,data
-assert "offer_id" not in data and "seller_pubkey" not in data,data
-PY
+printf '%s' "$OFFER_PLAN" | "$MKT_HELPER" offer-plan "$EXPECT_ROOT" \
+    "$FIXTURE_SIZE" "$EXPECTED_CHUNKS" "$EXPECT_TOTAL_ZAT" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
 OFFER_COUNT="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
     --input='{"sql":"SELECT COUNT(*) AS n FROM file_offers"}' || true)"
-[ "$(printf '%s' "$OFFER_COUNT" | mkt_jget 'd["data"]["rows"][0][0]' 2>/dev/null || true)" = "0" ] ||
+[ "$(printf '%s' "$OFFER_COUNT" | mkt_jget 'data.rows.0.0' 2>/dev/null || true)" = "0" ] ||
     mkt_die "offer plan mutated seller storage: $OFFER_COUNT"
-[ "$(a_rpc zmarket_list | mkt_result)" = "[]" ] ||
-    mkt_die "offer plan touched the seller gossip cache"
+SELLER_LIST_RAW="$(a_rpc zmarket_list 2>&1 || true)"
+SELLER_LIST="$(printf '%s' "$SELLER_LIST_RAW" | mkt_result 2>&1 || true)"
+printf '%s' "$SELLER_LIST" | "$MKT_HELPER" market-empty ||
+    mkt_die "offer plan changed or malformed the seller market view: raw=$SELLER_LIST_RAW projected=$SELLER_LIST"
 
 mkt_note "seller commits the offer (seal, persist, bind, flood)"
 OFFER_COMMIT="$(printf '%s' "{\"filepath\":\"$FIXTURE\",\"price_per_mb_zat\":$PRICE_PER_MB_ZAT,\"confirm\":true}" \
     | mkt_native "$MKT_DD_A" "$A_RPC" app market offer --input=- || true)"
-OFFER_ID="$(python3 - "$OFFER_COMMIT" "$EXPECT_ROOT" <<'PY' || mkt_die "offer commit refused: $OFFER_COMMIT"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="committed" and data["committed"] is True,data
-assert data["idempotent_replay"] is False and data["announced"] is True,data
-assert data["root_hash"]==sys.argv[2],data
-oid=data["offer_id"]
-assert len(oid)==64 and int(oid,16)>0,data
-assert len(data["seller_pubkey"])==64,data
-print(oid)
-PY
-)"
+OFFER_ID="$(printf '%s' "$OFFER_COMMIT" |
+    "$MKT_HELPER" offer-commit "$EXPECT_ROOT" ||
+    mkt_die "offer commit refused: $OFFER_COMMIT")"
 mkt_note "seller offer committed: offer_id=$OFFER_ID"
 
 # ── Phase 2: the offer gossips to the buyer ──────────────────────────
 mkt_note "waiting for the signed offer to gossip to the buyer"
 LIST_DEADLINE=$(( $(date +%s) + MKT_WAIT ))
 while :; do
-    BUYER_LIST="$(mkt_native "$MKT_DD_B" "$B_RPC" app market list 2>/dev/null || true)"
+    BUYER_LIST="$(printf '%s' '{"profile":"open"}' |
+        mkt_native "$MKT_DD_B" "$B_RPC" app market list --input=- 2>/dev/null || true)"
     case "$BUYER_LIST" in
         *"$OFFER_ID"*) break ;;
     esac
@@ -456,18 +409,13 @@ while :; do
         mkt_die "offer never gossiped to the buyer: $BUYER_LIST"
     sleep 1
 done
-BUYER_ENTRY="$(b_rpc zmarket_list | mkt_result)"
-python3 - "$BUYER_ENTRY" "$OFFER_ID" "$EXPECT_ROOT" "$PRICE_PER_MB_ZAT" "$EXPECTED_CHUNKS" "$EXPECT_TOTAL_ZAT" <<'PY' || mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
-import json,sys
-rows=json.loads(sys.argv[1])
-match=[r for r in rows if r.get("offer_id")==sys.argv[2]]
-assert len(match)==1,rows
-r=match[0]
-assert r["root_hash"]==sys.argv[3],r
-assert r["price_per_mb_zat"]==int(sys.argv[4]) and r["num_chunks"]==int(sys.argv[5]),r
-assert r["total_cost_zat"]==int(sys.argv[6]),r
-assert r["authenticated"] is True and r["peer_port"]>0,r
-PY
+DEFAULT_BUYER_LIST="$(mkt_native "$MKT_DD_B" "$B_RPC" app market list 2>/dev/null || true)"
+printf '%s' "$DEFAULT_BUYER_LIST" | "$MKT_HELPER" market-hidden "$OFFER_ID" ||
+    mkt_die "default moderation view did not honestly hide the unreviewed offer: $DEFAULT_BUYER_LIST"
+BUYER_ENTRY="$BUYER_LIST"
+printf '%s' "$BUYER_ENTRY" | "$MKT_HELPER" buyer-entry "$OFFER_ID" \
+    "$EXPECT_ROOT" "$PRICE_PER_MB_ZAT" "$EXPECTED_CHUNKS" \
+    "$EXPECT_TOTAL_ZAT" || mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
 
 # ── Phase 3: buyer purchase plan + commit (real Sapling payment) ─────
 mkt_note "buyer plans the full-file purchase"
@@ -480,58 +428,24 @@ for try in $(seq 1 20); do
         *) break ;;
     esac
 done
-PLAN_ID="$(python3 - "$PLAN" "$OFFER_ID" "$EXPECT_TOTAL_ZAT" <<'PY' || mkt_die "purchase plan refused: $PLAN"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="plan" and data["committed"] is False and data["spends_funds"] is False,data
-assert data["offer_id"]==sys.argv[2],data
-assert data["amount_zat"]==int(sys.argv[3]),data
-assert data["maximum_fee_zat"]>0 and data["reserved_zat"]==data["amount_zat"]+data["maximum_fee_zat"],data
-assert data["chunk_start"]==0 and data["chunks_paid"]>0 and data["state"]=="planned",data
-assert data["idempotent_replay"] is False,data
-pid=data["plan_id"]
-assert len(pid)==64 and int(pid,16)>0,data
-assert "commit_input" in data,data
-print(pid)
-PY
-)"
+PLAN_ID="$(printf '%s' "$PLAN" |
+    "$MKT_HELPER" purchase-plan "$OFFER_ID" "$EXPECT_TOTAL_ZAT" ||
+    mkt_die "purchase plan refused: $PLAN")"
 mkt_note "buyer purchase planned: plan_id=$PLAN_ID"
 
 mkt_note "buyer commits the purchase (broadcasts the Sapling payment)"
 COMMIT="$(printf '%s' "{\"wallet_scope\":\"dev\",\"plan_id\":\"$PLAN_ID\",\"confirm\":true}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase commit --input=- || true)"
-TXID="$(python3 - "$COMMIT" <<'PY' || mkt_die "purchase commit refused: $COMMIT"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="committed" and data["committed"] is True and data["spends_funds"] is True,data
-assert data["idempotent_replay"] is False,data
-assert data["payment_notification_queued"] is True,data
-assert data["state"]=="mempool_accepted",data
-txid=data["txid"]
-assert len(txid)==64 and int(txid,16)>0,data
-assert len(data["claim_id"])==64,data
-print(txid)
-PY
-)"
+TXID="$(printf '%s' "$COMMIT" | "$MKT_HELPER" purchase-commit ||
+    mkt_die "purchase commit refused: $COMMIT")"
 mkt_note "purchase payment broadcast: txid=$TXID"
 
 # ── Phase 4: authorize-before-read — delivery refused pre-confirmation ──
 mkt_note "buyer retrieves before confirmation: the seller must refuse"
 EARLY_RETRIEVE="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\",\"destination_path\":\"$DESTINATION\"}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase retrieve --input=- || true)"
-python3 - "$EARLY_RETRIEVE" <<'PY' || mkt_die "pre-confirmation retrieve was not refused: $EARLY_RETRIEVE"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is False,d
-err=d.get("error",{})
-assert err.get("code")=="DELIVERY_NOT_READY",d
-msg=err.get("message","")
-assert "PENDING" in msg or "UNKNOWN" in msg,d
-PY
+printf '%s' "$EARLY_RETRIEVE" | "$MKT_HELPER" early-refusal ||
+    mkt_die "pre-confirmation retrieve was not refused: $EARLY_RETRIEVE"
 [ ! -e "$DESTINATION" ] ||
     mkt_die "destination published before payment confirmation"
 
@@ -539,7 +453,7 @@ PY
 # has the payment produces a coinbase-only block and the purchase never
 # confirms. Wait until A's mempool names the exact txid (either hex order).
 mkt_note "waiting for the seller mempool to hold the payment"
-TXID_REV="$(python3 -c 'import sys; print(bytes.fromhex(sys.argv[1])[::-1].hex())' "$TXID")"
+TXID_REV="$("$MKT_HELPER" reverse-hex "$TXID")"
 MEMPOOL_DEADLINE=$(( $(date +%s) + MKT_WAIT ))
 while :; do
     MEMPOOL="$(a_rpc getrawmempool 2>/dev/null | mkt_result 2>/dev/null || true)"
@@ -568,20 +482,14 @@ while :; do
     VI_REFRESH="$(b_rpc vault_intent_status "{\"plan_id\":\"$PLAN_ID\"}" 2>&1 || true)"
     STATUS="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\"}" \
         | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase status --input=- || true)"
-    state="$(printf '%s' "$STATUS" | mkt_jget 'd["data"]["state"]' 2>/dev/null || true)"
+    state="$(printf '%s' "$STATUS" | mkt_jget 'data.state' 2>/dev/null || true)"
     [ "$state" = "confirmed" ] && break
     [ "$(date +%s)" -lt "$STATUS_DEADLINE" ] ||
         mkt_die "purchase never confirmed: $STATUS"
     sleep 1
 done
-python3 - "$STATUS" "$TXID" <<'PY' || mkt_die "confirmed purchase status mismatch: $STATUS"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["state"]=="confirmed" and data["txid"]==sys.argv[2],data
-assert len(data["claim_id"])==64,data
-PY
+printf '%s' "$STATUS" | "$MKT_HELPER" purchase-status "$TXID" ||
+    mkt_die "confirmed purchase status mismatch: $STATUS"
 
 # The seller claim row is a rebuildable projection: nothing reconciles it on
 # block arrival. The seller re-derives authority live inside
@@ -595,7 +503,7 @@ NOTE_DEADLINE=$(( $(date +%s) + MKT_WAIT ))
 while :; do
     NOTE="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
         --input="{\"sql\":\"SELECT COUNT(*) FROM wallet_sapling_notes WHERE value=$EXPECT_TOTAL_ZAT AND block_height=102\"}" || true)"
-    ncount="$(printf '%s' "$NOTE" | mkt_jget 'd["data"]["rows"][0][0]' 2>/dev/null || true)"
+    ncount="$(printf '%s' "$NOTE" | mkt_jget 'data.rows.0.0' 2>/dev/null || true)"
     [ "$ncount" = "1" ] && break
     [ "$(date +%s)" -lt "$NOTE_DEADLINE" ] ||
         mkt_die "seller never decrypted its payment note: $NOTE"
@@ -611,7 +519,7 @@ RETRIEVE_DEADLINE=$(( $(date +%s) + MKT_WAIT ))
 while :; do
     RETRIEVE="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\",\"destination_path\":\"$DESTINATION\"}" \
         | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase retrieve --input=- || true)"
-    rok="$(printf '%s' "$RETRIEVE" | mkt_jget 'd["ok"]' 2>/dev/null || true)"
+    rok="$(printf '%s' "$RETRIEVE" | mkt_jget 'ok' 2>/dev/null || true)"
     [ "$rok" = "True" ] && break
     case "$RETRIEVE" in
         *DELIVERY_NOT_READY*) ;;
@@ -621,30 +529,11 @@ while :; do
         mkt_die "retrieve never authorized: $RETRIEVE"
     sleep 2
 done
-python3 - "$RETRIEVE" "$FIXTURE_SIZE" "$EXPECTED_CHUNKS" <<'PY' || mkt_die "retrieve failed: $RETRIEVE"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="retrieved",data
-assert data["download_state"]=="complete" and data["destination_published"] is True,data
-assert data["chunks_received"]==int(sys.argv[3]) and data["num_chunks"]==int(sys.argv[3]),data
-assert data["bytes_received"]==int(sys.argv[2]) and data["size_bytes"]==int(sys.argv[2]),data
-PY
+printf '%s' "$RETRIEVE" | "$MKT_HELPER" retrieve "$FIXTURE_SIZE" \
+    "$EXPECTED_CHUNKS" || mkt_die "retrieve failed: $RETRIEVE"
 cmp -s "$FIXTURE" "$DESTINATION" ||
     mkt_die "delivered bytes differ from the seller fixture"
-DELIVERED_ROOT="$(python3 - "$DESTINATION" <<'PY'
-import hashlib,sys
-chunk = 50 * 1024 * 1024
-digests = []
-with open(sys.argv[1], "rb") as f:
-    while True:
-        b = f.read(chunk)
-        if not b: break
-        digests.append(hashlib.sha3_256(b).digest())
-print(hashlib.sha3_256(b"".join(digests)).hexdigest())
-PY
-)"
+DELIVERED_ROOT="$("$MKT_HELPER" file-root "$DESTINATION")"
 [ "$DELIVERED_ROOT" = "$EXPECT_ROOT" ] ||
     mkt_die "delivered bytes re-derive a different content root"
 
@@ -653,52 +542,28 @@ PY
 mkt_note "verifying the seller-side payment claim is confirmed"
 CLAIM="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
     --input='{"sql":"SELECT status, status_reason, confirmations, block_height FROM market_payment_claims"}' || true)"
-python3 - "$CLAIM" <<'PY' || mkt_die "seller claim row mismatch: $CLAIM"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-cols=data["columns"]; rows=data["rows"]
-assert len(rows)==1,rows
-r=dict(zip(cols,rows[0]))
-assert r["status"]=="CONFIRMED" and r["confirmations"]>=1 and r["block_height"]==102,r
-PY
+printf '%s' "$CLAIM" | "$MKT_HELPER" claim ||
+    mkt_die "seller claim row mismatch: $CLAIM"
 FINAL_STATUS="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\"}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase status --input=- || true)"
-[ "$(printf '%s' "$FINAL_STATUS" | mkt_jget 'd["data"]["destination_published"]' 2>/dev/null || true)" = "True" ] ||
+[ "$(printf '%s' "$FINAL_STATUS" | mkt_jget 'data.destination_published' 2>/dev/null || true)" = "True" ] ||
     mkt_die "purchase status does not show the completed download: $FINAL_STATUS"
 
 # ── Phase 7: idempotent replays ──────────────────────────────────────
 mkt_note "re-committing the same purchase plan (idempotent replay, no double-spend)"
 RECOMMIT="$(printf '%s' "{\"wallet_scope\":\"dev\",\"plan_id\":\"$PLAN_ID\",\"confirm\":true}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase commit --input=- || true)"
-python3 - "$RECOMMIT" "$TXID" <<'PY' || mkt_die "purchase re-commit was not an exact replay: $RECOMMIT"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["idempotent_replay"] is True and data["txid"]==sys.argv[2],data
-PY
+printf '%s' "$RECOMMIT" | "$MKT_HELPER" recommit "$TXID" ||
+    mkt_die "purchase re-commit was not an exact replay: $RECOMMIT"
 REPLAN="$(printf '%s' "{\"wallet_scope\":\"dev\",\"offer_id\":\"$OFFER_ID\",\"source_address\":\"$BUYER_ADDR\",\"chunk_start\":0,\"chunks_paid\":$EXPECTED_CHUNKS,\"idempotency_key\":\"$IDEMPOTENCY_KEY\"}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase plan --input=- || true)"
-python3 - "$REPLAN" "$PLAN_ID" <<'PY' || mkt_die "purchase re-plan was not an exact replay: $REPLAN"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["idempotent_replay"] is True and data["plan_id"]==sys.argv[2],data
-PY
+printf '%s' "$REPLAN" | "$MKT_HELPER" replan "$PLAN_ID" ||
+    mkt_die "purchase re-plan was not an exact replay: $REPLAN"
 
 mkt_note "seller re-commits the same offer (content-addressed idempotent)"
 REOFFER="$(printf '%s' "{\"filepath\":\"$FIXTURE\",\"price_per_mb_zat\":$PRICE_PER_MB_ZAT,\"confirm\":true}" \
     | mkt_native "$MKT_DD_A" "$A_RPC" app market offer --input=- || true)"
-python3 - "$REOFFER" "$OFFER_ID" <<'PY' || mkt_die "offer re-commit was not an exact replay: $REOFFER"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="committed" and data["idempotent_replay"] is True,data
-assert data["offer_id"]==sys.argv[2],data
-PY
+printf '%s' "$REOFFER" | "$MKT_HELPER" reoffer "$OFFER_ID" ||
+    mkt_die "offer re-commit was not an exact replay: $REOFFER"
 
 mkt_note "PASS: two-daemon market trade — signed offer gossip, Sapling payment, authorize-before-read refusal, confirmed delivery byte-identical to the offer root, idempotent replays"

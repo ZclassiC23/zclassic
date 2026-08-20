@@ -3711,6 +3711,27 @@ $(BIN_DIR)/zclassic23-zcode-app-server-benchmark: $(BUILD_IDENTITY_STAMP) \
 	mv -f -- "$$tmp" "$@"; \
 	trap - EXIT HUP INT TERM
 
+# C23-only parser and deterministic content oracle for the isolated two-node
+# market acceptance.  The shell harness retains process-group orchestration;
+# all JSON interpretation and content hashing stays in this bounded binary.
+MARKET_ACCEPTANCE_HELPER_SRCS = tools/market_acceptance_helper.c \
+	lib/json/src/json.c lib/base/src/safe_alloc.c lib/sha3/src/sha3.c
+.PHONY: market-acceptance-helper test-market-acceptance-helper
+market-acceptance-helper: $(BIN_DIR)/zclassic23-market-acceptance-helper
+$(BIN_DIR)/zclassic23-market-acceptance-helper: \
+		$(MARKET_ACCEPTANCE_HELPER_SRCS)
+	@mkdir -p $(dir $@)
+	@set -eu; \
+	tmp="$$(mktemp "$@.link.XXXXXX")"; \
+	trap 'rm -f "$$tmp"' EXIT HUP INT TERM; \
+	$(CC) $(DEV_RESTART_CFLAGS) $(DEV_RESTART_LDFLAGS) -o "$$tmp" \
+		$(MARKET_ACCEPTANCE_HELPER_SRCS); \
+	mv -f -- "$$tmp" "$@"; \
+	trap - EXIT HUP INT TERM
+
+test-market-acceptance-helper: market-acceptance-helper
+	@$(BIN_DIR)/zclassic23-market-acceptance-helper --selftest
+
 .PHONY: sim dump check-wallet
 sim: wallet_sim
 	$(BIN_DIR)/wallet_sim
@@ -4867,7 +4888,7 @@ sovereign-source-network-acceptance: zclassic23 zcl-rpc zclassic23-package-sign
 # Closes with idempotent offer/plan/commit replays and the seller-side
 # CONFIRMED payment-claim row. DELIBERATELY opt-in (NOT in `make ci`) —
 # it spawns two real nodes and needs ~/.zcash-params for the prover.
-test-market-acceptance: zclassic23 zcl-rpc
+test-market-acceptance: zclassic23 zcl-rpc market-acceptance-helper
 	@bash tools/dev/market_acceptance.sh
 
 # B5 onion-delivery acceptance: two isolated regtest daemons (396xx quads +
