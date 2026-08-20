@@ -809,17 +809,28 @@ void zcl_native_bridge_run(const struct zcl_command_request *request,
     if (!result) {
         char msgbuf[224];
         const char *msg;
+        enum zcl_command_status failure_status = ZCL_COMMAND_STATUS_FAILED;
+        enum zcl_command_exit failure_exit = ZCL_COMMAND_EXIT_FAILED;
+        bool retryable = false;
         if (body) {
             msg = body_err.message[0] ? body_err.message
                                       : "command handler reported an error";
+            if (body_err.status == ZCL_NATIVE_BODY_UNAVAILABLE) {
+                failure_status = ZCL_COMMAND_STATUS_BLOCKED;
+                failure_exit = ZCL_COMMAND_EXIT_TRANSIENT;
+                retryable = true;
+            } else if (body_err.status == ZCL_NATIVE_BODY_INVALID) {
+                failure_exit = ZCL_COMMAND_EXIT_INVALID;
+            } else if (body_err.status == ZCL_NATIVE_BODY_INTERNAL) {
+                failure_exit = ZCL_COMMAND_EXIT_INTERNAL;
+            }
         } else {
             (void)snprintf(msgbuf, sizeof(msgbuf), "RPC %s returned null",
                            rpc_method);
             msg = msgbuf;
         }
-        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                               ZCL_COMMAND_EXIT_FAILED, "TOOL_ERROR",
-                               "execute", false, false, msg,
+        zcl_command_reply_fail(reply, failure_status, failure_exit,
+                               "TOOL_ERROR", "execute", retryable, false, msg,
                                request->spec->path);
         nc_add_describe_next(reply, request->spec->path,
                              "inspect this command before retrying");

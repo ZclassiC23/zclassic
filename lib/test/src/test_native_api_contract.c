@@ -726,7 +726,7 @@ static int test_status_brief_body_schema_skew_tolerance(void)
         err = (struct zcl_native_body_err){0};
         body = zcl_native_status_brief_body(NULL, &err);
         ASSERT(body == NULL);
-        ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_UNAVAILABLE);
+        ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_INTERNAL);
         ASSERT(strstr(err.message, "predates the CLI contract") != NULL);
 
         /* (c) A MATCHING v2 schema with a genuinely malformed field must
@@ -740,7 +740,7 @@ static int test_status_brief_body_schema_skew_tolerance(void)
         err = (struct zcl_native_body_err){0};
         body = zcl_native_status_brief_body(NULL, &err);
         ASSERT(body == NULL);
-        ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_UNAVAILABLE);
+        ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_INTERNAL);
         ASSERT(strstr(err.message, "invalid zcl.public_status.v2") != NULL);
         ASSERT(strstr(err.message, "predates the CLI contract") == NULL);
 

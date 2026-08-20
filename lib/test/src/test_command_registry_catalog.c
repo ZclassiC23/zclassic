@@ -1286,21 +1286,30 @@ static int test_status_brief_composite_fails_closed(void)
          * a schema error. The version named is the one the DOCUMENT declared
          * when this build strictly reads it (case 3 is a v2 document, so the
          * error says v2); an out-of-family schema has no version to name, so
-         * case 2 names the contract this build targets. All four still fail
-         * closed. */
+         * case 2 names the contract this build targets. Transport absence is
+         * retryable; a malformed producer contract is not. */
         static const char *const expect_msg[] = {
             "node status unavailable: Method not found",
             "node status unavailable: cannot connect to node",
             "invalid zcl.public_status.v3",
             "invalid zcl.public_status.v2",
         };
+        static const enum zcl_command_exit expect_exit[] = {
+            ZCL_COMMAND_EXIT_TRANSIENT,
+            ZCL_COMMAND_EXIT_TRANSIENT,
+            ZCL_COMMAND_EXIT_INTERNAL,
+            ZCL_COMMAND_EXIT_INTERNAL,
+        };
         for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
             g_status_brief_agent_fixture = cases[i];
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
             ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
-            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT_EQ(code, expect_exit[i]);
             ASSERT(strstr(out, "\"ok\":false") != NULL);
-            ASSERT(strstr(out, "\"status\":\"failed\"") != NULL);
+            ASSERT(strstr(out, i < 2 ? "\"status\":\"blocked\""
+                                    : "\"status\":\"failed\"") != NULL);
+            ASSERT(strstr(out, i < 2 ? "\"retryable\":true"
+                                    : "\"retryable\":false") != NULL);
             ASSERT(strstr(out, "\"code\":\"TOOL_ERROR\"") != NULL);
             ASSERT(strstr(out, expect_msg[i]) != NULL);
         }
@@ -1393,7 +1402,7 @@ static int test_status_brief_schema_skew_degrades_gracefully(void)
         g_status_brief_agent_fixture = no_schema;
         code = ZCL_COMMAND_EXIT_INTERNAL;
         ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
-        ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_INTERNAL);
         ASSERT(strstr(out, "predates the CLI contract") != NULL);
         ASSERT(strstr(out, "field schema") != NULL);
 
@@ -1608,7 +1617,7 @@ static int test_status_brief_rejects_contract_contradictions(void)
             g_status_brief_agent_fixture = fixture;
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
             ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
-            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_INTERNAL);
             ASSERT(strstr(out, "\"ok\":false") != NULL);
             ASSERT(strstr(out, "\"code\":\"TOOL_ERROR\"") != NULL);
         }
@@ -1702,7 +1711,7 @@ static int test_status_brief_names_first_failing_field(void)
             g_status_brief_agent_fixture = removed;
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
             ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
-            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_INTERNAL);
             ASSERT(strstr(out, "chain_evidence_consistent") != NULL);
             ASSERT(strstr(out, "predates the CLI contract") != NULL);
         }
@@ -1735,7 +1744,7 @@ static int test_status_brief_names_first_failing_field(void)
             g_status_brief_agent_fixture = removed;
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
             ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
-            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_INTERNAL);
             ASSERT(strstr(out, "security_posture") != NULL);
             ASSERT(strstr(out, "predates the CLI contract") != NULL);
         }
@@ -1773,7 +1782,7 @@ static int test_status_brief_names_first_failing_field(void)
             g_status_brief_agent_fixture = malformed;
             enum zcl_command_exit code = ZCL_COMMAND_EXIT_INTERNAL;
             ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
-            ASSERT_EQ(code, ZCL_COMMAND_EXIT_FAILED);
+            ASSERT_EQ(code, ZCL_COMMAND_EXIT_INTERNAL);
             ASSERT(strstr(out, "\"healthy\"") != NULL ||
                    strstr(out, "field healthy") != NULL);
             ASSERT(strstr(out, "predates the CLI contract") == NULL);

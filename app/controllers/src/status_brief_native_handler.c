@@ -686,7 +686,12 @@ char *zcl_native_status_brief_body(const struct json_value *args,
     }
 
     if (!valid) {
-        err->status = ZCL_NATIVE_BODY_UNAVAILABLE;
+        /* Transport absence is transient; a parsed document that violates
+         * this build's strict contract is an internal producer/consumer
+         * mismatch and must not invite a blind retry. The native bridge maps
+         * these two statuses into retryable:true vs false. */
+        err->status = parsed ? ZCL_NATIVE_BODY_INTERNAL
+                             : ZCL_NATIVE_BODY_UNAVAILABLE;
         if (!parsed) {
             /* `parsed` is false for two very different situations that must
              * not both read as a schema fault: an unparsable byte stream, or
