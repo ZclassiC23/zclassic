@@ -39,8 +39,8 @@ publication authority of its own.
 **The subsystem as a whole is socket-wired and has been since slice 12**
 (commit 833d7f398). `lib/vcs/src/package_swarm_node.c` is the swarm engine —
 the manifest-first, rarest-first, multi-peer scheduler plus serving and
-accounting decisions — and `config/src/boot_zcode_swarm.c` puts its frames on
-the real P2P wire under the `zpkgswm` message tag via
+accounting decisions — and `config/src/boot_zcode_swarm_membership.c` puts
+its frames on the real P2P wire under the `zpkgswm` message tag via
 `p2p_node_begin_message()`. Hosting is **off by default** and enabled with
 `-packagehost=1`; the boot glue returns early otherwise, so a default node
 neither serves nor pulls package bytes.
@@ -56,7 +56,7 @@ The same `zpkgswm` command also carries dual-signed verified-byte receipts.
 ANNOUNCE/WANT/DATA/CANCEL values stay malformed. Both endpoints independently
 draft the same body from verified served/fetched bytes, sign their role, and
 accept only a matching transfer. Receipts are advisory reputation.
-<!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm.c # the swarm IS socket-wired -->
+<!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm_membership.c # the swarm IS socket-wired -->
 <!-- claim: file-present lib/vcs/src/package_swarm_node.c # the transport half exists -->
 <!-- claim: symbol-absent socket lib/vcs/src/package_swarm.c # the codec half stays pure -->
 <!-- claim: symbol-present packagehost config/src/boot_zcode_swarm.c # hosting stays flag-gated, default off -->
@@ -271,15 +271,22 @@ every WANT - proving it means reconstructing the tree.
 
 ## Swarm flow
 
+The serving set is a real C23 library shelf, not only the Arena demo. In-tree
+`packages/` holds dozens of independent titles; an opted-in host announces
+every complete public-serveable root it actually holds, up to the local
+announce bound (`VCS_SWARM_MAX_LOCAL_ANNOUNCES`). There is no central tracker
+and no Python path.
+
 1. A peer gossips a bounded announcement containing the package root and
    internally feasible manifest/count/size hints. Hints remain untrusted: they
    never reserve storage, earn ratio credit, or establish package identity.
-   Keep-alive of a root the peer already heard is inventory, not flood.
-   Re-announce of a root this node already holds is how redundancy works:
-   a replica that imported and pinned a carrier may advertise the same root
-   after the original publisher disappears. There is no central tracker. The
-   remaining bound is unique *new* roots per hour from a NEW_USER, capped at
-   the serving-set size (`VCS_SWARM_MAX_LOCAL_ANNOUNCES`, 64).
+   Unique *new* roots consume the NEW_USER hourly quota; keep-alive of a root
+   the peer already heard is inventory, not flood, and does not consume that
+   quota. Re-announce of a root this node already holds is how redundancy
+   works: a replica that imported and pinned a carrier may advertise the same
+   root after the original publisher disappears. The remaining bound is unique
+   *new* roots per hour from a NEW_USER, capped at the serving-set size
+   (`VCS_SWARM_MAX_LOCAL_ANNOUNCES`).
 2. The downloader requests the manifest, parses it, and recomputes the root.
 3. A scheduler assigns missing chunks across several peers, with one request id
    per in-flight object, bounded retries, timeouts, per-peer windows, and
@@ -387,8 +394,11 @@ review and tests.
   restart-mid-download resume, disconnect requeue, and the A→B→C hop:
   A publishes the C23 Arena library shelf (`zprng`, `zdogfight`, `zdogace`,
   `zdogview`), B mirrors and pins, A disappears, C fetches the exact carriers
-  from B. Still uncovered: reorg.
+  from B. The in-process engine gate (`lib/test/src/test_zcode_swarm.c`) seeds
+  an ordinary independent C23 shelf from `packages/` and proves keep-alive of
+  those roots is inventory, not unique-root flood. Still uncovered: reorg.
 <!-- claim: file-present lib/test/src/test_zcode_swarm_net.c # the real-wire swarm harness exists -->
+<!-- claim: file-present lib/test/src/test_zcode_swarm.c # the in-process engine gate seeds an ordinary C23 shelf -->
 
 The foundations this section once gated on — signed release envelope, staging
 CAS, runtime gossip, and explicit build/test/install — have shipped. The
