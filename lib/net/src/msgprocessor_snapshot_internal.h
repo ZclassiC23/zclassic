@@ -2,9 +2,8 @@
  * Distributed under the MIT software license, see the accompanying
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
-/* Internal header shared between msgprocessor_snapshot.c and
- * msgprocessor_snapshot_serve.c. NOT part of the public API — only
- * included by those two files. Mirrors the connman.c/connman_dialer.c
+/* Internal header shared by the msgprocessor_snapshot*.c translation units.
+ * NOT part of the public API. Mirrors the connman.c/connman_dialer.c
  * split shape (see connman_internal.h): a small header for the pieces
  * one file needs to call into the other, promoted from `static` only
  * as needed.
@@ -32,6 +31,8 @@
  *                                   mp_serve_chunk_req, mp_serve_block_req)
  *                                   plus the PEER_SNAPSHOT_SERVING chunk
  *                                   send loop (mp_snapshot_send_tick_serve).
+ *   msgprocessor_block_swarm_abandon.c — the shared fail-closed transition
+ *                                   from block swarm to legacy body fetch.
  *
  * Everything declared here used to be `static` in msgprocessor_snapshot.c;
  * it is promoted to external linkage (single definition, still in
@@ -45,10 +46,33 @@
 #include "net/msg_internal.h"
 #include "core/serialize.h"
 #include <stdbool.h>
+#include <stdatomic.h>
 
 struct msg_processor;
 struct p2p_node;
 struct byte_stream;
+struct block_swarm;
+
+struct block_swarm_abandonment {
+    uint32_t complete;
+    uint32_t total;
+    uint32_t failed;
+    int64_t last_complete_unix;
+};
+
+/* Shared fail-closed transition for integrity and silent-stall abandonment.
+ * Caller owns the block-swarm mutex; finish/report run after it is released
+ * so peer pipeline locks never nest inside the swarm lock. */
+bool mp_block_swarm_abandon_locked(
+    struct block_swarm *swarm, _Atomic bool *active,
+    _Atomic int64_t *reaped_unix, int64_t now,
+    struct block_swarm_abandonment *out);
+void mp_block_swarm_finish_abandon(struct msg_processor *mp);
+void mp_block_swarm_report_integrity_abandon(
+    struct msg_processor *mp, const struct p2p_node *node,
+    uint32_t piece_index, const struct block_swarm_abandonment *abandoned);
+void mp_block_swarm_mark_complete_through_height(
+    struct block_swarm *swarm, int32_t have_height);
 
 /* Max on-wire bytes for one serialized block inside a zblkdata response —
  * shared because both the server (build_block_piece_payloads, this file's

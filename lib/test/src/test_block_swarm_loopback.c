@@ -721,6 +721,8 @@ bool mp_block_swarm_reap_if_stalled(struct msg_processor *mp);
 void mp_block_swarm_test_seed_stall(uint32_t complete, uint32_t total,
                                     int64_t last_complete_unix);
 int64_t mp_block_swarm_test_reaped_unix(void);
+bool mp_block_swarm_test_fail_integrity(struct msg_processor *mp,
+                                        uint32_t piece_index);
 
 static int test_block_swarm_stall_reap(void)
 {
@@ -756,6 +758,45 @@ static int test_block_swarm_stall_reap(void)
         mp_block_swarm_test_seed_stall(0, 0, 0);         /* teardown */
         ASSERT(!mp_block_swarm_is_active());
         ASSERT(mp_block_swarm_test_reaped_unix() == 0);
+        PASS();
+    } _test_next:;
+
+    return failures;
+}
+
+static int test_block_swarm_integrity_abandon(void)
+{
+    int failures = 0;
+
+    TEST("block swarm integrity mismatch abandons immediately, clears peer "
+         "pipelines, and preserves the silent-stall watchdog separately") {
+        int64_t now = (int64_t)platform_time_wall_time_t();
+        struct net_manager nm;
+        struct msg_processor mp;
+        struct p2p_node peer;
+        struct p2p_node *nodes[1] = { &peer };
+        memset(&nm, 0, sizeof(nm));
+        memset(&mp, 0, sizeof(mp));
+        memset(&peer, 0, sizeof(peer));
+        zcl_mutex_init(&nm.cs_nodes);
+        nm.nodes = nodes;
+        nm.num_nodes = 1;
+        mp.net_mgr = &nm;
+        for (int i = 0; i < PIECE_PIPELINE_DEPTH; i++)
+            peer.blk_pipeline[i].piece_index = i + 1;
+
+        mp_block_swarm_test_seed_stall(5, 10, now);
+        ASSERT(mp_block_swarm_is_active());
+        ASSERT(mp_block_swarm_test_fail_integrity(&mp, 6));
+        ASSERT(!mp_block_swarm_is_active());
+        ASSERT(mp_block_swarm_test_reaped_unix() > 0);
+        for (int i = 0; i < PIECE_PIPELINE_DEPTH; i++)
+            ASSERT(peer.blk_pipeline[i].piece_index == -1);
+        ASSERT(!mp_block_swarm_test_fail_integrity(&mp, 6));
+        ASSERT(!mp_block_swarm_reap_if_stalled(&mp));
+
+        mp_block_swarm_test_seed_stall(0, 0, 0);
+        zcl_mutex_destroy(&nm.cs_nodes);
         PASS();
     } _test_next:;
 
@@ -916,6 +957,7 @@ int test_block_swarm_loopback(void)
     failures += test_block_swarm_throughput();
     failures += test_block_swarm_disconnect_requeue();
     failures += test_block_swarm_stall_reap();
+    failures += test_block_swarm_integrity_abandon();
     failures += test_block_swarm_duplicate_delivery();
     return failures;
 }

@@ -606,34 +606,6 @@ static bool parse_block_piece_payload_refs(
     return true;
 }
 
-static void block_swarm_mark_complete_through_height(struct block_swarm *bs,
-                                                     int32_t have_height)
-{
-    if (!bs || !bs->piece_states || have_height < bs->manifest.start_height)
-        return;
-
-    int64_t complete_blocks =
-        (int64_t)have_height - (int64_t)bs->manifest.start_height + 1;
-    if (complete_blocks <= 0)
-        return;
-
-    uint32_t full_pieces =
-        (uint32_t)(complete_blocks / BLOCKS_PER_PIECE);
-    if (full_pieces > bs->manifest.num_pieces)
-        full_pieces = bs->manifest.num_pieces;
-
-    for (uint32_t i = 0; i < full_pieces; i++) {
-        if (bs->piece_states[i] == CHUNK_COMPLETE)
-            continue;
-        bs->piece_states[i] = CHUNK_COMPLETE;
-        bs->piece_peer[i] = -1;
-        bs->piece_request_time[i] = 0;
-        bs->pieces_complete++;
-    }
-    if (full_pieces > 0)
-        bs->last_complete_unix = (int64_t)platform_time_wall_time_t();
-}
-
 bool mp_snapshot_is_active(void)
 {
     return snapsync_is_active();
@@ -648,7 +620,6 @@ bool mp_block_swarm_is_active(void)
 {
     return atomic_load(&g_block_swarm_active);
 }
-
 /* Stall watchdog. The legacy getdata assignment in msg_send_messages is
  * paused for as long as a block swarm is active (zblkreq/zblkdata owns body
  * transfer), but the swarm's only exit was full completion: a peer that
@@ -666,8 +637,7 @@ bool mp_block_swarm_reap_if_stalled(struct msg_processor *mp)
         return false;
 
     int64_t now = (int64_t)platform_time_wall_time_t();
-    uint32_t complete = 0, total = 0;
-    int64_t last_complete = 0;
+    struct block_swarm_abandonment abandoned = {0};
     pthread_mutex_lock(&g_block_swarm_mutex);
     struct block_swarm *bs = &g_block_swarm;
     bool stalled = bs->piece_states &&
@@ -676,36 +646,25 @@ bool mp_block_swarm_reap_if_stalled(struct msg_processor *mp)
                    bs->last_complete_unix > 0 &&
                    now - bs->last_complete_unix >= BLOCK_SWARM_STALL_SECS;
     if (stalled) {
-        complete = bs->pieces_complete;
-        total = bs->manifest.num_pieces;
-        last_complete = bs->last_complete_unix;
-        block_swarm_free(bs);
-        atomic_store(&g_block_swarm_active, false);
-        atomic_store(&g_block_swarm_reaped_unix, now);
+        stalled = mp_block_swarm_abandon_locked(
+            &g_block_swarm, &g_block_swarm_active,
+            &g_block_swarm_reaped_unix, now, &abandoned);
     }
     pthread_mutex_unlock(&g_block_swarm_mutex);
     if (!stalled)
         return false;
 
-    if (mp && mp->net_mgr) {
-        zcl_mutex_lock(&mp->net_mgr->cs_nodes);
-        for (size_t i = 0; i < mp->net_mgr->num_nodes; i++) {
-            struct p2p_node *n = mp->net_mgr->nodes[i];
-            if (!n)
-                continue;
-            for (int pi = 0; pi < PIECE_PIPELINE_DEPTH; pi++)
-                n->blk_pipeline[pi].piece_index = -1;
-        }
-        zcl_mutex_unlock(&mp->net_mgr->cs_nodes);
-    }
+    mp_block_swarm_finish_abandon(mp);
 
     LOG_WARN("net",
              "block swarm stalled at %u/%u pieces (no completion for %llds) "
              "— abandoning swarm; legacy getdata resumes body fetch",
-             complete, total, (long long)(now - last_complete));
+             abandoned.complete, abandoned.total,
+             (long long)(now - abandoned.last_complete_unix));
     event_emitf(EV_BLOCK_REQUESTED, 0,
                 "block_swarm_stall_abandon complete=%u total=%u stall_s=%lld",
-                complete, total, (long long)(now - last_complete));
+                abandoned.complete, abandoned.total,
+                (long long)(now - abandoned.last_complete_unix));
     return true;
 }
 
@@ -737,6 +696,28 @@ void mp_block_swarm_test_seed_stall(uint32_t complete, uint32_t total,
 int64_t mp_block_swarm_test_reaped_unix(void)
 {
     return atomic_load(&g_block_swarm_reaped_unix);
+}
+
+bool mp_block_swarm_test_fail_integrity(struct msg_processor *mp,
+                                        uint32_t piece_index)
+{
+    struct block_swarm_abandonment abandoned = {0};
+    bool did_abandon = false;
+    int64_t now = (int64_t)platform_time_wall_time_t();
+
+    pthread_mutex_lock(&g_block_swarm_mutex);
+    if (atomic_load(&g_block_swarm_active) &&
+        g_block_swarm.piece_states &&
+        piece_index < g_block_swarm.manifest.num_pieces) {
+        block_swarm_fail_piece(&g_block_swarm, piece_index);
+        did_abandon = mp_block_swarm_abandon_locked(
+            &g_block_swarm, &g_block_swarm_active,
+            &g_block_swarm_reaped_unix, now, &abandoned);
+    }
+    pthread_mutex_unlock(&g_block_swarm_mutex);
+    if (did_abandon)
+        mp_block_swarm_finish_abandon(mp);
+    return did_abandon;
 }
 #endif
 
@@ -1632,7 +1613,7 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                     if (block_swarm_init(&g_block_swarm, &pm, mp->datadir)) {
                         g_block_swarm.last_complete_unix =
                             (int64_t)platform_time_wall_time_t();
-                        block_swarm_mark_complete_through_height(
+                        mp_block_swarm_mark_complete_through_height(
                             &g_block_swarm, our_h);
                         g_block_swarm_active = true;
                         g_block_swarm_last_progress = (int64_t)platform_time_wall_time_t();
@@ -1675,6 +1656,8 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
 
                 if (parse_ok && blk_hashes) {
                     struct block_piece_payload_ref *block_refs = NULL;
+                    struct block_swarm_abandonment integrity_abandoned = {0};
+                    bool did_abandon_integrity = false;
                     if (!parse_block_piece_payload_refs(
                             s, (const uint8_t (*)[32])blk_hashes,
                             block_count, &block_refs)) {
@@ -1783,8 +1766,25 @@ bool mp_handle_zcl23_sync(struct msg_processor *mp,
                                node->addr_name, piece_index);
                         peer_scoring_record(mp->net_mgr, node, PEER_OFFENCE_INVALID_CHUNK,
                                             "bad block piece hash");
+                        /* The manifest-bound piece hash is a cryptographic
+                         * identity check: this response is disproven, though a
+                         * different peer could still serve a valid response.
+                         * C3 measured 3,114 retries across 62 pieces followed
+                         * by the full 90 s silent-stall wait. Fail closed on
+                         * this swarm session and arm its anti-flap cooldown;
+                         * safe legacy getdata resumes and every block still
+                         * traverses the canonical reducer. */
+                        did_abandon_integrity = mp_block_swarm_abandon_locked(
+                            &g_block_swarm, &g_block_swarm_active,
+                            &g_block_swarm_reaped_unix,
+                            (int64_t)platform_time_wall_time_t(),
+                            &integrity_abandoned);
                     }
                     pthread_mutex_unlock(&g_block_swarm_mutex);
+                    if (did_abandon_integrity) {
+                        mp_block_swarm_report_integrity_abandon(
+                            mp, node, piece_index, &integrity_abandoned);
+                    }
                     free(block_refs);
                 } else {
                     printf("Peer %s: truncated zblkdata\n", node->addr_name);
