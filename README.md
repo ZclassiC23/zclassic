@@ -43,9 +43,9 @@ make -j"$(nproc)"
 make commons-demo
 ```
 
-Two fresh nodes start on your machine with empty datadirs. Nothing outside your
-machine is contacted, and exit 0 means every step below held — each one asserts
-its own promise and stops at the first that does not.
+Three fresh nodes start on your machine with empty datadirs. Nothing outside
+your machine is contacted, and exit 0 means every step below held — each one
+asserts its own promise and stops at the first that does not.
 
 - Ask for software behavior.
 - Reuse C23 from another node.
@@ -54,6 +54,8 @@ its own promise and stops at the first that does not.
 - Then do all of that again to software that already existed, written by
   somebody else — and measure the behavior you asked to change: before on the
   node that published it, after on the node that fetched and rebuilt it.
+- Kill the original publisher. A third node still fetches, reproduces, and
+  runs those exact bytes from whoever still holds them.
 
 Reproduce means what it sounds like: the second node re-derives the identical
 source from content addresses it verified itself, then builds a byte-identical
@@ -63,8 +65,8 @@ over a failure.
 
 ![make commons-demo — the whole loop, end to end](docs/assets/z23-term-commons-demo.svg)
 
-The same journey across two separate machines, with the publisher then taken
-offline, is `make commons-multihost-acceptance`.
+The same journey with B and C on separate physical hosts — the publisher's
+machine itself gone — is `make commons-multihost-acceptance`.
 
 ---
 

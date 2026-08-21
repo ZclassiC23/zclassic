@@ -2364,10 +2364,12 @@ secure-release-regressions-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-ve
 # person asks for behavior, their node reuses C23 from a peer, creates only
 # what is missing, shows the result, a second node reproduces the exact
 # bytes, tampering is refused by name, the person accepts, and the accepted
-# application runs. Two fresh isolated datadirs; nothing outside this machine
-# is contacted after the build. Exit 0 means every one of those held.
+# application runs. Then the publisher process is killed and a third node
+# still discovers, fetches, reproduces and runs those exact bytes from the
+# remaining seeder. Three fresh isolated datadirs; nothing outside this
+# machine is contacted after the build. Exit 0 means every one of those held.
 #
-# It is deliberately not part of `make ci`: it spawns two real regtest
+# It is deliberately not part of `make ci`: it spawns three real regtest
 # daemons, mines a regtest chain and runs confined package builds.
 .PHONY: commons-demo commons-journey-acceptance
 commons-demo: zclassic23 zcl-rpc zclassic23-package-sign tools/arena-product-journey-c23
@@ -2376,10 +2378,9 @@ commons-demo: zclassic23 zcl-rpc zclassic23-package-sign tools/arena-product-jou
 # The same proof under its acceptance name, for scripts and release notes.
 commons-journey-acceptance: commons-demo
 
-# The SAME journey with nodes B and C on their own physical hosts, plus the
-# leg one host cannot prove: host A disappears, and host C still discovers,
-# fetches, reproduces and runs the exact accepted bytes from B — the original
-# publisher is gone and the software survives. Requires:
+# The SAME journey with nodes B and C on their own physical hosts. The
+# publisher's machine itself is gone; host C still discovers, fetches,
+# reproduces and runs the exact accepted bytes from B. Requires:
 #   CJ_HOST_B=user@hostB  CJ_HOST_C=user@hostC   (BatchMode ssh, cc present)
 #   CJ_PEER_ADDR_A=<this host's LAN address>     (B and C dial it)
 #   optional: CJ_PEER_ADDR_B / CJ_PEER_ADDR_C    (default: ssh host parts)

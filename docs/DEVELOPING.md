@@ -236,12 +236,12 @@ package that already existed and was written by somebody else, and measures the
 behavior it was asked to change before and after:
 
 ```bash
-make commons-demo        # two fresh isolated datadirs; exit 0 means all ten steps held
+make commons-demo        # three isolated datadirs; A is killed; C still fetches from B
 make readme-svg-check    # the README figures still match what this binary prints
 ```
 
-`commons-demo` is deliberately outside `make ci`: it spawns two real regtest
-daemons, mines a regtest chain and runs confined package builds. The README's
+`commons-demo` is deliberately outside `make ci`: it spawns three real
+regtest daemons, mines a regtest chain and runs confined package builds. The README's
 demo, proof and topology figures are rendered from a recording that same run
 writes — `ZCL_COMMONS_DEMO_RECORD=1 make commons-demo` refreshes
 `docs/assets/z23-commons-demo.{strip,facts}`, and `make readme-svg` redraws the

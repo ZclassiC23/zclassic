@@ -6,7 +6,8 @@
 # A person describes useful software behavior. Z23 reuses existing C23 first,
 # creates only what is missing, shows the result, reproduces the exact bytes
 # on another node, and lets the person accept and use that exact version.
-# This proves that sentence, end to end, on two fresh isolated datadirs:
+# This proves that sentence, end to end, on three fresh isolated datadirs
+# (A publishes, B reproduces, A is killed, C still fetches from B):
 #
 #   zcode guide -> work start -> work run -> work show
 #     -> publish -> discover -> fetch -> source reproduce
@@ -33,9 +34,9 @@
 # you/wordcount (an application that reuses it and needs one behavior nothing
 # in the commons provides — the longest line). Nothing here is a mock.
 #
-# DELIBERATELY opt-in (NOT in `make ci`): it spawns two real regtest daemons,
-# mines a regtest chain, and runs confined package builds. It touches no
-# production datadir, no wallet key of yours, and no live port.
+# DELIBERATELY opt-in (NOT in `make ci`): it spawns three real regtest
+# daemons, mines a regtest chain, and runs confined package builds. It
+# touches no production datadir, no wallet key of yours, and no live port.
 
 set -euo pipefail
 
@@ -49,7 +50,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CJ_FIXTURES="$SCRIPT_DIR/fixtures/commons_journey"
 CJ_SIGNER="${ZCL_PACKAGE_SIGN_BIN:-$REPO_ROOT/build/bin/zclassic23-package-sign}"
 
-# Two nodes, both on the production reachable-port policy's test-safe ports.
+# Three nodes, all on the production reachable-port policy's test-safe ports.
 # Both P2P ports must be in the production reachable-port allowlist
 # (lib/net/include/net/port_policy.h). The initial operator-directed dial
 # bypasses that policy, but the controlled Noise reconnect does not, so an
@@ -60,11 +61,12 @@ C_PORT=20026; C_RPC=29301; C_FS=29302; C_HTTPS=29303
 
 # ── node locations ───────────────────────────────────────────────────────
 # Default: every node is a local process and this is `make commons-demo` —
-# fast, deterministic, one physical host. ZCL_COMMONS_MULTIHOST=1 runs the
-# SAME journey with node B and node C on their own ssh hosts
-# (CJ_HOST_B/CJ_HOST_C) and adds the leg the single-host demo cannot prove:
-# host A disappears and host C still discovers, fetches, reproduces and runs
-# the exact accepted bytes from B. It fails closed without both hosts.
+# three isolated datadirs on one host, then A's process is killed so C can
+# only learn from B. ZCL_COMMONS_MULTIHOST=1 runs the SAME journey with
+# node B and node C on their own ssh hosts (CJ_HOST_B/CJ_HOST_C): binaries
+# are shipped and sha3-verified, and host A itself is gone. It fails closed
+# without both hosts. Same-host proves the publisher process can disappear;
+# multi-host proves the publisher's machine can disappear.
 CJ_MULTIHOST="${ZCL_COMMONS_MULTIHOST:-0}"
 CJ_HOST_B="${CJ_HOST_B:-}"   # ssh destination of the reproducer/onward provider
 CJ_HOST_C="${CJ_HOST_C:-}"   # ssh destination of the latecomer
@@ -1529,7 +1531,7 @@ cj_zdog_write_manifest() {
   "name": "${2:-zdogfight/zdogfight}",
   "semver": "0.1.0",
   "language": "c23",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "include_dir": "include",
   "source_dir": "src",
   "dependencies": [
@@ -1841,13 +1843,13 @@ cj_journey_turn_faster() {
     cj_note "the change travelled as $CJ_ZDOG_BYTES bytes, reproduced from its own root"
 }
 
-# ── multi-host only: the original publisher disappears ───────────────────
-# One physical host can never prove this leg: node A must actually go away.
-# With B and C on their own hosts (ZCL_COMMONS_MULTIHOST=1) the SAME journey
-# continues past step 9: C boots against B alone, A is killed, and C still
-# discovers, fetches, reproduces and runs the exact accepted bytes — served
-# by B, the only holder left. Reaching the end of this function IS the
-# survival proof: with A dead, only B could have answered.
+# ── the original publisher disappears ────────────────────────────────────
+# C boots against B, A is killed, and C still discovers, fetches,
+# reproduces and runs the exact accepted bytes — served by B, the only
+# holder left. Same-host: three processes, A's process group is signalled
+# and never comes back. Multi-host: B and C are other machines. Reaching
+# the end of this function IS the survival proof: with A dead, only B
+# could have answered.
 cj_boot_c() {
     local port
     for port in "$C_PORT" "$C_RPC" "$C_FS" "$C_HTTPS"; do
@@ -1880,7 +1882,7 @@ cj_boot_c() {
 }
 
 cj_journey_publisher_disappears() {
-    cj_step "multi-host leg  the publisher disappears and the software survives"
+    cj_step "11/11  the publisher disappears and the software survives"
     local anchor tip del_c
 
     # C takes its own anchored identity while A is still here to fund it —
@@ -1942,7 +1944,11 @@ cj_journey_publisher_disappears() {
     if dht_rpc "$DHT_DD_A" "$A_RPC" getblockcount >/dev/null 2>&1; then
         cj_die "node A still answers RPC after its disappearance"
     fi
-    cj_note "host A is gone — node C can now only learn from B"
+    if [ "$CJ_MULTIHOST" = 1 ]; then
+        cj_note "host A is gone — node C can now only learn from B"
+    else
+        cj_note "node A is gone — node C can now only learn from B"
+    fi
 
     # B, the only remaining holder, announces that it serves both packages
     # and the accepted application's source. These records are B's own; A
@@ -2085,14 +2091,16 @@ REPRODUCED ON NODE B
 TAMPER REFUSED
 ACCEPTED
 USED
-CHANGED WHAT EXISTED'
+CHANGED WHAT EXISTED
+PUBLISHER GONE'
 
 cj_strip_row() { printf '  \033[1;36m%-26s\033[0m%s\n' "$1" "$2"; }
 cj_strip_cont() { printf '  %-26s\033[2m%s\033[0m\n' "" "$1"; }
 
 cj_strip() {
     printf '  \033[1mYOU ASKED\033[0m → \033[1mREUSED FROM PEER\033[0m → \033[1mCREATED MISSING BEHAVIOR\033[0m → \033[1mVISIBLE RESULT\033[0m →\n'
-    printf '  \033[1mREPRODUCED ON NODE B\033[0m → \033[1mTAMPER REFUSED\033[0m → \033[1mACCEPTED\033[0m → \033[1mUSED\033[0m\n\n'
+    printf '  \033[1mREPRODUCED ON NODE B\033[0m → \033[1mTAMPER REFUSED\033[0m → \033[1mACCEPTED\033[0m → \033[1mUSED\033[0m →\n'
+    printf '  \033[1mPUBLISHER GONE\033[0m\n\n'
     cj_strip_row "YOU ASKED" "$CJ_GOAL"
     cj_strip_row "REUSED FROM PEER" \
         "z23/textstat ${CJ_TEXTSTAT_ROOT:0:12}… — $CJ_TEXTSTAT_BYTES bytes from node A, no registry"
@@ -2126,7 +2134,10 @@ cj_strip() {
     cj_strip_cont "\"make the aircraft turn faster\" — one number, measured twice:"
     cj_strip_cont "${CJ_TURN_BEFORE} deg/s on node A before → ${CJ_TURN_AFTER} deg/s on node B after"
     cj_strip_cont "its own root ${CJ_ZDOG_APP_ROOT:0:12}… — the original is still exactly itself"
-    printf '\n  \033[2mtwo fresh datadirs · %s bytes over the overlay · 1 peer · central services contacted: 0\033[0m\n' \
+    printf '\n'
+    cj_strip_row "PUBLISHER GONE" \
+        "node A killed; node C fetched, reproduced and ran the exact bytes from B"
+    printf '\n  \033[2mthree fresh datadirs · %s bytes over the overlay · A gone · central services contacted: 0\033[0m\n' \
         "$CJ_APP_BYTES"
 }
 
@@ -2190,7 +2201,7 @@ cj_write_facts() {
         printf 'source_git_commit     = %s (dirty: %s)\n' "$commit" "$dirty"
         printf 'z23_binary_sha3       = %s\n' "$(cj_sha3 "$NODE_BIN")"
         printf 'journey_script_sha3   = %s\n' "$(cj_sha3 "$SCRIPT_DIR/commons_journey_acceptance.sh")"
-        printf 'conditions            = two fresh isolated regtest datadirs, one physical host, 1 peer\n'
+        printf 'conditions            = three fresh isolated regtest datadirs, one physical host, A process killed, C learned from B\n'
         printf 'reused_package_root   = %s\n' "$CJ_TEXTSTAT_ROOT"
         printf 'accepted_source_root  = %s\n' "$CJ_ACCEPTED_SOURCE"
         printf 'accepted_app_root     = %s\n' "$CJ_APP_ROOT"
@@ -2211,7 +2222,11 @@ cj_write_facts() {
         printf 'turn_rate_before      = %s deg/s (node A, the package as published)\n' "$CJ_TURN_BEFORE"
         printf 'turn_rate_after       = %s deg/s (node B, from the bytes it fetched)\n' "$CJ_TURN_AFTER"
         if [ "${CJ_PUBLISHER_SURVIVAL:-0}" = 1 ]; then
-            printf 'publisher_survival    = host A killed; host C reproduced and ran the exact accepted bytes from host B\n'
+            if [ "$CJ_MULTIHOST" = 1 ]; then
+                printf 'publisher_survival    = host A killed; host C reproduced and ran the exact accepted bytes from host B\n'
+            else
+                printf 'publisher_survival    = node A killed; node C reproduced and ran the exact accepted bytes from node B\n'
+            fi
         fi
         if [ "${CJ_TURN_SURVIVED:-0}" = 1 ]; then
             printf 'changed_survival      = host C measured %s deg/s from host B, host A killed\n' \
@@ -2236,7 +2251,7 @@ case "${1:-}" in
     *) cj_die "unknown argument '$1' (accepted: --strip-labels, --topology)" ;;
 esac
 
-cj_step "bring-up: two fresh isolated datadirs"
+cj_step "bring-up: three fresh isolated datadirs"
 cj_boot
 cj_build_peer_helper
 cj_identities
@@ -2270,17 +2285,16 @@ cj_journey_use_app
 # and you keep that exact version". Same nodes, same overlay, same lifecycle.
 cj_journey_turn_faster
 
-# Multi-host only: the leg one physical host cannot prove. The publisher
-# disappears; the software survives on whoever holds it.
+# The publisher disappears; the software survives on whoever still holds
+# it. Same-host kills A's process; multi-host already placed B and C on
+# other machines.
 CJ_PUBLISHER_SURVIVAL=0
 CJ_TURN_SURVIVED=0
-if [ "$CJ_MULTIHOST" = 1 ]; then
-    cj_journey_publisher_disappears
-fi
+cj_journey_publisher_disappears
 
 # The verdict is the whole journey or nothing. Every step above dies on its
-# first broken promise, so reaching this line means all ten held on two
-# fresh datadirs that reached no service outside this machine.
+# first broken promise, so reaching this line means the journey held on
+# three fresh datadirs, A is gone, and C learned only from B.
 
 # The verdict this run earned, built BEFORE the recording is written so the
 # recording can bind it. A recording that names its commit, binary, script and
@@ -2289,8 +2303,8 @@ fi
 # both the facts line and the printed document, so the two cannot disagree.
 CJ_VERDICT_SCHEMA=zcl.commons_journey_acceptance.v1
 CJ_VERDICT_TOKEN=PASS
-CJ_STEPS_PROVEN=10
-CJ_STEPS_TOTAL=10
+CJ_STEPS_PROVEN=11
+CJ_STEPS_TOTAL=11
 CJ_VERDICT="{\"schema\":\"$CJ_VERDICT_SCHEMA\",\"verdict\":\"$CJ_VERDICT_TOKEN\",\"steps_proven\":$CJ_STEPS_PROVEN,\"steps_total\":$CJ_STEPS_TOTAL,\"complete\":true,\"reuse_before_creation\":true,\"no_false_reuse_claim\":true,\"peer_to_peer_fetch\":true,\"fetched_source_inert\":true,\"explicit_local_admission\":true,\"independent_remote_build\":true,\"approved_signer_required\":true,\"explicit_human_acceptance\":true,\"accepted_work_published\":true,\"remote_source_reproduced\":true,\"byte_identical_artifacts\":true,\"tamper_refused_by_name\":[\"source\",\"dependency\",\"receipt\",\"artifact\"],\"application_ran\":true,\"existing_package_changed\":true,\"behavior_change_measured_before_and_after\":true,\"changed_version_is_its_own_root\":true,\"central_services_contacted\":0,\"human_first_terminal_output\":true}"
 # The multi-host leg adds its fact only when it actually ran: the publisher
 # disappeared and node C still reproduced and ran the exact accepted bytes.
