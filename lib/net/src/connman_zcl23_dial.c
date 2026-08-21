@@ -8,6 +8,7 @@
 #include "platform/time_compat.h"
 #include "connman_internal.h"
 #include "net/port_policy.h"
+#include "util/log_macros.h"
 #include "core/random.h"
 #include <stdatomic.h>
 #include <string.h>
@@ -148,4 +149,52 @@ bool connman_gather_known_zcl23_candidate(
         return true;
     }
     return false;
+}
+
+void connman_evict_same_ip_inbound_when_outbound(struct connman *cm,
+                                                 struct p2p_node *node)
+{
+    if (!cm || !node || node->disconnect || node->is_feeler)
+        return;
+    if (node->state < PEER_HANDSHAKE_COMPLETE)
+        return;
+    if (net_addr_is_operator_local(&node->addr.svc.addr))
+        return;
+
+    zcl_mutex_lock(&cm->manager.cs_nodes);
+    bool have_outbound = false;
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        struct p2p_node *n = cm->manager.nodes[i];
+        if (!n || n->disconnect || n->is_feeler)
+            continue;
+        if (!net_addr_eq(&n->addr.svc.addr, &node->addr.svc.addr))
+            continue;
+        if (net_addr_is_operator_local(&n->addr.svc.addr))
+            continue;
+        if (!n->inbound && n->state >= PEER_HANDSHAKE_COMPLETE) {
+            have_outbound = true;
+            break;
+        }
+    }
+    if (!have_outbound) {
+        zcl_mutex_unlock(&cm->manager.cs_nodes);
+        return;
+    }
+
+    for (size_t i = 0; i < cm->manager.num_nodes; i++) {
+        struct p2p_node *n = cm->manager.nodes[i];
+        if (!n || n->disconnect || !n->inbound)
+            continue;
+        if (!net_addr_eq(&n->addr.svc.addr, &node->addr.svc.addr))
+            continue;
+        if (p2p_node_request_disconnect(
+                n, P2P_DISCONNECT_EVICTED,
+                P2P_DISCONNECT_SOURCE_PEER_POLICY,
+                n->endpoint_generation)) {
+            LOG_INFO("connman",
+                     "evicted inbound %s; outbound handshake owns this IP",
+                     n->addr_name);
+        }
+    }
+    zcl_mutex_unlock(&cm->manager.cs_nodes);
 }

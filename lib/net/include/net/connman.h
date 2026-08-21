@@ -369,6 +369,13 @@ struct addr_man *connman_addrman(struct connman *cm);
 int64_t connman_time_to_first_peer_us(void);
 void    connman_note_first_handshaked_peer(void);
 
+/* After a completed handshake, drop inbound sockets from the same remote IP
+ * when a handshaked outbound already owns that host. Operator-local and
+ * feeler sockets are left alone. Mixed inbound+outbound to one host splits
+ * getheaders and trips peer-stability attention. */
+void connman_evict_same_ip_inbound_when_outbound(struct connman *cm,
+                                                 struct p2p_node *node);
+
 /* Return the highest starting_height among handshaked, non-disconnecting
  * NODE_NETWORK peers, or -1 if no usable block-serving peer is present. */
 int connman_max_peer_height(struct connman *cm);

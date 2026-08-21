@@ -430,6 +430,9 @@ bool process_version(struct msg_processor *mp, struct p2p_node *node,
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_HANDSHAKE_COMPLETE, "inbound version+verack");
         peer_lifecycle_note_handshake_complete(node);
+        if (mp->net_mgr && mp->net_mgr->owner)
+            connman_evict_same_ip_inbound_when_outbound(mp->net_mgr->owner,
+                                                        node);
     }
 
     /* Ask outbound peers for their address list */
@@ -512,11 +515,17 @@ bool process_verack(struct msg_processor *mp, struct p2p_node *node)
                                PEER_HANDSHAKE_COMPLETE, "verack received");
         peer_lifecycle_note_handshake_complete(node);
         printf("Peer %s: handshake complete (outbound)\n", node->addr_name);
+        if (mp->net_mgr && mp->net_mgr->owner)
+            connman_evict_same_ip_inbound_when_outbound(mp->net_mgr->owner,
+                                                        node);
     } else if (node->state < PEER_HANDSHAKE_COMPLETE) {
         peer_set_state_checked((uint32_t)node->id, &node->state,
                                PEER_HANDSHAKE_COMPLETE, "verack received");
         peer_lifecycle_note_handshake_complete(node);
         printf("Peer %s: verack received\n", node->addr_name);
+        if (mp->net_mgr && mp->net_mgr->owner)
+            connman_evict_same_ip_inbound_when_outbound(mp->net_mgr->owner,
+                                                        node);
     }
 
     /* Mark peer as good in addrman — increases selection priority */
