@@ -8,6 +8,8 @@
 #include "net/msgprocessor.h"
 #include "net/net.h"
 #include "net/peer_identity.h"
+#include "net/peer_scoring.h"
+#include "util/log_macros.h"
 #include "vcs/package_swarm_node.h"
 #include "vcs/zcode_work_node.h"
 
@@ -94,4 +96,40 @@ void boot_zcode_swarm_sync_membership(
         }
     }
     zcl_mutex_unlock(&nm->cs_nodes);
+}
+
+void boot_zcode_swarm_send(struct msg_processor *mp, struct p2p_node *node,
+                           const uint8_t *frame, size_t frame_len)
+{
+    if (!p2p_node_begin_message(node, "zpkgswm",
+                                mp->params->pchMessageStart)) {
+        LOG_ERROR("net.zcode_swarm", "begin_message failed for peer %lld",
+                  (long long)node->id);
+        return;
+    }
+    p2p_node_write_message_data(node, frame, frame_len);
+    if (!p2p_node_end_message(node))
+        LOG_ERROR("net.zcode_swarm", "end_message failed for peer %lld",
+                  (long long)node->id);
+}
+
+enum peer_offence boot_zcode_swarm_offence(enum vcs_swarm_penalty penalty)
+{
+    switch (penalty) {
+    case VCS_SWARM_PENALTY_MALFORMED:
+        return PEER_OFFENCE_INVALID_MESSAGE;
+    case VCS_SWARM_PENALTY_ANNOUNCE_FLOOD:
+    case VCS_SWARM_PENALTY_REQUEST_FLOOD:
+        return PEER_OFFENCE_FLOOD;
+    case VCS_SWARM_PENALTY_REPLAYED_REQUEST:
+    case VCS_SWARM_PENALTY_REPLAYED_DATA:
+        return PEER_OFFENCE_INVALID_PAYLOAD;
+    case VCS_SWARM_PENALTY_UNREQUESTED_DATA:
+        return PEER_OFFENCE_UNREQUESTED;
+    case VCS_SWARM_PENALTY_INVALID_DATA:
+        return PEER_OFFENCE_INVALID_CHUNK;
+    case VCS_SWARM_PENALTY_NONE:
+    default:
+        return PEER_OFFENCE_NONE;
+    }
 }

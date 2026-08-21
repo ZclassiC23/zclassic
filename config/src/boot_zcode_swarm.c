@@ -2,6 +2,7 @@
  * The only lib/net-to-swarm adapter; see config/boot_zcode_swarm.h. */
 #include "config/boot_zcode_swarm.h"
 #include "config/boot_zcode_swarm_membership.h"
+#include "config/boot_zcode_swarm_receipt.h"
 #include "config/boot_zcode_dht.h"
 #include "config/boot_internal.h"
 #include "config/runtime.h"
@@ -537,44 +538,6 @@ static struct vcs_swarm_engine *boot_zcode_swarm_ensure(
     return s_engine;
 }
 
-static enum peer_offence boot_zcode_swarm_offence(
-    enum vcs_swarm_penalty penalty)
-{
-    switch (penalty) {
-    case VCS_SWARM_PENALTY_MALFORMED:
-        return PEER_OFFENCE_INVALID_MESSAGE;
-    case VCS_SWARM_PENALTY_ANNOUNCE_FLOOD:
-    case VCS_SWARM_PENALTY_REQUEST_FLOOD:
-        return PEER_OFFENCE_FLOOD;
-    case VCS_SWARM_PENALTY_REPLAYED_REQUEST:
-    case VCS_SWARM_PENALTY_REPLAYED_DATA:
-        return PEER_OFFENCE_INVALID_PAYLOAD;
-    case VCS_SWARM_PENALTY_UNREQUESTED_DATA:
-        return PEER_OFFENCE_UNREQUESTED;
-    case VCS_SWARM_PENALTY_INVALID_DATA:
-        return PEER_OFFENCE_INVALID_CHUNK;
-    case VCS_SWARM_PENALTY_NONE:
-    default:
-        return PEER_OFFENCE_NONE;
-    }
-}
-
-static void boot_zcode_swarm_send(struct msg_processor *mp,
-                                  struct p2p_node *node,
-                                  const uint8_t *frame, size_t frame_len)
-{
-    if (!p2p_node_begin_message(node, "zpkgswm",
-                                mp->params->pchMessageStart)) {
-        LOG_ERROR("net.zcode_swarm", "begin_message failed for peer %lld",
-                  (long long)node->id);
-        return;
-    }
-    p2p_node_write_message_data(node, frame, frame_len);
-    if (!p2p_node_end_message(node))
-        LOG_ERROR("net.zcode_swarm", "end_message failed for peer %lld",
-                  (long long)node->id);
-}
-
 bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
                             const uint8_t *payload, size_t payload_len,
                             void *ctx)
@@ -602,6 +565,11 @@ bool boot_zcode_swarm_frame(struct msg_processor *mp, struct p2p_node *node,
     uint64_t now = (uint64_t)platform_time_wall_time_t();
     uint64_t peer_id = boot_zcode_swarm_peer_id(node);
     (void)vcs_zcode_work_node_peer_add(s_work, peer_id);
+    if (boot_zcode_swarm_receipt_frame(mp, node, engine, s_book, s_zcode_dir,
+                                       payload, payload_len, day)) {
+        zcl_mutex_unlock(&s_lock);
+        return true;
+    }
     if (payload_len >= 4 && memcmp(payload, "ZCWS", 4) == 0) {
         enum vcs_zcode_work_node_result wr =
             vcs_zcode_work_node_handle_frame(s_work, peer_id, payload,
@@ -752,6 +720,9 @@ static size_t boot_zcode_swarm_drain_node(struct msg_processor *mp,
         boot_zcode_swarm_send(mp, node, work_frame, frame_len);
         sent++;
     }
+    int64_t day = (int64_t)platform_time_wall_time_t() / 86400;
+    sent += boot_zcode_swarm_receipt_drain(mp, node, engine, s_zcode_dir,
+                                           day);
     return sent;
 }
 
@@ -901,6 +872,7 @@ void boot_zcode_swarm_shutdown(void)
     s_book = NULL;
     if (s_ledger) vcs_reward_ledger_free(s_ledger);
     s_ledger = NULL;
+    boot_zcode_swarm_receipt_close();
     s_last_sync = 0;
     s_last_tick = 0;
     s_frames_sent = 0;
