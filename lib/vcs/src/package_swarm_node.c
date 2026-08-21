@@ -741,6 +741,10 @@ static void handle_announce(struct vcs_swarm_engine *engine,
         peer->announce_start = now;
         peer->announce_count = 0;
     }
+    /* Keep-alive of a root already in peer->ads[] is accepted and does
+     * not consume the unique-root inventory quota or raise ANNOUNCE_FLOOD. */
+    if (peer_advertises(peer, a->package_root))
+        return;
     struct vcs_policy_decision d =
         vcs_policy_check_announce(peer->tier, peer->announce_count);
     if (!d.allow) {
@@ -754,10 +758,8 @@ static void handle_announce(struct vcs_swarm_engine *engine,
         return;
     }
     peer->announce_count++;
-    if (!peer_advertises(peer, a->package_root) &&
-        peer->ad_count < VCS_SWARM_MAX_PEER_ADS) {
+    if (peer->ad_count < VCS_SWARM_MAX_PEER_ADS)
         memcpy(peer->ads[peer->ad_count++], a->package_root, 32);
-    }
 }
 
 /* Public-hosting admission for one root.

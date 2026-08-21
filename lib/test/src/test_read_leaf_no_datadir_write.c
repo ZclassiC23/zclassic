@@ -352,6 +352,13 @@ static const struct rlw_leaf g_rlw_leaves[] = {
     { "zcode.science.discover",
       zcl_native_handle_zcode_science_discover,
       "category", "active",     NULL, NULL, NULL },
+    /* The local package-store catalog, covered on the day it landed rather
+     * than added to the stated-gap list. Absent <datadir>/zcode/manifests
+     * is a passed empty list and never opens the store (open runs recovery
+     * GC). payload_dir is zcode/manifests so a file there is
+     * STORE_UNREADABLE, not an empty shelf. */
+    { "zcode.package.library",  zcl_native_handle_zcode_package_library,
+      NULL, NULL,               NULL, NULL, "zcode/manifests" },
     /* Local sovereignty policy inspection is a READ leaf even though the
      * sibling mutate leaf persists policy.v1.  Its loader must not create
      * zcode/policy on an absent datadir or repair an unreadable policy store. */

@@ -115,14 +115,18 @@ reconstructs the signed carrier; pin keeps the replica. After that this node
 announces the same root, so the original publisher can disappear and later
 peers still fetch the exact bytes from whoever still holds them. The swarm
 net test `useful C23 packages host redundantly` is that proof for `zprng`,
-`zdogfight`, and `zdogview` (A publishes, B mirrors, A is removed, C fetches
-from B). The two-node arena script below is the match-play journey for the
-four match packages. The raylib window is a local display of those verified
-bytes, not a swarm dependency. The announce quota still limits a *fresh* peer
-to four *new* roots in one window, which is why the acceptance script prunes
-to the four match packages; that quota is a named product gap, not a second
-license class. Re-announcing a root a peer already holds is how redundancy
-works inside the quota.
+`zdogfight`, `zdogace`, and `zdogview` (A publishes, B mirrors, A is removed,
+C fetches from B). The two-node arena script below is the match-play journey
+for the four match packages (`zprng`, `zdogfight`, `zdogace`, `zdogdrone`).
+The raylib window is a local display of those verified bytes, not a swarm
+dependency.
+
+Keep-alive of a root a peer already heard is inventory, not flood.
+Re-announcing a root this node already holds is how redundancy works: B
+serves the same exact carrier after A disappears. There is no central
+tracker. The remaining announce bound is unique *new* roots per hour from a
+NEW_USER, capped at the serving-set size (64). The four match packages sit
+inside that library shelf.
 
 A pilot is an ordinary program. Per tick, for each of its living planes, it
 reads one 82-byte observation frame on stdin and writes one 7-byte control
@@ -264,12 +268,14 @@ These are named because they are real, not because they are about to be fixed.
   the seed, plane count and package roots to a file both nodes read. There is
   no signed on-network challenge/accept wire for a match yet; the transport
   under test there is the package swarm, not the match definition.
-- **A fresh peer can only learn four package roots.** The announce quota
-  refuses the fifth-plus announce to a new peer within its window, so a store
-  serving more than four complete packages cannot introduce the excess to a
-  fresh node. The acceptance script prunes its scratch copy to exactly the four
-  arena packages to work inside that limit; the limit itself is a real product
-  gap.
+- **A NEW_USER learns unique new roots, not keep-alives.** Announce flood
+  counts unique *new* roots per hour from a NEW_USER, capped at the serving-set
+  size (64). Keep-alive of a root the peer already heard is inventory, not
+  flood. Re-announce of a root this node already holds is how redundancy
+  works; there is no central tracker. A store serving more than 64 complete
+  packages cannot introduce the excess to a fresh NEW_USER in one hour
+  window. The four match packages (`zprng`, `zdogfight`, `zdogace`,
+  `zdogdrone`) sit inside that library shelf.
 - **Release-envelope import is DHT-gated.** The raw swarm delivers exact
   package content, but persisting the signed release envelope needs the
   authenticated DHT provider route, so the acceptance script hands those

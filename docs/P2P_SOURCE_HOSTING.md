@@ -280,6 +280,12 @@ every WANT - proving it means reconstructing the tree.
 1. A peer gossips a bounded announcement containing the package root and
    internally feasible manifest/count/size hints. Hints remain untrusted: they
    never reserve storage, earn ratio credit, or establish package identity.
+   Keep-alive of a root the peer already heard is inventory, not flood.
+   Re-announce of a root this node already holds is how redundancy works:
+   a replica that imported and pinned a carrier may advertise the same root
+   after the original publisher disappears. There is no central tracker. The
+   remaining bound is unique *new* roots per hour from a NEW_USER, capped at
+   the serving-set size (`VCS_SWARM_MAX_LOCAL_ANNOUNCES`, 64).
 2. The downloader requests the manifest, parses it, and recomputes the root.
 3. A scheduler assigns missing chunks across several peers, with one request id
    per in-flight object, bounded retries, timeouts, per-peer windows, and
@@ -389,8 +395,10 @@ review and tests.
   `lib/test/src/test_zcode_swarm_net.c` runs real `zpkgswm` frames between
   independent engines behind real msg_processors (only socket syscalls elided)
   and covers the golden path, malicious wrong-hash chunks, unrequested DATA,
-  restart-mid-download resume, and disconnect requeue. Still uncovered:
-  quota exhaustion, reorg, and deterministic seed replay.
+  restart-mid-download resume, disconnect requeue, and the A→B→C hop:
+  A publishes the C23 Arena library shelf (`zprng`, `zdogfight`, `zdogace`,
+  `zdogview`), B mirrors and pins, A disappears, C fetches the exact carriers
+  from B. Still uncovered: reorg.
 <!-- claim: file-present lib/test/src/test_zcode_swarm_net.c # the real-wire swarm harness exists -->
 
 The foundations this section once gated on — signed release envelope, staging

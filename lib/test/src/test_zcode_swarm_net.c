@@ -35,9 +35,9 @@
  *      in-flight work moves to the survivor and the download completes.
  *   7. Sovereign source: one signed workspace-head lookup fetches a bundled
  *      content.v2 evidence closure, then accepted source rebuilds Git-free.
- *   8. Useful C23 Arena packages (zprng, zdogfight) host redundantly:
- *      A publishes, B fetches and pins, A disappears, C still discovers
- *      and fetches the exact carriers from B. */
+ *   8. Useful C23 Arena packages (zprng, zdogfight, zdogace, zdogview)
+ *      host redundantly: A publishes, B fetches and pins, A disappears,
+ *      C still discovers and fetches the exact carriers from B. */
 
 #include "test/test_core.h"
 
@@ -4177,45 +4177,50 @@ static bool zwn_hop_carrier(struct zwn_node *from, struct zwn_node *to,
                                  true) == VCS_PACKAGE_STORE_OK;
 }
 
-/* Useful C23 packages (entropy + match core + integer 3D view) must
- * survive the original publisher disappearing. Fetch is inert; import
- * reconstructs the signed carrier; pin keeps the replica; B then serves
- * C. Publish in dependency order so zdogview's lock can see zdogfight. */
+/* Useful C23 packages (entropy + match core + pursuit pilot + integer
+ * 3D view) must survive the original publisher disappearing. Fetch is
+ * inert; import reconstructs the signed carrier; pin keeps the replica;
+ * B then serves C. Publish in dependency order: zprng, zdogfight, then
+ * zdogace and zdogview (both lock zdogfight+zprng). NEW_USER unique-new
+ * quota is the serving-set size; four roots sit inside that shelf. */
 static int zwn_t_useful_c23_redundant(const struct chain_params *params)
 {
     int failures = 0;
     struct zwn_fixture fixture = {0};
-    struct vcs_package_prepared prepared[3];
-    struct vcs_package_transport transport[3];
+    static const char *const k_dirs[] = {
+        "packages/zprng",
+        "packages/zdogfight",
+        "packages/zdogace",
+        "packages/zdogview",
+    };
+    enum { k_useful_n = (int)(sizeof(k_dirs) / sizeof(k_dirs[0])) };
+    struct vcs_package_prepared prepared[k_useful_n];
+    struct vcs_package_transport transport[k_useful_n];
     memset(prepared, 0, sizeof(prepared));
     memset(transport, 0, sizeof(transport));
     TEST("useful C23 packages host redundantly: A publishes zprng/"
-         "zdogfight/zdogview, B mirrors, A disappears, C fetches from B") {
-        static const char *dirs[3] = {
-            "packages/zprng",
-            "packages/zdogfight",
-            "packages/zdogview",
-        };
+         "zdogfight/zdogace/zdogview, B mirrors, A disappears, C fetches "
+         "from B") {
         struct zwn_node a, b, c;
         const struct zwn_node_spec nodes[] = {
             {&a, "arena-a"}, {&b, "arena-b"}, {&c, "arena-c"},
         };
         ASSERT(zwn_fixture_nodes(&fixture, params, nodes,
                                  sizeof(nodes) / sizeof(nodes[0])));
-        for (size_t i = 0; i < 3; i++) {
+        for (size_t i = 0; i < k_useful_n; i++) {
             struct zwn_package_scenario sc = {
-                .name = dirs[i],
+                .name = k_dirs[i],
                 .dht_namespace = "package.c23-commons",
-                .source_dir = dirs[i],
+                .source_dir = k_dirs[i],
                 .publisher_sequence = i + 1u,
                 .expected_package_root_hex = NULL,
             };
             vcs_package_transport_init(&transport[i]);
             ASSERT(zwn_prepare_package_transport(
-                &sc, dirs[i], i + 1u, NULL, &prepared[i],
+                &sc, k_dirs[i], i + 1u, NULL, &prepared[i],
                 &transport[i]));
             ASSERT(vcs_package_transport_store(
-                       a.store, &transport[i], dirs[i]) ==
+                       a.store, &transport[i], k_dirs[i]) ==
                    VCS_PACKAGE_TRANSPORT_OK);
             ASSERT(vcs_package_store_pin(a.store,
                                          transport[i].transport_root,
@@ -4227,6 +4232,12 @@ static int zwn_t_useful_c23_redundant(const struct chain_params *params)
             struct vcs_package_public_verdict shape;
             vcs_package_public_shape_classify(
                 a.store, transport[i].transport_root, &shape);
+            if (shape.shape == VCS_PACKAGE_PUBLIC_REFUSED)
+                fprintf(stderr, "zwn public_shape %s: %s (%s)\n",
+                        k_dirs[i],
+                        shape.rule ? shape.rule : "?",
+                        shape.dependency_rule ? shape.dependency_rule
+                                              : "-");
             ASSERT(shape.shape != VCS_PACKAGE_PUBLIC_REFUSED);
         }
 
@@ -4240,7 +4251,7 @@ static int zwn_t_useful_c23_redundant(const struct chain_params *params)
                                      sizeof(a_b_links[0])));
         ASSERT(zwn_meet_side(&a, &a_b));
         ASSERT(zwn_meet_side(&b, &b_a));
-        for (size_t i = 0; i < 3; i++)
+        for (size_t i = 0; i < k_useful_n; i++)
             ASSERT(zwn_hop_carrier(&a, &b, &a_b, &b_a, &transport[i],
                                    params->pchMessageStart,
                                    1400u + (uint64_t)i * 10u));
@@ -4259,7 +4270,7 @@ static int zwn_t_useful_c23_redundant(const struct chain_params *params)
                                      sizeof(b_c_links[0])));
         ASSERT(zwn_meet_side(&b, &b_c));
         ASSERT(zwn_meet_side(&c, &c_b));
-        for (size_t i = 0; i < 3; i++) {
+        for (size_t i = 0; i < k_useful_n; i++) {
             ASSERT(zwn_hop_carrier(&b, &c, &b_c, &c_b, &transport[i],
                                    params->pchMessageStart,
                                    1500u + (uint64_t)i * 10u));
@@ -4277,7 +4288,7 @@ static int zwn_t_useful_c23_redundant(const struct chain_params *params)
         }
         PASS();
     } _test_next:
-    for (size_t i = 0; i < 3; i++) {
+    for (size_t i = 0; i < k_useful_n; i++) {
         vcs_package_transport_free(&transport[i]);
         vcs_package_prepared_free(&prepared[i]);
     }

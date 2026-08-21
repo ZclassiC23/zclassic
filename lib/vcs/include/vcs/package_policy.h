@@ -20,8 +20,8 @@
  *   announcement rate, request burst allowance, and verifier eligibility
  *   all scale with the tier:
  *     new user           — small queue, 1 publication/week, bounded
- *                          announce bootstrap so the publish is
- *                          deliverable over the swarm
+ *                          unique-root serving-set inventory so one
+ *                          library shelf is deliverable over the swarm
  *     earned contributor — larger queue, more frequent publication, pin
  *                          allowance (earned score >= the threshold)
  *     active verified seeder — best local bandwidth ratio, highest request
@@ -89,12 +89,13 @@ const char *vcs_policy_tier_string(enum vcs_policy_tier tier);
  * separate 256 MiB weekly byte allowance remains the absolute free cap; this
  * request bound lets a path-sharded source carrier arrive without classifying
  * its ordinary manifest/chunk fan-out as a flood. */
-/* The bounded announce bootstrap quota: a new user can announce the one
- * free weekly publication (and re-announce it to a few peers) so the free
- * publish is actually deliverable. Announces STILL never earn credit (the
- * frozen no-credit list) and over-quota announces are the ANNOUNCE_FLOOD
- * offence exactly as before — this is a bootstrap quota, not a reward. */
-#define VCS_POLICY_FREE_ANNOUNCE_PER_HOUR 4u
+/* The NEW_USER serving-set inventory bound: DISTINCT package_root values
+ * advertised per hour. Matches VCS_SWARM_MAX_LOCAL_ANNOUNCES so one
+ * bounded library shelf is deliverable. Repeats of a root the peer
+ * already advertises are keep-alives and do not consume this bound.
+ * Announces still never earn credit; over-quota unique roots remain the
+ * ANNOUNCE_FLOOD offence. This is an inventory bound, not a reward. */
+#define VCS_POLICY_FREE_ANNOUNCE_PER_HOUR 64u
 
 /* The per-tier limit table (the policy table, frozen). */
 struct vcs_policy_limits {
@@ -180,9 +181,11 @@ struct vcs_policy_decision vcs_policy_check_concurrent_downloads(
 struct vcs_policy_decision vcs_policy_check_pin(
     enum vcs_policy_tier tier, uint64_t pinned_bytes, uint64_t add_bytes);
 
-/* Package announcement rate (per hour window). New users get the bounded
- * VCS_POLICY_FREE_ANNOUNCE_PER_HOUR bootstrap quota so a zero-score
- * publication is deliverable; higher tiers scale with earned standing. */
+/* Package announcement rate (per hour window), counted on DISTINCT
+ * package_root values first added to a peer's advertisement set. New
+ * users get VCS_POLICY_FREE_ANNOUNCE_PER_HOUR unique roots per hour so
+ * one bounded library shelf is deliverable; over-quota unique roots
+ * name announce-rate-limit. */
 struct vcs_policy_decision vcs_policy_check_announce(
     enum vcs_policy_tier tier, uint32_t announces_this_hour);
 

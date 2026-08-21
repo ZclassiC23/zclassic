@@ -17,8 +17,10 @@
  *      with no credit. Late DATA for a CANCELLED id is the honest race:
  *      no credit, NO offence.
  *   5. Announce-only peers earn nothing (no-credit ANNOUNCEMENT on every
- *      announce); a new-user (zero-score) peer gets the bounded bootstrap
- *      quota and the announce over it is ANNOUNCE_FLOOD naming
+ *      announce); keep-alive repeats of a root already advertised do not
+ *      consume the unique-root inventory bound; a new-user (zero-score)
+ *      peer gets VCS_POLICY_FREE_ANNOUNCE_PER_HOUR distinct roots per
+ *      hour and the next distinct root is ANNOUNCE_FLOOD naming
  *      announce-rate-limit.
  *   6. Scheduler shape: manifest-first; rarest-first across downloads
  *      (fewest advertisers first); per-peer in-flight bound honored;
@@ -816,38 +818,70 @@ static int t_swarm_announce_policy(void)
     uint8_t frame[128];
     size_t frame_len = sw_announce_frame(&p, frame);
     struct vcs_swarm_peer_info infos[4];
-    /* NEW_USER announce rate is the bounded bootstrap quota
-     * (VCS_POLICY_FREE_ANNOUNCE_PER_HOUR/hour): the first announces are
-     * ACCEPTED — a fresh node's free weekly publish must be deliverable —
-     * and the announce over the quota names announce-rate-limit. */
+    /* NEW_USER announce rate is the unique-root serving-set inventory
+     * bound (VCS_POLICY_FREE_ANNOUNCE_PER_HOUR/hour). Keep-alive repeats
+     * of a root already in peer->ads[] do not consume it. */
     struct vcs_swarm_frame_result res = vcs_swarm_engine_handle_frame(
         n.engine, peer, frame, frame_len, SW_DAY, 1);
-    SW_CHECK("new-user first announce accepted (bootstrap quota)",
+    SW_CHECK("new-user first unique announce accepted",
              res.penalty == VCS_SWARM_PENALTY_NONE);
     SW_CHECK("new-user announce recorded",
              vcs_swarm_engine_peers_for(n.engine, p.root, infos, 4) == 1);
-    for (uint32_t i = 1; i < VCS_POLICY_FREE_ANNOUNCE_PER_HOUR; i++) {
-        res = vcs_swarm_engine_handle_frame(n.engine, peer, frame, frame_len,
-                                            SW_DAY, 1);
-        SW_CHECK("new-user announce within quota accepted",
-                 res.penalty == VCS_SWARM_PENALTY_NONE);
-    }
     res = vcs_swarm_engine_handle_frame(n.engine, peer, frame, frame_len,
                                         SW_DAY, 1);
-    SW_CHECK("new-user announce over quota flood named",
+    SW_CHECK("keep-alive of the same root accepted, no flood",
+             res.penalty == VCS_SWARM_PENALTY_NONE);
+    bool minted = true;
+    uint32_t extra_accepted = 0;
+    for (uint32_t i = 1; i < VCS_POLICY_FREE_ANNOUNCE_PER_HOUR; i++) {
+        struct sw_pkg extra;
+        /* count>=2 so seed changes the root (LICENSE-only packages share
+         * one root). */
+        if (!sw_make_package(&extra, 2, (uint8_t)(50u + i))) {
+            minted = false;
+            break;
+        }
+        uint8_t extra_frame[128];
+        size_t extra_len = sw_announce_frame(&extra, extra_frame);
+        res = vcs_swarm_engine_handle_frame(n.engine, peer, extra_frame,
+                                            extra_len, SW_DAY, 1);
+        if (res.penalty == VCS_SWARM_PENALTY_NONE)
+            extra_accepted++;
+        sw_free_package(&extra);
+    }
+    SW_CHECK("new-user unique announces fill the inventory bound",
+             minted &&
+             extra_accepted == VCS_POLICY_FREE_ANNOUNCE_PER_HOUR - 1);
+    struct sw_pkg over;
+    if (!sw_make_package(&over, 2,
+                         (uint8_t)(50u + VCS_POLICY_FREE_ANNOUNCE_PER_HOUR))) {
+        sw_free_package(&p);
+        sw_node_close(&n);
+        test_rm_rf_recursive(n.datadir);
+        return failures + 1;
+    }
+    uint8_t over_frame[128];
+    size_t over_len = sw_announce_frame(&over, over_frame);
+    res = vcs_swarm_engine_handle_frame(n.engine, peer, over_frame, over_len,
+                                        SW_DAY, 1);
+    SW_CHECK("new-user distinct root over inventory bound flood named",
              res.penalty == VCS_SWARM_PENALTY_ANNOUNCE_FLOOD &&
              res.rule != NULL &&
              strcmp(res.rule, "announce-rate-limit") == 0);
     struct vcs_service_key_totals totals;
+    /* Unique accepts + one keep-alive + one flood unique; no credit. */
     SW_CHECK("announce: one flood offence, no ratio movement",
              vcs_service_key_totals(n.book, key, SW_DAY, &totals) &&
              totals.offences[VCS_POLICY_OFFENCE_ANNOUNCE_FLOOD] == 1 &&
              totals.no_credit_events[VCS_POLICY_NO_CREDIT_ANNOUNCEMENT] ==
-                 VCS_POLICY_FREE_ANNOUNCE_PER_HOUR + 1 &&
+                 VCS_POLICY_FREE_ANNOUNCE_PER_HOUR + 2 &&
              totals.verified_bytes_downloaded == 0 &&
              totals.verified_bytes_uploaded == 0);
-    SW_CHECK("bounded peer still advertising only the one root",
+    SW_CHECK("first unique root still advertised after keep-alive",
              vcs_swarm_engine_peers_for(n.engine, p.root, infos, 4) == 1);
+    SW_CHECK("flooded distinct root was not added to the serving set",
+             vcs_swarm_engine_peers_for(n.engine, over.root, infos, 4) == 0);
+    sw_free_package(&over);
 
     /* An earned contributor may announce; it STILL earns nothing. */
     struct sw_node n2;

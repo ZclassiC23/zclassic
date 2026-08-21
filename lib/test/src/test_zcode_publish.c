@@ -22,11 +22,13 @@
  *      against persisted releases; a higher sequence commits.
  *   7. search: publisher/name-prefix/license/keyword filters, miss,
  *      bounds (limit + items_truncated), empty store.
- *   8. show: full record + manifest summary + bounded file page;
+ *   8. library: complete tracked store catalog (empty store, name from
+ *      the index, complete/pinned/counts/public_serveable).
+ *   9. show: full record + manifest summary + bounded file page;
  *      UNKNOWN_PACKAGE and BAD_ROOT rejections.
- *   9. Index rebuild: a fresh build from the persisted CAS bytes equals the
+ *  10. Index rebuild: a fresh build from the persisted CAS bytes equals the
  *      pre-"crash" build entry for entry (the index holds no truth).
- *  10. THE CLI PATH (t_registry_path): the same publication driven through
+ *  11. THE CLI PATH (t_registry_path): the same publication driven through
  *      the catalog the way `z23 zcode package publish ...` drives it
  *      — zcl_command_registry_input_validate() first, then the handler the
  *      leaf BINDS. Cases 1-9 call the handler symbol directly, which skips
@@ -1293,7 +1295,88 @@ static int t_search(void)
     return failures;
 }
 
-/* ── 8: show ────────────────────────────────────────────────────────── */
+/* ── 8: library ─────────────────────────────────────────────────────── */
+static int t_library(void)
+{
+    int failures = 0;
+    chain_params_select(CHAIN_MAIN);
+    char dd[256];
+    test_make_tmpdir(dd, sizeof(dd), "zcode_publish", "library");
+    struct zp_cmd c;
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    zcl_native_handle_zcode_package_library(&c.request, &c.reply);
+    ZP_CHECK("library: empty store passes with zero rows",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_int(json_get(&c.reply.data, "count")) == 0 &&
+             json_get_int(json_get(&c.reply.data, "rendered")) == 0 &&
+             !json_get_bool(json_get(&c.reply.data, "items_truncated")));
+    zp_cmd_free(&c);
+
+    zp_cmd_init(&c);
+    zcl_native_handle_zcode_package_library(&c.request, &c.reply);
+    ZP_CHECK("library: missing datadir names MISSING_DATADIR",
+             c.reply.status == ZCL_COMMAND_STATUS_FAILED &&
+             strcmp(c.reply.error.code, "MISSING_DATADIR") == 0);
+    zp_cmd_free(&c);
+
+    ZP_CHECK("library: two packages commit",
+             zp_commit_one(dd, 0xaa, 1u, "rhett/ring-buffer", "MIT", 21) &&
+             zp_commit_one(dd, 0xbb, 1u, "bob/json-lite", "Apache-2.0", 22));
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    zcl_native_handle_zcode_package_library(&c.request, &c.reply);
+    const struct json_value *rows = json_get(&c.reply.data, "packages");
+    int64_t listed = json_get_int(json_get(&c.reply.data, "count"));
+    bool named_ring = false;
+    bool named_json = false;
+    const struct json_value *named_row = NULL;
+    size_t n_rows = rows ? rows->num_children : 0;
+    for (size_t i = 0; i < n_rows; i++) {
+        const struct json_value *row = json_at(rows, i);
+        const char *name = row ? json_get_str(json_get(row, "name")) : NULL;
+        if (name && strcmp(name, "rhett/ring-buffer") == 0) {
+            named_ring = true;
+            named_row = row;
+        }
+        if (name && strcmp(name, "bob/json-lite") == 0)
+            named_json = true;
+    }
+    ZP_CHECK("library: lists both complete packages with index names",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             listed >= 2 &&
+             json_get_int(json_get(&c.reply.data, "rendered")) == listed &&
+             named_ring && named_json);
+    ZP_CHECK("library: named row is a complete unpinned seedable package",
+             named_row &&
+             json_get_str(json_get(named_row, "package_root")) &&
+             strlen(json_get_str(json_get(named_row, "package_root"))) == 64 &&
+             json_get_bool(json_get(named_row, "complete")) &&
+             !json_get_bool(json_get(named_row, "pinned")) &&
+             json_get_int(json_get(named_row, "file_count")) == 2 &&
+             json_get_int(json_get(named_row, "total_bytes")) > 0 &&
+             json_get_int(json_get(named_row, "total_chunks")) == 2 &&
+             json_get(named_row, "public_serveable") &&
+             json_get(named_row, "public_serveable")->type == JSON_BOOL);
+    zp_cmd_free(&c);
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_int(&c.input, "limit", 1);
+    zcl_native_handle_zcode_package_library(&c.request, &c.reply);
+    ZP_CHECK("library: limit bounds rows and flags truncation",
+             json_get_int(json_get(&c.reply.data, "rendered")) == 1 &&
+             json_get_int(json_get(&c.reply.data, "count")) == 1 &&
+             json_get_bool(json_get(&c.reply.data, "items_truncated")));
+    zp_cmd_free(&c);
+
+    test_rm_rf_recursive(dd);
+    return failures;
+}
+
+/* ── 9: show ────────────────────────────────────────────────────────── */
 static int t_show(void)
 {
     int failures = 0;
@@ -1376,7 +1459,7 @@ static int t_show(void)
     return failures;
 }
 
-/* ── 9: index rebuild from the CAS (simulated crash) ────────────────── */
+/* ── 10: index rebuild from the CAS (simulated crash) ────────────────── */
 static int t_index_rebuild(void)
 {
     int failures = 0;
@@ -1449,7 +1532,7 @@ static int t_index_rebuild(void)
     return failures;
 }
 
-/* ── 10: the CLI path — input_validate, then the BOUND handler ────────
+/* ── 11: the CLI path — input_validate, then the BOUND handler ────────
  *
  * Every other case in this file calls the handler symbol directly, which is
  * exactly the hole that let `zcode package publish plan` ship uncallable:
@@ -1526,8 +1609,25 @@ static int t_registry_path(void)
              commit->handler ==
                  zcl_native_handle_zcode_package_publish_commit);
 
+    const struct zcl_command_spec *library = zp_leaf("zcode.package.library");
+    ZP_CHECK("registry: library leaf is registered", library && library->handler);
+    ZP_CHECK("registry: library binds the handler the direct tests call",
+             library &&
+             library->handler == zcl_native_handle_zcode_package_library);
+
     char why[192] = {0};
     struct zp_cmd c;
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    bool library_ran = zp_registry_run(library, &c, why, sizeof(why));
+    ZP_CHECK("registry: library accepts datadir-only input", library_ran);
+    if (!library_ran)
+        printf("    validator refused: %s\n", why);
+    ZP_CHECK("registry: library empty store is a passed empty list",
+             library_ran && c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_int(json_get(&c.reply.data, "count")) == 0);
+    zp_cmd_free(&c);
 
     /* plan — the operator's exact input, through input_validate. */
     zp_cmd_init(&c);
@@ -1634,6 +1734,7 @@ int test_zcode_publish(void)
     failures += t_commit_roundtrip();
     failures += t_acceptance_replay();
     failures += t_search();
+    failures += t_library();
     failures += t_show();
     failures += t_index_rebuild();
     failures += t_registry_path();
