@@ -3888,6 +3888,203 @@ static int zwn_t_unrequested(const struct chain_params *params)
     return failures;
 }
 
+/* Quota exhaustion: STAGING is 1/10 of total quota and never evicts, so a
+ * total quota whose staging pool is smaller than an in-flight package's
+ * charged bytes must fail that download terminally and BY NAME, never
+ * complete a partial package, and leave the store healthy enough to finish
+ * the very same fetch once the operator raises -packagequota. */
+static int zwn_t_quota_exhaustion(const struct chain_params *params)
+{
+    int failures = 0;
+    struct zwn_fixture fixture = {0};
+    TEST("quota exhaustion: named terminal failure, no partial completion, "
+         "raised quota completes the same fetch") {
+        struct zwn_pkg pkg;
+        ASSERT(zwn_make_package(&pkg, 6, 0x55));
+        ASSERT(pkg.total_bytes > 0 && pkg.total_bytes < 4096);
+
+        struct zwn_node a, b;
+        const struct zwn_node_spec nodes[] = {{&a, "qa"}, {&b, "qb"}};
+        ASSERT(zwn_fixture_nodes(&fixture, params, nodes,
+                                 sizeof(nodes) / sizeof(nodes[0])));
+        ASSERT(zwn_store_package(a.store, &pkg));
+
+        /* Reopen B's store with a 10 KB total quota: the frozen STAGING
+         * tenth (1 KB) is smaller than this package's charged bytes, so an
+         * in-flight chunk put must refuse with ERR_QUOTA (staging is full
+         * and full is full). */
+        vcs_swarm_engine_free(b.engine);
+        vcs_package_store_close(b.store);
+        b.store = vcs_package_store_open(b.datadir, 10000);
+        ASSERT(b.store != NULL);
+        b.engine = vcs_swarm_engine_create(b.store, b.book, b.zcode_dir,
+                                           zwn_score, NULL);
+        ASSERT(b.engine != NULL);
+
+        struct zwn_link a_b, b_a;
+        const struct zwn_link_spec links[] = {
+            {&a, &a_b, {5, 6, 7, 8}, "peer-b"},
+            {&b, &b_a, {1, 2, 3, 4}, "peer-a"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, links,
+                                 sizeof(links) / sizeof(links[0])));
+        ASSERT(zwn_meet_side(&a, &a_b));
+        ASSERT(zwn_meet_side(&b, &b_a));
+
+        ASSERT(vcs_swarm_engine_fetch(b.engine, pkg.root, ZWN_DAY,
+                                      ++b.now) == VCS_SWARM_FETCH_OK);
+        enum vcs_swarm_download_state state = VCS_SWARM_DL_INACTIVE;
+        for (int i = 0; i < 400; i++) {
+            ASSERT(zwn_round(&a_b, &b_a, params->pchMessageStart));
+            struct vcs_swarm_download_status st;
+            memset(&st, 0, sizeof(st));
+            ASSERT(vcs_swarm_engine_download_status(b.engine, pkg.root,
+                                                    &st));
+            state = st.state;
+            if (state == VCS_SWARM_DL_FAILED ||
+                state == VCS_SWARM_DL_COMPLETE)
+                break;
+        }
+        /* The refusal is terminal and named — never a silent retry loop,
+         * never a partial completion. Depending on where the pool fills,
+         * the refusal lands at manifest admission (total_chunks still 0)
+         * or mid-chunks; both are the same fail-closed contract. */
+        ASSERT(state == VCS_SWARM_DL_FAILED);
+        struct vcs_swarm_download_status failed;
+        memset(&failed, 0, sizeof(failed));
+        ASSERT(vcs_swarm_engine_download_status(b.engine, pkg.root,
+                                                &failed));
+        ASSERT(failed.rule != NULL && failed.rule[0] != '\0');
+        ASSERT(failed.state != VCS_SWARM_DL_COMPLETE);
+        ASSERT(failed.present_chunks == 0 ||
+               failed.present_chunks < failed.total_chunks);
+
+        /* The operator raises -packagequota: same datadir, same root, the
+         * fetch runs to completion. */
+        vcs_swarm_engine_free(b.engine);
+        vcs_package_store_close(b.store);
+        b.store = vcs_package_store_open(
+            b.datadir, VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+        ASSERT(b.store != NULL);
+        b.engine = vcs_swarm_engine_create(b.store, b.book, b.zcode_dir,
+                                           zwn_score, NULL);
+        ASSERT(b.engine != NULL);
+        /* The store swap dropped the session peers exactly like a restart:
+         * re-meet both sides of the link. */
+        ASSERT(zwn_meet_side(&b, &b_a));
+        vcs_swarm_engine_peer_drop(a.engine, (uint64_t)a_b.node->id);
+        ASSERT(zwn_meet_side(&a, &a_b));
+
+        ASSERT(vcs_swarm_engine_fetch(b.engine, pkg.root, ZWN_DAY,
+                                      ++b.now) == VCS_SWARM_FETCH_OK);
+        bool complete = false;
+        for (int i = 0; i < 400 && !complete; i++) {
+            ASSERT(zwn_round(&a_b, &b_a, params->pchMessageStart));
+            struct vcs_swarm_download_status st;
+            memset(&st, 0, sizeof(st));
+            ASSERT(vcs_swarm_engine_download_status(b.engine, pkg.root,
+                                                    &st));
+            complete = st.state == VCS_SWARM_DL_COMPLETE;
+        }
+        ASSERT(complete);
+
+        zwn_fixture_cleanup(&fixture);
+        zwn_free_package(&pkg);
+        PASS();
+    } _test_next:
+    zwn_fixture_cleanup(&fixture);
+
+    return failures;
+}
+
+/* Deterministic seed replay: two identical topologies driven by identical
+ * caller-supplied ticks must produce identical scheduler behavior — same
+ * chunk arrival order, same transfer counters at every sampled round. The
+ * engine takes no wall time and no unseeded randomness, so any divergence
+ * between the twins is a real determinism defect (hash-order or clock
+ * leakage), not noise. */
+static int zwn_t_deterministic_replay(const struct chain_params *params)
+{
+    int failures = 0;
+    struct zwn_fixture fx1 = {0};
+    struct zwn_fixture fx2 = {0};
+    TEST("deterministic seed replay: twin topologies stay identical "
+         "round for round") {
+        struct zwn_pkg p1, p2;
+        ASSERT(zwn_make_package(&p1, 12, 0x77));
+        ASSERT(zwn_make_package(&p2, 12, 0x77));
+        ASSERT(p1.total_bytes == p2.total_bytes);
+        ASSERT(memcmp(p1.root, p2.root, 32) == 0);
+
+        struct zwn_node a1, b1, a2, b2;
+        const struct zwn_node_spec nodes1[] = {{&a1, "t1a"}, {&b1, "t1b"}};
+        const struct zwn_node_spec nodes2[] = {{&a2, "t2a"}, {&b2, "t2b"}};
+        ASSERT(zwn_fixture_nodes(&fx1, params, nodes1,
+                                 sizeof(nodes1) / sizeof(nodes1[0])));
+        ASSERT(zwn_fixture_nodes(&fx2, params, nodes2,
+                                 sizeof(nodes2) / sizeof(nodes2[0])));
+        ASSERT(zwn_store_package(a1.store, &p1));
+        ASSERT(zwn_store_package(a2.store, &p2));
+
+        struct zwn_link a1_b, b1_a, a2_b, b2_a;
+        const struct zwn_link_spec links1[] = {
+            {&a1, &a1_b, {5, 6, 7, 8}, "peer-b"},
+            {&b1, &b1_a, {1, 2, 3, 4}, "peer-a"},
+        };
+        const struct zwn_link_spec links2[] = {
+            {&a2, &a2_b, {5, 6, 7, 8}, "peer-b"},
+            {&b2, &b2_a, {1, 2, 3, 4}, "peer-a"},
+        };
+        ASSERT(zwn_fixture_links(&fx1, links1,
+                                 sizeof(links1) / sizeof(links1[0])));
+        ASSERT(zwn_fixture_links(&fx2, links2,
+                                 sizeof(links2) / sizeof(links2[0])));
+        ASSERT(zwn_meet_side(&a1, &a1_b));
+        ASSERT(zwn_meet_side(&b1, &b1_a));
+        ASSERT(zwn_meet_side(&a2, &a2_b));
+        ASSERT(zwn_meet_side(&b2, &b2_a));
+
+        ASSERT(vcs_swarm_engine_fetch(b1.engine, p1.root, ZWN_DAY,
+                                      ++b1.now) == VCS_SWARM_FETCH_OK);
+        ASSERT(vcs_swarm_engine_fetch(b2.engine, p2.root, ZWN_DAY,
+                                      ++b2.now) == VCS_SWARM_FETCH_OK);
+
+        bool done1 = false;
+        bool done2 = false;
+        for (int i = 0; i < 400 && !(done1 && done2); i++) {
+            ASSERT(zwn_round(&a1_b, &b1_a, params->pchMessageStart));
+            ASSERT(zwn_round(&a2_b, &b2_a, params->pchMessageStart));
+
+            struct vcs_swarm_download_status s1, s2;
+            memset(&s1, 0, sizeof(s1));
+            memset(&s2, 0, sizeof(s2));
+            ASSERT(vcs_swarm_engine_download_status(b1.engine, p1.root,
+                                                    &s1));
+            ASSERT(vcs_swarm_engine_download_status(b2.engine, p2.root,
+                                                    &s2));
+            /* Identical inputs -> identical state, every round. */
+            ASSERT(s1.state == s2.state);
+            ASSERT(s1.present_chunks == s2.present_chunks);
+            ASSERT(s1.transferred_objects == s2.transferred_objects);
+            ASSERT(s1.requested_objects == s2.requested_objects);
+            ASSERT(s1.fetched_bytes == s2.fetched_bytes);
+            done1 = s1.state == VCS_SWARM_DL_COMPLETE;
+            done2 = s2.state == VCS_SWARM_DL_COMPLETE;
+        }
+        ASSERT(done1 && done2);
+
+        zwn_fixture_cleanup(&fx1);
+        zwn_fixture_cleanup(&fx2);
+        zwn_free_package(&p1);
+        zwn_free_package(&p2);
+        PASS();
+    } _test_next:
+    zwn_fixture_cleanup(&fx1);
+    zwn_fixture_cleanup(&fx2);
+
+    return failures;
+}
+
 int test_zcode_swarm_net(void)
 {
     int failures = 0;
@@ -3911,6 +4108,8 @@ int test_zcode_swarm_net(void)
     failures += zwn_t_corrupt_provider_repair(params);
     failures += zwn_t_corrupt_local_repair(params);
     failures += zwn_t_unrequested(params);
+    failures += zwn_t_quota_exhaustion(params);
+    failures += zwn_t_deterministic_replay(params);
     if (failures == 0 && g_zwn_sovereign_receipt.ready)
         zwn_print_sovereign_receipt();
     return failures;
