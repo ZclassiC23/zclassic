@@ -34,3 +34,13 @@
                "runtime", "runtime", "config/src/boot_zcode_dht.c",
                "in_process_snapshot", "cheap", "empty or status", NULL,
                NULL, "lib/test/src/test_zcode_dht_service.c", false),
+
+    DIAG_ENTRY("zcode_swarm", vcs_package_swarm_status_dump_state_json,
+               "ZCODE package swarm engine: whether the node-global engine "
+               "is present, peer count, active download count, and bounded "
+               "per-peer served/fetched bytes; enabled=false and present="
+               "false when hosting is off; never exposes keys, wallet "
+               "material, or datadir paths",
+               "runtime", "runtime", "lib/vcs/src/package_swarm_status.c",
+               "in_process_snapshot", "cheap", NULL, NULL, NULL,
+               "lib/test/src/test_zcode_store.c", false),
