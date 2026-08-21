@@ -69,8 +69,13 @@
  *     (`(applied_through+1) * rows_per_step`) must equal `coins_kv_count()`
  *     EXACTLY — the cursor can never be ahead of (or behind) the content it
  *     claims, which is exactly what the drain pre-commit veto guarantees in
- *     production. `mint_anchor_progress_can_resume()` must authorize a clean
- *     resume at every reopen (the named non-corruption terminal); a final
+ *     production. `mint_anchor_progress_can_resume()` must authorize one of
+ *     exactly two clean outcomes at every reopen: a non-legacy RESUME when
+ *     fold progress exists, or — since cf71eb314 — the sanctioned GENESIS
+ *     RESET when the marker matches but nothing was ever applied (an empty
+ *     resume would skip the reset that truncates coins_kv and wedge the
+ *     producer against its node.db mirror). Any other refusal is the silent
+ *     wedge this test exists to catch; a final
  *     uninterrupted drain to the last step plus `mint_anchor_progress_clear`
  *     proves the OTHER named terminal (verified completion) is always
  *     reachable regardless of interruption history.
@@ -614,12 +619,52 @@ static int p11_7mf_run_phase(void)
         bool legacy_adopted = true; /* poison — must come back false */
         bool can_resume = mint_anchor_progress_can_resume(db, &cp, &applied_through,
                                                            &legacy_adopted);
-        if (!can_resume || legacy_adopted) {
-            printf("FAIL (mint-fold cycle %d: can_resume=%d legacy_adopted=%d "
-                   "— the durable marker was written and matched before any "
-                   "fold step ran, so a SIGKILL anywhere afterward must still "
-                   "authorize a clean, non-legacy resume — never a silent "
-                   "wedge)\n", i, can_resume, legacy_adopted);
+        if (!can_resume) {
+            /* cf71eb314 contract: an intact matched marker with NOTHING
+             * durably applied authorizes a genesis reset (can_resume=false)
+             * rather than an empty resume — resuming would skip the reset
+             * that truncates coins_kv. That refusal is clean ONLY when it is
+             * provably the empty case: no durable frontier and nothing
+             * adopted. Any other false here is the silent wedge this test
+             * exists to catch (a kill after real progress must resume). */
+            int32_t empty_frontier = 0;
+            bool have_frontier = true; /* poison — must come back false */
+            if (legacy_adopted ||
+                !coins_kv_get_applied_height(db, &empty_frontier,
+                                             &have_frontier) ||
+                have_frontier) {
+                printf("FAIL (mint-fold cycle %d: unexpected resume refusal: "
+                       "legacy_adopted=%d have_frontier=%d — a SIGKILL after "
+                       "the marker was written must end in exactly one clean "
+                       "state: non-legacy resume when progress exists, or the "
+                       "sanctioned genesis reset only while nothing was ever "
+                       "applied — never a silent wedge)\n",
+                       i, legacy_adopted, have_frontier);
+                failures++;
+                progress_store_close();
+                break;
+            }
+            /* Mirror boot_refold_staged.c's false branch: re-bind the lane,
+             * re-mark, and fold again from step 0. */
+            bool rearmed = mint_anchor_producer_lane_bind(
+                               db, /*checkpoint_fold=*/true) &&
+                           mint_anchor_progress_mark(db, &cp);
+            progress_store_close();
+            if (!rearmed) {
+                printf("FAIL (mint-fold cycle %d: could not re-arm the "
+                       "producer lane/marker after a sanctioned genesis "
+                       "reset)\n", i);
+                failures++;
+                break;
+            }
+            printf("[kill9mf] cycle %d: SIGKILL landed pre-first-commit — "
+                   "sanctioned genesis reset taken, producer re-armed\n", i);
+            continue;
+        }
+        if (legacy_adopted) {
+            printf("FAIL (mint-fold cycle %d: legacy_adopted=1 on a resumed "
+                   "fold — this fixture never arms the refold signal, so "
+                   "legacy adoption must be impossible)\n", i);
             failures++;
             progress_store_close();
             break;
