@@ -35,6 +35,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
+JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
 
 MKT_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
@@ -120,15 +121,27 @@ mkt_rpc() {
 a_rpc() { mkt_rpc "$MKT_DD_A" "$A_RPC" "$@"; }
 b_rpc() { mkt_rpc "$MKT_DD_B" "$B_RPC" "$@"; }
 mkt_result() {
-    python3 -c 'import json,sys
-d=json.load(sys.stdin)
-if d.get("error") is not None: raise SystemExit(2)
-v=d.get("result")
-print(json.dumps(v,separators=(",",":")) if isinstance(v,(dict,list)) else v)'
+    "$JSONQ" unwrap
 }
 mkt_jget() {
-    local expr="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); print($expr)"
+    "$JSONQ" get "$1"
+}
+hexrev() {
+    local h="$1" i=${#1} out=""
+    while [ "$i" -gt 0 ]; do
+        i=$((i-2))
+        out="${out}${h:$i:2}"
+    done
+    printf '%s\n' "$out"
+}
+mkt_hex64() {
+    local h="$1"
+    [ "${#h}" -eq 64 ] || return 1
+    case "$h" in
+        *[!0-9a-fA-F]*) return 1 ;;
+        *[!0]*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 mkt_native() {
     local dd="$1" rpc="$2"; shift 2
@@ -194,24 +207,14 @@ mkt_wait_height() {
 # explorer_dump_state_json). On timeout, FAIL with the last bootstrap
 # line — never silently skip the onion proof.
 oni_onion_address() {
-    mkt_native "$1" "$2" ops state --subsystem=explorer 2>/dev/null | python3 -c '
-import json,sys
-try:
-    d = json.load(sys.stdin)
-except Exception:
-    raise SystemExit(0)
-def walk(v):
-    if isinstance(v, dict):
-        for k, x in v.items():
-            if k == "onion_address" and isinstance(x, str) and \
-               x.endswith(".onion"):
-                print(x); return True
-            if walk(x): return True
-    elif isinstance(v, list):
-        for x in v:
-            if walk(x): return True
-    return False
-walk(d)' 2>/dev/null
+    local json addr
+    json="$(mkt_native "$1" "$2" ops state --subsystem=explorer 2>/dev/null || true)"
+    addr="$(printf '%s' "$json" | "$JSONQ" get data.state.onion_address 2>/dev/null || true)"
+    [ -n "$addr" ] ||
+        addr="$(printf '%s' "$json" | "$JSONQ" get state.onion_address 2>/dev/null || true)"
+    [ -n "$addr" ] ||
+        addr="$(printf '%s' "$json" | "$JSONQ" get data.onion_address 2>/dev/null || true)"
+    printf '%s\n' "$addr"
 }
 oni_bootstrap_tail() {
     grep "Bootstrapped" "$1/tor.log" 2>/dev/null | tail -1
@@ -263,7 +266,7 @@ mkt_wait_sync_live() {
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         state="$(mkt_rpc "$dd" "$rpc" downloadstats 2>/dev/null \
-            | mkt_jget 'd["result"]["sync_state"]' 2>/dev/null || true)"
+            | mkt_jget result.sync_state 2>/dev/null || true)"
         case "$state" in
             blocks_download|connecting_blocks|at_tip) return 0 ;;
         esac
@@ -281,7 +284,7 @@ mkt_wait_at_tip() {
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         state="$(mkt_rpc "$dd" "$rpc" downloadstats 2>/dev/null \
-            | mkt_jget 'd["result"]["sync_state"]' 2>/dev/null || true)"
+            | mkt_jget result.sync_state 2>/dev/null || true)"
         [ "$state" = "at_tip" ] && return 0
         sleep 0.5
     done
@@ -294,8 +297,8 @@ mkt_wait_fold() {
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         dump="$(mkt_native "$dd" "$rpc" dumpstate reducer_frontier || true)"
-        coins="$(printf '%s' "$dump" | mkt_jget 'd["state"]["coins_best_height"]' 2>/dev/null || true)"
-        hstar="$(printf '%s' "$dump" | mkt_jget 'd["state"]["hstar"]' 2>/dev/null || true)"
+        coins="$(printf '%s' "$dump" | mkt_jget state.coins_best_height 2>/dev/null || true)"
+        hstar="$(printf '%s' "$dump" | mkt_jget state.hstar 2>/dev/null || true)"
         [ "$coins" = "$tip" ] && [ "$hstar" = "$tip" ] && return 0
         sleep 1
     done
@@ -305,19 +308,13 @@ mkt_wait_fold() {
 # RPC-ready != chain-loaded: the money gate needs the active chain index,
 # which loads after the RPC starts serving.
 mkt_wait_chain_loaded() {
-    local dd="$1" rpc="$2" tip="$3" deadline loaded
+    local dd="$1" rpc="$2" tip="$3" deadline chain blocks ibd
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
-        loaded="$(mkt_rpc "$dd" "$rpc" getblockchaininfo 2>/dev/null | python3 -c '
-import json,sys
-tip = int(sys.argv[1])
-try:
-    d = json.load(sys.stdin).get("result")
-except Exception:
-    d = None
-print(isinstance(d, dict) and d.get("blocks") == tip and d.get("initialblockdownload") is not True)' \
-            "$tip" 2>/dev/null || true)"
-        [ "$loaded" = "True" ] && return 0
+        chain="$(mkt_rpc "$dd" "$rpc" getblockchaininfo 2>/dev/null || true)"
+        blocks="$(printf '%s' "$chain" | mkt_jget result.blocks 2>/dev/null || true)"
+        ibd="$(printf '%s' "$chain" | mkt_jget result.initialblockdownload 2>/dev/null || true)"
+        [ "$blocks" = "$tip" ] && [ "$ibd" != "true" ] && return 0
         sleep 1
     done
     return 1
@@ -330,7 +327,7 @@ mkt_wait_spendable() {
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         spend="$(mkt_native "$dd" "$rpc" dumpstate vault 2>/dev/null \
-            | mkt_jget 'd["state"]["zcl"]["spendable"]' 2>/dev/null || true)"
+            | mkt_jget state.zcl.spendable 2>/dev/null || true)"
         case "$spend" in
             ''|*[!0-9]*) ;;
             *) [ "$spend" -gt 0 ] && return 0 ;;
@@ -342,12 +339,12 @@ mkt_wait_spendable() {
 mkt_unlock_wallet() {
     local dd="$1" rpc="$2" status unlock
     status="$(mkt_native "$dd" "$rpc" core wallet security status || true)"
-    [ "$(printf '%s' "$status" | mkt_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+    [ "$(printf '%s' "$status" | mkt_jget ok 2>/dev/null || true)" = "true" ] || {
         printf '%s\n' "$status" >&2; return 1; }
-    if [ "$(printf '%s' "$status" | mkt_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" != "True" ]; then
+    if [ "$(printf '%s' "$status" | mkt_jget data.unlocked 2>/dev/null || true)" != "true" ]; then
         unlock="$(printf '%s' "{\"passphrase\":\"$MKT_WALLET_PASS\",\"timeout_seconds\":3600}" \
             | mkt_native "$dd" "$rpc" core wallet security unlock --input=- || true)"
-        [ "$(printf '%s' "$unlock" | mkt_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" = "True" ] || {
+        [ "$(printf '%s' "$unlock" | mkt_jget data.unlocked 2>/dev/null || true)" = "true" ] || {
             printf '%s\n' "$unlock" >&2; return 1; }
     fi
     return 0
@@ -356,7 +353,7 @@ mkt_backup_wallet() {
     local dd="$1" rpc="$2" out
     out="$(printf '%s' "{\"confirm\":true,\"password\":\"$MKT_BACKUP_PASS\"}" \
         | mkt_native "$dd" "$rpc" core wallet backup now --input=- || true)"
-    [ "$(printf '%s' "$out" | mkt_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+    [ "$(printf '%s' "$out" | mkt_jget ok 2>/dev/null || true)" = "true" ] || {
         printf '%s\n' "$out" >&2; return 1; }
 }
 
@@ -365,6 +362,7 @@ for port in $A_PORT $A_RPC $A_FS $A_HTTPS $B_PORT $B_RPC $B_FS $B_HTTPS \
     mkt_assert_port "$port"
 done
 [ -x "$NODE_BIN" ] && [ -x "$RPC_BIN" ] || mkt_die "build node and RPC binaries first"
+[ -x "$JSONQ" ] || mkt_die "build/bin/jsonq is missing — run make jsonq"
 mkdir -p "$REPO_ROOT/test-tmp"
 MKT_WORK="$(mktemp -d "$REPO_ROOT/test-tmp/zcl23-oniacc-XXXXXX")"
 MKT_DD_A="$MKT_WORK/a"; MKT_DD_B="$MKT_WORK/b"
@@ -373,31 +371,217 @@ MKT_DOWNLOADS="$MKT_WORK/downloads"
 mkdir -p "$MKT_DD_A" "$MKT_DD_B" "$MKT_CONTENT" "$MKT_DOWNLOADS"
 FIXTURE="$MKT_CONTENT/seller-fixture.bin"
 DESTINATION="$MKT_DOWNLOADS/bought-copy.bin"
+FIXTURE_GEN="$MKT_WORK/fixture_gen"
 
 # Deterministic one-chunk fixture, plus the exact manifest root the offer
 # must commit (sha3-256 over the concatenated per-chunk sha3-256 digests)
 # and the exact total price.
-read -r FIXTURE_SIZE EXPECT_ROOT EXPECT_TOTAL_ZAT <<<"$(python3 - "$FIXTURE" "$PRICE_PER_MB_ZAT" "$FIXTURE_BYTES" <<'PY'
-import hashlib,sys
-path, price, size = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-chunk = 50 * 1024 * 1024
-digests = []
-written = 0
-with open(path, "wb") as f:
-    while written < size:
-        n = min(chunk, size - written)
-        block = bytes(((written + i * 11) & 0xFF) for i in range(n))
-        f.write(block)
-        digests.append(hashlib.sha3_256(block).digest())
-        written += n
-root = hashlib.sha3_256(b"".join(digests)).hexdigest()
-mb = 1024 * 1024
-whole, rem = divmod(written, mb)
-pw, pr = divmod(price, mb)
-total = whole * price + rem * pw + (rem * pr + mb - 1) // mb
-print(written, root, total)
-PY
-)" || mkt_die "fixture build failed"
+cat >"$MKT_WORK/fixture_gen.c" <<'C'
+#include "sha3/sha3.h"
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+enum { CHUNK = 50 * 1024 * 1024, BLOCK = 65536 };
+
+static void die(const char *m)
+{
+    fprintf(stderr, "fixture_gen: %s\n", m);
+    exit(1);
+}
+
+static void digest_hex(const unsigned char d[32], char out[65])
+{
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = hex[d[i] >> 4];
+        out[i * 2 + 1] = hex[d[i] & 15];
+    }
+    out[64] = '\0';
+}
+
+static int hex_nibble(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static uint64_t parse_u64(const char *s)
+{
+    char *end = NULL;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (!s || !s[0] || !end || *end) die("invalid integer");
+    return (uint64_t)v;
+}
+
+static uint64_t price_total(uint64_t written, uint64_t price)
+{
+    uint64_t mb = 1024ull * 1024ull;
+    uint64_t whole = written / mb, rem = written % mb;
+    uint64_t pw = price / mb, pr = price % mb;
+    return whole * price + rem * pw + (rem * pr + mb - 1ull) / mb;
+}
+
+static int hash_chunk_stream(FILE *f, int writing, uint64_t size,
+                             unsigned char *digests, int *nchunks)
+{
+    unsigned char buf[BLOCK];
+    unsigned char digest[32];
+    uint64_t written = 0;
+    *nchunks = 0;
+    while (written < size) {
+        uint64_t n = size - written;
+        if (n > (uint64_t)CHUNK) n = (uint64_t)CHUNK;
+        struct sha3_256_ctx ctx;
+        sha3_256_init(&ctx);
+        uint64_t off = 0;
+        while (off < n) {
+            size_t take = (n - off) > (uint64_t)BLOCK
+                ? (size_t)BLOCK : (size_t)(n - off);
+            if (writing) {
+                for (size_t i = 0; i < take; i++)
+                    buf[i] = (unsigned char)((written +
+                        (off + (uint64_t)i) * 11ull) & 0xFFull);
+                if (fwrite(buf, 1, take, f) != take) return -1;
+            } else {
+                if (fread(buf, 1, take, f) != take) return -1;
+            }
+            sha3_256_write(&ctx, buf, take);
+            off += take;
+        }
+        sha3_256_finalize(&ctx, digest);
+        memcpy(digests + (*nchunks) * 32, digest, 32);
+        (*nchunks)++;
+        written += n;
+    }
+    return 0;
+}
+
+static void cmd_write(const char *path, uint64_t price, uint64_t size)
+{
+    unsigned char digests[64 * 32];
+    int nchunks = 0;
+    FILE *f = fopen(path, "wb");
+    if (!f) die("open write failed");
+    if (size == 0 ||
+        (size + (uint64_t)CHUNK - 1ull) / (uint64_t)CHUNK > 64ull) {
+        fclose(f);
+        die("size out of range");
+    }
+    if (hash_chunk_stream(f, 1, size, digests, &nchunks) != 0) {
+        fclose(f);
+        die("write failed");
+    }
+    fclose(f);
+    unsigned char root[32];
+    char hex[65];
+    sha3_256(digests, (size_t)nchunks * 32u, root);
+    digest_hex(root, hex);
+    printf("%llu %s %llu\n",
+           (unsigned long long)size, hex,
+           (unsigned long long)price_total(size, price));
+}
+
+static void cmd_root(const char *path)
+{
+    unsigned char digests[64 * 32];
+    int nchunks = 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) die("open read failed");
+    if (fseek(f, 0, SEEK_END) != 0) die("seek failed");
+    long sz = ftell(f);
+    if (sz < 0) die("tell failed");
+    if (fseek(f, 0, SEEK_SET) != 0) die("seek failed");
+    uint64_t size = (uint64_t)sz;
+    if (size == 0 ||
+        (size + (uint64_t)CHUNK - 1ull) / (uint64_t)CHUNK > 64ull) {
+        fclose(f);
+        die("size out of range");
+    }
+    if (hash_chunk_stream(f, 0, size, digests, &nchunks) != 0) {
+        fclose(f);
+        die("read failed");
+    }
+    fclose(f);
+    unsigned char root[32];
+    char hex[65];
+    sha3_256(digests, (size_t)nchunks * 32u, root);
+    digest_hex(root, hex);
+    printf("%s\n", hex);
+}
+
+static void b32encode(const unsigned char *in, size_t inlen, char *out)
+{
+    static const char alph[] = "abcdefghijklmnopqrstuvwxyz234567";
+    uint64_t buf = 0;
+    int bits = 0;
+    size_t j = 0;
+    for (size_t i = 0; i < inlen; i++) {
+        buf = (buf << 8) | in[i];
+        bits += 8;
+        while (bits >= 5) {
+            bits -= 5;
+            out[j++] = alph[(buf >> bits) & 31];
+        }
+    }
+    if (bits)
+        out[j++] = alph[(buf << (5 - bits)) & 31];
+    out[j] = '\0';
+}
+
+static void cmd_onion(const char *hex)
+{
+    unsigned char pub[32];
+    if (!hex || strlen(hex) != 64) die("onion pubkey must be 64 hex chars");
+    for (int i = 0; i < 32; i++) {
+        int hi = hex_nibble(hex[i * 2]);
+        int lo = hex_nibble(hex[i * 2 + 1]);
+        if (hi < 0 || lo < 0) die("onion pubkey is not hex");
+        pub[i] = (unsigned char)((hi << 4) | lo);
+    }
+    unsigned char msg[15 + 32 + 1];
+    memcpy(msg, ".onion checksum", 15);
+    memcpy(msg + 15, pub, 32);
+    msg[47] = 0x03;
+    unsigned char digest[32];
+    sha3_256(msg, 48, digest);
+    unsigned char raw[35];
+    memcpy(raw, pub, 32);
+    raw[32] = digest[0];
+    raw[33] = digest[1];
+    raw[34] = 0x03;
+    char addr[57];
+    b32encode(raw, 35, addr);
+    printf("%s.onion\n", addr);
+}
+
+int main(int argc, char **argv)
+{
+    if (argc >= 2 && strcmp(argv[1], "write") == 0 && argc == 5) {
+        cmd_write(argv[2], parse_u64(argv[3]), parse_u64(argv[4]));
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "root") == 0 && argc == 3) {
+        cmd_root(argv[2]);
+        return 0;
+    }
+    if (argc >= 2 && strcmp(argv[1], "onion") == 0 && argc == 3) {
+        cmd_onion(argv[2]);
+        return 0;
+    }
+    die("usage: fixture_gen write PATH PRICE SIZE | root PATH | onion PUBKEY_HEX");
+}
+C
+cc -std=c23 -O2 -I"$REPO_ROOT/lib/sha3/include" -I"$REPO_ROOT/lib/base/include" \
+    -o "$FIXTURE_GEN" "$MKT_WORK/fixture_gen.c" \
+    "$REPO_ROOT/lib/sha3/src/sha3.c" || mkt_die "fixture_gen compile failed"
+read -r FIXTURE_SIZE EXPECT_ROOT EXPECT_TOTAL_ZAT \
+    <<<"$("$FIXTURE_GEN" write "$FIXTURE" "$PRICE_PER_MB_ZAT" "$FIXTURE_BYTES")" \
+    || mkt_die "fixture build failed"
 
 # Wallet custody: boot both nodes with a passphrase credential so key writes
 # encrypt at rest (WKS1). The seller-key envelope (metadata DEK) and the
@@ -476,21 +660,36 @@ mkt_wait_spendable "$MKT_DD_B" "$B_RPC" || mkt_die "B vault spendable never beca
 mkt_note "seller plans the offer (non-mutating preview)"
 OFFER_PLAN="$(printf '%s' "{\"filepath\":\"$FIXTURE\",\"price_per_mb_zat\":$PRICE_PER_MB_ZAT}" \
     | mkt_native "$MKT_DD_A" "$A_RPC" app market offer --input=- || true)"
-python3 - "$OFFER_PLAN" "$EXPECT_ROOT" "$FIXTURE_SIZE" "$EXPECTED_CHUNKS" "$EXPECT_TOTAL_ZAT" <<'PY' || mkt_die "offer plan preview mismatch: $OFFER_PLAN"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="plan" and data["committed"] is False and data["spends_funds"] is False,data
-assert data["root_hash"]==sys.argv[2],data
-assert data["size_bytes"]==int(sys.argv[3]) and data["num_chunks"]==int(sys.argv[4]),data
-assert data["total_zat"]==int(sys.argv[5]),data
-assert data["price_per_mb_zat"]>0 and "commit_input" in data,data
-assert "offer_id" not in data and "seller_pubkey" not in data,data
-PY
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq ok true ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.stage plan ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.committed false ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.spends_funds false ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.root_hash "$EXPECT_ROOT" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.size_bytes "$FIXTURE_SIZE" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.num_chunks "$EXPECTED_CHUNKS" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.total_zat "$EXPECT_TOTAL_ZAT" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+price="$(printf '%s' "$OFFER_PLAN" | "$JSONQ" get data.price_per_mb_zat)" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+[ "$price" -gt 0 ] || mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" has data.commit_input ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+if printf '%s' "$OFFER_PLAN" | "$JSONQ" has data.offer_id; then
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+fi
+if printf '%s' "$OFFER_PLAN" | "$JSONQ" has data.seller_pubkey; then
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+fi
 OFFER_COUNT="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
     --input='{"sql":"SELECT COUNT(*) AS n FROM file_offers"}' || true)"
-[ "$(printf '%s' "$OFFER_COUNT" | mkt_jget 'd["data"]["rows"][0][0]' 2>/dev/null || true)" = "0" ] ||
+[ "$(printf '%s' "$OFFER_COUNT" | mkt_jget data.rows[0][0] 2>/dev/null || true)" = "0" ] ||
     mkt_die "offer plan mutated seller storage: $OFFER_COUNT"
 [ "$(a_rpc zmarket_list | mkt_result)" = "[]" ] ||
     mkt_die "offer plan touched the seller gossip cache"
@@ -498,21 +697,26 @@ OFFER_COUNT="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
 mkt_note "seller commits the offer — Tor ready + no -externalip must select the v2 onion endpoint"
 OFFER_COMMIT="$(printf '%s' "{\"filepath\":\"$FIXTURE\",\"price_per_mb_zat\":$PRICE_PER_MB_ZAT,\"confirm\":true}" \
     | mkt_native "$MKT_DD_A" "$A_RPC" app market offer --input=- || true)"
-OFFER_ID="$(python3 - "$OFFER_COMMIT" "$EXPECT_ROOT" <<'PY' || mkt_die "offer commit refused: $OFFER_COMMIT"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="committed" and data["committed"] is True,data
-assert data["idempotent_replay"] is False and data["announced"] is True,data
-assert data["root_hash"]==sys.argv[2],data
-assert data["endpoint_source"]=="onion",data
-oid=data["offer_id"]
-assert len(oid)==64 and int(oid,16)>0,data
-assert len(data["seller_pubkey"])==64,data
-print(oid)
-PY
-)"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq ok true ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.stage committed ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.committed true ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.idempotent_replay false ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.announced true ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.root_hash "$EXPECT_ROOT" ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.endpoint_source onion ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+OFFER_ID="$(printf '%s' "$OFFER_COMMIT" | "$JSONQ" get data.offer_id)" ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+mkt_hex64 "$OFFER_ID" || mkt_die "offer commit refused: $OFFER_COMMIT"
+seller_pubkey="$(printf '%s' "$OFFER_COMMIT" | "$JSONQ" get data.seller_pubkey)" ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+[ "${#seller_pubkey}" -eq 64 ] || mkt_die "offer commit refused: $OFFER_COMMIT"
 mkt_note "seller offer committed on the onion endpoint: offer_id=$OFFER_ID"
 
 # The committed offer must name A's OWN onion service: endpoint_type=1,
@@ -521,19 +725,18 @@ mkt_note "seller offer committed on the onion endpoint: offer_id=$OFFER_ID"
 # checksum" || pubkey || 0x03)[:2] || 0x03) + ".onion").
 A_OFFER_ROW="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
     --input='{"sql":"SELECT endpoint_type, peer_port, hex(onion_pubkey) FROM file_offers"}' || true)"
-python3 - "$A_OFFER_ROW" "$A_ONION" <<'PY' || mkt_die "seller offer endpoint row mismatch: $A_OFFER_ROW"
-import base64,hashlib,json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-rows=d["data"]["rows"]
-assert len(rows)==1,rows
-endpoint_type,peer_port,pubkey_hex=rows[0]
-assert endpoint_type==1 and peer_port==0,(endpoint_type,peer_port)
-pub=bytes.fromhex(pubkey_hex)
-chk=hashlib.sha3_256(b".onion checksum"+pub+b"\x03").digest()[:2]
-addr=base64.b32encode(pub+chk+b"\x03").decode().lower().rstrip("=")+".onion"
-assert addr==sys.argv[2],(addr,sys.argv[2])
-PY
+printf '%s' "$A_OFFER_ROW" | "$JSONQ" eq ok true ||
+    mkt_die "seller offer endpoint row mismatch: $A_OFFER_ROW"
+[ "$(printf '%s' "$A_OFFER_ROW" | "$JSONQ" count data.rows)" = "1" ] ||
+    mkt_die "seller offer endpoint row mismatch: $A_OFFER_ROW"
+printf '%s' "$A_OFFER_ROW" | "$JSONQ" eq data.rows[0][0] 1 ||
+    mkt_die "seller offer endpoint row mismatch: $A_OFFER_ROW"
+printf '%s' "$A_OFFER_ROW" | "$JSONQ" eq data.rows[0][1] 0 ||
+    mkt_die "seller offer endpoint row mismatch: $A_OFFER_ROW"
+onion_pub="$(printf '%s' "$A_OFFER_ROW" | "$JSONQ" get data.rows[0][2])" ||
+    mkt_die "seller offer endpoint row mismatch: $A_OFFER_ROW"
+[ "$("$FIXTURE_GEN" onion "$onion_pub")" = "$A_ONION" ] ||
+    mkt_die "seller offer endpoint row mismatch: $A_OFFER_ROW"
 
 # ── Phase 2: the offer gossips to the buyer ──────────────────────────
 mkt_note "waiting for the signed v2 offer to gossip to the buyer"
@@ -548,22 +751,52 @@ while :; do
     sleep 1
 done
 BUYER_ENTRY="$(b_rpc zmarket_list | mkt_result)"
-python3 - "$BUYER_ENTRY" "$OFFER_ID" "$EXPECT_ROOT" "$PRICE_PER_MB_ZAT" "$EXPECTED_CHUNKS" "$EXPECT_TOTAL_ZAT" <<'PY' || mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
-import json,sys
-rows=json.loads(sys.argv[1])
-match=[r for r in rows if r.get("offer_id")==sys.argv[2]]
-assert len(match)==1,rows
-r=match[0]
-assert r["root_hash"]==sys.argv[3],r
-assert r["price_per_mb_zat"]==int(sys.argv[4]) and r["num_chunks"]==int(sys.argv[5]),r
-assert r["total_cost_zat"]==int(sys.argv[6]),r
-# The onion endpoint carries NO usable clearnet address: the buyer
-# physically cannot open a clearnet file-service connection to the seller.
-assert r["authenticated"] is True and r["peer_port"]==0,r
-PY
+buyer_kind="$(printf '%s' "$BUYER_ENTRY" | "$JSONQ" type .)" ||
+    mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+if [ "$buyer_kind" = "array" ]; then
+    buyer_n="$(printf '%s' "$BUYER_ENTRY" | "$JSONQ" count .)" ||
+        mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+    buyer_pref=""
+else
+    buyer_n="$(printf '%s' "$BUYER_ENTRY" | "$JSONQ" count offers)" ||
+        mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+    buyer_pref="offers"
+fi
+buyer_match=0
+buyer_i=0
+while [ "$buyer_i" -lt "$buyer_n" ]; do
+    if [ -n "$buyer_pref" ]; then
+        buyer_at="${buyer_pref}[$buyer_i]"
+    else
+        buyer_at="[$buyer_i]"
+    fi
+    buyer_oid="$(printf '%s' "$BUYER_ENTRY" | "$JSONQ" get "$buyer_at.offer_id")" ||
+        mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+    if [ "$buyer_oid" = "$OFFER_ID" ]; then
+        buyer_match=$((buyer_match + 1))
+        printf '%s' "$BUYER_ENTRY" | "$JSONQ" eq "$buyer_at.root_hash" "$EXPECT_ROOT" ||
+            mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+        printf '%s' "$BUYER_ENTRY" | "$JSONQ" eq "$buyer_at.price_per_mb_zat" "$PRICE_PER_MB_ZAT" ||
+            mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+        printf '%s' "$BUYER_ENTRY" | "$JSONQ" eq "$buyer_at.num_chunks" "$EXPECTED_CHUNKS" ||
+            mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+        printf '%s' "$BUYER_ENTRY" | "$JSONQ" eq "$buyer_at.total_cost_zat" "$EXPECT_TOTAL_ZAT" ||
+            mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+        # The onion endpoint carries NO usable clearnet address: the buyer
+        # physically cannot open a clearnet file-service connection to the seller.
+        printf '%s' "$BUYER_ENTRY" | "$JSONQ" eq "$buyer_at.authenticated" true ||
+            mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+        printf '%s' "$BUYER_ENTRY" | "$JSONQ" eq "$buyer_at.peer_port" 0 ||
+            mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
+    fi
+    buyer_i=$((buyer_i + 1))
+done
+[ "$buyer_match" = 1 ] || mkt_die "buyer market list entry mismatch: $BUYER_ENTRY"
 B_OFFER_ROW="$(mkt_native "$MKT_DD_B" "$B_RPC" core storage query \
     --input="{\"sql\":\"SELECT endpoint_type, peer_port FROM file_offers WHERE offer_id=x'$OFFER_ID'\"}" || true)"
-[ "$(printf '%s' "$B_OFFER_ROW" | mkt_jget 'd["data"]["rows"]' 2>/dev/null || true)" = "[[1, 0]]" ] ||
+[ "$(printf '%s' "$B_OFFER_ROW" | "$JSONQ" count data.rows 2>/dev/null || true)" = "1" ] &&
+    printf '%s' "$B_OFFER_ROW" | "$JSONQ" eq data.rows[0][0] 1 &&
+    printf '%s' "$B_OFFER_ROW" | "$JSONQ" eq data.rows[0][1] 0 ||
     mkt_die "buyer stored the offer with a non-onion endpoint: $B_OFFER_ROW"
 
 # ── Phase 3: buyer purchase plan + commit (real Sapling payment) ─────
@@ -577,43 +810,65 @@ for try in $(seq 1 20); do
         *) break ;;
     esac
 done
-PLAN_ID="$(python3 - "$PLAN" "$OFFER_ID" "$EXPECT_TOTAL_ZAT" <<'PY' || mkt_die "purchase plan refused: $PLAN"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="plan" and data["committed"] is False and data["spends_funds"] is False,data
-assert data["offer_id"]==sys.argv[2],data
-assert data["amount_zat"]==int(sys.argv[3]),data
-assert data["maximum_fee_zat"]>0 and data["reserved_zat"]==data["amount_zat"]+data["maximum_fee_zat"],data
-assert data["chunk_start"]==0 and data["chunks_paid"]>0 and data["state"]=="planned",data
-assert data["idempotent_replay"] is False,data
-pid=data["plan_id"]
-assert len(pid)==64 and int(pid,16)>0,data
-assert "commit_input" in data,data
-print(pid)
-PY
-)"
+printf '%s' "$PLAN" | "$JSONQ" eq ok true ||
+    mkt_die "purchase plan refused: $PLAN"
+printf '%s' "$PLAN" | "$JSONQ" eq data.stage plan ||
+    mkt_die "purchase plan refused: $PLAN"
+printf '%s' "$PLAN" | "$JSONQ" eq data.committed false ||
+    mkt_die "purchase plan refused: $PLAN"
+printf '%s' "$PLAN" | "$JSONQ" eq data.spends_funds false ||
+    mkt_die "purchase plan refused: $PLAN"
+printf '%s' "$PLAN" | "$JSONQ" eq data.offer_id "$OFFER_ID" ||
+    mkt_die "purchase plan refused: $PLAN"
+printf '%s' "$PLAN" | "$JSONQ" eq data.amount_zat "$EXPECT_TOTAL_ZAT" ||
+    mkt_die "purchase plan refused: $PLAN"
+fee="$(printf '%s' "$PLAN" | "$JSONQ" get data.maximum_fee_zat)" ||
+    mkt_die "purchase plan refused: $PLAN"
+reserved="$(printf '%s' "$PLAN" | "$JSONQ" get data.reserved_zat)" ||
+    mkt_die "purchase plan refused: $PLAN"
+amount="$(printf '%s' "$PLAN" | "$JSONQ" get data.amount_zat)" ||
+    mkt_die "purchase plan refused: $PLAN"
+[ "$fee" -gt 0 ] && [ "$reserved" = "$((amount + fee))" ] ||
+    mkt_die "purchase plan refused: $PLAN"
+printf '%s' "$PLAN" | "$JSONQ" eq data.chunk_start 0 ||
+    mkt_die "purchase plan refused: $PLAN"
+chunks_paid="$(printf '%s' "$PLAN" | "$JSONQ" get data.chunks_paid)" ||
+    mkt_die "purchase plan refused: $PLAN"
+[ "$chunks_paid" -gt 0 ] || mkt_die "purchase plan refused: $PLAN"
+printf '%s' "$PLAN" | "$JSONQ" eq data.state planned ||
+    mkt_die "purchase plan refused: $PLAN"
+printf '%s' "$PLAN" | "$JSONQ" eq data.idempotent_replay false ||
+    mkt_die "purchase plan refused: $PLAN"
+PLAN_ID="$(printf '%s' "$PLAN" | "$JSONQ" get data.plan_id)" ||
+    mkt_die "purchase plan refused: $PLAN"
+mkt_hex64 "$PLAN_ID" || mkt_die "purchase plan refused: $PLAN"
+printf '%s' "$PLAN" | "$JSONQ" has data.commit_input ||
+    mkt_die "purchase plan refused: $PLAN"
 mkt_note "buyer purchase planned: plan_id=$PLAN_ID"
 
 mkt_note "buyer commits the purchase (broadcasts the Sapling payment)"
 COMMIT="$(printf '%s' "{\"wallet_scope\":\"dev\",\"plan_id\":\"$PLAN_ID\",\"confirm\":true}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase commit --input=- || true)"
-TXID="$(python3 - "$COMMIT" <<'PY' || mkt_die "purchase commit refused: $COMMIT"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="committed" and data["committed"] is True and data["spends_funds"] is True,data
-assert data["idempotent_replay"] is False,data
-assert data["payment_notification_queued"] is True,data
-assert data["state"]=="mempool_accepted",data
-txid=data["txid"]
-assert len(txid)==64 and int(txid,16)>0,data
-assert len(data["claim_id"])==64,data
-print(txid)
-PY
-)"
+printf '%s' "$COMMIT" | "$JSONQ" eq ok true ||
+    mkt_die "purchase commit refused: $COMMIT"
+printf '%s' "$COMMIT" | "$JSONQ" eq data.stage committed ||
+    mkt_die "purchase commit refused: $COMMIT"
+printf '%s' "$COMMIT" | "$JSONQ" eq data.committed true ||
+    mkt_die "purchase commit refused: $COMMIT"
+printf '%s' "$COMMIT" | "$JSONQ" eq data.spends_funds true ||
+    mkt_die "purchase commit refused: $COMMIT"
+printf '%s' "$COMMIT" | "$JSONQ" eq data.idempotent_replay false ||
+    mkt_die "purchase commit refused: $COMMIT"
+printf '%s' "$COMMIT" | "$JSONQ" eq data.payment_notification_queued true ||
+    mkt_die "purchase commit refused: $COMMIT"
+printf '%s' "$COMMIT" | "$JSONQ" eq data.state mempool_accepted ||
+    mkt_die "purchase commit refused: $COMMIT"
+TXID="$(printf '%s' "$COMMIT" | "$JSONQ" get data.txid)" ||
+    mkt_die "purchase commit refused: $COMMIT"
+mkt_hex64 "$TXID" || mkt_die "purchase commit refused: $COMMIT"
+claim_id="$(printf '%s' "$COMMIT" | "$JSONQ" get data.claim_id)" ||
+    mkt_die "purchase commit refused: $COMMIT"
+[ "${#claim_id}" -eq 64 ] || mkt_die "purchase commit refused: $COMMIT"
 mkt_note "purchase payment broadcast: txid=$TXID"
 
 # ── Phase 4: authorize-before-read — refused pre-confirmation, via onion ──
@@ -623,15 +878,15 @@ mkt_note "purchase payment broadcast: txid=$TXID"
 mkt_note "buyer retrieves before confirmation: the onion route must refuse"
 EARLY_RETRIEVE="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\",\"destination_path\":\"$DESTINATION\"}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase retrieve --input=- || true)"
-python3 - "$EARLY_RETRIEVE" <<'PY' || mkt_die "pre-confirmation retrieve was not refused: $EARLY_RETRIEVE"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is False,d
-err=d.get("error",{})
-assert err.get("code")=="DELIVERY_NOT_READY",d
-msg=err.get("message","")
-assert "PENDING" in msg or "UNKNOWN" in msg,d
-PY
+printf '%s' "$EARLY_RETRIEVE" | "$JSONQ" eq ok false ||
+    mkt_die "pre-confirmation retrieve was not refused: $EARLY_RETRIEVE"
+printf '%s' "$EARLY_RETRIEVE" | "$JSONQ" eq error.code DELIVERY_NOT_READY ||
+    mkt_die "pre-confirmation retrieve was not refused: $EARLY_RETRIEVE"
+early_msg="$(printf '%s' "$EARLY_RETRIEVE" | "$JSONQ" get error.message 2>/dev/null || true)"
+case "$early_msg" in
+    *PENDING*|*UNKNOWN*) ;;
+    *) mkt_die "pre-confirmation retrieve was not refused: $EARLY_RETRIEVE" ;;
+esac
 [ ! -e "$DESTINATION" ] ||
     mkt_die "destination published before payment confirmation"
 
@@ -639,7 +894,7 @@ PY
 # has the payment produces a coinbase-only block and the purchase never
 # confirms. Wait until A's mempool names the exact txid (either hex order).
 mkt_note "waiting for the seller mempool to hold the payment"
-TXID_REV="$(python3 -c 'import sys; print(bytes.fromhex(sys.argv[1])[::-1].hex())' "$TXID")"
+TXID_REV="$(hexrev "$TXID")"
 MEMPOOL_DEADLINE=$(( $(date +%s) + MKT_WAIT ))
 while :; do
     MEMPOOL="$(a_rpc getrawmempool 2>/dev/null | mkt_result 2>/dev/null || true)"
@@ -668,20 +923,22 @@ while :; do
     VI_REFRESH="$(b_rpc vault_intent_status "{\"plan_id\":\"$PLAN_ID\"}" 2>&1 || true)"
     STATUS="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\"}" \
         | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase status --input=- || true)"
-    state="$(printf '%s' "$STATUS" | mkt_jget 'd["data"]["state"]' 2>/dev/null || true)"
+    state="$(printf '%s' "$STATUS" | mkt_jget data.state 2>/dev/null || true)"
     [ "$state" = "confirmed" ] && break
     [ "$(date +%s)" -lt "$STATUS_DEADLINE" ] ||
         mkt_die "purchase never confirmed: $STATUS"
     sleep 1
 done
-python3 - "$STATUS" "$TXID" <<'PY' || mkt_die "confirmed purchase status mismatch: $STATUS"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["state"]=="confirmed" and data["txid"]==sys.argv[2],data
-assert len(data["claim_id"])==64,data
-PY
+printf '%s' "$STATUS" | "$JSONQ" eq ok true ||
+    mkt_die "confirmed purchase status mismatch: $STATUS"
+printf '%s' "$STATUS" | "$JSONQ" eq data.state confirmed ||
+    mkt_die "confirmed purchase status mismatch: $STATUS"
+printf '%s' "$STATUS" | "$JSONQ" eq data.txid "$TXID" ||
+    mkt_die "confirmed purchase status mismatch: $STATUS"
+status_claim="$(printf '%s' "$STATUS" | "$JSONQ" get data.claim_id)" ||
+    mkt_die "confirmed purchase status mismatch: $STATUS"
+[ "${#status_claim}" -eq 64 ] ||
+    mkt_die "confirmed purchase status mismatch: $STATUS"
 
 # The seller wallet must trial-decrypt its exact payment note at the
 # confirmation height before the chunk gate can bind against it.
@@ -690,7 +947,7 @@ NOTE_DEADLINE=$(( $(date +%s) + MKT_WAIT ))
 while :; do
     NOTE="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
         --input="{\"sql\":\"SELECT COUNT(*) FROM wallet_sapling_notes WHERE value=$EXPECT_TOTAL_ZAT AND block_height=102\"}" || true)"
-    ncount="$(printf '%s' "$NOTE" | mkt_jget 'd["data"]["rows"][0][0]' 2>/dev/null || true)"
+    ncount="$(printf '%s' "$NOTE" | mkt_jget data.rows[0][0] 2>/dev/null || true)"
     [ "$ncount" = "1" ] && break
     [ "$(date +%s)" -lt "$NOTE_DEADLINE" ] ||
         mkt_die "seller never decrypted its payment note: $NOTE"
@@ -711,13 +968,10 @@ mkt_wait_rpc "$MKT_DD_B" "$B_RPC" "$MKT_PGID_B" || mkt_die "B no-Tor restart fai
 mkt_unlock_wallet "$MKT_DD_B" "$B_RPC" || mkt_die "B no-Tor wallet unlock failed"
 NOTOR_RETRIEVE="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\",\"destination_path\":\"$DESTINATION\"}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase retrieve --input=- || true)"
-python3 - "$NOTOR_RETRIEVE" <<'PY' || mkt_die "retrieve without Tor was not refused by name: $NOTOR_RETRIEVE"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is False,d
-err=d.get("error",{})
-assert err.get("code")=="ONION_DELIVERY_UNAVAILABLE",d
-PY
+printf '%s' "$NOTOR_RETRIEVE" | "$JSONQ" eq ok false ||
+    mkt_die "retrieve without Tor was not refused by name: $NOTOR_RETRIEVE"
+printf '%s' "$NOTOR_RETRIEVE" | "$JSONQ" eq error.code ONION_DELIVERY_UNAVAILABLE ||
+    mkt_die "retrieve without Tor was not refused by name: $NOTOR_RETRIEVE"
 [ ! -e "$DESTINATION" ] ||
     mkt_die "destination published by a no-Tor retrieve"
 mkt_note "no-Tor retrieve refused with ONION_DELIVERY_UNAVAILABLE"
@@ -741,8 +995,8 @@ RETRIEVE_DEADLINE=$(( $(date +%s) + ONI_RETRIEVE_WAIT ))
 while :; do
     RETRIEVE="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\",\"destination_path\":\"$DESTINATION\"}" \
         | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase retrieve --input=- || true)"
-    rok="$(printf '%s' "$RETRIEVE" | mkt_jget 'd["ok"]' 2>/dev/null || true)"
-    [ "$rok" = "True" ] && break
+    rok="$(printf '%s' "$RETRIEVE" | mkt_jget ok 2>/dev/null || true)"
+    [ "$rok" = "true" ] && break
     case "$RETRIEVE" in
         *DELIVERY_NOT_READY*) ;;
         *) mkt_die "retrieve failed with a non-delivery error: $RETRIEVE" ;;
@@ -751,30 +1005,25 @@ while :; do
         mkt_die "retrieve never authorized over onion: $RETRIEVE"
     sleep 2
 done
-python3 - "$RETRIEVE" "$FIXTURE_SIZE" "$EXPECTED_CHUNKS" <<'PY' || mkt_die "retrieve failed: $RETRIEVE"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="retrieved",data
-assert data["download_state"]=="complete" and data["destination_published"] is True,data
-assert data["chunks_received"]==int(sys.argv[3]) and data["num_chunks"]==int(sys.argv[3]),data
-assert data["bytes_received"]==int(sys.argv[2]) and data["size_bytes"]==int(sys.argv[2]),data
-PY
+printf '%s' "$RETRIEVE" | "$JSONQ" eq ok true ||
+    mkt_die "retrieve failed: $RETRIEVE"
+printf '%s' "$RETRIEVE" | "$JSONQ" eq data.stage retrieved ||
+    mkt_die "retrieve failed: $RETRIEVE"
+printf '%s' "$RETRIEVE" | "$JSONQ" eq data.download_state complete ||
+    mkt_die "retrieve failed: $RETRIEVE"
+printf '%s' "$RETRIEVE" | "$JSONQ" eq data.destination_published true ||
+    mkt_die "retrieve failed: $RETRIEVE"
+printf '%s' "$RETRIEVE" | "$JSONQ" eq data.chunks_received "$EXPECTED_CHUNKS" ||
+    mkt_die "retrieve failed: $RETRIEVE"
+printf '%s' "$RETRIEVE" | "$JSONQ" eq data.num_chunks "$EXPECTED_CHUNKS" ||
+    mkt_die "retrieve failed: $RETRIEVE"
+printf '%s' "$RETRIEVE" | "$JSONQ" eq data.bytes_received "$FIXTURE_SIZE" ||
+    mkt_die "retrieve failed: $RETRIEVE"
+printf '%s' "$RETRIEVE" | "$JSONQ" eq data.size_bytes "$FIXTURE_SIZE" ||
+    mkt_die "retrieve failed: $RETRIEVE"
 cmp -s "$FIXTURE" "$DESTINATION" ||
     mkt_die "delivered bytes differ from the seller fixture"
-DELIVERED_ROOT="$(python3 - "$DESTINATION" <<'PY'
-import hashlib,sys
-chunk = 50 * 1024 * 1024
-digests = []
-with open(sys.argv[1], "rb") as f:
-    while True:
-        b = f.read(chunk)
-        if not b: break
-        digests.append(hashlib.sha3_256(b).digest())
-print(hashlib.sha3_256(b"".join(digests)).hexdigest())
-PY
-)"
+DELIVERED_ROOT="$("$FIXTURE_GEN" root "$DESTINATION")"
 [ "$DELIVERED_ROOT" = "$EXPECT_ROOT" ] ||
     mkt_die "delivered bytes re-derive a different content root"
 
@@ -801,53 +1050,65 @@ mkt_note "onion witness: seller served $A_CHUNK_GETS chunk GETs, buyer initiated
 mkt_note "verifying the seller-side payment claim is confirmed"
 CLAIM="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
     --input='{"sql":"SELECT status, status_reason, confirmations, block_height FROM market_payment_claims"}' || true)"
-python3 - "$CLAIM" <<'PY' || mkt_die "seller claim row mismatch: $CLAIM"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-cols=data["columns"]; rows=data["rows"]
-assert len(rows)==1,rows
-r=dict(zip(cols,rows[0]))
-assert r["status"]=="CONFIRMED" and r["confirmations"]>=1 and r["block_height"]==102,r
-PY
+printf '%s' "$CLAIM" | "$JSONQ" eq ok true ||
+    mkt_die "seller claim row mismatch: $CLAIM"
+[ "$(printf '%s' "$CLAIM" | "$JSONQ" count data.rows)" = "1" ] ||
+    mkt_die "seller claim row mismatch: $CLAIM"
+claim_ncols="$(printf '%s' "$CLAIM" | "$JSONQ" count data.columns)" ||
+    mkt_die "seller claim row mismatch: $CLAIM"
+claim_status=""; claim_conf=""; claim_height=""
+claim_i=0
+while [ "$claim_i" -lt "$claim_ncols" ]; do
+    claim_col="$(printf '%s' "$CLAIM" | "$JSONQ" get "data.columns[$claim_i]")" ||
+        mkt_die "seller claim row mismatch: $CLAIM"
+    claim_val="$(printf '%s' "$CLAIM" | "$JSONQ" get "data.rows[0][$claim_i]")" ||
+        mkt_die "seller claim row mismatch: $CLAIM"
+    case "$claim_col" in
+        status) claim_status="$claim_val" ;;
+        confirmations) claim_conf="$claim_val" ;;
+        block_height) claim_height="$claim_val" ;;
+    esac
+    claim_i=$((claim_i + 1))
+done
+[ "$claim_status" = "CONFIRMED" ] && [ "${claim_conf:-0}" -ge 1 ] &&
+    [ "$claim_height" = "102" ] ||
+    mkt_die "seller claim row mismatch: $CLAIM"
 FINAL_STATUS="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\"}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase status --input=- || true)"
-[ "$(printf '%s' "$FINAL_STATUS" | mkt_jget 'd["data"]["destination_published"]' 2>/dev/null || true)" = "True" ] ||
+[ "$(printf '%s' "$FINAL_STATUS" | mkt_jget data.destination_published 2>/dev/null || true)" = "true" ] ||
     mkt_die "purchase status does not show the completed download: $FINAL_STATUS"
 
 # ── Phase 9: idempotent replays ──────────────────────────────────────
 mkt_note "re-committing the same purchase plan (idempotent replay, no double-spend)"
 RECOMMIT="$(printf '%s' "{\"wallet_scope\":\"dev\",\"plan_id\":\"$PLAN_ID\",\"confirm\":true}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase commit --input=- || true)"
-python3 - "$RECOMMIT" "$TXID" <<'PY' || mkt_die "purchase re-commit was not an exact replay: $RECOMMIT"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["idempotent_replay"] is True and data["txid"]==sys.argv[2],data
-PY
+printf '%s' "$RECOMMIT" | "$JSONQ" eq ok true ||
+    mkt_die "purchase re-commit was not an exact replay: $RECOMMIT"
+printf '%s' "$RECOMMIT" | "$JSONQ" eq data.idempotent_replay true ||
+    mkt_die "purchase re-commit was not an exact replay: $RECOMMIT"
+printf '%s' "$RECOMMIT" | "$JSONQ" eq data.txid "$TXID" ||
+    mkt_die "purchase re-commit was not an exact replay: $RECOMMIT"
 REPLAN="$(printf '%s' "{\"wallet_scope\":\"dev\",\"offer_id\":\"$OFFER_ID\",\"source_address\":\"$BUYER_ADDR\",\"chunk_start\":0,\"chunks_paid\":$EXPECTED_CHUNKS,\"idempotency_key\":\"$IDEMPOTENCY_KEY\"}" \
     | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase plan --input=- || true)"
-python3 - "$REPLAN" "$PLAN_ID" <<'PY' || mkt_die "purchase re-plan was not an exact replay: $REPLAN"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["idempotent_replay"] is True and data["plan_id"]==sys.argv[2],data
-PY
+printf '%s' "$REPLAN" | "$JSONQ" eq ok true ||
+    mkt_die "purchase re-plan was not an exact replay: $REPLAN"
+printf '%s' "$REPLAN" | "$JSONQ" eq data.idempotent_replay true ||
+    mkt_die "purchase re-plan was not an exact replay: $REPLAN"
+printf '%s' "$REPLAN" | "$JSONQ" eq data.plan_id "$PLAN_ID" ||
+    mkt_die "purchase re-plan was not an exact replay: $REPLAN"
 
 mkt_note "seller re-commits the same offer (content-addressed idempotent)"
 REOFFER="$(printf '%s' "{\"filepath\":\"$FIXTURE\",\"price_per_mb_zat\":$PRICE_PER_MB_ZAT,\"confirm\":true}" \
     | mkt_native "$MKT_DD_A" "$A_RPC" app market offer --input=- || true)"
-python3 - "$REOFFER" "$OFFER_ID" <<'PY' || mkt_die "offer re-commit was not an exact replay: $REOFFER"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="committed" and data["idempotent_replay"] is True,data
-assert data["offer_id"]==sys.argv[2],data
-assert data["endpoint_source"]=="onion",data
-PY
+printf '%s' "$REOFFER" | "$JSONQ" eq ok true ||
+    mkt_die "offer re-commit was not an exact replay: $REOFFER"
+printf '%s' "$REOFFER" | "$JSONQ" eq data.stage committed ||
+    mkt_die "offer re-commit was not an exact replay: $REOFFER"
+printf '%s' "$REOFFER" | "$JSONQ" eq data.idempotent_replay true ||
+    mkt_die "offer re-commit was not an exact replay: $REOFFER"
+printf '%s' "$REOFFER" | "$JSONQ" eq data.offer_id "$OFFER_ID" ||
+    mkt_die "offer re-commit was not an exact replay: $REOFFER"
+printf '%s' "$REOFFER" | "$JSONQ" eq data.endpoint_source onion ||
+    mkt_die "offer re-commit was not an exact replay: $REOFFER"
 
 mkt_note "PASS: two-daemon onion market trade — v2 onion-endpoint offer gossip, Sapling payment, authorize-before-read refusal served through the onion route, no-Tor retrieve refused by name (ONION_DELIVERY_UNAVAILABLE), 3-slice 60 KiB onion delivery byte-identical to the offer root, /market/chunk traffic witnessed in both tor.log files, idempotent replays"

@@ -92,7 +92,10 @@ build/bin/z23 discover search <query>
 ```
 
 Normal source-development tools—Git, compiler, linker, `make`, and bounded
-shell scripts—remain appropriate for repository work. Add a native command
+shell scripts—remain appropriate for repository work. Never Python: no `.py`
+files, no `python3` invocations, no Python fallbacks. Flat JSON fields use
+grep/sed/awk; nested documents use `build/bin/jsonq`; SQLite files use
+`build/bin/sqlq`. Add a native command
 only for a recurring operator or agent product need, not for every one-off
 development inspection. Command registry extension details live in
 [`CODEBASE_MAP.md`](CODEBASE_MAP.md) and

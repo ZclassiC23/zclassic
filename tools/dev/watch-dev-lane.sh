@@ -363,7 +363,7 @@ is_relevant_path()
         Makefile|README.md|AGENTS.md|docs/*.md|*.mk) return 0 ;;
         app/*|application/*|adapters/*|config/*|core/*|domain/*|lib/*|ports/*|src/*|tools/*|vendor/include/*)
             case "$path" in
-                *.c|*.h|*.def|*.inc|*.md|*.mk|*.service|*.sh|*.py|*.css|*.js|*.html|*.tmpl)
+                *.c|*.h|*.def|*.inc|*.md|*.mk|*.service|*.sh|*.css|*.js|*.html|*.tmpl)
                     return 0
                     ;;
             esac
@@ -450,7 +450,7 @@ write_manifest()
             \( -name 'Makefile' -o -name '*.mk' -o -name '*.c' -o \
                -name '*.h' -o -name '*.def' -o -name '*.inc' -o \
                -name '*.md' -o -name '*.service' -o \
-               -name '*.sh' -o -name '*.py' -o -name '*.css' -o \
+               -name '*.sh' -o -name '*.css' -o \
                -name '*.js' -o -name '*.html' -o -name '*.tmpl' \) \
             -printf '%T@:%s\t%p\n' 2>/dev/null | LC_ALL=C sort
     ) > "$tmp" || {

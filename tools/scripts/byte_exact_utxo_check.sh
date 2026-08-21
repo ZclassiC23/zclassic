@@ -26,8 +26,16 @@ BIN="${NODE_BIN:-/home/rhett/github/zclassic23/build/producer-bin/zclassic23}"
 # Mirrors replay_canary.sh's zd verb (ISO_RPC_BIN = build/bin/zcl-rpc).
 ZDRPC_BIN="${ZD_RPC_BIN:-/home/rhett/github/zclassic23/build/bin/zcl-rpc}"
 
-json_str() { python3 -c "import json,sys;d=json.loads(sys.argv[1]);print(d.get(sys.argv[2],'') or '')" "$1" "$2" 2>/dev/null; }
-json_result_str() { python3 -c "import json,sys;d=json.loads(sys.argv[1]).get('result',{}) or {};print(d.get(sys.argv[2],'') or '')" "$1" "$2" 2>/dev/null; }
+json_field() {
+    local v
+    v=$(printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" |
+        head -1 | sed -E 's/.*:[ ]*"//; s/"$//' || true)
+    if [ -n "$v" ]; then printf '%s' "$v"; return 0; fi
+    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*-?[0-9]+(\.[0-9]+)?" |
+        head -1 | sed -E 's/.*:[ ]*//' || true
+}
+json_str() { json_field "$1" "$2"; }
+json_result_str() { json_field "$1" "$2"; }
 
 deadline=$(( $(date +%s) + 300 ))
 while :; do

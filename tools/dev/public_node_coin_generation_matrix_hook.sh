@@ -38,9 +38,15 @@ printf '%s\n' \
     'run,phase,node,cpu_ticks,read_bytes,write_bytes,rss_kb,connections,height' \
     >"$PCM_RESOURCES"
 
+JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
+[ -x "$JSONQ" ] || dht_die "build/bin/jsonq is missing — run make jsonq"
+
+pcm_json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
 pcm_field() {
-    local expression="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); print($expression)"
+    "$JSONQ" get "$1"
 }
 
 pcm_rpc_result() {
@@ -54,12 +60,19 @@ pcm_hash_at() {
 }
 
 pcm_mempool_count() {
-    local node="$1" txid="$2" rows
+    local node="$1" txid="$2" rows n i tx count=0
     rows="$(pcm_rpc_result "$node" getrawmempool 2>/dev/null || true)"
-    python3 -c 'import json,sys
-rows=json.loads(sys.argv[1])
-print(sum(1 for row in rows if row==sys.argv[2]))
-' "$rows" "$txid" 2>/dev/null || printf '%s' -1
+    n="$(printf '%s' "$rows" | "$JSONQ" count . 2>/dev/null || true)"
+    case "$n" in
+        ''|*[!0-9]*) printf '%s' -1; return ;;
+    esac
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        tx="$(printf '%s' "$rows" | "$JSONQ" get "[$i]" 2>/dev/null || true)"
+        [ "$tx" = "$txid" ] && count=$((count + 1))
+        i=$((i + 1))
+    done
+    printf '%s' "$count"
 }
 
 pcm_wait_mempool_count() {
@@ -118,19 +131,31 @@ pcm_resource_snapshot() {
     done
 }
 
+pcm_peer_state_ready() {
+    case "$1" in
+        handshake_complete|active|syncing_headers|syncing_blocks|snapshot_serving|snapshot_receiving)
+            return 0
+            ;;
+        *) return 1 ;;
+    esac
+}
+
 pcm_ready_peer_count() {
-    local node="$1" rows
+    local node="$1" rows n i state count=0
     rows="$(pcm_rpc_result "$node" getpeerinfo 2>/dev/null || true)"
-    python3 -c 'import json,sys
-try:
-    rows=json.loads(sys.argv[1])
-except Exception:
-    print(-1)
-    raise SystemExit
-ready={"handshake_complete","active","syncing_headers","syncing_blocks",
-       "snapshot_serving","snapshot_receiving"}
-print(sum(1 for row in rows if row.get("state") in ready))
-' "$rows" 2>/dev/null || printf '%s' -1
+    n="$(printf '%s' "$rows" | "$JSONQ" count . 2>/dev/null || true)"
+    case "$n" in
+        ''|*[!0-9]*) printf '%s' -1; return ;;
+    esac
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        state="$(printf '%s' "$rows" | "$JSONQ" get "[$i].state" 2>/dev/null || true)"
+        if pcm_peer_state_ready "$state"; then
+            count=$((count + 1))
+        fi
+        i=$((i + 1))
+    done
+    printf '%s' "$count"
 }
 
 pcm_wait_relay_floor() {
@@ -149,7 +174,7 @@ pcm_wait_relay_floor() {
 }
 
 pcm_ready_peer_snapshot() {
-    local node="$1" target rows
+    local node="$1" target rows n i live owners state pid inbound addr
     if [ "$node" = "$ZAP_A" ]; then
         target="127.0.0.1:${PORTS[$ZAP_B]}"
     elif [ "$node" = "$ZAP_B" ]; then
@@ -161,25 +186,33 @@ pcm_ready_peer_snapshot() {
         return
     fi
     rows="$(pcm_rpc_result "$node" getpeerinfo 2>/dev/null || true)"
-    python3 -c 'import json,sys
-try:
-    rows=json.loads(sys.argv[1])
-except Exception:
-    print("-1:")
-    raise SystemExit
-ready={"handshake_complete","active","syncing_headers","syncing_blocks",
-       "snapshot_serving","snapshot_receiving"}
-live=[row for row in rows if row.get("state") in ready and
-      isinstance(row.get("id"),int)]
-# Track only the node-declared outbound edge. Autonomous reachability and
-# inbound sessions may legitimately rotate while the public relay floor stays
-# healthy; including their IDs made an unrelated overlay redial reset the
-# stability timer forever. The total live count still proves both physical
-# relay directions are available.
-owners=sorted(int(row["id"]) for row in live
-              if not row.get("inbound",False) and row.get("addr")==sys.argv[2])
-print(str(len(live))+":"+",".join(map(str,owners)))
-' "$rows" "$target" 2>/dev/null || printf '%s' '-1:'
+    n="$(printf '%s' "$rows" | "$JSONQ" count . 2>/dev/null || true)"
+    case "$n" in
+        ''|*[!0-9]*) printf '%s' '-1:'; return ;;
+    esac
+    i=0
+    live=0
+    owners=""
+    while [ "$i" -lt "$n" ]; do
+        state="$(printf '%s' "$rows" | "$JSONQ" get "[$i].state" 2>/dev/null || true)"
+        pid="$(printf '%s' "$rows" | "$JSONQ" get "[$i].id" 2>/dev/null || true)"
+        inbound="$(printf '%s' "$rows" | "$JSONQ" get "[$i].inbound" 2>/dev/null || true)"
+        addr="$(printf '%s' "$rows" | "$JSONQ" get "[$i].addr" 2>/dev/null || true)"
+        case "$pid" in
+            ''|*[!0-9]*) i=$((i + 1)); continue ;;
+        esac
+        if pcm_peer_state_ready "$state"; then
+            live=$((live + 1))
+            if [ "$inbound" != true ] && [ "$addr" = "$target" ]; then
+                owners="${owners}${owners:+$'\n'}${pid}"
+            fi
+        fi
+        i=$((i + 1))
+    done
+    if [ -n "$owners" ]; then
+        owners="$(printf '%s\n' "$owners" | sort -n | paste -sd, -)"
+    fi
+    printf '%s:%s' "$live" "$owners"
 }
 
 pcm_wait_mesh_relay_stable() {
@@ -286,68 +319,65 @@ pcm_command_probe() {
         started_ns="$(date +%s%N)"
         response="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" core status || true)"
         elapsed=$((($(date +%s%N)-started_ns)/1000000))
-        [ "$(printf '%s' "$response" | pcm_field 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+        [ "$(printf '%s' "$response" | pcm_field ok 2>/dev/null || true)" = true ] ||
             dht_die "coin matrix run $run command probe failed on node $node: $response"
         pcm_metric "$run" "command_responsiveness_$phase" "$node" "$elapsed" ok true
     done
 }
 
 pcm_select_unspent() {
-    local node="$1" response
+    local node="$1" response n i amount best_i=0 best_amt="" txid vout
     response="$(dht_rpc "${DDS[$node]}" "${RPCS[$node]}" listunspent || true)"
-    printf '%s' "$response" | python3 -c '
-import decimal,json,sys
-d=json.load(sys.stdin)
-assert d.get("error") is None,d
-rows=d.get("result")
-assert isinstance(rows,list) and rows,rows
-row=max(rows,key=lambda x:decimal.Decimal(str(x["amount"])))
-print(row["txid"])
-print(int(row["vout"]))
-print(format(decimal.Decimal(str(row["amount"])),".8f"))
-'
+    printf '%s' "$response" | "$JSONQ" eq error null || return 1
+    n="$(printf '%s' "$response" | "$JSONQ" count result)" || return 1
+    [ "$n" -gt 0 ] || return 1
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        amount="$(printf '%s' "$response" | "$JSONQ" get "result[$i].amount")"
+        if [ -z "$best_amt" ] || awk -v a="$amount" -v b="$best_amt" \
+            'BEGIN { exit !(a + 0 > b + 0) }'
+        then
+            best_amt="$amount"
+            best_i="$i"
+        fi
+        i=$((i + 1))
+    done
+    txid="$(printf '%s' "$response" | "$JSONQ" get "result[$best_i].txid")"
+    vout="$(printf '%s' "$response" | "$JSONQ" get "result[$best_i].vout")"
+    amount="$(awk -v a="$best_amt" 'BEGIN { printf "%.8f\n", a + 0 }')"
+    printf '%s\n%s\n%s\n' "$txid" "$vout" "$amount"
 }
 
 # Emit signed hex, txid, and exact output amount on separate lines.  All
 # transactions have one input, one wallet-owned output, and no change.
 pcm_create_signed_child() {
     local node="$1" parent="$2" vout="$3" amount="$4"
-    local pair inputs outputs out_amount raw_response raw sign_response signed
-    local decoded txid
-    pair="$(python3 - "$parent" "$vout" "$amount" "$ADDR" <<'PY'
-import decimal,json,sys
-parent,vout,amount,address=sys.argv[1:]
-value=decimal.Decimal(amount)-decimal.Decimal("0.00100000")
-assert value>0,value
-print(json.dumps([{"txid":parent,"vout":int(vout)}],separators=(",",":")))
-print("{"+json.dumps(address)+":"+format(value,".8f")+"}")
-print(format(value,".8f"))
-PY
-)" || return 1
-    inputs="$(printf '%s\n' "$pair" | sed -n '1p')"
-    outputs="$(printf '%s\n' "$pair" | sed -n '2p')"
-    out_amount="$(printf '%s\n' "$pair" | sed -n '3p')"
+    local inputs outputs out_amount raw_response raw sign_response signed
+    local decoded txid esc
+    out_amount="$(awk -v a="$amount" 'BEGIN {
+        v = a - 0.00100000
+        if (!(v > 0)) exit 1
+        printf "%.8f\n", v
+    }')" || return 1
+    esc="$(pcm_json_escape "$ADDR")"
+    inputs="[{\"txid\":\"${parent}\",\"vout\":${vout}}]"
+    outputs="{\"${esc}\":${out_amount}}"
     raw_response="$(dht_rpc "${DDS[$node]}" "${RPCS[$node]}" \
         createrawtransaction "$inputs" "$outputs" || true)"
     raw="$(printf '%s' "$raw_response" | dht_result 2>/dev/null || true)"
     [ -n "$raw" ] || return 1
     sign_response="$(dht_rpc "${DDS[$node]}" "${RPCS[$node]}" \
         signrawtransaction "\"$raw\"" || true)"
-    signed="$(printf '%s' "$sign_response" | python3 -c '
-import json,sys
-d=json.load(sys.stdin); r=d.get("result")
-assert d.get("error") is None and isinstance(r,dict) and r.get("complete") is True,d
-print(r["hex"])
-' 2>/dev/null || true)"
+    printf '%s' "$sign_response" | "$JSONQ" eq error null || return 1
+    printf '%s' "$sign_response" | "$JSONQ" eq result.complete true || return 1
+    signed="$(printf '%s' "$sign_response" | "$JSONQ" get result.hex \
+        2>/dev/null || true)"
     [ -n "$signed" ] || return 1
     decoded="$(dht_rpc "${DDS[$node]}" "${RPCS[$node]}" \
         decoderawtransaction "\"$signed\"" || true)"
-    txid="$(printf '%s' "$decoded" | python3 -c '
-import json,sys
-d=json.load(sys.stdin); r=d.get("result")
-assert d.get("error") is None and isinstance(r,dict),d
-print(r["txid"])
-' 2>/dev/null || true)"
+    printf '%s' "$decoded" | "$JSONQ" eq error null || return 1
+    txid="$(printf '%s' "$decoded" | "$JSONQ" get result.txid \
+        2>/dev/null || true)"
     [ "${#txid}" -eq 64 ] || return 1
     printf '%s\n%s\n%s\n' "$signed" "$txid" "$out_amount"
 }
@@ -629,8 +659,7 @@ for node in "$ZAP_A" "$ZAP_B" "$ZAP_C"; do
         accepted="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" \
             zcode endpoint accept \
             --input="{\"doc\":\"${DOCS[$publisher]}\"}" || true)"
-        [ "$(printf '%s' "$accepted" | dht_jget \
-            'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+        [ "$(printf '%s' "$accepted" | "$JSONQ" get ok 2>/dev/null || true)" = true ] ||
             dht_die "coin matrix node $node refused signed endpoint $publisher: $accepted"
     done
 done
@@ -655,21 +684,45 @@ dht_unlock_wallet "${DDS[$PCM_CHAIN_OWNER]}" "${RPCS[$PCM_CHAIN_OWNER]}" ||
 dht_wait_spendable "${DDS[$PCM_CHAIN_OWNER]}" "${RPCS[$PCM_CHAIN_OWNER]}" ||
     dht_die "coin matrix chain owner has no spendable fixture output"
 
-python3 - "$PCM_RUNS" "$PCM_SEED" "$ZAP_A" "$ZAP_B" "$ZAP_C" \
-    >>"$PCM_SCHEDULE" <<'PY'
-import random,sys
-runs,seed=map(int,sys.argv[1:3]); nodes=list(map(int,sys.argv[3:]))
-rng=random.Random(seed)
-loads=[0,1,3]
-schedule=[]
-while len(schedule)<runs:
-    batch=loads[:]
-    rng.shuffle(batch)
-    schedule.extend(batch)
-for run in range(1,runs+1):
-    roles=rng.sample(nodes,len(nodes))
-    print(f"{run},{seed},{roles[0]},{roles[1]},{roles[2]},{schedule[run-1]}")
-PY
+awk -v runs="$PCM_RUNS" -v print_seed="$PCM_SEED" \
+    -v a="$ZAP_A" -v b="$ZAP_B" -v c="$ZAP_C" '
+function lcg() {
+    seed = (16807 * seed) % 2147483647
+    if (seed <= 0) seed += 2147483646
+    return seed
+}
+function randint(n) {
+    return int(n * (lcg() / 2147483647))
+}
+function shuffle(arr, n,    i, j, t) {
+    for (i = n; i > 1; i--) {
+        j = randint(i) + 1
+        t = arr[i]; arr[i] = arr[j]; arr[j] = t
+    }
+}
+BEGIN {
+    seed = print_seed + 0
+    if (seed < 0) seed = -seed
+    seed = seed % 2147483646
+    if (seed == 0) seed = 1
+    loads[1] = 0; loads[2] = 1; loads[3] = 3
+    ns = 0
+    while (ns < runs) {
+        batch[1] = loads[1]; batch[2] = loads[2]; batch[3] = loads[3]
+        shuffle(batch, 3)
+        for (i = 1; i <= 3 && ns < runs; i++) {
+            ns++
+            sched[ns] = batch[i]
+        }
+    }
+    nodes[1] = a; nodes[2] = b; nodes[3] = c
+    for (run = 1; run <= runs; run++) {
+        roles[1] = nodes[1]; roles[2] = nodes[2]; roles[3] = nodes[3]
+        shuffle(roles, 3)
+        printf "%d,%s,%s,%s,%s,%s\n", run, print_seed, roles[1], roles[2], roles[3], sched[run]
+    }
+}
+' >>"$PCM_SCHEDULE"
 
 mapfile -t PCM_PREV < <(pcm_select_unspent "$PCM_CHAIN_OWNER")
 [ "${#PCM_PREV[@]}" -eq 3 ] || dht_die "coin matrix could not select initial UTXO"
@@ -722,7 +775,7 @@ while IFS=, read -r run seed miner_a miner_b restart_node proof_count; do
     # The raw builder is deterministic; alter the conflicting output amount
     # by one additional fee so the stale probe is a distinct transaction.
     mapfile -t stale_a < <(pcm_create_signed_child "$PCM_CHAIN_OWNER" \
-        "$txid_a" 0 "$(python3 -c 'import decimal,sys; print(format(decimal.Decimal(sys.argv[1])-decimal.Decimal("0.00010000"),".8f"))' "$amount_a")")
+        "$txid_a" 0 "$(awk -v a="$amount_a" 'BEGIN { printf "%.8f\n", a - 0.00010000 }')")
     raw_stale_a="${stale_a[0]}"; stale_txid_a="${stale_a[1]}"
     [ "$stale_txid_a" != "$txid_b" ] || dht_die "coin matrix stale spend did not differ from B"
 
@@ -796,39 +849,59 @@ while IFS=, read -r run seed miner_a miner_b restart_node proof_count; do
     PCM_PARENT_TXID="$txid_c"; PCM_PARENT_VOUT=0; PCM_PARENT_AMOUNT="$amount_c"
 done <"$PCM_SCHEDULE"
 
-python3 - "$PCM_SCHEDULE" "$PCM_METRICS" "$PCM_RESOURCES" "$PCM_RUNS" <<'PY' \
-    >"$PCM_ROOT/receipt.json" || dht_die "coin matrix aggregate receipt failed"
-import csv,json,sys
-schedule_path,metrics_path,resources_path,want=sys.argv[1:]
-want=int(want)
-schedule=list(csv.DictReader(open(schedule_path,encoding="utf-8")))
-metrics=list(csv.DictReader(open(metrics_path,encoding="utf-8")))
-resources=list(csv.DictReader(open(resources_path,encoding="utf-8")))
-assert len(schedule)==want,(len(schedule),want)
-assert metrics and resources
-assert all(r["ok"]=="true" for r in metrics),metrics
-nodes={r["miner_a"] for r in schedule}|{r["miner_b"] for r in schedule}
-if want>=3:
-    assert len(nodes)==3,nodes
-if want>=3:
-    assert {int(r["proof_actions"]) for r in schedule}=={0,1,3},schedule
-required={"block_template","concurrent_delivery","block_production_a",
-          "block_production_b","block_sync","peer_restart_after_finalize",
-          "coin_phase_mesh_restart","durable_generation_restart",
-          "stale_parent_refusal",
-          "reorg_disconnect","reorg_reconnect","cleanup_block_c","peer_floor",
-          "tx_relay_a","tx_relay_b","command_responsiveness_proof_load"}
-for run in range(1,want+1):
-    got={r["phase"] for r in metrics if int(r["run"])==run}
-    assert required<=got,(run,required-got)
-report={"schema":"zcl.public_node_coin_generation_matrix.v1",
-        "seed":int(schedule[0]["seed"]),"runs":want,
-        "physical_nodes":3,"miner_roles_rotated":len(nodes)==3,
-        "background_proof_action_counts":sorted({int(r["proof_actions"]) for r in schedule}),
-        "duplicate_mempool_owners":0,"stale_cache_generations":0,
-        "synchronization_divergences":0,"deadlocks":0,
-        "metrics_rows":len(metrics),"resource_rows":len(resources),"verdict":"PASS"}
-print(json.dumps(report,separators=(",",":")))
-PY
+pcm_write_receipt() {
+    local want="$PCM_RUNS" n_sched=0 n_metrics=0 n_resources=0
+    local run seed miner_a miner_b restart_node proof_actions
+    local phase node elapsed value ok first_seed="" rotated=false
+    local counts="" p r req
+    declare -A miners=() proofs=() phases=()
+    while IFS=, read -r run seed miner_a miner_b restart_node proof_actions; do
+        [ "$run" = run ] && continue
+        n_sched=$((n_sched + 1))
+        [ -n "$first_seed" ] || first_seed="$seed"
+        miners[$miner_a]=1
+        miners[$miner_b]=1
+        proofs[$proof_actions]=1
+    done <"$PCM_SCHEDULE"
+    [ "$n_sched" -eq "$want" ] || return 1
+    while IFS=, read -r run phase node elapsed value ok; do
+        [ "$run" = run ] && continue
+        n_metrics=$((n_metrics + 1))
+        [ "$ok" = true ] || return 1
+        phases["$run $phase"]=1
+    done <"$PCM_METRICS"
+    while IFS=, read -r run phase node elapsed value ok extra; do
+        [ "$run" = run ] && continue
+        n_resources=$((n_resources + 1))
+    done <"$PCM_RESOURCES"
+    [ "$n_metrics" -gt 0 ] && [ "$n_resources" -gt 0 ] || return 1
+    if [ "$want" -ge 3 ]; then
+        [ "${#miners[@]}" -eq 3 ] || return 1
+        [ -n "${proofs[0]:-}" ] && [ -n "${proofs[1]:-}" ] && [ -n "${proofs[3]:-}" ] || return 1
+        [ "${#proofs[@]}" -eq 3 ] || return 1
+    fi
+    r=1
+    while [ "$r" -le "$want" ]; do
+        for req in block_template concurrent_delivery block_production_a \
+            block_production_b block_sync peer_restart_after_finalize \
+            coin_phase_mesh_restart durable_generation_restart \
+            stale_parent_refusal reorg_disconnect reorg_reconnect \
+            cleanup_block_c peer_floor tx_relay_a tx_relay_b \
+            command_responsiveness_proof_load
+        do
+            [ -n "${phases[$r $req]:-}" ] || return 1
+        done
+        r=$((r + 1))
+    done
+    for p in $(printf '%s\n' "${!proofs[@]}" | sort -n); do
+        counts="${counts}${counts:+,}${p}"
+    done
+    [ "${#miners[@]}" -eq 3 ] && rotated=true
+    printf '{"schema":"zcl.public_node_coin_generation_matrix.v1","seed":%s,"runs":%s,"physical_nodes":3,"miner_roles_rotated":%s,"background_proof_action_counts":[%s],"duplicate_mempool_owners":0,"stale_cache_generations":0,"synchronization_divergences":0,"deadlocks":0,"metrics_rows":%s,"resource_rows":%s,"verdict":"PASS"}\n' \
+        "$first_seed" "$want" "$rotated" "$counts" "$n_metrics" "$n_resources"
+}
+
+pcm_write_receipt >"$PCM_ROOT/receipt.json" ||
+    dht_die "coin matrix aggregate receipt failed"
 
 dht_note "public-node coin-generation matrix PASS: runs=$PCM_RUNS seed=$PCM_SEED physical_nodes=3 roles=randomized"

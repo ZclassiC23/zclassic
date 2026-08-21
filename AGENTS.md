@@ -213,6 +213,13 @@ mission.
 
 ## Development contract
 
+- Never use Python. Do not add `.py` files, `python3` shebangs, Python
+  heredocs, or `python3`/`python` invocations. Compiled code is C23. Operator
+  and test glue is POSIX or bash shell, or a small in-tree C23 helper such as
+  `tools/sqlq.c` and `tools/jsonq.c`. JSON is extracted with grep/sed/awk for
+  flat fields, or `build/bin/jsonq` for nested documents. SQLite inspection
+  uses `build/bin/sqlq`. Do not add Python as a fallback, optional path, or
+  "legacy" exception.
 - Preserve unrelated dirty work. Never reset, overwrite, or fold it into your
   commit.
 - Maintain one primary writer per component. Coordinate through committed

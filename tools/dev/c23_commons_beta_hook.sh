@@ -9,15 +9,78 @@ fi
 
 beta_die() { dht_die "c23-commons-beta: $*"; }
 beta_note() { dht_note "c23-commons-beta: $*"; }
+
+JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
+[ -x "$JSONQ" ] || beta_die "build/bin/jsonq is missing"
+
 beta_jget() {
-    local expression="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); print($expression)"
+    "$JSONQ" get "$1"
 }
 beta_ok() {
     local label="$1" document="$2"
-    [ "$(printf '%s' "$document" | beta_jget 'd.get("ok",False)' 2>/dev/null || true)" = True ] ||
+    [ "$(printf '%s' "$document" | beta_jget ok 2>/dev/null || true)" = true ] ||
         beta_die "$label failed: $document"
 }
+
+beta_steps_sorted_roots() {
+    local document="$1" n i
+    n="$(printf '%s' "$document" | "$JSONQ" count data.steps)"
+    {
+        i=0
+        while [ "$i" -lt "$n" ]; do
+            printf '%s' "$document" | "$JSONQ" get "data.steps[$i].root"
+            i=$((i + 1))
+        done
+    } | sort | paste -sd' ' -
+}
+
+beta_step_field_for_root() {
+    local document="$1" root="$2" field="$3" n i r
+    n="$(printf '%s' "$document" | "$JSONQ" count data.steps)"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        r="$(printf '%s' "$document" | "$JSONQ" get "data.steps[$i].root")"
+        if [ "$r" = "$root" ]; then
+            printf '%s' "$document" | "$JSONQ" get "data.steps[$i].$field"
+            return 0
+        fi
+        i=$((i + 1))
+    done
+    return 1
+}
+
+beta_steps_count_where() {
+    local document="$1" field="$2" want="$3" n i v count=0
+    n="$(printf '%s' "$document" | "$JSONQ" count data.steps)"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        v="$(printf '%s' "$document" | "$JSONQ" get "data.steps[$i].$field")"
+        [ "$v" = "$want" ] && count=$((count + 1))
+        i=$((i + 1))
+    done
+    printf '%s' "$count"
+}
+
+beta_results_unique() {
+    local document="$1" field="$2" n i
+    n="$(printf '%s' "$document" | "$JSONQ" count data.results 2>/dev/null || echo 0)"
+    {
+        i=0
+        while [ "$i" -lt "$n" ]; do
+            printf '%s' "$document" | "$JSONQ" get "data.results[$i].$field"
+            i=$((i + 1))
+        done
+    } | sort -u
+}
+
+beta_results_set_eq() {
+    local document="$1" field="$2" got expected
+    shift 2
+    got="$(beta_results_unique "$document" "$field")"
+    expected="$(printf '%s\n' "$@" | sort -u)"
+    [ "$got" = "$expected" ]
+}
+
 beta_native() {
     local role="$1"; shift
     dht_native "${DDS[$role]}" "${RPCS[$role]}" -regtest "$@"
@@ -52,10 +115,10 @@ fi
 
 beta_visual_assert_reply() {
     local label="$1" reply="$2"
-    [ "$(printf '%s' "$reply" | beta_jget 'd.get("ok",False)' 2>/dev/null || true)" = True ] &&
-    [ "$(printf '%s' "$reply" | beta_jget 'd.get("data",{}).get("launched",False)' 2>/dev/null || true)" = True ] &&
-    [ "$(printf '%s' "$reply" | beta_jget 'd.get("data",{}).get("resident_host",False)' 2>/dev/null || true)" = True ] &&
-    [ "$(printf '%s' "$reply" | beta_jget 'd.get("data",{}).get("authority","")' 2>/dev/null || true)" = display-only ] ||
+    [ "$(printf '%s' "$reply" | beta_jget ok 2>/dev/null || true)" = true ] &&
+    [ "$(printf '%s' "$reply" | beta_jget data.launched 2>/dev/null || true)" = true ] &&
+    [ "$(printf '%s' "$reply" | beta_jget data.resident_host 2>/dev/null || true)" = true ] &&
+    [ "$(printf '%s' "$reply" | beta_jget data.authority 2>/dev/null || true)" = display-only ] ||
         beta_die "$label did not use the display-only resident host: $reply"
 }
 
@@ -65,12 +128,12 @@ beta_visual_capture_source() {
         --input="{\"workspace\":\"$workspace\"}")"
     beta_ok "exact source capture" "$reply"
     root="$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("source_root","")')"
+        data.source_root)"
     [ "${#root}" -eq 64 ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("accepted",True)')" = False ] &&
+        data.accepted)" = false ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("source_executed",True)')" = False ] ||
+        data.source_executed)" = false ] ||
         beta_die "source capture did not remain exact and inert: $reply"
     printf '%s\n' "$root"
 }
@@ -82,15 +145,15 @@ beta_visual_code_change() {
         --input="{\"workspace\":\"$workspace\",\"before_root\":\"$before_root\",\"candidate_root\":\"$candidate_root\",\"path\":\"$path\",\"requested_behavior\":\"Reject an empty note before hashing\",\"before_behavior\":\"An empty note reaches the SHA3 calculation\",\"after_behavior\":\"An empty note is refused before SHA3\"}")"
     beta_visual_assert_reply "exact package code change" "$reply"
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("fact_authority","")')" = local_zvcs_cas ] &&
+        data.fact_authority)" = local_zvcs_cas ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("summary_authority","")')" = agent ] &&
+        data.summary_authority)" = agent ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("before_root","")')" = "$before_root" ] &&
+        data.before_root)" = "$before_root" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("candidate_root","")')" = "$candidate_root" ] &&
+        data.candidate_root)" = "$candidate_root" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("path","")')" = "$path" ] ||
+        data.path)" = "$path" ] ||
         beta_die "code-change view lost its exact source evidence: $reply"
     "$C23_BETA_NATIVE_UI_DRIVER" --title='Exact code change' --key=escape \
         --timeout-ms=5000 >/dev/null ||
@@ -106,7 +169,7 @@ beta_visual_confirm_publication() {
     local reply_file="$DHT_WORK/native-publication-confirm.json"
     local pid reply decision plan_identity expected_identity
     expected_identity="$(printf '%s' "$expected_plan" | beta_jget \
-        'd["data"]["plan_token"]')"
+        data.plan_token)"
     beta_native "$role" app presentation publication-confirm \
         --input="$input" >"$reply_file" 2>&1 &
     pid="$!"
@@ -128,18 +191,18 @@ beta_visual_confirm_publication() {
     reply="$(<"$reply_file")"
     beta_visual_assert_reply "package publication confirmation" "$reply"
     decision="$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("human_decision","")')"
+        data.human_decision)"
     plan_identity="$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("plan_identity","")')"
+        data.plan_identity)"
     [ "$decision" = CONFIRM ] && [ "$plan_identity" = "$expected_identity" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("human_confirmed",False)')" = True ] &&
+        data.human_confirmed)" = true ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("local_commit_complete",True)')" = False ] &&
+        data.local_commit_complete)" = false ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("provider_publication_observed",True)')" = False ] &&
+        data.provider_publication_observed)" = false ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("privileged_action_performed",True)')" = False ] ||
+        data.privileged_action_performed)" = false ] ||
         beta_die "human decision was not bound to the exact inert plan"
     printf '%s\n' "$plan_identity" >"$DHT_WORK/native-ui-plan-identity"
     printf '%s\n' confirmation >>"$DHT_WORK/native-ui-agent-requests"
@@ -163,25 +226,25 @@ beta_visual_publication_status() {
     beta_visual_assert_reply "exact publication progress" "$reply"
     expected_request="publish-${confirmation_identity:0:12}"
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("request_id","")')" = "$expected_request" ] &&
+        data.request_id)" = "$expected_request" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("package_root","")')" = "$root" ] &&
+        data.package_root)" = "$root" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("transport_root","")')" = "$transport" ] &&
+        data.transport_root)" = "$transport" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("human_confirmation_rederived",True)')" = False ] &&
+        data.human_confirmation_rederived)" = false ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("local_commit_complete",False)')" = "$local_commit" ] &&
+        data.local_commit_complete)" = "$local_commit" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("pointer_publication_observed",False)')" = "$pointer" ] &&
+        data.pointer_publication_observed)" = "$pointer" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("provider_publication_observed",False)')" = "$provider" ] &&
+        data.provider_publication_observed)" = "$provider" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("peer_discovery_observed",False)')" = "$discovery" ] &&
+        data.peer_discovery_observed)" = "$discovery" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("exact_fetch_observed",False)')" = "$fetch" ] &&
+        data.exact_fetch_observed)" = "$fetch" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("privileged_action_performed",True)')" = False ] ||
+        data.privileged_action_performed)" = false ] ||
         beta_die "publication progress outran its exact evidence: $reply"
     if [ "$dismiss" = true ]; then
         "$C23_BETA_NATIVE_UI_DRIVER" --title='Exact package publication' \
@@ -199,10 +262,10 @@ beta_visual_reproduction() {
         --input="{\"action_id\":\"$action\"}")"
     beta_visual_assert_reply "reproduction progress ($phase)" "$reply"
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("action_id","")')" = "$action" ] ||
+        data.action_id)" = "$action" ] ||
         beta_die "reproduction view lost its exact action identity"
     proof_state="$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("proof_state","")')"
+        data.proof_state)"
     [ -n "${PIDS[$role]:-}" ] && kill -0 "${PIDS[$role]}" 2>/dev/null ||
         beta_die "native reproduction view outlived its full-node fact owner"
     if [ "$phase" = ready ]; then
@@ -223,17 +286,17 @@ beta_visual_development_receipt() {
         --input="{\"receipt_id\":\"$receipt\"}")"
     beta_visual_assert_reply "exact local package development consequence" "$reply"
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("fact_authority","")')" = local_package_build_receipt ] &&
+        data.fact_authority)" = local_package_build_receipt ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("receipt_id","")')" = "$receipt" ] &&
+        data.receipt_id)" = "$receipt" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("candidate_root","")')" = "$expected_root" ] &&
+        data.candidate_root)" = "$expected_root" ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("event","")')" = STORY_GREEN ] &&
+        data.event)" = STORY_GREEN ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("candidate_selected",True)')" = False ] &&
+        data.candidate_selected)" = false ] &&
     [ "$(printf '%s' "$reply" | beta_jget \
-        'd["data"].get("privileged_action_performed",True)')" = False ] ||
+        data.privileged_action_performed)" = false ] ||
         beta_die "local development view outran its exact package receipt: $reply"
     "$C23_BETA_NATIVE_UI_DRIVER" --title='Exact development consequence' \
         --key=escape --timeout-ms=5000 >/dev/null ||
@@ -330,7 +393,7 @@ beta_allow_package_policy() {
     plan="$(beta_native "$role" zcode network policy mutate \
         --input="{\"mode\":\"plan\",$common}")"
     beta_ok "role $role package-policy plan" "$plan"
-    token="$(printf '%s' "$plan" | beta_jget 'd["data"]["plan_token"]')"
+    token="$(printf '%s' "$plan" | beta_jget data.plan_token)"
     commit="$(beta_native "$role" zcode network policy mutate \
         --input="{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}")"
     beta_ok "role $role package-policy commit" "$commit"
@@ -626,15 +689,15 @@ beta_seal_publish() {
     local prep body manifest recipe seal release release_id plan commit root transport
     prep="$(beta_prepare "$dir" "$pubkey" "$sequence")"
     beta_ok "$label prepare" "$prep"
-    body="$(printf '%s' "$prep" | beta_jget 'd["data"]["release_body_hex"]')"
-    manifest="$(printf '%s' "$prep" | beta_jget 'd["data"]["manifest_hex"]')"
-    recipe="$(printf '%s' "$prep" | beta_jget 'd["data"]["recipe_hex"]')"
+    body="$(printf '%s' "$prep" | beta_jget data.release_body_hex)"
+    manifest="$(printf '%s' "$prep" | beta_jget data.manifest_hex)"
+    recipe="$(printf '%s' "$prep" | beta_jget data.recipe_hex)"
     seal="$("$NODE_BIN" zcode package dev seal \
         --input="{\"release_body_hex\":\"$body\",\"signature_hex\":\"$signature\"}" \
         2>/dev/null | tail -1)"
     beta_ok "$label seal" "$seal"
-    release="$(printf '%s' "$seal" | beta_jget 'd["data"]["release_hex"]')"
-    release_id="$(printf '%s' "$seal" | beta_jget 'd["data"]["release_id"]')"
+    release="$(printf '%s' "$seal" | beta_jget data.release_hex)"
+    release_id="$(printf '%s' "$seal" | beta_jget data.release_id)"
     plan="$(beta_native "$role" zcode create \
         --input="{\"mode\":\"plan\",\"release_hex\":\"$release\",\"manifest_hex\":\"$manifest\",\"recipe_hex\":\"$recipe\",\"dir\":\"$dir\",\"day\":$day}")"
     beta_ok "$label create plan" "$plan"
@@ -646,11 +709,11 @@ beta_seal_publish() {
     commit="$(beta_native "$role" zcode create \
         --input="{\"mode\":\"commit\",\"release_hex\":\"$release\",\"manifest_hex\":\"$manifest\",\"recipe_hex\":\"$recipe\",\"dir\":\"$dir\",\"day\":$day}")"
     beta_ok "$label create commit" "$commit"
-    root="$(printf '%s' "$commit" | beta_jget 'd["data"]["package_root"]')"
-    transport="$(printf '%s' "$commit" | beta_jget 'd["data"]["transport_root"]')"
+    root="$(printf '%s' "$commit" | beta_jget data.package_root)"
+    transport="$(printf '%s' "$commit" | beta_jget data.transport_root)"
     if [ "$BETA_VISUAL_ENABLED" = true ] && [ "$label" = v2 ]; then
         beta_visual_publication_status "$role" "$root" "$transport" \
-            True False False False False
+            true false false false false
     fi
     printf '%s %s %s' "$root" "$transport" "$release_id"
 }
@@ -672,17 +735,17 @@ beta_publish_signed_dir() {
         <<<"$(beta_seal_publish "$role" "$label" "$dir" "$pubkey" \
             "$sequence" "$signature" "$day")"
     BETA_VERSION_RECIPE_ROOT="$(printf '%s' "$prep" | beta_jget \
-        'd["data"]["recipe_root"]')"
+        data.recipe_root)"
     BETA_VERSION_LOCK_ROOT="$(printf '%s' "$prep" | beta_jget \
-        'd["data"]["dependency_lock_root"]')"
+        data.dependency_lock_root)"
     BETA_VERSION_API_ROOT="$(printf '%s' "$prep" | beta_jget \
-        'd["data"]["api_capsule_root"]')"
+        data.api_capsule_root)"
 }
 
 beta_sign_package() {
     local prep="$1" key="$2"
     local digest signature
-    digest="$(printf '%s' "$prep" | beta_jget 'd["data"]["release_signing_digest"]')"
+    digest="$(printf '%s' "$prep" | beta_jget data.release_signing_digest)"
     # The digest and signature are public release material. Keep only the
     # private key off argv via a mode-0600 descriptor; the installed signer
     # validates canonical lowercase hex and prints the public signature.
@@ -705,7 +768,7 @@ beta_publish_record() {
     plan="$(beta_native "$role" zcode network publish \
         --input="{\"mode\":\"plan\",$common}" || true)"
     beta_ok "role $role $kind plan $root" "$plan"
-    token="$(printf '%s' "$plan" | beta_jget 'd["data"]["plan_token"]')"
+    token="$(printf '%s' "$plan" | beta_jget data.plan_token)"
     commit="$(beta_native "$role" zcode network publish \
         --input="{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}" || true)"
     beta_ok "role $role $kind commit $root" "$commit"
@@ -720,24 +783,24 @@ beta_publish_package() {
     if [ "$BETA_VISUAL_ENABLED" = true ] &&
        [ "${BETA_V2_ROOT:-}" = "$root" ]; then
         beta_visual_publication_status "$role" "$root" "$transport" \
-            True True False False False
+            true true false false false
     fi
     beta_publish_record "$role" provider "$root" "$transport" "$sequence"
     if [ "$BETA_VISUAL_ENABLED" = true ] &&
        [ "${BETA_V2_ROOT:-}" = "$root" ]; then
         beta_visual_publication_status "$role" "$root" "$transport" \
-            True True True False False
+            true true true false false
     fi
 }
 
 beta_wait_complete() {
-    local role="$1" root="$2" deadline out complete=False
+    local role="$1" root="$2" deadline out complete=false
     deadline=$(( $(date +%s) + ${C23_BETA_WAIT:-180} ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         out="$(beta_native "$role" zcode package pin \
             --input="{\"root\":\"$root\",\"mode\":\"plan\"}" || true)"
-        complete="$(printf '%s' "$out" | beta_jget 'd.get("data",{}).get("package",{}).get("complete",False)' 2>/dev/null || true)"
-        [ "$complete" = True ] && return 0
+        complete="$(printf '%s' "$out" | beta_jget data.package.complete 2>/dev/null || true)"
+        [ "$complete" = true ] && return 0
         sleep 1
     done
     return 1
@@ -748,7 +811,7 @@ beta_pin() {
     plan="$(beta_native "$role" zcode package pin \
         --input="{\"root\":\"$root\",\"mode\":\"plan\"}")"
     beta_ok "role $role pin plan $root" "$plan"
-    token="$(printf '%s' "$plan" | beta_jget 'd["data"]["plan_token"]')"
+    token="$(printf '%s' "$plan" | beta_jget data.plan_token)"
     commit="$(beta_native "$role" zcode package pin \
         --input="{\"root\":\"$root\",\"mode\":\"commit\",\"plan_token\":\"$token\"}")"
     beta_ok "role $role pin commit $root" "$commit"
@@ -776,7 +839,7 @@ beta_wait_provider_record() {
         out="$(beta_native "$role" zcode network records \
             --input="{\"kind\":\"provider\",\"namespace\":\"$BETA_NAMESPACE\",\"transport_root\":\"$transport\"}" || true)"
         count="$(printf '%s' "$out" |
-            beta_jget 'd.get("data",{}).get("count",0)' 2>/dev/null || true)"
+            beta_jget data.count 2>/dev/null || true)"
         [ "${count:-0}" -ge 1 ] 2>/dev/null && return 0
         sleep 1
     done
@@ -790,25 +853,25 @@ beta_fetch_pin() {
     fetched="$(beta_native "$role" zcode package fetch \
         --input="{\"root\":\"$transport\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}" || true)"
     beta_ok "role $role fetch $transport" "$fetched"
-    [ "$(printf '%s' "$fetched" | beta_jget 'd["data"].get("live",False)')" = True ] ||
+    [ "$(printf '%s' "$fetched" | beta_jget data.live)" = true ] ||
         beta_die "role $role did not route fetch through its live daemon"
     beta_wait_complete "$role" "$transport" ||
         beta_die "role $role did not complete $transport"
     imported="$(beta_native "$role" zcode package fetch \
         --input="{\"root\":\"$transport\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}" || true)"
     beta_ok "role $role import $transport" "$imported"
-    [ "$(printf '%s' "$imported" | beta_jget 'd["data"].get("reconstructed",False)')" = True ] ||
+    [ "$(printf '%s' "$imported" | beta_jget data.reconstructed)" = true ] ||
         beta_die "role $role did not reconstruct signed carrier $transport"
-    [ "$(printf '%s' "$imported" | beta_jget 'd["data"]["package_root"]')" = "$root" ] ||
+    [ "$(printf '%s' "$imported" | beta_jget data.package_root)" = "$root" ] ||
         beta_die "role $role carrier mapped to the wrong package root"
-    [ "$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["state"]')" = complete ] ||
+    [ "$(printf '%s' "$imported" | beta_jget data.download.state)" = complete ] ||
         beta_die "role $role omitted the completed download receipt"
-    BETA_FETCH_REQUESTED_OBJECTS="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["requested_objects"]')"
-    BETA_FETCH_TRANSFERRED_OBJECTS="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["transferred_objects"]')"
-    BETA_FETCH_REUSED_OBJECTS="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["reused_objects"]')"
-    BETA_FETCH_REQUESTED_BYTES="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["requested_bytes"]')"
-    BETA_FETCH_TRANSFERRED_BYTES="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["transferred_bytes"]')"
-    BETA_FETCH_REUSED_BYTES="$(printf '%s' "$imported" | beta_jget 'd["data"]["download"]["reused_bytes"]')"
+    BETA_FETCH_REQUESTED_OBJECTS="$(printf '%s' "$imported" | beta_jget data.download.requested_objects)"
+    BETA_FETCH_TRANSFERRED_OBJECTS="$(printf '%s' "$imported" | beta_jget data.download.transferred_objects)"
+    BETA_FETCH_REUSED_OBJECTS="$(printf '%s' "$imported" | beta_jget data.download.reused_objects)"
+    BETA_FETCH_REQUESTED_BYTES="$(printf '%s' "$imported" | beta_jget data.download.requested_bytes)"
+    BETA_FETCH_TRANSFERRED_BYTES="$(printf '%s' "$imported" | beta_jget data.download.transferred_bytes)"
+    BETA_FETCH_REUSED_BYTES="$(printf '%s' "$imported" | beta_jget data.download.reused_bytes)"
     beta_pin "$role" "$transport"
     beta_pin "$role" "$root"
 }
@@ -828,29 +891,28 @@ beta_build_graph() {
     plan="$(beta_native "$role" zcode use \
         --input="{\"name_or_root\":\"$root\",\"now_unix\":$now}")"
     beta_ok "role $role use plan" "$plan"
-    [ "$(printf '%s' "$plan" | beta_jget 'd["data"]["step_count"]')" -eq "$#" ] ||
+    [ "$(printf '%s' "$plan" | beta_jget data.step_count)" -eq "$#" ] ||
         beta_die "role $role did not resolve the expected $#-package DAG"
-    actual="$(printf '%s' "$plan" | beta_jget \
-        '" ".join(sorted(x["root"] for x in d["data"]["steps"]))')"
+    actual="$(beta_steps_sorted_roots "$plan")"
     expected="$(printf '%s\n' "$@" | sort | paste -sd' ' -)"
     [ "$actual" = "$expected" ] ||
         beta_die "role $role dependency plan substituted an unpinned root"
-    plan_id="$(printf '%s' "$plan" | beta_jget 'd["data"]["plan_id"]')"
+    plan_id="$(printf '%s' "$plan" | beta_jget data.plan_id)"
     commit="$(beta_native "$role" zcode use \
         --input="{\"plan_id\":\"$plan_id\",\"now_unix\":$((now + 1))}")"
     beta_ok "role $role use commit" "$commit"
-    BETA_BUILD_RECEIPT="$(printf '%s' "$commit" | beta_jget \
-        '[x["build_receipt_id"] for x in d["data"]["steps"] if x["root"]=="'"$root"'"][0]')"
+    BETA_BUILD_RECEIPT="$(beta_step_field_for_root "$commit" "$root" \
+        build_receipt_id)"
     [ "${#BETA_BUILD_RECEIPT}" -eq 64 ] ||
         beta_die "role $role omitted target receipt"
-    BETA_BUILD_REBUILT="$(printf '%s' "$commit" | beta_jget \
-        'sum(1 for x in d["data"]["steps"] if not x["already_installed"])')"
-    BETA_BUILD_REUSED="$(printf '%s' "$commit" | beta_jget \
-        'sum(1 for x in d["data"]["steps"] if x["already_installed"])')"
-    BETA_BUILD_EVIDENCE_REUSED="$(printf '%s' "$commit" | beta_jget \
-        'sum(1 for x in d["data"]["steps"] if x["receipt_reused"])')"
+    BETA_BUILD_REBUILT="$(beta_steps_count_where "$commit" \
+        already_installed false)"
+    BETA_BUILD_REUSED="$(beta_steps_count_where "$commit" \
+        already_installed true)"
+    BETA_BUILD_EVIDENCE_REUSED="$(beta_steps_count_where "$commit" \
+        receipt_reused true)"
     BETA_BUILD_ACTIVE_ROOT="$(printf '%s' "$commit" | beta_jget \
-        'd["data"]["active_root"]')"
+        data.active_root)"
     BETA_BUILD_RESULT="$commit"
     [ "$BETA_BUILD_ACTIVE_ROOT" = "$root" ] ||
         beta_die "role $role activated a root other than the exact request"
@@ -887,11 +949,11 @@ read -r SHA3_PUBLISHED BETA_SHA3_TRANSPORT SHA3_RELEASE_ID <<<"$(beta_seal_publi
 PACKAGE_PREP="$(beta_prepare "$BETA_PACKAGE_DIR" "$AUTHOR_PUB" 3)"
 beta_ok "outside package prepare" "$PACKAGE_PREP"
 BETA_V1_RECIPE_ROOT="$(printf '%s' "$PACKAGE_PREP" | beta_jget \
-    'd["data"]["recipe_root"]')"
+    data.recipe_root)"
 BETA_V1_LOCK_ROOT="$(printf '%s' "$PACKAGE_PREP" | beta_jget \
-    'd["data"]["dependency_lock_root"]')"
+    data.dependency_lock_root)"
 BETA_V1_API_ROOT="$(printf '%s' "$PACKAGE_PREP" | beta_jget \
-    'd["data"]["api_capsule_root"]')"
+    data.api_capsule_root)"
 PACKAGE_SIGNATURE="$(beta_sign_package "$PACKAGE_PREP" "$AUTHOR_KEY")"
 read -r PACKAGE_PUBLISHED BETA_PACKAGE_TRANSPORT PACKAGE_RELEASE_ID <<<"$(beta_seal_publish "$BETA_A" outside "$BETA_PACKAGE_DIR" \
     "$AUTHOR_PUB" 3 "$PACKAGE_SIGNATURE" 15)"
@@ -914,7 +976,7 @@ beta_fetch_graph "$BETA_B"
 B_SEARCH="$(beta_native "$BETA_B" zcode package search \
     --input='{"name_prefix":"stranger/sha3-note","limit":4}')"
 beta_ok "B local verified-package search" "$B_SEARCH"
-[ "$(printf '%s' "$B_SEARCH" | beta_jget 'd["data"]["total_matches"]')" -eq 1 ] ||
+[ "$(printf '%s' "$B_SEARCH" | beta_jget data.total_matches)" -eq 1 ] ||
     beta_die "B could not inspect the fetched signed release"
 
 # The same ordinary node is now an unrelated author. Its private key and
@@ -956,8 +1018,8 @@ beta_fetch_graph "$BETA_D"
 beta_build_graph "$BETA_C" "$BETA_PACKAGE_ROOT" "$BETA_BASE_ROOT" \
     "$BETA_SHA3_ROOT" "$BETA_PACKAGE_ROOT"
 C_RECEIPT="$BETA_BUILD_RECEIPT"
-C_BASE_RECEIPT="$(printf '%s' "$BETA_BUILD_RESULT" | beta_jget \
-    '[x["build_receipt_id"] for x in d["data"]["steps"] if x["root"]=="'"$BETA_BASE_ROOT"'"][0]')"
+C_BASE_RECEIPT="$(beta_step_field_for_root "$BETA_BUILD_RESULT" \
+    "$BETA_BASE_ROOT" build_receipt_id)"
 [ "$BETA_BUILD_REBUILT" -eq 3 ] && [ "$BETA_BUILD_REUSED" -eq 0 ] &&
 [ "$BETA_BUILD_EVIDENCE_REUSED" -eq 0 ] ||
     beta_die "C's cold graph build did not execute exactly three packages"
@@ -983,8 +1045,8 @@ SECOND_TRANSFERRED_BYTES="$BETA_FETCH_TRANSFERRED_BYTES"
 beta_build_graph "$BETA_C" "$BETA_SECOND_ROOT" "$BETA_BASE_ROOT" \
     "$BETA_SECOND_ROOT"
 SECOND_RECEIPT="$BETA_BUILD_RECEIPT"
-SECOND_BASE_RECEIPT="$(printf '%s' "$BETA_BUILD_RESULT" | beta_jget \
-    '[x["build_receipt_id"] for x in d["data"]["steps"] if x["root"]=="'"$BETA_BASE_ROOT"'"][0]')"
+SECOND_BASE_RECEIPT="$(beta_step_field_for_root "$BETA_BUILD_RESULT" \
+    "$BETA_BASE_ROOT" build_receipt_id)"
 [ "$BETA_BUILD_REBUILT" -eq 1 ] && [ "$BETA_BUILD_REUSED" -eq 1 ] &&
 [ "$BETA_BUILD_EVIDENCE_REUSED" -eq 1 ] &&
 [ "$C_BASE_RECEIPT" = "$SECOND_BASE_RECEIPT" ] ||
@@ -1062,10 +1124,8 @@ B_SECOND_AFTER="$(beta_native "$BETA_B" zcode package search \
     --input='{"name_prefix":"visitor/hex-frame","limit":4}')"
 beta_ok "B first package after publisher removal" "$B_AFTER"
 beta_ok "B second package after publisher removal" "$B_SECOND_AFTER"
-[ "$(printf '%s' "$B_AFTER" | beta_jget \
-    'set(x["package_root"] for x in d["data"]["results"])==set(["'"$BETA_PACKAGE_ROOT"'"])')" = True ] &&
-[ "$(printf '%s' "$B_SECOND_AFTER" | beta_jget \
-    'set(x["package_root"] for x in d["data"]["results"])==set(["'"$BETA_SECOND_ROOT"'"])')" = True ] ||
+beta_results_set_eq "$B_AFTER" package_root "$BETA_PACKAGE_ROOT" &&
+beta_results_set_eq "$B_SECOND_AFTER" package_root "$BETA_SECOND_ROOT" ||
     beta_die "onward providers did not preserve both graphs after publisher disappearance"
 
 # Reconstruct the package source inertly, then link the standalone application
@@ -1119,16 +1179,16 @@ if [ "$BETA_VISUAL_ENABLED" = true ]; then
     BETA_VISUAL_BEFORE_SOURCE_ROOT="$(beta_visual_capture_source \
         "$BETA_D" "$APP_SOURCE")"
 fi
-python3 - "$APP_SOURCE/src/note.c" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-text = path.read_text()
-old = "    if (!text || !out)\n        return false;"
-new = "    if (!text || !out || text[0] == '\\0')\n        return false;"
-if text.count(old) != 1:
-    raise SystemExit("v2 edit target is not exact")
-path.write_text(text.replace(old, new))
-PY
+[ "$(grep -F -c '    if (!text || !out)' "$APP_SOURCE/src/note.c")" -eq 1 ] ||
+    beta_die "v2 edit target is not exact"
+awk -f - "$APP_SOURCE/src/note.c" > "$APP_SOURCE/src/note.c.beta-edit" <<'AWK'
+$0 == "    if (!text || !out)" {
+    print "    if (!text || !out || text[0] == '\\0')"
+    next
+}
+{ print }
+AWK
+mv "$APP_SOURCE/src/note.c.beta-edit" "$APP_SOURCE/src/note.c"
 if [ "$BETA_VISUAL_ENABLED" = true ]; then
     BETA_VISUAL_CANDIDATE_SOURCE_ROOT="$(beta_visual_capture_source \
         "$BETA_D" "$APP_SOURCE")"
@@ -1158,7 +1218,7 @@ beta_publish_package "$BETA_D" "$BETA_V2_ROOT" "$BETA_V2_TRANSPORT" 2
 beta_fetch_pin "$BETA_C" "$BETA_V2_ROOT" "$BETA_V2_TRANSPORT"
 if [ "$BETA_VISUAL_ENABLED" = true ]; then
     beta_visual_publication_status "$BETA_C" "$BETA_V2_ROOT" \
-        "$BETA_V2_TRANSPORT" True True True True True true
+        "$BETA_V2_TRANSPORT" true true true true true true
 fi
 V2_REQUESTED_OBJECTS="$BETA_FETCH_REQUESTED_OBJECTS"
 V2_TRANSFERRED_OBJECTS="$BETA_FETCH_TRANSFERRED_OBJECTS"
@@ -1220,16 +1280,20 @@ fi
 beta_note "after the change: the same empty note is refused - \"$AFTER_EMPTY_OUTPUT\" (exit $AFTER_EMPTY_STATUS) - while hello still answers the same bytes"
 
 beta_note "v3 moves the same offline author identity to interchangeable C"
-python3 - "$APP_SOURCE/include/stranger/note.h" <<'PY'
-import pathlib, sys
-path = pathlib.Path(sys.argv[1])
-text = path.read_text()
-old = "\n#endif\n"
-new = "\n#define STRANGER_NOTE_API_VERSION 3u\n\n#endif\n"
-if text.count(old) != 1:
-    raise SystemExit("v3 edit target is not exact")
-path.write_text(text.replace(old, new))
-PY
+[ "$(grep -F -c '#endif' "$APP_SOURCE/include/stranger/note.h")" -eq 1 ] ||
+    beta_die "v3 edit target is not exact"
+awk -f - "$APP_SOURCE/include/stranger/note.h" \
+    > "$APP_SOURCE/include/stranger/note.h.beta-edit" <<'AWK'
+$0 == "#endif" {
+    print "#define STRANGER_NOTE_API_VERSION 3u"
+    print ""
+    print
+    next
+}
+{ print }
+AWK
+mv "$APP_SOURCE/include/stranger/note.h.beta-edit" \
+    "$APP_SOURCE/include/stranger/note.h"
 beta_publish_version "$BETA_C" v3 "$APP_SOURCE" 5 29
 BETA_V3_ROOT="$BETA_VERSION_ROOT"
 BETA_V3_TRANSPORT="$BETA_VERSION_TRANSPORT"
@@ -1277,12 +1341,10 @@ V3_ARTIFACT="$(openssl dgst -sha3-256 "$V3_ARCHIVE" | awk '{print $NF}')"
 VERSION_SEARCH="$(beta_native "$BETA_C" zcode package search \
     --input='{"name_prefix":"stranger/sha3-note","limit":8}')"
 beta_ok "C version search" "$VERSION_SEARCH"
-[ "$(printf '%s' "$VERSION_SEARCH" | beta_jget \
-    'set(x["package_root"] for x in d["data"]["results"])==set(["'"$BETA_PACKAGE_ROOT"'","'"$BETA_V2_ROOT"'","'"$BETA_V3_ROOT"'"])')" = True ] &&
-[ "$(printf '%s' "$VERSION_SEARCH" | beta_jget \
-    'set(x["publisher_sequence"] for x in d["data"]["results"])==set([3,4,5])')" = True ] &&
-[ "$(printf '%s' "$VERSION_SEARCH" | beta_jget \
-    'len(set(x["publisher"] for x in d["data"]["results"]))')" -eq 1 ] ||
+beta_results_set_eq "$VERSION_SEARCH" package_root \
+    "$BETA_PACKAGE_ROOT" "$BETA_V2_ROOT" "$BETA_V3_ROOT" &&
+beta_results_set_eq "$VERSION_SEARCH" publisher_sequence 3 4 5 &&
+[ "$(beta_results_unique "$VERSION_SEARCH" publisher | grep -c .)" -eq 1 ] ||
     beta_die "signed package history did not preserve v1/v2/v3 distinctly"
 
 # A fresh B store asks for v1 by exact root after v2 and v3 exist. D must
@@ -1292,7 +1354,7 @@ beta_fetch_graph "$BETA_B"
 B_V1_SHOW="$(beta_native "$BETA_B" zcode package show \
     --input="{\"root\":\"$BETA_PACKAGE_ROOT\"}")"
 beta_ok "B exact v1 after v3" "$B_V1_SHOW"
-[ "$(printf '%s' "$B_V1_SHOW" | beta_jget 'd["data"]["package_root"]')" = "$BETA_PACKAGE_ROOT" ] ||
+[ "$(printf '%s' "$B_V1_SHOW" | beta_jget data.package_root)" = "$BETA_PACKAGE_ROOT" ] ||
     beta_die "B silently substituted a successor for pinned v1"
 
 beta_note "exact byte revert recreates v1 identities and reuses all evidence"
@@ -1304,26 +1366,26 @@ cmp -s "$APP_SOURCE/include/stranger/note.h" \
     beta_die "revert did not restore exact v1 source bytes"
 REVERT_PREP="$(beta_prepare "$APP_SOURCE" "$AUTHOR_PUB" 3)"
 beta_ok "exact revert prepare" "$REVERT_PREP"
-[ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["package_root"]')" = "$BETA_PACKAGE_ROOT" ] &&
-[ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["recipe_root"]')" = "$BETA_V1_RECIPE_ROOT" ] &&
-[ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["dependency_lock_root"]')" = "$BETA_V1_LOCK_ROOT" ] &&
-[ "$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["api_capsule_root"]')" = "$BETA_V1_API_ROOT" ] ||
+[ "$(printf '%s' "$REVERT_PREP" | beta_jget data.package_root)" = "$BETA_PACKAGE_ROOT" ] &&
+[ "$(printf '%s' "$REVERT_PREP" | beta_jget data.recipe_root)" = "$BETA_V1_RECIPE_ROOT" ] &&
+[ "$(printf '%s' "$REVERT_PREP" | beta_jget data.dependency_lock_root)" = "$BETA_V1_LOCK_ROOT" ] &&
+[ "$(printf '%s' "$REVERT_PREP" | beta_jget data.api_capsule_root)" = "$BETA_V1_API_ROOT" ] ||
     beta_die "exact revert did not recreate all v1 semantic roots"
 REVERT_SIGNATURE="$(beta_sign_package "$REVERT_PREP" "$AUTHOR_KEY")"
 REVERT_SEAL="$("$NODE_BIN" zcode package dev seal \
-    --input="{\"release_body_hex\":\"$(printf '%s' "$REVERT_PREP" | beta_jget 'd["data"]["release_body_hex"]')\",\"signature_hex\":\"$REVERT_SIGNATURE\"}" \
+    --input="{\"release_body_hex\":\"$(printf '%s' "$REVERT_PREP" | beta_jget data.release_body_hex)\",\"signature_hex\":\"$REVERT_SIGNATURE\"}" \
     2>/dev/null | tail -1)"
 beta_ok "exact revert seal" "$REVERT_SEAL"
-[ "$(printf '%s' "$REVERT_SEAL" | beta_jget 'd["data"]["release_id"]')" = "$PACKAGE_RELEASE_ID" ] ||
+[ "$(printf '%s' "$REVERT_SEAL" | beta_jget data.release_id)" = "$PACKAGE_RELEASE_ID" ] ||
     beta_die "exact revert did not recreate the original signed release"
 REVERT_STORE="$DHT_WORK/revert-identity-store"
 mkdir -p "$REVERT_STORE"
 REVERT_RELEASE="$(printf '%s' "$REVERT_SEAL" | beta_jget \
-    'd["data"]["release_hex"]')"
+    data.release_hex)"
 REVERT_MANIFEST="$(printf '%s' "$REVERT_PREP" | beta_jget \
-    'd["data"]["manifest_hex"]')"
+    data.manifest_hex)"
 REVERT_RECIPE="$(printf '%s' "$REVERT_PREP" | beta_jget \
-    'd["data"]["recipe_hex"]')"
+    data.recipe_hex)"
 REVERT_PLAN="$("$NODE_BIN" -regtest zcode create \
     --input="{\"mode\":\"plan\",\"release_hex\":\"$REVERT_RELEASE\",\"manifest_hex\":\"$REVERT_MANIFEST\",\"recipe_hex\":\"$REVERT_RECIPE\",\"dir\":\"$APP_SOURCE\",\"day\":15,\"datadir\":\"$REVERT_STORE\"}" \
     2>/dev/null | tail -1)"
@@ -1332,14 +1394,14 @@ REVERT_COMMIT="$("$NODE_BIN" -regtest zcode create \
     --input="{\"mode\":\"commit\",\"release_hex\":\"$REVERT_RELEASE\",\"manifest_hex\":\"$REVERT_MANIFEST\",\"recipe_hex\":\"$REVERT_RECIPE\",\"dir\":\"$APP_SOURCE\",\"day\":15,\"datadir\":\"$REVERT_STORE\"}" \
     2>/dev/null | tail -1)"
 beta_ok "exact revert carrier commit" "$REVERT_COMMIT"
-[ "$(printf '%s' "$REVERT_COMMIT" | beta_jget 'd["data"]["transport_root"]')" = "$BETA_PACKAGE_TRANSPORT" ] ||
+[ "$(printf '%s' "$REVERT_COMMIT" | beta_jget data.transport_root)" = "$BETA_PACKAGE_TRANSPORT" ] ||
     beta_die "exact revert did not recreate the original carrier root"
 beta_wait_provider_record "$BETA_C" "$BETA_PACKAGE_TRANSPORT" ||
     beta_die "C never discovered a provider record for the original carrier"
 REVERT_FETCH="$(beta_native "$BETA_C" zcode package fetch \
     --input="{\"root\":\"$BETA_PACKAGE_TRANSPORT\",\"namespace\":\"$BETA_NAMESPACE\",\"maximum_bytes\":268435456}")"
 beta_ok "C exact revert fetch" "$REVERT_FETCH"
-[ "$(printf '%s' "$REVERT_FETCH" | beta_jget 'd["data"]["fetch_result"]')" = already-complete ] ||
+[ "$(printf '%s' "$REVERT_FETCH" | beta_jget data.fetch_result)" = already-complete ] ||
     beta_die "exact revert transferred bytes instead of using local v1"
 beta_build_graph "$BETA_C" "$BETA_PACKAGE_ROOT" "$BETA_BASE_ROOT" \
     "$BETA_SHA3_ROOT" "$BETA_PACKAGE_ROOT"

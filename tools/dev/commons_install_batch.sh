@@ -19,6 +19,33 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 cd "$ROOT"
 
+JSONQ="${JSONQ:-$ROOT/build/bin/jsonq}"
+[ -x "$JSONQ" ] || {
+    echo "commons_install_batch: missing $JSONQ — run make jsonq" >&2
+    exit 1
+}
+
+# Transitive post-order walk of packages/<short>/zcode-package.json pins.
+# Dedup by short name after children, matching a depth-first closure.
+batch_dep_seen=""
+batch_dep_visit() {
+    local short="${1%%/*}"
+    case " $batch_dep_seen " in
+        *" $short "*) return 0 ;;
+    esac
+    local manifest="packages/$short/zcode-package.json"
+    [ -f "$manifest" ] || return 0
+    local n i dep
+    n="$("$JSONQ" count dependencies < "$manifest" 2>/dev/null || echo 0)"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        dep="$("$JSONQ" get "dependencies[$i].name" < "$manifest")"
+        batch_dep_visit "$dep"
+        i=$((i + 1))
+    done
+    batch_dep_seen="${batch_dep_seen:+$batch_dep_seen }$short"
+}
+
 SIGN=build/bin/zclassic23-package-sign
 FACTORY=build/bin/package-factory
 KEYDIR="$HOME/.config/zclassic23"
@@ -61,32 +88,23 @@ while [ "$#" -ge 2 ]; do
     # zotp -> zsha1) and every src/*.c of a multi-file dep participates.
     dep_includes=()
     dep_srcs=()
-    while IFS= read -r dep; do
+    batch_dep_seen=""
+    n="$("$JSONQ" count dependencies < "packages/$name/zcode-package.json" \
+        2>/dev/null || echo 0)"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        dep="$("$JSONQ" get "dependencies[$i].name" \
+            < "packages/$name/zcode-package.json")"
+        batch_dep_visit "$dep"
+        i=$((i + 1))
+    done
+    for dep in $batch_dep_seen; do
         [ -z "$dep" ] && continue
         dep_includes+=("-Ipackages/$dep/include")
         for s in "packages/$dep"/src/*.c; do
             dep_srcs+=("$s")
         done
-    done < <(python3 -c "
-import json
-seen = []
-def visit(name):
-    short = name.split('/')[0]
-    if short in seen:
-        return
-    try:
-        m = json.load(open('packages/%s/zcode-package.json' % short))
-    except OSError:
-        return
-    for d in m.get('dependencies', []):
-        visit(d['name'])
-    seen.append(short)
-m = json.load(open('packages/$name/zcode-package.json'))
-for d in m.get('dependencies', []):
-    visit(d['name'])
-for short in seen:
-    print(short)
-")
+    done
 
     # The package itself may be multi-file (src/*.c).
     pkg_srcs=()

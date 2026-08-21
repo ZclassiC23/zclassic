@@ -47,6 +47,7 @@ VERIFY_BIN="$ROOT/build/bin/zclassic23-package-verify"
 NODE_BIN="$ROOT/build/bin/zclassic23"
 SIGN_BIN="$ROOT/build/bin/zclassic23-package-sign"
 FACTORY_BIN="$ROOT/build/bin/package-factory"
+JSONQ="${JSONQ:-$ROOT/build/bin/jsonq}"
 PKGS=(zsha256 zhkdf zscrypt)
 
 CACHE_DIR="$WORK/cache"          # shared fast-object cache across all runs
@@ -113,11 +114,9 @@ fi
 
 # ── preflight ──────────────────────────────────────────────────────────
 
-for bin in "$VERIFY_BIN" "$NODE_BIN" "$SIGN_BIN" "$FACTORY_BIN"; do
+for bin in "$VERIFY_BIN" "$NODE_BIN" "$SIGN_BIN" "$FACTORY_BIN" "$JSONQ"; do
     [ -x "$bin" ] || fail "missing $bin — run: make -j\$(nproc)"
 done
-command -v python3 >/dev/null 2>&1 ||
-    fail "python3 is required (plan-stat extraction, report assembly)"
 for p in "${PKGS[@]}"; do
     [ -d "$ROOT/packages/$p" ] || fail "missing packages/$p"
 done
@@ -149,16 +148,13 @@ dev_prepare()
     printf '{"dir":"%s","publisher_pubkey":"%s","publisher_sequence":1}' \
         "$DRAFTS/$p" "$BENCH_PUBKEY" |
         "$NODE_BIN" zcode package dev prepare --input=- > "$prep" 2>/dev/null
-    python3 - "$prep" "$WORK/$p.recipe.wire" <<'PYEOF'
-import json, sys
-doc = json.load(open(sys.argv[1]))
-if not doc.get("ok"):
-    sys.exit(1)
-data = doc["data"]
-with open(sys.argv[2], "wb") as fh:
-    fh.write(bytes.fromhex(data["recipe_hex"]))
-print(data["package_root"], data["dependency_lock_root"])
-PYEOF
+    "$JSONQ" eq ok true < "$prep" || return 1
+    local recipe_hex pkg_root lock_root
+    recipe_hex="$("$JSONQ" get data.recipe_hex < "$prep")"
+    pkg_root="$("$JSONQ" get data.package_root < "$prep")"
+    lock_root="$("$JSONQ" get data.dependency_lock_root < "$prep")"
+    printf '%s' "$recipe_hex" | xxd -r -p > "$WORK/$p.recipe.wire"
+    printf '%s %s\n' "$pkg_root" "$lock_root"
 }
 
 declare -A PKG_ROOT PKG_LOCK
@@ -215,25 +211,27 @@ run_verify()
     procs="$(sed -n 's/^zbuild-package-perf=v1 processes=\([0-9]*\).*/\1/p' "$out")"
     local files_reread=0 bytes_reread=0
     if [ "$mode" = fast ] && [ -f "$plan" ]; then
-        local rr
-        rr="$(python3 - "$plan" <<'PYEOF'
-import json, sys
-try:
-    doc = json.load(open(sys.argv[1]))
-except Exception:
-    print(0, 0)
-    sys.exit(0)
-files = set()
-total = 0
-for tu in doc.get("translation_units", []):
-    for inp in tu.get("inputs", []):
-        files.add(inp.get("path", ""))
-        total += int(inp.get("bytes", 0))
-print(len(files), total)
-PYEOF
-)"
-        files_reread="${rr%% *}"
-        bytes_reread="${rr##* }"
+        local n_tu n_in i j pth bsz paths=""
+        n_tu="$("$JSONQ" count translation_units < "$plan" 2>/dev/null || echo 0)"
+        i=0
+        while [ "$i" -lt "$n_tu" ]; do
+            n_in="$("$JSONQ" count "translation_units[$i].inputs" < "$plan" \
+                2>/dev/null || echo 0)"
+            j=0
+            while [ "$j" -lt "$n_in" ]; do
+                pth="$("$JSONQ" get "translation_units[$i].inputs[$j].path" \
+                    < "$plan" 2>/dev/null || true)"
+                bsz="$("$JSONQ" get "translation_units[$i].inputs[$j].bytes" \
+                    < "$plan" 2>/dev/null || echo 0)"
+                bytes_reread=$((bytes_reread + ${bsz:-0}))
+                case " $paths " in
+                    *" $pth "*) ;;
+                    *) paths="$paths $pth"; files_reread=$((files_reread + 1)) ;;
+                esac
+                j=$((j + 1))
+            done
+            i=$((i + 1))
+        done
     fi
     printf '%s %s %s %s %s %s %s %s %s %s\n' \
         "$rc" "$((end - start))" "${result:-none}" "${hits:-0}" \
@@ -254,35 +252,30 @@ record_edit()
 {
     local id="$1" p="$2" class="$3" file="$4" desc="$5"
     local fastline="$6" shadowline="$7" match="$8" extra="${9:-"{}"}"
-    python3 - "$EDITS_NDJSON" "$id" "$p" "$class" "$file" "$desc" \
-        "$fastline" "$shadowline" "$match" "$extra" <<'PYEOF'
-import json, sys
-(path, eid, pkg, klass, file_, desc, fastline, shadowline, match,
- extra_raw) = sys.argv[1:11]
-f = fastline.split()
-s = shadowline.split()
-rec = {
-    "edit": eid, "package": pkg, "class": klass, "file": file_,
-    "description": desc,
-    "fast": {
-        "exit": int(f[0]), "wall_ms": int(f[1]), "result": f[2],
-        "cache_hits": int(f[3]), "cache_misses": int(f[4]),
-        "reused_bytes": int(f[5]),
-        "compiler_processes": int(f[6]), "processes": int(f[7]),
-        "files_reread": int(f[8]), "bytes_reread": int(f[9]),
-        "green": f[2] in ("test-pass", "build-pass") and int(f[0]) == 0,
-    },
-    "shadow": {
-        "exit": int(s[0]), "wall_ms": int(s[1]), "result": s[2],
-        "compiler_processes": int(s[6]), "processes": int(s[7]),
-    },
-    "shadow_match": match == "true",
-}
-if extra_raw != "{}":
-    rec["detail"] = json.loads(extra_raw)
-with open(path, "a", encoding="utf-8") as fh:
-    fh.write(json.dumps(rec) + "\n")
-PYEOF
+    local f_exit f_wall f_result f_hits f_misses f_reused f_cprocs f_procs
+    local f_files f_bytes s_exit s_wall s_result s_cprocs s_procs
+    local green=false shadow_match=false detail=""
+    read -r f_exit f_wall f_result f_hits f_misses f_reused f_cprocs f_procs \
+        f_files f_bytes _ <<<"$fastline"
+    read -r s_exit s_wall s_result _ _ _ s_cprocs s_procs _ <<<"$shadowline"
+    if [ "$f_exit" = 0 ] &&
+       { [ "$f_result" = test-pass ] || [ "$f_result" = build-pass ]; }; then
+        green=true
+    fi
+    [ "$match" = true ] && shadow_match=true
+    if [ "$extra" != "{}" ]; then
+        detail="$(printf ',"detail":%s' "$extra")"
+    fi
+    printf '{"edit":"%s","package":"%s","class":"%s","file":"%s","description":"%s","fast":{"exit":%s,"wall_ms":%s,"result":"%s","cache_hits":%s,"cache_misses":%s,"reused_bytes":%s,"compiler_processes":%s,"processes":%s,"files_reread":%s,"bytes_reread":%s,"green":%s},"shadow":{"exit":%s,"wall_ms":%s,"result":"%s","compiler_processes":%s,"processes":%s},"shadow_match":%s%s}\n' \
+        "$(json_escape "$id")" "$(json_escape "$p")" "$(json_escape "$class")" \
+        "$(json_escape "$file")" "$(json_escape "$desc")" \
+        "$f_exit" "$f_wall" "$(json_escape "$f_result")" \
+        "${f_hits:-0}" "${f_misses:-0}" "${f_reused:-0}" \
+        "${f_cprocs:-0}" "${f_procs:-0}" "${f_files:-0}" "${f_bytes:-0}" \
+        "$green" \
+        "$s_exit" "$s_wall" "$(json_escape "$s_result")" \
+        "${s_cprocs:-0}" "${s_procs:-0}" "$shadow_match" "$detail" \
+        >> "$EDITS_NDJSON"
 }
 
 # do_edit <id> <pkg> <class> <file> <desc> [detail_json] — runs fast+shadow,
@@ -553,16 +546,14 @@ else
             $cache_arg > "$FWORK/$label.stdout" 2>&1
         local rc=$?
         [ "$rc" -eq 0 ] || fail "factory run failed ($label): $FWORK/$label.stdout"
-        python3 - "$r_pkg" "$label" >> "$FACTORY_NDJSON" <<'PYEOF'
-import json, sys
-d = json.load(open(sys.argv[1]))
-fc = d.get("fast_cache") or {}
-print(json.dumps({
-    "label": sys.argv[2], "ok": d["ok"], "total_ms": d["total_ms"],
-    "hits": fc.get("hits"), "misses": fc.get("misses"),
-    "report": sys.argv[1],
-}))
-PYEOF
+        local ok total_ms hits misses
+        ok="$("$JSONQ" get ok < "$r_pkg")"
+        total_ms="$("$JSONQ" get total_ms < "$r_pkg")"
+        hits="$("$JSONQ" get fast_cache.hits < "$r_pkg" 2>/dev/null || echo null)"
+        misses="$("$JSONQ" get fast_cache.misses < "$r_pkg" 2>/dev/null || echo null)"
+        printf '{"label":"%s","ok":%s,"total_ms":%s,"hits":%s,"misses":%s,"report":"%s"}\n' \
+            "$(json_escape "$label")" "$ok" "$total_ms" "$hits" "$misses" \
+            "$(json_escape "$r_pkg")" >> "$FACTORY_NDJSON"
     }
     # F1: cache on, cold standard-profile entries (only quick TUs warm).
     factory_run f1 "--fast-cache=$CACHE_DIR"
@@ -580,134 +571,211 @@ TRACKED_STATUS_AFTER="$(git -C "$ROOT" status --porcelain=v1 -- packages corpus 
 
 mkdir -p "$(dirname "$OUTPUT")"
 GENERATED_AT="$(date -u +%FT%TZ)"
-python3 - "$EDITS_NDJSON" "$FACTORY_NDJSON" "$OUTPUT" "$GENERATED_AT" \
-    "$TOTAL_EDITS" "$SHADOW_MISMATCHES" "$EDIT_FAILURES" <<'PYEOF'
-import json, sys
 
-(edits_path, factory_path, out_path, generated_at,
- total_edits, shadow_mismatches, edit_failures) = sys.argv[1:8]
-
-edits = [json.loads(line) for line in open(edits_path) if line.strip()]
-factory = [json.loads(line) for line in open(factory_path) if line.strip()]
-
-def pct(samples, p):
-    if not samples:
-        return None
-    s = sorted(samples)
-    rank = (len(s) * p + 99) // 100
-    return s[min(max(rank, 1), len(s)) - 1]
-
-classes = {}
-for rec in edits:
-    c = classes.setdefault(rec["class"], {"edits": 0, "fast_ms": [],
-        "shadow_ms": [], "hits": 0, "misses": 0, "files_reread": [],
-        "bytes_reread": [], "compiler_processes_fast": [],
-        "compiler_processes_shadow": [], "all_green": True,
-        "all_shadow_match": True})
-    c["edits"] += 1
-    c["fast_ms"].append(rec["fast"]["wall_ms"])
-    c["shadow_ms"].append(rec["shadow"]["wall_ms"])
-    c["hits"] += rec["fast"]["cache_hits"]
-    c["misses"] += rec["fast"]["cache_misses"]
-    c["files_reread"].append(rec["fast"]["files_reread"])
-    c["bytes_reread"].append(rec["fast"]["bytes_reread"])
-    c["compiler_processes_fast"].append(rec["fast"]["compiler_processes"])
-    c["compiler_processes_shadow"].append(rec["shadow"]["compiler_processes"])
-    c["all_green"] = c["all_green"] and (
-        rec["fast"]["green"] or rec["class"] == "semantic_red")
-    c["all_shadow_match"] = c["all_shadow_match"] and rec["shadow_match"]
-
-class_rows = {}
-for name, c in sorted(classes.items()):
-    class_rows[name] = {
-        "edits": c["edits"],
-        "fast_p50_ms": pct(c["fast_ms"], 50),
-        "fast_p95_ms": pct(c["fast_ms"], 95),
-        "shadow_p50_ms": pct(c["shadow_ms"], 50),
-        "shadow_p95_ms": pct(c["shadow_ms"], 95),
-        "cache_hits": c["hits"], "cache_misses": c["misses"],
-        "files_reread_p50": pct(c["files_reread"], 50),
-        "bytes_reread_p50": pct(c["bytes_reread"], 50),
-        "compiler_processes_fast_p50": pct(c["compiler_processes_fast"], 50),
-        "compiler_processes_shadow_p50": pct(c["compiler_processes_shadow"], 50),
-        "all_green": c["all_green"],
-        "all_shadow_match": c["all_shadow_match"],
-    }
-
-f2 = next((f for f in factory if f["label"] == "f2"), None)
-f3 = next((f for f in factory if f["label"] == "f3"), None)
-factory_equiv = None
-if f2 and f3:
-    VOLATILE = {"total_ms", "ms", "fast_cache", "plan_id", "error"}
-    def strip(v):
-        if isinstance(v, dict):
-            return {k: strip(x) for k, x in v.items() if k not in VOLATILE}
-        if isinstance(v, list):
-            return [strip(x) for x in v]
-        return v
-    factory_equiv = strip(json.load(open(f2["report"]))) == \
-                    strip(json.load(open(f3["report"])))
-
-status = "ok"
-if int(shadow_mismatches) or int(edit_failures):
-    status = "failed"
-
-doc = {
-    "schema": "zcl.fast_build_bench.v1",
-    "status": status,
-    "generated_at_utc": generated_at,
-    "artifact": out_path,
-    "verifier": "zclassic23-package-verify candidate mode, profile=quick, "
-                "full isolation; fast runs carry --fast-cache + --plan, "
-                "shadow runs neither",
-    "derivations": {
-        "compiler_processes": "zbuild-package-perf=v1 line (verifier-"
-            "instrumented gcc driver spawns incl. -E probes; cc1/as children "
-            "of the driver are not separately visible)",
-        "files_reread_bytes_reread": "zcl.dep_plan.v1 depfile closure: "
-            "distinct files the preprocessor opened across recipe source "
-            "TUs, and their summed bytes (fast runs only)",
-        "time_to_green_ms": "fast wall ms with exit 0, result test-pass, "
-            "and a build receipt",
-    },
-    "totals": {
-        "edits": int(total_edits),
-        "shadow_mismatches": int(shadow_mismatches),
-        "edit_failures": int(edit_failures),
-        "all_shadow_match": int(shadow_mismatches) == 0,
-    },
-    "classes": class_rows,
-    "factory_end_to_end": {
-        "runs": factory,
-        "report_equal_modulo_volatile_keys": factory_equiv,
-        "volatile_keys": ["total_ms", "ms", "fast_cache", "plan_id", "error"],
-        "note": "f2 = stores wiped, shared warm cache; f3 = stores wiped, "
-                "cache disabled (--fast-cache=); identical draft content",
-    },
-    "edits": edits,
+factory_report_core() {
+    local f="$1" n i side
+    "$JSONQ" get schema < "$f"
+    "$JSONQ" get ok < "$f"
+    "$JSONQ" get package < "$f"
+    for side in a b; do
+        "$JSONQ" get "stores.$side.datadir" < "$f"
+        "$JSONQ" get "stores.$side.published" < "$f"
+        "$JSONQ" get "stores.$side.installed" < "$f"
+        "$JSONQ" get "stores.$side.receipt_quick" < "$f"
+        "$JSONQ" get "stores.$side.receipt_standard" < "$f"
+        "$JSONQ" get "stores.$side.reproduced" < "$f"
+        "$JSONQ" get "stores.$side.storage_ack" < "$f"
+    done
+    "$JSONQ" get admission < "$f"
+    n="$("$JSONQ" count steps < "$f")"
+    printf 'steps=%s\n' "$n"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        "$JSONQ" get "steps[$i].name" < "$f"
+        "$JSONQ" get "steps[$i].ok" < "$f"
+        i=$((i + 1))
+    done
+    "$JSONQ" get disclosures < "$f"
+    "$JSONQ" get durable_hosting < "$f"
+    "$JSONQ" get corpus_registered < "$f"
+    "$JSONQ" get corpus_next_step < "$f" 2>/dev/null || true
 }
-with open(out_path, "w", encoding="utf-8") as fh:
-    json.dump(doc, fh, indent=1)
-    fh.write("\n")
 
-# ── text table ──
-print()
-print("class               edits   fast p50/p95 ms   shadow p50/p95 ms   hits/misses  files/bytes reread p50")
-for name, row in class_rows.items():
-    print("%-19s %5d   %8s / %-8s %8s / %-8s %5d/%-5d  %s/%s" % (
-        name, row["edits"], row["fast_p50_ms"], row["fast_p95_ms"],
-        row["shadow_p50_ms"], row["shadow_p95_ms"],
-        row["cache_hits"], row["cache_misses"],
-        row["files_reread_p50"], row["bytes_reread_p50"]))
-print()
-if f2 and f3:
-    print("factory end-to-end: warm-cache total_ms=%s  no-cache total_ms=%s  "
-          "reports_equal_mod_volatile=%s" %
-          (f2["total_ms"], f3["total_ms"], factory_equiv))
-print("artifact: %s" % out_path)
-sys.exit(0 if status == "ok" else 1)
-PYEOF
-rc=$?
+STATS="$WORK/edits.stats.tsv"
+: > "$STATS"
+while IFS= read -r rec; do
+    [ -n "$rec" ] || continue
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
+        "$(printf '%s' "$rec" | "$JSONQ" get class)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get fast.wall_ms)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get shadow.wall_ms)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get fast.cache_hits)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get fast.cache_misses)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get fast.files_reread)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get fast.bytes_reread)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get fast.compiler_processes)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get shadow.compiler_processes)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get fast.green)" \
+        "$(printf '%s' "$rec" | "$JSONQ" get shadow_match)" \
+        >> "$STATS"
+done < "$EDITS_NDJSON"
+
+CLASSES_JSON="$(awk -F '\t' '
+function pct(arr, n, p,    s, i, j, tmp, rank) {
+    if (n == 0) return "null"
+    for (i = 1; i <= n; i++) s[i] = arr[i] + 0
+    for (i = 2; i <= n; i++) {
+        tmp = s[i]
+        j = i - 1
+        while (j >= 1 && s[j] > tmp) { s[j + 1] = s[j]; j-- }
+        s[j + 1] = tmp
+    }
+    rank = int((n * p + 99) / 100)
+    if (rank < 1) rank = 1
+    if (rank > n) rank = n
+    return s[rank]
+}
+{
+    c = $1
+    seen[c] = 1
+    n[c]++
+    i = n[c]
+    fastms[c, i] = $2
+    shadowms[c, i] = $3
+    hits[c] += $4
+    misses[c] += $5
+    files[c, i] = $6
+    bytes[c, i] = $7
+    cpf[c, i] = $8
+    cps[c, i] = $9
+    if (!(c in ag)) ag[c] = 1
+    if (!(c in am)) am[c] = 1
+    if ($10 != "true" && c != "semantic_red") ag[c] = 0
+    if ($11 != "true") am[c] = 0
+}
+END {
+    nnames = asorti(seen, names)
+    printf "{"
+    for (k = 1; k <= nnames; k++) {
+        c = names[k]
+        nn = n[c]
+        delete a
+        for (i = 1; i <= nn; i++) a[i] = fastms[c, i]
+        fp50 = pct(a, nn, 50); fp95 = pct(a, nn, 95)
+        delete a
+        for (i = 1; i <= nn; i++) a[i] = shadowms[c, i]
+        sp50 = pct(a, nn, 50); sp95 = pct(a, nn, 95)
+        delete a
+        for (i = 1; i <= nn; i++) a[i] = files[c, i]
+        files50 = pct(a, nn, 50)
+        delete a
+        for (i = 1; i <= nn; i++) a[i] = bytes[c, i]
+        bytes50 = pct(a, nn, 50)
+        delete a
+        for (i = 1; i <= nn; i++) a[i] = cpf[c, i]
+        cpf50 = pct(a, nn, 50)
+        delete a
+        for (i = 1; i <= nn; i++) a[i] = cps[c, i]
+        cps50 = pct(a, nn, 50)
+        if (k > 1) printf ","
+        printf "\"%s\":{\"edits\":%d,\"fast_p50_ms\":%s,\"fast_p95_ms\":%s,\"shadow_p50_ms\":%s,\"shadow_p95_ms\":%s,\"cache_hits\":%d,\"cache_misses\":%d,\"files_reread_p50\":%s,\"bytes_reread_p50\":%s,\"compiler_processes_fast_p50\":%s,\"compiler_processes_shadow_p50\":%s,\"all_green\":%s,\"all_shadow_match\":%s}", \
+            c, nn, fp50, fp95, sp50, sp95, hits[c] + 0, misses[c] + 0, \
+            files50, bytes50, cpf50, cps50, \
+            (ag[c] ? "true" : "false"), (am[c] ? "true" : "false")
+        printf "%s\t%d\t%s\t%s\t%s\t%s\t%d\t%d\t%s\t%s\n", \
+            c, nn, fp50, fp95, sp50, sp95, hits[c] + 0, misses[c] + 0, \
+            files50, bytes50 > "/dev/stderr"
+    }
+    printf "}"
+}
+' "$STATS" 2>"$WORK/classes.table")"
+
+f2_total="" f3_total="" f2_report="" f3_report=""
+if [ -s "$FACTORY_NDJSON" ]; then
+    while IFS= read -r rec; do
+        [ -n "$rec" ] || continue
+        lab="$(printf '%s' "$rec" | "$JSONQ" get label)"
+        case "$lab" in
+            f2)
+                f2_total="$(printf '%s' "$rec" | "$JSONQ" get total_ms)"
+                f2_report="$(printf '%s' "$rec" | "$JSONQ" get report)"
+                ;;
+            f3)
+                f3_total="$(printf '%s' "$rec" | "$JSONQ" get total_ms)"
+                f3_report="$(printf '%s' "$rec" | "$JSONQ" get report)"
+                ;;
+        esac
+    done < "$FACTORY_NDJSON"
+    FACTORY_RUNS="[$(paste -sd, "$FACTORY_NDJSON")]"
+else
+    FACTORY_RUNS="[]"
+fi
+
+factory_equiv=null
+if [ -n "$f2_report" ] && [ -n "$f3_report" ]; then
+    if cmp -s <(factory_report_core "$f2_report") \
+              <(factory_report_core "$f3_report"); then
+        factory_equiv=true
+    else
+        factory_equiv=false
+    fi
+fi
+
+status=ok
+if [ "$SHADOW_MISMATCHES" -ne 0 ] || [ "$EDIT_FAILURES" -ne 0 ]; then
+    status=failed
+fi
+all_shadow_match=true
+[ "$SHADOW_MISMATCHES" -eq 0 ] || all_shadow_match=false
+EDITS_ARR="[$(paste -sd, "$EDITS_NDJSON")]"
+
+printf '%s\n' \
+    "{" \
+    "\"schema\":\"zcl.fast_build_bench.v1\"," \
+    "\"status\":\"$status\"," \
+    "\"generated_at_utc\":\"$(json_escape "$GENERATED_AT")\"," \
+    "\"artifact\":\"$(json_escape "$OUTPUT")\"," \
+    "\"verifier\":\"zclassic23-package-verify candidate mode, profile=quick, full isolation; fast runs carry --fast-cache + --plan, shadow runs neither\"," \
+    "\"derivations\":{" \
+    "\"compiler_processes\":\"zbuild-package-perf=v1 line (verifier-instrumented gcc driver spawns incl. -E probes; cc1/as children of the driver are not separately visible)\"," \
+    "\"files_reread_bytes_reread\":\"zcl.dep_plan.v1 depfile closure: distinct files the preprocessor opened across recipe source TUs, and their summed bytes (fast runs only)\"," \
+    "\"time_to_green_ms\":\"fast wall ms with exit 0, result test-pass, and a build receipt\"" \
+    "}," \
+    "\"totals\":{" \
+    "\"edits\":$TOTAL_EDITS," \
+    "\"shadow_mismatches\":$SHADOW_MISMATCHES," \
+    "\"edit_failures\":$EDIT_FAILURES," \
+    "\"all_shadow_match\":$all_shadow_match" \
+    "}," \
+    "\"classes\":$CLASSES_JSON," \
+    "\"factory_end_to_end\":{" \
+    "\"runs\":$FACTORY_RUNS," \
+    "\"report_equal_modulo_volatile_keys\":$factory_equiv," \
+    "\"volatile_keys\":[\"total_ms\",\"ms\",\"fast_cache\",\"plan_id\",\"error\"]," \
+    "\"note\":\"f2 = stores wiped, shared warm cache; f3 = stores wiped, cache disabled (--fast-cache=); identical draft content\"" \
+    "}," \
+    "\"edits\":$EDITS_ARR" \
+    "}" > "$OUTPUT"
+
+printf '\n'
+printf '%s\n' "class               edits   fast p50/p95 ms   shadow p50/p95 ms   hits/misses  files/bytes reread p50"
+while IFS=$'\t' read -r name edits fp50 fp95 sp50 sp95 hits misses files50 bytes50; do
+    [ -n "$name" ] || continue
+    printf "%-19s %5d   %8s / %-8s %8s / %-8s %5d/%-5d  %s/%s\n" \
+        "$name" "$edits" "$fp50" "$fp95" "$sp50" "$sp95" \
+        "$hits" "$misses" "$files50" "$bytes50"
+done < "$WORK/classes.table"
+printf '\n'
+if [ -n "$f2_total" ] && [ -n "$f3_total" ]; then
+    printf 'factory end-to-end: warm-cache total_ms=%s  no-cache total_ms=%s  reports_equal_mod_volatile=%s\n' \
+        "$f2_total" "$f3_total" "$factory_equiv"
+fi
+printf 'artifact: %s\n' "$OUTPUT"
+if [ "$status" = ok ]; then
+    rc=0
+else
+    rc=1
+fi
 
 if is_true "$KEEP"; then
     log "scratch kept at $WORK"

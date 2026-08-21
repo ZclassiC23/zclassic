@@ -1,0 +1,30 @@
+{
+  "schema": 1,
+  "name": "zdogview/zdogview",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "Apache-2.0",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [
+    {
+      "name": "zdogfight/zdogfight",
+      "root": "c2febb45f9afe73b938a80e815fe6ed22001e838640564959270e6877cc0f436",
+      "semver": "0.1.0"
+    },
+    {
+      "name": "zprng/zprng",
+      "root": "577ffde9ca912872b4a382da2e0b96392abfb2fe3a2066629b01b5e72164b62b",
+      "semver": "0.1.0"
+    }
+  ],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zdogview/zdogview.h",
+    "src/zdogview.c",
+    "tests/test_zdogview.c",
+    "zcode-package.json"
+  ]
+}

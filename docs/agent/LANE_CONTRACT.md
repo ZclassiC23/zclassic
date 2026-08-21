@@ -77,14 +77,16 @@ that false green already shipped once.
 printf); `docs/DEVELOPING.md` §Build/test/deploy; `docs/work/agent-protocol.md`
 §Completion ritual.
 
-**A6 — No new language, no new dependency.** Compiled code is C23. No Rust, no
-Python, no CMake, no third-party library. Shell is the accepted medium for dev
-tooling — write it dependency-free (no `jq`, no helper binary).
-*Cite:* stated at its use sites — `tools/scripts/intervention_ledger.sh` ("No
-python (banned), no jq"), `tools/scripts/simnet_nightly.sh` ("no python (project
-ban)"), `tools/mvp_gate.sh` ("no python/sqlite3 per project rule");
-`docs/GETTING_STARTED.md` (stock `cc`/`ld`/`make`). Pre-existing Python under
-`tools/scripts/` is legacy, not a licence to add more.
+**A6 — No new language, no new dependency. Never Python.** Compiled code is
+C23. No Rust, no Python, no CMake, no third-party library. There is no
+legacy exception: do not add, keep, or call `.py` files or `python3`. Shell
+is the accepted medium for dev tooling — write it dependency-free (no `jq`).
+Nested JSON goes through `build/bin/jsonq`; SQLite inspection through
+`build/bin/sqlq`. Those two C23 helpers are the allowed in-tree CLIs, not a
+licence to add runtimes.
+*Cite:* [`AGENTS.md`](../../AGENTS.md) §Development contract; `tools/mvp_gate.sh`
+("no python/sqlite3 per project rule"); `tools/scripts/simnet_nightly.sh`
+("no python (project ban)"); `docs/GETTING_STARTED.md` (stock `cc`/`ld`/`make`).
 
 ## B. Standing engineering rules
 
