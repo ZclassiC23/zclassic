@@ -760,6 +760,9 @@ const char *vcs_service_credit_result_string(
     case VCS_SERVICE_CREDIT_BAD_INPUT: return "bad-input";
     case VCS_SERVICE_CREDIT_FULL: return "full";
     case VCS_SERVICE_CREDIT_IO: return "io";
+    case VCS_SERVICE_CREDIT_UNVERIFIED: return "unverified-receipt";
+    case VCS_SERVICE_CREDIT_NOT_PARTY: return "not-party";
+    case VCS_SERVICE_CREDIT_WINDOW: return "outside-window";
     }
     return "unknown";
 }

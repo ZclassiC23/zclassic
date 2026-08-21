@@ -1670,6 +1670,127 @@ static int t_service_receipt(void)
     return failures;
 }
 
+static int t_receipt_accept(void)
+{
+    int failures = 0;
+    char zcode_dir[4400];
+    snprintf(zcode_dir, sizeof(zcode_dir),
+             "test-tmp/zpy_receipt_%ld/zcode", (long)getpid());
+    zpy_rm_rf(zcode_dir);
+    ZPY_CHECK("receipt-accept: datadir created", zpy_mkdir_p(zcode_dir));
+
+    secp256k1_context *ctx = secp256k1_context_create(
+        SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    uint8_t up_secret[32] = {0};
+    uint8_t down_secret[32] = {0};
+    uint8_t other_secret[32] = {0};
+    up_secret[31] = 0x31;
+    down_secret[31] = 0x32;
+    other_secret[31] = 0x33;
+
+    struct vcs_service_receipt r;
+    memset(&r, 0, sizeof(r));
+    size_t pub_len = 33;
+    secp256k1_pubkey parsed;
+    bool ok = secp256k1_ec_pubkey_create(ctx, &parsed, up_secret) == 1 &&
+              secp256k1_ec_pubkey_serialize(ctx, r.uploader_pubkey, &pub_len,
+                                            &parsed,
+                                            SECP256K1_EC_COMPRESSED) == 1 &&
+              secp256k1_ec_pubkey_create(ctx, &parsed, down_secret) == 1 &&
+              secp256k1_ec_pubkey_serialize(ctx, r.downloader_pubkey,
+                                            &pub_len, &parsed,
+                                            SECP256K1_EC_COMPRESSED) == 1;
+    uint8_t other_pub[33];
+    pub_len = 33;
+    ok = ok && secp256k1_ec_pubkey_create(ctx, &parsed, other_secret) == 1 &&
+         secp256k1_ec_pubkey_serialize(ctx, other_pub, &pub_len, &parsed,
+                                       SECP256K1_EC_COMPRESSED) == 1;
+    for (size_t i = 0; i < VCS_SERVICE_RECEIPT_ROOT_BYTES; i++)
+        r.package_root[i] = (uint8_t)(i + 3);
+    r.verified_bytes = 4096;
+    r.day_start = 20600;
+    r.day_end = 20606;
+    for (size_t i = 0; i < VCS_SERVICE_RECEIPT_NONCE_BYTES; i++)
+        r.session_nonce[i] = (uint8_t)(0x5A ^ i);
+    uint8_t wire[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+    ok = ok && vcs_service_receipt_sign(&r, VCS_SERVICE_RECEIPT_UPLOADER, ctx,
+                                        up_secret) == VCS_SERVICE_RECEIPT_OK &&
+         vcs_service_receipt_sign(&r, VCS_SERVICE_RECEIPT_DOWNLOADER, ctx,
+                                  down_secret) == VCS_SERVICE_RECEIPT_OK &&
+         vcs_service_receipt_serialize(&r, wire, sizeof(wire)) ==
+             VCS_SERVICE_RECEIPT_OK;
+    ZPY_CHECK("receipt-accept: signed wire", ok);
+
+    struct vcs_service_book *book = vcs_service_book_load(zcode_dir);
+    ZPY_CHECK("receipt-accept: book loads", book != NULL);
+    if (!book) {
+        secp256k1_context_destroy(ctx);
+        return failures + 1;
+    }
+
+    ZPY_CHECK("receipt-accept: downloader credits upload counterpart",
+              vcs_service_book_accept_receipt(book, wire, sizeof(wire),
+                                              r.downloader_pubkey, 20603) ==
+                  VCS_SERVICE_CREDIT_OK);
+    struct vcs_service_key_totals kt;
+    memset(&kt, 0, sizeof(kt));
+    ok = vcs_service_key_totals(book, r.uploader_pubkey, 20603, &kt) &&
+         kt.present && kt.verified_bytes_downloaded == 4096 &&
+         kt.verified_bytes_uploaded == 0;
+    ZPY_CHECK("receipt-accept: downloader book records received bytes", ok);
+
+    ZPY_CHECK("receipt-accept: exact replay is duplicate",
+              vcs_service_book_accept_receipt(book, wire, sizeof(wire),
+                                              r.downloader_pubkey, 20603) ==
+                  VCS_SERVICE_CREDIT_DUPLICATE);
+
+    ZPY_CHECK("receipt-accept: uploader credits download counterpart",
+              vcs_service_book_accept_receipt(book, wire, sizeof(wire),
+                                              r.uploader_pubkey, 20603) ==
+                  VCS_SERVICE_CREDIT_OK);
+    memset(&kt, 0, sizeof(kt));
+    ok = vcs_service_key_totals(book, r.downloader_pubkey, 20603, &kt) &&
+         kt.present && kt.verified_bytes_uploaded == 4096 &&
+         kt.verified_bytes_downloaded == 0;
+    ZPY_CHECK("receipt-accept: uploader book records served bytes", ok);
+
+    ZPY_CHECK("receipt-accept: stranger is not-party",
+              vcs_service_book_accept_receipt(book, wire, sizeof(wire),
+                                              other_pub, 20603) ==
+                  VCS_SERVICE_CREDIT_NOT_PARTY);
+    ZPY_CHECK("receipt-accept: day before window refused",
+              vcs_service_book_accept_receipt(book, wire, sizeof(wire),
+                                              r.downloader_pubkey, 20599) ==
+                  VCS_SERVICE_CREDIT_WINDOW);
+    ZPY_CHECK("receipt-accept: day after window refused",
+              vcs_service_book_accept_receipt(book, wire, sizeof(wire),
+                                              r.downloader_pubkey, 20607) ==
+                  VCS_SERVICE_CREDIT_WINDOW);
+
+    uint8_t bad[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+    memcpy(bad, wire, sizeof(bad));
+    bad[20] ^= 0x01;
+    ZPY_CHECK("receipt-accept: tampered wire unverified",
+              vcs_service_book_accept_receipt(book, bad, sizeof(bad),
+                                              r.downloader_pubkey, 20603) ==
+                  VCS_SERVICE_CREDIT_UNVERIFIED);
+    ZPY_CHECK("receipt-accept: named refusals",
+              strcmp(vcs_service_credit_result_string(
+                         VCS_SERVICE_CREDIT_NOT_PARTY),
+                     "not-party") == 0 &&
+                  strcmp(vcs_service_credit_result_string(
+                             VCS_SERVICE_CREDIT_WINDOW),
+                         "outside-window") == 0 &&
+                  strcmp(vcs_service_credit_result_string(
+                             VCS_SERVICE_CREDIT_UNVERIFIED),
+                         "unverified-receipt") == 0);
+
+    vcs_service_book_free(book);
+    secp256k1_context_destroy(ctx);
+    zpy_rm_rf(zcode_dir);
+    return failures;
+}
+
 int test_zcode_policy(void)
 {
     printf("\n=== zcode_policy: local P2P ratio + anti-spam policy ===\n");
@@ -1680,6 +1801,7 @@ int test_zcode_policy(void)
     failures += t_book();
     failures += t_seed_commands();
     failures += t_service_receipt();
+    failures += t_receipt_accept();
     failures += t_storage_commands();
     failures += t_publish_gate();
     printf("=== zcode_policy complete: %d failure(s) ===\n", failures);
