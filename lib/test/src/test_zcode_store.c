@@ -22,6 +22,8 @@
  *      pins never evicted + pins budget, pre-existing pin markers.
  *   7. Release envelope storage through the acceptance layer.
  *   8. dump_state_json: disabled shape, enabled totals, key drilldown.
+ *      Swarm engine dumpstate (`zcode_swarm`): hosting-off shape, injected
+ *      engine peer rows, dumpstate registry key.
  *   9. Blob surface (vcs/blob_store.h): the FROZEN golden root vector,
  *      root purity across independent constructions, length commitment,
  *      put/get round-trip, idempotent re-put, the size ceiling refused by
@@ -39,7 +41,11 @@
 #include "vcs/blob_store.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_possession_scheduler.h"
+#include "vcs/package_swarm_node.h"
+#include "vcs/package_swarm_status.h"
 #include "vcs/zcode_work_output.h"
+
+#include "controllers/diagnostics_internal.h"
 
 #include "chain/chainparams.h"
 #include "core/uint256.h"
@@ -1807,6 +1813,109 @@ static int t_store_dump_state(void)
     return failures;
 }
 
+/* ── 12: swarm engine dump_state_json ─────────────────────────────── */
+static int t_swarm_engine_dump_state(void)
+{
+    int failures = 0;
+    struct vcs_swarm_engine *prev = vcs_swarm_engine_global();
+    vcs_swarm_engine_set_global(NULL);
+
+    struct json_value v;
+    json_init(&v);
+    ZS_CHECK("swarm dump: unwired engine reports present=false",
+             vcs_package_swarm_status_dump_state_json(&v, NULL) &&
+             json_get(&v, "enabled") &&
+             !json_get_bool(json_get(&v, "enabled")) &&
+             json_get(&v, "present") &&
+             !json_get_bool(json_get(&v, "present")) &&
+             json_get_int(json_get(&v, "peer_count")) == 0 &&
+             json_get_int(json_get(&v, "active_downloads")) == 0 &&
+             json_get(&v, "peers") &&
+             json_get(&v, "peers")->type == JSON_ARR &&
+             json_size(json_get(&v, "peers")) == 0);
+    char rendered[2048];
+    size_t rendered_len = json_write(&v, rendered, sizeof(rendered));
+    ZS_CHECK("swarm dump: hosting-off snapshot leaks no paths or keys",
+             rendered_len < sizeof(rendered) &&
+             strstr(rendered, "datadir") == NULL &&
+             strstr(rendered, "wallet") == NULL &&
+             strstr(rendered, "/home/") == NULL &&
+             strstr(rendered, "secret") == NULL);
+    json_free(&v);
+
+    struct json_value params;
+    json_init(&params);
+    json_set_array(&params);
+    struct json_value sub;
+    json_init(&sub);
+    json_set_str(&sub, "zcode_swarm");
+    bool dumpstate_ok = json_push_back(&params, &sub);
+    json_free(&sub);
+    struct json_value result;
+    json_init(&result);
+    dumpstate_ok = dumpstate_ok &&
+                   diag_rpc_dumpstate(&params, false, &result);
+    const struct json_value *state = json_get(&result, "state");
+    const char *sys = json_get_str(json_get(&result, "subsystem"));
+    ZS_CHECK("swarm dump: dumpstate includes zcode_swarm",
+             dumpstate_ok && sys && strcmp(sys, "zcode_swarm") == 0 &&
+             state && state->type == JSON_OBJ &&
+             json_get(state, "enabled") &&
+             !json_get_bool(json_get(state, "enabled")) &&
+             json_get(state, "present") &&
+             !json_get_bool(json_get(state, "present")));
+    json_free(&params);
+    json_free(&result);
+
+    struct vcs_swarm_engine *engine =
+        vcs_swarm_engine_create(NULL, NULL, NULL, NULL, NULL);
+    ZS_CHECK("swarm dump: engine creates without store or datadir",
+             engine != NULL);
+    if (!engine) {
+        vcs_swarm_engine_set_global(prev);
+        return failures;
+    }
+    uint8_t key_a[33];
+    uint8_t key_b[33];
+    key_a[0] = 0x02;
+    key_b[0] = 0x02;
+    memset(key_a + 1, 0x11, 32);
+    memset(key_b + 1, 0x22, 32);
+    ZS_CHECK("swarm dump: two peers register",
+             vcs_swarm_engine_peer_add(engine, 7, key_a) &&
+             vcs_swarm_engine_peer_add(engine, 11, key_b));
+    vcs_swarm_engine_set_global(engine);
+
+    json_init(&v);
+    bool ok = vcs_package_swarm_status_dump_state_json(&v, NULL);
+    const struct json_value *peers = json_get(&v, "peers");
+    const struct json_value *row0 = peers ? json_at(peers, 0) : NULL;
+    const struct json_value *row1 = peers ? json_at(peers, 1) : NULL;
+    ZS_CHECK("swarm dump: wired engine reports peers and zero transfers",
+             ok && json_get(&v, "enabled") &&
+             json_get_bool(json_get(&v, "enabled")) &&
+             json_get_bool(json_get(&v, "present")) &&
+             json_get_int(json_get(&v, "peer_count")) == 2 &&
+             json_get_int(json_get(&v, "active_downloads")) == 0 &&
+             peers && json_size(peers) == 2 &&
+             row0 && json_get_int(json_get(row0, "peer_id")) == 7 &&
+             json_get_int(json_get(row0, "served_bytes")) == 0 &&
+             json_get_int(json_get(row0, "fetched_bytes")) == 0 &&
+             row1 && json_get_int(json_get(row1, "peer_id")) == 11);
+    rendered_len = json_write(&v, rendered, sizeof(rendered));
+    ZS_CHECK("swarm dump: live snapshot leaks no accounting keys",
+             rendered_len < sizeof(rendered) &&
+             strstr(rendered, "datadir") == NULL &&
+             strstr(rendered, "wallet") == NULL &&
+             strstr(rendered, "key") == NULL);
+    json_free(&v);
+
+    vcs_swarm_engine_set_global(NULL);
+    vcs_swarm_engine_free(engine);
+    vcs_swarm_engine_set_global(prev);
+    return failures;
+}
+
 /* A live daemon may be receiving verified chunks while one-shot commands
  * inspect the same datadir. Recovery includes orphan GC, so the second open
  * must serialize with manifest/CAS writes without denying the offline reader
@@ -1875,6 +1984,7 @@ int test_zcode_store(void)
     failures += t_store_work_output();
     failures += t_store_serialized_recovery();
     failures += t_store_dump_state();
+    failures += t_swarm_engine_dump_state();
     printf("=== zcode_store complete: %d failure(s) ===\n", failures);
     return failures;
 }

@@ -43,7 +43,13 @@ accounting decisions — and `config/src/boot_zcode_swarm.c` puts its frames on
 the real P2P wire under the `zpkgswm` message tag via
 `p2p_node_begin_message()`. Hosting is **off by default** and enabled with
 `-packagehost=1`; the boot glue returns early otherwise, so a default node
-neither serves nor pulls package bytes.
+neither serves nor pulls package bytes. Operators inspect the live engine
+with `z23 dumpstate zcode_swarm`. When hosting is off the dump still
+succeeds and reports `enabled`/`present` false; when the engine is wired
+it reports peer count, active downloads, and bounded per-peer served and
+fetched bytes, never keys or datadir paths.
+<!-- claim: symbol-present vcs_package_swarm_status_dump_state_json lib/vcs/src/package_swarm_status.c # dumpstate zcode_swarm leaf -->
+<!-- claim: symbol-present zcode_swarm app/controllers/include/controllers/diagnostics_dumpers_zcode.def # dumpstate leaf registered -->
 
 Read "pure codec" as a statement about the two lower layers only
 (`package_swarm.c` and the engine, both of which stay free of sockets, threads,
