@@ -315,7 +315,7 @@ static int t_decisions(void)
                                    UINT64_C(1) << 30).allow);
 
     /* Announce rate / request burst. */
-    ZPY_CHECK("announce: the new-user bootstrap quota is exact",
+    ZPY_CHECK("announce: the new-user serving-set inventory bound is exact",
               vcs_policy_check_announce(VCS_POLICY_TIER_NEW_USER, 0).allow &&
               vcs_policy_check_announce(VCS_POLICY_TIER_NEW_USER,
                                         VCS_POLICY_FREE_ANNOUNCE_PER_HOUR - 1)

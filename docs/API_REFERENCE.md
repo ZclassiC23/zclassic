@@ -74,11 +74,11 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 699 |
+| Registry entries (branches + leaves) | 700 |
 | Top-level roots | 11 |
 | Branches | 162 |
-| Leaves (dispatchable command paths) | 537 |
-| … `ready` (live handler in this build) | 483 |
+| Leaves (dispatchable command paths) | 538 |
+| … `ready` (live handler in this build) | 484 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `z23-dev`) | 24 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 215 | 51 | 164 |
+| `config/commands/zcode.def` | 216 | 51 | 165 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -1252,6 +1252,7 @@ represented by its children's sections.
 |---|---|---|---|---|---|---|
 | `zcode package guide` | ready | read / read / public · instant/tiny | none | `zcl.zcode_package_guide.v1` | `z23 zcode package guide` | Show the exact package workflow and authority boundaries |
 | `zcode package search` | ready | read / read / operator · fast/low | `publisher`, `name_prefix`, `license`, `keyword`, `limit`, `datadir` | `zcl.zcode_package_search.v1` | `z23 zcode package search --input='{"keyword":"ring"}'` | Search locally committed packages |
+| `zcode package library` | ready | read / read / operator · fast/low | `limit`, `datadir` | `zcl.zcode_package_library.v1` | `z23 zcode package library` | List complete packages this node can seed |
 | `zcode package show` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_show.v1` | `z23 zcode package show --input='{"root":"<64hex>"}'` | Release record and manifest summary for one package root |
 | `zcode package recipe` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_recipe.v1` | `z23 zcode package recipe --input='{"root":"<64hex>"}'` | Declarative build recipe for one package root |
 | `zcode package verify` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_verify.v1` | `z23 zcode package verify --input='{"root":"<64hex>"}'` | Verifier attestation quorum for one package root |

@@ -726,6 +726,9 @@ void zcl_native_handle_zcode_continuity_status(
 void zcl_native_handle_zcode_package_search(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_library(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_create(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

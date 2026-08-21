@@ -13,6 +13,8 @@
  *                                 redelivered release id reports "duplicate")
  *   zcode package search          bounded local search over the rebuildable
  *                                 package index projection
+ *   zcode package library         complete tracked packages in the local
+ *                                 store (the shelf this node can seed)
  *   zcode package show            one package's full release record +
  *                                 manifest summary
  *   zcode package recipe          the decoded, bounded declarative build
@@ -80,6 +82,7 @@
 #include "vcs/package_reproduce.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_service.h"
+#include "vcs/package_public_shape.h"
 #include "vcs/package_store.h"
 #include "vcs/package_transport.h"
 #include "vcs/package_verify_policy.h"
@@ -87,14 +90,17 @@
 #include <dirent.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #define ZC_LOG "zcode.command"
 
 /* Render caps: search rows omit the long optional fields (show carries the
  * full record) so 16 rows stay inside the LIST budget even at maximum name
- * length; show renders at most 32 manifest files per page. */
+ * length; show renders at most 32 manifest files per page. The library
+ * catalog matches the local-announce bound (VCS_SWARM_MAX_LOCAL_ANNOUNCES). */
 #define ZC_SEARCH_MAX_ROWS 16u
 #define ZC_SHOW_MAX_FILES 32u
+#define ZC_LIBRARY_MAX_ROWS 64u
 
 /* ── small input helpers ──────────────────────────────────────────── */
 
@@ -1502,6 +1508,201 @@ void zcl_native_handle_zcode_package_search(
                            (int64_t)vcs_package_index_count(index));
     (void)json_push_kv_int(&reply->data, "limit", limit);
     vcs_package_index_free(index);
+}
+
+/* ── zcode package library ──────────────────────────────────────────── */
+
+static void zc_library_emit(struct zcl_command_reply *reply,
+                            struct json_value *packages, size_t rendered,
+                            bool truncated, int64_t limit)
+{
+    (void)json_push_kv(&reply->data, "packages", packages);
+    (void)json_push_kv_int(&reply->data, "count", (int64_t)rendered);
+    (void)json_push_kv_int(&reply->data, "rendered", (int64_t)rendered);
+    (void)json_push_kv_bool(&reply->data, "items_truncated", truncated);
+    (void)json_push_kv_int(&reply->data, "limit", limit);
+}
+
+/* True when <zcode_dir>/manifests holds at least one committed 64-hex
+ * manifest. Unreadable (a file where the directory belongs, or opendir
+ * failure on a present path) sets *unreadable so the leaf can refuse
+ * instead of answering an empty shelf. Absent is empty, not unreadable. */
+static bool zc_library_has_manifests(const char *zcode_dir, bool *unreadable)
+{
+    char path[4400];
+    int n;
+
+    if (unreadable)
+        *unreadable = false;
+    if (!zcode_dir)
+        return false;
+    n = snprintf(path, sizeof(path), "%s/manifests", zcode_dir);
+    if (n < 0 || (size_t)n >= sizeof(path)) {
+        if (unreadable)
+            *unreadable = true;
+        return false;
+    }
+    struct stat st;
+    if (stat(path, &st) != 0)
+        return false;
+    if (!S_ISDIR(st.st_mode)) {
+        if (unreadable)
+            *unreadable = true;
+        return false;
+    }
+    DIR *d = opendir(path);
+    if (!d) {
+        if (unreadable)
+            *unreadable = true;
+        return false;
+    }
+    bool present = false;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        uint8_t root[32];
+        if (strlen(ent->d_name) == 64 &&
+            zcl_hex_decode_lower(ent->d_name, root, 32)) {
+            present = true;
+            break;
+        }
+    }
+    closedir(d);
+    return present;
+}
+
+void zcl_native_handle_zcode_package_library(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+    const char *datadir = zc_datadir(request);
+    if (!datadir) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "MISSING_DATADIR",
+                               "normalize", false, false,
+                               "no datadir given (input datadir or --datadir)",
+                               "zcode.package.library");
+        return;
+    }
+    int64_t limit = 0;
+    const struct json_value *lv = json_get(request->input, "limit");
+    if (lv)
+        limit = json_get_int(lv);
+    if (limit <= 0)
+        limit = (int64_t)ZC_LIBRARY_MAX_ROWS;
+    if (limit > (int64_t)ZC_LIBRARY_MAX_ROWS)
+        limit = (int64_t)ZC_LIBRARY_MAX_ROWS;
+
+    char zcode_dir[4400];
+    int n = snprintf(zcode_dir, sizeof(zcode_dir), "%s/zcode", datadir);
+    if (n < 0 || (size_t)n >= sizeof(zcode_dir)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "DATADIR_TOO_LONG",
+                               "normalize", false, false,
+                               "datadir path too long", datadir);
+        return;
+    }
+
+    struct json_value arr;
+    json_init(&arr);
+    json_set_array(&arr);
+
+    /* A running node already owns the store this datadir maps to. Borrow
+     * that handle so a one-shot open does not run recovery against a live
+     * shelf. Any other datadir stays one-shot — and an absent or empty
+     * manifests tree is a passed empty list, never a mkdir/lock/GC. */
+    struct vcs_package_store *resident = vcs_package_store_global();
+    const char *resident_root = vcs_package_store_root_dir(resident);
+    bool own_store = !(resident_root && strcmp(resident_root, zcode_dir) == 0);
+    struct vcs_package_store *store = NULL;
+    if (!own_store) {
+        store = resident;
+    } else {
+        struct stat st;
+        if (stat(zcode_dir, &st) != 0) {
+            zc_library_emit(reply, &arr, 0, false, limit);
+            json_free(&arr);
+            return;
+        }
+        if (!S_ISDIR(st.st_mode)) {
+            json_free(&arr);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "STORE_UNREADABLE", "execute", false, false,
+                "zcode path exists and is not a directory", zcode_dir);
+            return;
+        }
+        bool unreadable = false;
+        if (!zc_library_has_manifests(zcode_dir, &unreadable)) {
+            if (unreadable) {
+                json_free(&arr);
+                zcl_command_reply_fail(
+                    reply, ZCL_COMMAND_STATUS_FAILED,
+                    ZCL_COMMAND_EXIT_INVALID, "STORE_UNREADABLE",
+                    "execute", false, false,
+                    "package manifests path exists and is not enumerable",
+                    zcode_dir);
+                return;
+            }
+            zc_library_emit(reply, &arr, 0, false, limit);
+            json_free(&arr);
+            return;
+        }
+        store = vcs_package_store_open(datadir,
+                                       vcs_package_store_quota_bytes());
+        if (!store) {
+            json_free(&arr);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                "STORE_OPEN", "execute", false, false,
+                "the package store failed to open", zcode_dir);
+            return;
+        }
+    }
+
+    /* Probe one extra slot so a full cap can still flag truncation. */
+    struct vcs_package_store_summary summaries[ZC_LIBRARY_MAX_ROWS + 1u];
+    size_t want = (size_t)limit + 1u;
+    if (want > ZC_LIBRARY_MAX_ROWS + 1u)
+        want = ZC_LIBRARY_MAX_ROWS + 1u;
+    size_t total = vcs_package_store_list_summaries(store, true, summaries,
+                                                    want);
+    size_t rendered = total < (size_t)limit ? total : (size_t)limit;
+    bool truncated = total > rendered;
+
+    struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
+    for (size_t i = 0; i < rendered; i++) {
+        char root_hex[65];
+        zcl_hex_encode(summaries[i].root, 32, root_hex);
+        const struct vcs_package_index_entry *named =
+            index ? vcs_package_index_find_root(index, summaries[i].root)
+                  : NULL;
+        enum vcs_package_public_shape shape =
+            vcs_package_public_shape_classify(store, summaries[i].root,
+                                              NULL);
+        struct json_value row;
+        json_init(&row);
+        json_set_object(&row);
+        (void)json_push_kv_str(&row, "package_root", root_hex);
+        (void)json_push_kv_str(&row, "name", named ? named->name : "");
+        (void)json_push_kv_bool(&row, "complete", summaries[i].complete);
+        (void)json_push_kv_bool(&row, "pinned", summaries[i].pinned);
+        (void)json_push_kv_int(&row, "file_count",
+                               (int64_t)summaries[i].file_count);
+        (void)json_push_kv_int(&row, "total_bytes",
+                               (int64_t)summaries[i].total_bytes);
+        (void)json_push_kv_int(&row, "total_chunks",
+                               (int64_t)summaries[i].total_chunks);
+        (void)json_push_kv_bool(&row, "public_serveable",
+                                shape != VCS_PACKAGE_PUBLIC_REFUSED);
+        (void)json_push_back(&arr, &row);
+        json_free(&row);
+    }
+    vcs_package_index_free(index);
+    zc_store_release(store, own_store);
+    zc_library_emit(reply, &arr, rendered, truncated, limit);
+    json_free(&arr);
 }
 
 /* ── zcode package show ─────────────────────────────────────────────── */

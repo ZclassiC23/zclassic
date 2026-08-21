@@ -2159,6 +2159,29 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_search)
 
 ZCL_COMMAND_READY_READ(
+    "zcode.package.library", "zcode.package", "",
+    "List complete packages this node can seed",
+    "Bounded catalog of complete tracked packages in the local package "
+    "store — the shelf this node can seed. Each row is one 64-hex "
+    "`package_root` with complete/pinned, file_count, total_bytes, "
+    "total_chunks, public_serveable (the public-shape classifier; no swarm "
+    "engine lock), and `name` when a persisted release in the rebuildable "
+    "index names that root. Capped at 64 (the local-announce bound); limit "
+    "raises only within that cap. An empty store is a passed empty list, "
+    "not an error. dumpstate zcode_store reports totals; this leaf is the "
+    "per-root catalog.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,library,store,shelf,seed,catalog",
+    "zcl.zcode_package_library.input.v1", "zcl.zcode_package_library.v1",
+    "limit,datadir", "",
+    "z23 zcode package library",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_library)
+
+ZCL_COMMAND_READY_READ(
     "zcode.package.show", "zcode.package", "",
     "Release record and manifest summary for one package root",
     "The complete persisted release record (publisher, sequence, license, "
