@@ -14,8 +14,10 @@
  *   2. If validate ok=0 (header failed PoW/Equihash earlier): log a
  *      `source='skipped_invalid'` row, ok=0, advance cursor — there is
  *      no point fetching a body for a known-bad header.
- *   3. Else: join that exact hash to nonfailed best-header ancestry and the
- *      visible active parent. A conflicting active sibling fails closed.
+ *   3. Else: join that exact hash to nonfailed best-header ancestry and an
+ *      exact parent witness: the visible active slot when present, otherwise
+ *      the durable finalized/trusted-base hash. A conflicting active sibling
+ *      fails closed.
  *      Then check the body availability flag (`BLOCK_HAVE_DATA`).
  *        - Available: log `source='disk'`, ok=1, advance cursor.
  *        - Not yet available: JOB_IDLE (cursor unchanged). The next
@@ -64,7 +66,40 @@
 #include <stdint.h>
 
 struct main_state;
+struct block_index;
 struct json_value;
+struct sqlite3;
+struct uint256;
+
+/* Exact durable-verdict -> live-chain join state shared by body_fetch and its
+ * missing-body Condition.  The resolver never scans by height: the target is
+ * best-header ancestry at `height`, bound to `expected_hash`; its parent is
+ * either the visible active slot or the convention-aware durable finalized
+ * hash at height-1. */
+enum body_fetch_exact_authority_state {
+    BODY_FETCH_EXACT_READY = 0,
+    BODY_FETCH_EXACT_HAVE_DATA,
+    BODY_FETCH_EXACT_BEST_ABSENT,
+    BODY_FETCH_EXACT_BEST_HASH_MISMATCH,
+    BODY_FETCH_EXACT_ACTIVE_HASH_MISMATCH,
+    BODY_FETCH_EXACT_PARENT_ABSENT,
+    BODY_FETCH_EXACT_PARENT_MISMATCH,
+    BODY_FETCH_EXACT_AUTHORITY_FAILED,
+};
+
+const char *body_fetch_exact_authority_state_name(
+    enum body_fetch_exact_authority_state state);
+
+/* Resolve one exact validated target.  Owns cs_main internally.  On the
+ * healthy path it uses the active parent.  Only when that slot is absent does
+ * it release cs_main, read the durable finalized/trusted-base parent under the
+ * progress-store lock, then re-lock and repeat the entire identity proof.
+ * Returned block_index objects have process lifetime; callers still read
+ * mutable status through block_index_status_load(). */
+struct block_index *body_fetch_exact_authority_resolve(
+    struct sqlite3 *db, struct main_state *ms, int height,
+    const struct uint256 *expected_hash,
+    enum body_fetch_exact_authority_state *out_state);
 
 /* Max steps drained per supervisor tick. Each step is one in-memory
  * flag check + one small SQL insert; 500 keeps churn modest while

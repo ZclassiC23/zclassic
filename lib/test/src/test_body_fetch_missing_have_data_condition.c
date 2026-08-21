@@ -5,6 +5,7 @@
 #include "conditions/body_fetch_missing_have_data.h"
 #include "core/arith_uint256.h"
 #include "framework/condition.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "net/download.h"
 #include "net/msgprocessor.h"
@@ -64,7 +65,11 @@ static bool seed_schema(sqlite3 *db)
             "CREATE TABLE IF NOT EXISTS body_fetch_log ("
             "height INTEGER PRIMARY KEY, hash BLOB NOT NULL, source TEXT NOT NULL,"
             "bytes INTEGER NOT NULL DEFAULT 0, fetched_at INTEGER NOT NULL,"
-            "ok INTEGER NOT NULL, fail_reason TEXT)");
+            "ok INTEGER NOT NULL, fail_reason TEXT)") &&
+        exec_sql(db,
+            "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+            "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+            "ok INTEGER NOT NULL, tip_hash BLOB)");
 }
 
 static bool seed_cursor(sqlite3 *db, const char *name, int cursor)
@@ -128,6 +133,21 @@ static bool seed_body_row(sqlite3 *db, int height,
     bool ok = sqlite3_step(st) == SQLITE_DONE;
     sqlite3_finalize(st);
     return ok;
+}
+
+static bool seed_trusted_parent_bfmhd(sqlite3 *db, int height,
+                                      const struct uint256 *hash)
+{
+    if (!db || height < 0 || !hash)
+        return false;
+    uint8_t encoded_height[8];
+    uint64_t value = (uint64_t)height;
+    for (size_t i = 0; i < sizeof(encoded_height); i++)
+        encoded_height[i] = (uint8_t)(value >> (8u * i));
+    return progress_meta_set(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                             encoded_height, sizeof(encoded_height)) &&
+           progress_meta_set(db, REDUCER_TRUSTED_BASE_HASH_KEY,
+                             hash->data, sizeof(hash->data));
 }
 
 static bool row_exists(sqlite3 *db, const char *table, int height)
@@ -454,6 +474,53 @@ int test_body_fetch_missing_have_data_condition(void)
             "exact_have_data") != 0;
         BFMHD_CHECK("canonical target whose parent is not the visible H "
                     "fails closed instead of queueing a sibling", ok);
+        teardown_fixture(&fx);
+    }
+
+    /* Checkpoint respawn: active_chain intentionally has no H* slot. The
+     * durable trusted-base pair is the exact parent witness for the canonical
+     * H*+1 best-header child, so the healer must queue that hash. */
+    {
+        struct bfmhd_fixture fx;
+        bool ok = setup_fixture(&fx, "durable_checkpoint_parent");
+        active_chain_free(&fx.ms.chain_active);
+        active_chain_init(&fx.ms.chain_active);
+        ok = ok && seed_trusted_parent_bfmhd(
+            progress_store_db(), fx.tip_h, fx.tip->phashBlock);
+        msgprocessor_test_block_mark_seen(fx.child->phashBlock);
+
+        condition_engine_tick();
+
+        ok = ok && body_fetch_missing_have_data_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+        ok = ok && queue_has_target(&fx);
+        ok = ok && !msgprocessor_test_block_already_seen(
+            fx.child->phashBlock);
+        BFMHD_CHECK("durable checkpoint parent queues exact H*+1 child",
+                    ok);
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct bfmhd_fixture fx;
+        bool ok = setup_fixture(&fx, "durable_checkpoint_parent_mismatch");
+        active_chain_free(&fx.ms.chain_active);
+        active_chain_init(&fx.ms.chain_active);
+        ok = ok && seed_trusted_parent_bfmhd(
+            progress_store_db(), fx.tip_h, &fx.hashes[0]);
+
+        condition_engine_tick();
+
+        uint64_t queued = 0;
+        dl_get_stats(&fx.dm, NULL, NULL, NULL, NULL, &queued);
+        ok = ok && body_fetch_missing_have_data_test_remedy_calls() == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && queued == 0;
+        ok = ok && strcmp(
+            body_fetch_missing_have_data_test_last_skip_reason(),
+            "visible_parent_mismatch") == 0;
+        BFMHD_CHECK("mismatched durable checkpoint parent fails closed",
+                    ok);
         teardown_fixture(&fx);
     }
 

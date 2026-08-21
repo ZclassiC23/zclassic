@@ -11,7 +11,9 @@
 
 #include "platform/time_compat.h"
 #include "jobs/body_fetch_stage.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/stage_helpers.h"
+#include "jobs/tip_finalize_stage.h"
 #include "body_fetch_log_store.h"
 
 #include "chain/chain.h"
@@ -82,14 +84,56 @@ static job_result_t body_fetch_idle(enum body_fetch_idle_reason reason)
     return JOB_IDLE;
 }
 
-/* Join the durable validate_headers verdict to the live chain by exact hash.
- * A height is not an identity: a stale active sibling must neither borrow the
- * canonical verdict nor become the hash written to body_fetch_log. */
+static enum body_fetch_idle_reason body_fetch_idle_reason_from_exact(
+    enum body_fetch_exact_authority_state state)
+{
+    switch (state) {
+    case BODY_FETCH_EXACT_READY:
+    case BODY_FETCH_EXACT_HAVE_DATA:
+        return BF_IDLE_NONE;
+    case BODY_FETCH_EXACT_BEST_ABSENT:
+        return BF_IDLE_BEST_HEADER_ABSENT;
+    case BODY_FETCH_EXACT_BEST_HASH_MISMATCH:
+        return BF_IDLE_BEST_HASH_MISMATCH;
+    case BODY_FETCH_EXACT_ACTIVE_HASH_MISMATCH:
+        return BF_IDLE_ACTIVE_HASH_MISMATCH;
+    case BODY_FETCH_EXACT_PARENT_ABSENT:
+        return BF_IDLE_VISIBLE_PARENT_ABSENT;
+    case BODY_FETCH_EXACT_PARENT_MISMATCH:
+        return BF_IDLE_VISIBLE_PARENT_MISMATCH;
+    case BODY_FETCH_EXACT_AUTHORITY_FAILED:
+        return BF_IDLE_AUTHORITY_FAILED;
+    }
+    return BF_IDLE_AUTHORITY_FAILED;
+}
+
+const char *body_fetch_exact_authority_state_name(
+    enum body_fetch_exact_authority_state state)
+{
+    static const char *const names[] = {
+        "ready",
+        "exact_have_data",
+        "best_absent",
+        "best_hash_mismatch",
+        "active_hash_mismatch",
+        "visible_parent_absent",
+        "visible_parent_mismatch",
+        "authority_failed",
+    };
+    return state >= BODY_FETCH_EXACT_READY &&
+                   state <= BODY_FETCH_EXACT_AUTHORITY_FAILED
+        ? names[state] : "unknown";
+}
+
+/* Join the durable validate_headers verdict to live chain identity.  Caller
+ * owns cs_main.  `durable_parent_hash` was captured before taking cs_main and
+ * is consulted only when the raw active parent slot is absent. */
 static struct block_index *body_fetch_exact_authority_locked(
     struct main_state *ms, int height, const struct uint256 *expected_hash,
-    enum body_fetch_idle_reason *out_reason)
+    const struct uint256 *durable_parent_hash,
+    enum body_fetch_exact_authority_state *out_state)
 {
-    *out_reason = BF_IDLE_BEST_HEADER_ABSENT;
+    *out_state = BODY_FETCH_EXACT_BEST_ABSENT;
     if (!ms || height < 0 || !expected_hash || !ms->pindex_best_header ||
         height > ms->pindex_best_header->nHeight)
         return NULL;
@@ -99,24 +143,32 @@ static struct block_index *body_fetch_exact_authority_locked(
     if (!best || !best->phashBlock)
         return NULL;
     if (!uint256_eq(best->phashBlock, expected_hash)) {
-        *out_reason = BF_IDLE_BEST_HASH_MISMATCH;
+        *out_state = BODY_FETCH_EXACT_BEST_HASH_MISMATCH;
         return NULL;
     }
     if (block_has_any_failure(best)) {
-        *out_reason = BF_IDLE_AUTHORITY_FAILED;
+        *out_state = BODY_FETCH_EXACT_AUTHORITY_FAILED;
         return NULL;
     }
 
     if (height > 0) {
         struct block_index *parent = active_chain_at(
             &ms->chain_active, height - 1);
-        if (!parent || !parent->phashBlock) {
-            *out_reason = BF_IDLE_VISIBLE_PARENT_ABSENT;
+        const struct uint256 *parent_hash =
+            parent && parent->phashBlock ? parent->phashBlock
+                                         : durable_parent_hash;
+        if (!parent_hash) {
+            *out_state = BODY_FETCH_EXACT_PARENT_ABSENT;
+            return NULL;
+        }
+        if ((parent && block_has_any_failure(parent)) ||
+            (best->pprev && block_has_any_failure(best->pprev))) {
+            *out_state = BODY_FETCH_EXACT_AUTHORITY_FAILED;
             return NULL;
         }
         if (!best->pprev || !best->pprev->phashBlock ||
-            !uint256_eq(best->pprev->phashBlock, parent->phashBlock)) {
-            *out_reason = BF_IDLE_VISIBLE_PARENT_MISMATCH;
+            !uint256_eq(best->pprev->phashBlock, parent_hash)) {
+            *out_state = BODY_FETCH_EXACT_PARENT_MISMATCH;
             return NULL;
         }
     }
@@ -124,26 +176,88 @@ static struct block_index *body_fetch_exact_authority_locked(
     struct block_index *active = active_chain_at(&ms->chain_active, height);
     if (active && (!active->phashBlock ||
                    !uint256_eq(active->phashBlock, expected_hash))) {
-        *out_reason = BF_IDLE_ACTIVE_HASH_MISMATCH;
+        *out_state = BODY_FETCH_EXACT_ACTIVE_HASH_MISMATCH;
         return NULL;
     }
     if (active && block_has_any_failure(active)) {
-        *out_reason = BF_IDLE_AUTHORITY_FAILED;
+        *out_state = BODY_FETCH_EXACT_AUTHORITY_FAILED;
         return NULL;
     }
     if (height > 0 && active &&
         (!active->pprev || !active->pprev->phashBlock ||
          !uint256_eq(active->pprev->phashBlock, best->pprev->phashBlock))) {
-        *out_reason = BF_IDLE_VISIBLE_PARENT_MISMATCH;
+        *out_state = BODY_FETCH_EXACT_PARENT_MISMATCH;
         return NULL;
     }
 
-    *out_reason = BF_IDLE_NONE;
-    if (active && (block_index_status_load(active) & BLOCK_HAVE_DATA))
+    *out_state = BODY_FETCH_EXACT_READY;
+    if (active && (block_index_status_load(active) & BLOCK_HAVE_DATA)) {
+        *out_state = BODY_FETCH_EXACT_HAVE_DATA;
         return active;
-    if (block_index_status_load(best) & BLOCK_HAVE_DATA)
+    }
+    if (block_index_status_load(best) & BLOCK_HAVE_DATA) {
+        *out_state = BODY_FETCH_EXACT_HAVE_DATA;
         return best;
+    }
     return active ? active : best;
+}
+
+static bool body_fetch_durable_parent_hash_at(sqlite3 *db, int height,
+                                               struct uint256 *out)
+{
+    if (!db || height < 0 || !out)
+        return false;
+    if (tip_finalize_stage_block_hash_at(db, height, out->data))
+        return true;
+
+    /* The first checkpoint transition may replace the seed anchor row before
+     * a height-1 finalized row exists.  Header-admit and utxo-apply use this
+     * same exact trusted-base pair for that one convention gap. */
+    int32_t base_height = -1;
+    bool found = false;
+    uint8_t base_hash[32];
+    if (!reducer_frontier_trusted_base_read(db, &base_height, base_hash,
+                                            &found))
+        return false;
+    if (!found || base_height != height)
+        return false;
+    memcpy(out->data, base_hash, sizeof(base_hash));
+    return true;
+}
+
+struct block_index *body_fetch_exact_authority_resolve(
+    sqlite3 *db, struct main_state *ms, int height,
+    const struct uint256 *expected_hash,
+    enum body_fetch_exact_authority_state *out_state)
+{
+    if (!out_state)
+        return NULL;
+    *out_state = BODY_FETCH_EXACT_BEST_ABSENT;
+    if (!db || !ms || height < 0 || !expected_hash)
+        return NULL;
+
+    zcl_mutex_lock(&ms->cs_main);
+    struct block_index *bi = body_fetch_exact_authority_locked(
+        ms, height, expected_hash, NULL, out_state);
+    zcl_mutex_unlock(&ms->cs_main);
+    if (bi || *out_state != BODY_FETCH_EXACT_PARENT_ABSENT || height == 0)
+        return bi;
+
+    /* LOCK ORDER: durable read outside cs_main.  The read acquires the
+     * recursive progress-store lock; taking it under cs_main would invert the
+     * reducer's progress_store -> cs_main order. */
+    struct uint256 durable_parent_hash;
+    if (!body_fetch_durable_parent_hash_at(db, height - 1,
+                                           &durable_parent_hash))
+        return NULL;
+
+    /* Re-resolve every identity after re-locking.  No pointer or verdict from
+     * the first pass crosses the lock gap. */
+    zcl_mutex_lock(&ms->cs_main);
+    bi = body_fetch_exact_authority_locked(
+        ms, height, expected_hash, &durable_parent_hash, out_state);
+    zcl_mutex_unlock(&ms->cs_main);
+    return bi;
 }
 
 /* ── Schema + log I/O ─────────────────────────────────────────────────
@@ -228,13 +342,13 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
         return JOB_ADVANCED;
     }
 
-    enum body_fetch_idle_reason idle_reason = BF_IDLE_NONE;
-    zcl_mutex_lock(&ms->cs_main);
-    struct block_index *bi = body_fetch_exact_authority_locked(
-        ms, next_h, &vh_hash, &idle_reason);
-    zcl_mutex_unlock(&ms->cs_main);
+    enum body_fetch_exact_authority_state authority_state =
+        BODY_FETCH_EXACT_BEST_ABSENT;
+    struct block_index *bi = body_fetch_exact_authority_resolve(
+        db, ms, next_h, &vh_hash, &authority_state);
     if (!bi)
-        return body_fetch_idle(idle_reason);
+        return body_fetch_idle(
+            body_fetch_idle_reason_from_exact(authority_state));
 
     /* Header passed validation; check body availability. */
     if (!(block_index_status_load(bi) & BLOCK_HAVE_DATA)) {
@@ -245,7 +359,7 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
 
     /* Body observed on disk. Record presence; bytes=0 because size probing
      * would add per-height pread cost. */
-    if (!body_fetch_log_insert(db, next_h, bi->phashBlock, "disk", 0, true, NULL))
+    if (!body_fetch_log_insert(db, next_h, &vh_hash, "disk", 0, true, NULL))
         return JOB_FATAL;
 
     atomic_fetch_add(&g_observed_total, 1);

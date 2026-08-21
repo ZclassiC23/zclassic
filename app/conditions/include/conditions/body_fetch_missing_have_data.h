@@ -16,7 +16,7 @@
  *   body_fetch's own cursor, so candidate (a) never matches it. The lower of
  *   the two candidates is targeted first.
  * Candidate (a) is bound to the durable validate hash, best-header ancestry,
- * and visible-parent identity, then queues through
+ * and the exact visible or durable finalized parent identity, then queues through
  * sync_monitor_queue_best_header_body(target, exact_hash). Candidate (b)
  * retains the active-frontier queue path. A failed queue returns
  * COND_REMEDY_FAILED.

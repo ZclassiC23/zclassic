@@ -26,6 +26,7 @@
 #include "core/uint256.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/header_admit_stage.h"
+#include "jobs/reducer_frontier.h"
 #include "jobs/validate_headers_stage.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
@@ -57,6 +58,22 @@ static int mkdir_p_bf(const char *p)
     if (mkdir(p, 0700) == 0) return 0;
     if (errno == EEXIST) return 0;
     return -1;
+}
+
+static bool ensure_tip_finalize_fixture_schema_bf(sqlite3 *db)
+{
+    char *err = NULL;
+    int rc = sqlite3_exec(db,
+        "CREATE TABLE IF NOT EXISTS tip_finalize_log ("
+        "height INTEGER PRIMARY KEY, status TEXT NOT NULL, "
+        "ok INTEGER NOT NULL, tip_hash BLOB)",
+        NULL, NULL, &err);
+    if (rc != SQLITE_OK) {
+        if (err)
+            sqlite3_free(err);
+        return false;
+    }
+    return true;
 }
 
 /* Synthetic chain — fully controllable nStatus + nHeight per block. */
@@ -236,6 +253,21 @@ static bool vh_log_force_short_hash(sqlite3 *db, int height)
     int rc = sqlite3_step(st);
     sqlite3_finalize(st);
     return rc == SQLITE_DONE;
+}
+
+static bool seed_trusted_parent_bf(sqlite3 *db, int height,
+                                   const struct uint256 *hash)
+{
+    if (!db || height < 0 || !hash)
+        return false;
+    uint8_t encoded_height[8];
+    uint64_t value = (uint64_t)height;
+    for (size_t i = 0; i < sizeof(encoded_height); i++)
+        encoded_height[i] = (uint8_t)(value >> (8u * i));
+    return progress_meta_set(db, REDUCER_TRUSTED_BASE_HEIGHT_KEY,
+                             encoded_height, sizeof(encoded_height)) &&
+           progress_meta_set(db, REDUCER_TRUSTED_BASE_HASH_KEY,
+                             hash->data, sizeof(hash->data));
 }
 
 /* Set up the full saga prefix (progress + admit + validate + body_fetch).
@@ -566,6 +598,8 @@ int test_body_fetch_stage(void)
 
         const struct uint256 *saved_parent_hash = sc.blocks[1].phashBlock;
         sc.blocks[1].phashBlock = NULL;
+        BF_CHECK("authority_refusal: durable fixture schema",
+                 ensure_tip_finalize_fixture_schema_bf(progress_store_db()));
         BF_CHECK("authority_refusal: absent parent is IDLE zero-row",
                  body_fetch_stage_step_once() == JOB_IDLE &&
                  body_fetch_stage_cursor() == 2 &&
@@ -579,6 +613,54 @@ int test_body_fetch_stage(void)
                  body_fetch_stage_step_once() == JOB_FATAL &&
                  body_fetch_stage_cursor() == 2 &&
                  !log_row_at(progress_store_db(), 2, &(int){0}, NULL, 0));
+
+        bf_teardown(dir, &ms, &sc);
+    }
+
+    /* Checkpoint boot deliberately has no active-chain slot at H*, but the
+     * checkpoint CAS leaves an exact durable (H*,hash) authority pair. The
+     * H*+1 validate verdict may advance only when its best-header parent
+     * matches that pair. This is the real C3 post-respawn window shape. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_bf sc;
+        BF_CHECK("durable_parent: setup",
+                 bf_setup("durable_parent", 3, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        header_admit_stage_drain(100);
+        validate_headers_stage_drain(100);
+        BF_CHECK("durable_parent: prefix reaches H*+1",
+                 body_fetch_stage_drain(2) == 2 &&
+                 body_fetch_stage_cursor() == 2);
+        BF_CHECK("durable_parent: finalized fixture schema",
+                 ensure_tip_finalize_fixture_schema_bf(progress_store_db()));
+
+        active_chain_free(&ms.chain_active);
+        active_chain_init(&ms.chain_active);
+        BF_CHECK("durable_parent: absent active H* refuses without witness",
+                 body_fetch_stage_step_once() == JOB_IDLE &&
+                 body_fetch_stage_cursor() == 2 &&
+                 !log_row_at(progress_store_db(), 2, &(int){0}, NULL, 0) &&
+                 dump_has_idle_reason("authority.visible_parent_absent"));
+
+        BF_CHECK("durable_parent: mismatched durable H* witness seeded",
+                 seed_trusted_parent_bf(progress_store_db(), 1,
+                                        &sc.hashes[0]));
+        BF_CHECK("durable_parent: mismatch fails closed with zero movement",
+                 body_fetch_stage_step_once() == JOB_IDLE &&
+                 body_fetch_stage_cursor() == 2 &&
+                 !log_row_at(progress_store_db(), 2, &(int){0}, NULL, 0) &&
+                 dump_has_idle_reason("authority.visible_parent_mismatch"));
+
+        BF_CHECK("durable_parent: exact durable H* witness seeded",
+                 seed_trusted_parent_bf(progress_store_db(), 1,
+                                        &sc.hashes[1]));
+        BF_CHECK("durable_parent: exact best-header child advances",
+                 body_fetch_stage_step_once() == JOB_ADVANCED &&
+                 body_fetch_stage_cursor() == 3);
+        struct uint256 recorded;
+        BF_CHECK("durable_parent: row remains bound to validate hash",
+                 log_hash_at(progress_store_db(), 2, &recorded) &&
+                 uint256_eq(&recorded, &sc.hashes[2]));
 
         bf_teardown(dir, &ms, &sc);
     }
