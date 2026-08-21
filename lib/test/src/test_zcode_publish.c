@@ -23,7 +23,9 @@
  *   7. search: publisher/name-prefix/license/keyword filters, miss,
  *      bounds (limit + items_truncated), empty store.
  *   8. library: complete tracked store catalog (empty store, name from
- *      the index, complete/pinned/counts/public_serveable).
+ *      the index, complete/pinned/counts/public_serveable, next_command
+ *      on empty and non-empty shelves). Fetch by that local name after
+ *      a published complete package; name+root mismatch fails closed.
  *   9. show: full record + manifest summary + bounded file page;
  *      UNKNOWN_PACKAGE and BAD_ROOT rejections.
  *  10. Index rebuild: a fresh build from the persisted CAS bytes equals the
@@ -1307,11 +1309,15 @@ static int t_library(void)
     zp_cmd_init(&c);
     (void)json_push_kv_str(&c.input, "datadir", dd);
     zcl_native_handle_zcode_package_library(&c.request, &c.reply);
+    const char *empty_next =
+        json_get_str(json_get(&c.reply.data, "next_command"));
     ZP_CHECK("library: empty store passes with zero rows",
              c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              json_get_int(json_get(&c.reply.data, "count")) == 0 &&
              json_get_int(json_get(&c.reply.data, "rendered")) == 0 &&
              !json_get_bool(json_get(&c.reply.data, "items_truncated")));
+    ZP_CHECK("library: empty shelf names an obvious fetch next command",
+             empty_next && strstr(empty_next, "zcode package fetch") != NULL);
     zp_cmd_free(&c);
 
     zp_cmd_init(&c);
@@ -1360,6 +1366,68 @@ static int t_library(void)
              json_get_int(json_get(named_row, "total_chunks")) == 2 &&
              json_get(named_row, "public_serveable") &&
              json_get(named_row, "public_serveable")->type == JSON_BOOL);
+    const char *listed_root =
+        named_row ? json_get_str(json_get(named_row, "package_root")) : NULL;
+    const char *shelf_next =
+        json_get_str(json_get(&c.reply.data, "next_command"));
+    ZP_CHECK("library: non-empty shelf points at fetch of a listed title",
+             shelf_next && strstr(shelf_next, "zcode package fetch") != NULL &&
+             (strstr(shelf_next, "rhett/ring-buffer") != NULL ||
+              strstr(shelf_next, "bob/json-lite") != NULL ||
+              (listed_root && strstr(shelf_next, listed_root) != NULL)));
+    char ring_root[65];
+    ring_root[0] = '\0';
+    if (listed_root)
+        (void)snprintf(ring_root, sizeof(ring_root), "%s", listed_root);
+    zp_cmd_free(&c);
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "name", "rhett/ring-buffer");
+    zcl_native_handle_zcode_package_fetch(&c.request, &c.reply);
+    ZP_CHECK("library: fetch by local name after a published complete package",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&c.reply.data, "already_complete")) &&
+             json_get_str(json_get(&c.reply.data, "package_root")) &&
+             ring_root[0] &&
+             strcmp(json_get_str(json_get(&c.reply.data, "package_root")),
+                    ring_root) == 0);
+    zp_cmd_free(&c);
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "name", "rhett/ring-buffer");
+    (void)json_push_kv_str(&c.input, "root", ring_root);
+    zcl_native_handle_zcode_package_fetch(&c.request, &c.reply);
+    ZP_CHECK("library: matching name+root still fetches the same identity",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&c.reply.data, "already_complete")));
+    zp_cmd_free(&c);
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "root", ring_root);
+    zcl_native_handle_zcode_package_fetch(&c.request, &c.reply);
+    ZP_CHECK("library: fetch by root still works",
+             c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
+             json_get_bool(json_get(&c.reply.data, "already_complete")) &&
+             json_get_str(json_get(&c.reply.data, "package_root")) &&
+             strcmp(json_get_str(json_get(&c.reply.data, "package_root")),
+                    ring_root) == 0);
+    zp_cmd_free(&c);
+
+    char other_root[65];
+    memset(other_root, 'a', 64);
+    other_root[64] = '\0';
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "name", "rhett/ring-buffer");
+    (void)json_push_kv_str(&c.input, "root", other_root);
+    zcl_native_handle_zcode_package_fetch(&c.request, &c.reply);
+    ZP_CHECK("library: name+root mismatch fails closed",
+             c.reply.status == ZCL_COMMAND_STATUS_FAILED &&
+             strcmp(c.reply.error.code, "NAME_ROOT_MISMATCH") == 0 &&
+             c.reply.error.message[0] != '\0');
     zp_cmd_free(&c);
 
     zp_cmd_init(&c);
@@ -1615,6 +1683,14 @@ static int t_registry_path(void)
              library &&
              library->handler == zcl_native_handle_zcode_package_library);
 
+    const struct zcl_command_spec *fetch = zp_leaf("zcode.package.fetch");
+    ZP_CHECK("registry: fetch leaf is registered", fetch && fetch->handler);
+    ZP_CHECK("registry: fetch binds the handler the direct tests call",
+             fetch && fetch->handler == zcl_native_handle_zcode_package_fetch);
+    ZP_CHECK("registry: fetch does not require root when name is allowed",
+             fetch && fetch->positional_keys &&
+             fetch->positional_keys[0] == '\0');
+
     char why[192] = {0};
     struct zp_cmd c;
 
@@ -1627,6 +1703,27 @@ static int t_registry_path(void)
     ZP_CHECK("registry: library empty store is a passed empty list",
              library_ran && c.reply.status == ZCL_COMMAND_STATUS_PASSED &&
              json_get_int(json_get(&c.reply.data, "count")) == 0);
+    zp_cmd_free(&c);
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "name", "rhett/ring-cli");
+    why[0] = 0;
+    bool fetch_name_ok =
+        fetch && zcl_command_registry_input_validate(fetch, &c.input, why,
+                                                     sizeof(why));
+    ZP_CHECK("registry: fetch accepts name without root", fetch_name_ok);
+    if (!fetch_name_ok)
+        printf("    validator refused: %s\n", why);
+    zp_cmd_free(&c);
+
+    zp_cmd_init(&c);
+    (void)json_push_kv_str(&c.input, "datadir", dd);
+    (void)json_push_kv_str(&c.input, "root", p.root_hex);
+    why[0] = 0;
+    ZP_CHECK("registry: fetch still accepts root without name",
+             fetch && zcl_command_registry_input_validate(fetch, &c.input, why,
+                                                          sizeof(why)));
     zp_cmd_free(&c);
 
     /* plan — the operator's exact input, through input_validate. */

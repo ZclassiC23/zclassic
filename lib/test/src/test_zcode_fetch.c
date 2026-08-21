@@ -8,7 +8,10 @@
  *                          <datadir>/zcode/downloads/<root-hex> and the
  *                          reply honestly reports live:false; a complete
  *                          package reports already_complete; BAD_ROOT
- *                          names the bad input
+ *                          names the bad input; optional local library
+ *                          `name` resolves from the rebuildable index
+ *                          (UNKNOWN_NAME / NAME_ROOT_MISMATCH /
+ *                          MISSING_ROOT_OR_NAME fail closed; never ZNAM)
  *   zcode package peers    one-shot: live:false, empty list, never a
  *                          replayed-from-disk fake; store-side possession
  *                          (complete, operator-pinned, public-serveable /
@@ -280,6 +283,44 @@ static int zf_t_fetch_bad_root(void)
         zcl_native_handle_zcode_package_fetch(&c.request, &c.reply);
         ASSERT(c.reply.status == ZCL_COMMAND_STATUS_FAILED);
         ASSERT(strcmp(c.reply.error.code, "BAD_ROOT") == 0);
+        ASSERT(c.reply.error.message[0] != '\0');
+        zf_cmd_free(&c);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int zf_t_fetch_missing_identity(void)
+{
+    int failures = 0;
+    TEST("zcode package fetch: missing name and root fails closed") {
+        char dd[1024];
+        test_make_tmpdir(dd, sizeof(dd), "zcode_fetch", "noid");
+        struct zf_cmd c;
+        zf_cmd_init(&c, dd);
+        zcl_native_handle_zcode_package_fetch(&c.request, &c.reply);
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(strcmp(c.reply.error.code, "MISSING_ROOT_OR_NAME") == 0);
+        ASSERT(c.reply.error.message[0] != '\0');
+        zf_cmd_free(&c);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int zf_t_fetch_unknown_name(void)
+{
+    int failures = 0;
+    TEST("zcode package fetch: unknown local name fails closed") {
+        char dd[1024];
+        test_make_tmpdir(dd, sizeof(dd), "zcode_fetch", "unknown-name");
+        struct zf_cmd c;
+        zf_cmd_init(&c, dd);
+        (void)json_push_kv_str(&c.input, "name", "nobody/missing-package");
+        zcl_native_handle_zcode_package_fetch(&c.request, &c.reply);
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(strcmp(c.reply.error.code, "UNKNOWN_NAME") == 0);
+        ASSERT(c.reply.error.message[0] != '\0');
         zf_cmd_free(&c);
         PASS();
     } _test_next:;
@@ -700,6 +741,8 @@ int test_zcode_fetch(void)
     chain_params_select(CHAIN_MAIN);
     failures += zf_t_fetch_one_shot();
     failures += zf_t_fetch_bad_root();
+    failures += zf_t_fetch_missing_identity();
+    failures += zf_t_fetch_unknown_name();
     failures += zf_t_fetch_dht_routed_live();
     failures += zf_t_fetch_complete();
     failures += zf_t_source_reproduction_loop();

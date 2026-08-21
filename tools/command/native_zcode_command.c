@@ -14,7 +14,10 @@
  *   zcode package search          bounded local search over the rebuildable
  *                                 package index projection
  *   zcode package library         complete tracked packages in the local
- *                                 store (the shelf this node can seed)
+ *                                 store (the shelf this node can seed);
+ *                                 the JSON names one next_command (fetch
+ *                                 by a listed local name/root, or how to
+ *                                 fetch when the shelf is empty)
  *   zcode package show            one package's full release record +
  *                                 manifest summary
  *   zcode package recipe          the decoded, bounded declarative build
@@ -1516,11 +1519,48 @@ static void zc_library_emit(struct zcl_command_reply *reply,
                             struct json_value *packages, size_t rendered,
                             bool truncated, int64_t limit)
 {
+    char next[384];
+    if (rendered == 0) {
+        (void)snprintf(
+            next, sizeof(next),
+            "z23 zcode package fetch --input='{\"root\":\"<64hex>\"}'");
+    } else {
+        const char *name = NULL;
+        const char *root = NULL;
+        size_t n = packages ? packages->num_children : 0;
+        for (size_t i = 0; i < n; i++) {
+            const struct json_value *row = json_at(packages, i);
+            const char *row_name =
+                row ? json_get_str(json_get(row, "name")) : NULL;
+            const char *row_root =
+                row ? json_get_str(json_get(row, "package_root")) : NULL;
+            if (!root && row_root && row_root[0])
+                root = row_root;
+            if (row_name && row_name[0]) {
+                name = row_name;
+                root = row_root;
+                break;
+            }
+        }
+        if (name && name[0])
+            (void)snprintf(next, sizeof(next),
+                           "z23 zcode package fetch --input='{\"name\":\"%s\"}'",
+                           name);
+        else if (root && root[0])
+            (void)snprintf(next, sizeof(next),
+                           "z23 zcode package fetch --input='{\"root\":\"%s\"}'",
+                           root);
+        else
+            (void)snprintf(
+                next, sizeof(next),
+                "z23 zcode package fetch --input='{\"root\":\"<64hex>\"}'");
+    }
     (void)json_push_kv(&reply->data, "packages", packages);
     (void)json_push_kv_int(&reply->data, "count", (int64_t)rendered);
     (void)json_push_kv_int(&reply->data, "rendered", (int64_t)rendered);
     (void)json_push_kv_bool(&reply->data, "items_truncated", truncated);
     (void)json_push_kv_int(&reply->data, "limit", limit);
+    (void)json_push_kv_str(&reply->data, "next_command", next);
 }
 
 /* True when <zcode_dir>/manifests holds at least one committed 64-hex
