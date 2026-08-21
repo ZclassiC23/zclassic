@@ -12,7 +12,12 @@
  *                          next hosting boot to resume
  *   zcode package peers    the live swarm's view of the peers advertising
  *                          one package root (tier, in-flight, verified
- *                          bytes both ways, allowance + offence state)
+ *                          served/fetched bytes, allowance + offence
+ *                          state) plus THIS node's store-side possession:
+ *                          complete, operator-pinned, public-serveable
+ *                          (would_serve). Engine-down replies are
+ *                          live:false with an empty peer list and still
+ *                          report store facts, fail closed.
  *   zcode package pin      operator-pin a tracked package (PINS pool,
  *                          never evicted, never tier-gated)
  *   zcode package unpin    release an operator pin
@@ -26,17 +31,19 @@
  * Every rejection names the exact rule. */
 
 #include "base/hex.h"
+#include "base/log_macros.h"
 #include "command/native_command.h"
+#include "command/native_zcode_discovery.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
 
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "vcs/package_public_shape.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm_node.h"
-#include "command/native_zcode_discovery.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -136,6 +143,120 @@ static void zw_push_status(struct json_value *obj,
                            (int64_t)st->reused_objects);
     (void)json_push_kv_int(obj, "maximum_package_bytes",
                            (int64_t)st->maximum_package_bytes);
+}
+
+/* Observe the datadir store without creating one as a READ side-effect
+ * and without racing a resident daemon. Global handle first; otherwise
+ * open only an already-present <datadir>/zcode. Implicit datadir with a
+ * live cookie is the resident's store — a second recovery owner can
+ * sweep CAS the daemon is writing. Explicit input datadir is the
+ * offline/copy path. */
+static struct vcs_package_store *zw_observe_store(
+    const struct zcl_command_request *request, bool *own_out)
+{
+    if (own_out)
+        *own_out = false;
+    struct vcs_package_store *store = vcs_package_store_global();
+    if (store)
+        return store;
+    const char *datadir = zw_datadir(request);
+    if (!datadir || !datadir[0])
+        return NULL;
+    char zcode[4400];
+    int n = snprintf(zcode, sizeof(zcode), "%s/zcode", datadir);
+    if (n < 0 || (size_t)n >= sizeof(zcode) || access(zcode, F_OK) != 0)
+        return NULL;
+    if (!zw_input_str(request->input, "datadir")) {
+        char cookie[4400];
+        int cn = snprintf(cookie, sizeof(cookie), "%s/.cookie", datadir);
+        if (cn > 0 && (size_t)cn < sizeof(cookie) &&
+            access(cookie, F_OK) == 0)
+            return NULL;
+    }
+    store = vcs_package_store_open(datadir, vcs_package_store_quota_bytes());
+    if (!store) {
+        LOG_ERROR("zcode.package.peers",
+                  "package store failed to open under %s", zcode);
+        return NULL;
+    }
+    if (own_out)
+        *own_out = true;
+    return store;
+}
+
+/* Store-side possession for one root. Missing store, untracked root, or
+ * classify refusal all fail closed: would_serve is false and no replica
+ * count is invented. */
+static void zw_push_possession(struct json_value *obj,
+                               struct vcs_package_store *store,
+                               const uint8_t root[32])
+{
+    bool observed = false;
+    bool tracked = false;
+    bool complete = false;
+    bool pinned = false;
+    bool public_serveable = false;
+    const char *shape =
+        vcs_package_public_shape_string(VCS_PACKAGE_PUBLIC_REFUSED);
+    const char *rule = "store-unobserved";
+    int64_t present_bytes = 0;
+    int64_t total_bytes = 0;
+
+    if (store && root) {
+        observed = true;
+        struct vcs_package_store_status st;
+        memset(&st, 0, sizeof(st));
+        if (vcs_package_store_package_status(store, root, &st) &&
+            st.tracked) {
+            tracked = true;
+            complete = st.complete;
+            pinned = st.pinned;
+            present_bytes = (int64_t)st.present_bytes;
+            total_bytes = (int64_t)st.total_bytes;
+        }
+        struct vcs_package_public_verdict verdict;
+        memset(&verdict, 0, sizeof(verdict));
+        enum vcs_package_public_shape ps =
+            vcs_package_public_shape_classify(store, root, &verdict);
+        public_serveable = ps != VCS_PACKAGE_PUBLIC_REFUSED;
+        shape = vcs_package_public_shape_string(ps);
+        rule = verdict.rule ? verdict.rule : "null-input";
+    }
+
+    struct json_value local;
+    json_init(&local);
+    json_set_object(&local);
+    (void)json_push_kv_bool(&local, "observed", observed);
+    (void)json_push_kv_bool(&local, "tracked", tracked);
+    (void)json_push_kv_bool(&local, "complete", complete);
+    (void)json_push_kv_bool(&local, "pinned", pinned);
+    (void)json_push_kv_bool(&local, "public_serveable", public_serveable);
+    (void)json_push_kv_bool(&local, "would_serve",
+                            tracked && complete && public_serveable);
+    (void)json_push_kv_str(&local, "public_shape", shape);
+    (void)json_push_kv_str(&local, "serve_rule", rule);
+    (void)json_push_kv_int(&local, "present_bytes", present_bytes);
+    (void)json_push_kv_int(&local, "total_bytes", total_bytes);
+    (void)json_push_kv(obj, "possession", &local);
+    json_free(&local);
+}
+
+static void zw_push_peer_transfer(struct json_value *row,
+                                  const struct vcs_swarm_peer_info *p)
+{
+    struct json_value transfer;
+    json_init(&transfer);
+    json_set_object(&transfer);
+    (void)json_push_kv_int(&transfer, "verified_bytes_served",
+                           (int64_t)p->verified_served);
+    (void)json_push_kv_int(&transfer, "verified_bytes_fetched",
+                           (int64_t)p->verified_from);
+    (void)json_push_kv(row, "transfer", &transfer);
+    json_free(&transfer);
+    (void)json_push_kv_int(row, "verified_bytes_served",
+                           (int64_t)p->verified_served);
+    (void)json_push_kv_int(row, "verified_bytes_received",
+                           (int64_t)p->verified_from);
 }
 
 /* ── zcode package fetch ────────────────────────────────────────────── */
@@ -355,14 +476,30 @@ void zcl_native_handle_zcode_package_peers(
     (void)json_push_kv_str(&reply->data, "package_root", hex);
 
     struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
-    (void)json_push_kv_bool(&reply->data, "live", engine != NULL);
-    if (!engine) {
+    bool live = engine != NULL;
+    (void)json_push_kv_bool(&reply->data, "live", live);
+
+    bool own_store = false;
+    struct vcs_package_store *store = zw_observe_store(request, &own_store);
+    zw_push_possession(&reply->data, store, root);
+    if (own_store)
+        vcs_package_store_close(store);
+
+    if (!live) {
+        struct json_value rows;
+        json_init(&rows);
+        json_set_array(&rows);
+        (void)json_push_kv(&reply->data, "peers", &rows);
+        json_free(&rows);
         (void)json_push_kv_int(&reply->data, "peer_count", 0);
+        (void)json_push_kv_bool(&reply->data, "peers_truncated", false);
         (void)json_push_kv_str(
             &reply->data, "note",
             "no live hosting engine on this process (-packagehost=1 on a "
             "running node wires it); peer facts are session-scoped and "
-            "never persisted, so a one-shot CLI has none to report");
+            "never persisted, so a one-shot CLI has none to report. "
+            "possession is store-side and is still reported; missing "
+            "store facts fail closed and replica counts are never invented");
         return;
     }
 
@@ -394,10 +531,7 @@ void zcl_native_handle_zcode_package_peers(
         (void)json_push_kv_str(&row, "session_key", key_hex);
         (void)json_push_kv_str(&row, "tier", vcs_policy_tier_string(p->tier));
         (void)json_push_kv_int(&row, "inflight", (int64_t)p->inflight);
-        (void)json_push_kv_int(&row, "verified_bytes_served",
-                               (int64_t)p->verified_served);
-        (void)json_push_kv_int(&row, "verified_bytes_received",
-                               (int64_t)p->verified_from);
+        zw_push_peer_transfer(&row, p);
         (void)json_push_kv_bool(&row, "allowance_exhausted",
                                 p->allowance_exhausted);
         (void)json_push_kv_int(&row, "offence_total",
