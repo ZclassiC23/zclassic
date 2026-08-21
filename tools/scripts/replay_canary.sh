@@ -366,6 +366,48 @@ json_amount() {  # $1=json $2=key
         | head -1 | sed 's/.*:[[:space:]]*\([0-9.]*\)/\1/' || true
 }
 
+# TCP liveness of one 127.0.0.1 port. The C8 genesis replay cannot start
+# without a co-located zclassicd; probing here (timeout + /dev/tcp) names
+# that host gap in milliseconds without a local binary, iso_init, or the
+# 30s curl wait zcl-rpc would spend on a closed port.
+oracle_tcp_open() {
+    local port="$1"
+    command -v timeout >/dev/null 2>&1 || return 1
+    timeout 3 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' -- "$port" \
+        >/dev/null 2>&1
+}
+
+# Host-oracle preflight: no local binary required. A missing zclassicd is
+# the C8 gap; a missing worktree binary must not hide it. Port-number
+# validation, then TCP on RPC then P2P (same order the later getblockcount
+# / -connect= checks use). First failure wins, typed BLOCKED.
+preflight_host_oracle() {
+    case "$ZD_RPC" in
+        ''|*[!0-9]*) ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_rpc_port_invalid" ;;
+    esac
+    case "$ZD_P2P" in
+        ''|*[!0-9]*) ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_port_invalid" ;;
+    esac
+    if [ "$ZD_RPC" -lt 1 ] || [ "$ZD_RPC" -gt 65535 ]; then
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_rpc_port_invalid"
+    fi
+    if [ "$ZD_P2P" -lt 1 ] || [ "$ZD_P2P" -gt 65535 ]; then
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_port_invalid"
+    fi
+    if ! command -v timeout >/dev/null 2>&1; then
+        echo "replay-canary: timeout(1) missing — cannot probe zclassicd RPC/P2P liveness" >&2
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_probe_unavailable"
+    fi
+    if ! oracle_tcp_open "$ZD_RPC"; then
+        echo "replay-canary: zclassicd RPC 127.0.0.1:$ZD_RPC unreachable — C8 genesis replay needs a co-located zclassicd (default RPC 8232, P2P 8034, datadir $SRC_DATADIR)" >&2
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_rpc_unreachable"
+    fi
+    if ! oracle_tcp_open "$ZD_P2P"; then
+        echo "replay-canary: zclassicd P2P 127.0.0.1:$ZD_P2P unreachable — genesis replay -connect= needs the co-located oracle (default 8034)" >&2
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_unreachable"
+    fi
+}
+
 # ── Result vars (populated as we probe; consumed by write_verdict) ─
 # START_TS / STARTED_TS / ELAPSED are fixed earlier (with the sentinel
 # helpers) so reset_verdict and the elapsed band share the same run-start.
@@ -575,6 +617,26 @@ run_live() {
     # stderr line + bare exit) — a canary that cannot run must leave a
     # verdict an operator/ops-surface reader can distinguish from a replay
     # MISMATCH (see blocked()'s doc comment).
+    #
+    # Order is load-bearing for C8: probe the co-located zclassicd FIRST.
+    # A missing worktree binary used to win, so `make replay-canary-genesis`
+    # on an unbuilt tree named binary_missing_zclassic23 and hid the actual
+    # acceptance gap (no oracle on 8232/8034). The hermetic
+    # test_blocked_on_oracle_rpc_unreachable contract also depends on this
+    # order: `--zclassicd-rpc=1` must resolve oracle_rpc_unreachable even
+    # when build/bin/zclassic23 is absent.
+    preflight_host_oracle
+
+    # from=genesis byte-exact tier hashes zclassicd's OWN chainstate via
+    # --legacy-utxo-commitment. Missing chainstate used to burn the 8 h
+    # budget and then FAIL exact_reference_unusable (a consensus-grade
+    # alarm) for an environmental gap. BLOCKED here, after the oracle TCP
+    # probe so a closed RPC port still wins the hermetic port-1 test.
+    if [ "$FROM" = "genesis" ] && [ ! -d "$SRC_DATADIR/chainstate" ]; then
+        echo "replay-canary: --src-datadir=$SRC_DATADIR has no chainstate/ — byte-exact C8 (--legacy-utxo-commitment) cannot run (expected the zclassicd datadir, default \$HOME/.zclassic)" >&2
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "src_datadir_missing"
+    fi
+
     if [ ! -x build/bin/zclassic23 ]; then
         echo "replay-canary: build/bin/zclassic23 missing — run 'make' in $REPO_ROOT" >&2
         ELAPSED=0; blocked "binary_missing_zclassic23"
@@ -606,36 +668,16 @@ run_live() {
         blocked "source_identity_capture_failed"
     fi
 
-    # The genesis replay cannot make any progress without the co-located
-    # zclassicd oracle: RPC supplies the comparison tip and -connect supplies
-    # every block body.  Check both BEFORE spawning the candidate.  Otherwise
-    # an absent oracle leaves the fresh node at height zero for the full
-    # eight-hour budget and is misreported as a consensus-grade replay FAIL.
-    # This is an external prerequisite, so it must produce typed BLOCKED.
-    case "$ZD_RPC" in
-        ''|*[!0-9]*) ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_rpc_port_invalid" ;;
-    esac
-    case "$ZD_P2P" in
-        ''|*[!0-9]*) ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_port_invalid" ;;
-    esac
-    if [ "$ZD_RPC" -lt 1 ] || [ "$ZD_RPC" -gt 65535 ]; then
-        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_rpc_port_invalid"
-    fi
-    if [ "$ZD_P2P" -lt 1 ] || [ "$ZD_P2P" -gt 65535 ]; then
-        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_port_invalid"
-    fi
+    # TCP already proved the oracle ports are open (preflight_host_oracle).
+    # getblockcount still has to answer: an open port that is reindexing,
+    # unauthenticated, or not actually zclassicd must stay typed BLOCKED,
+    # never a spawned 8 h replay that FAILs as if consensus diverged.
     local oracle_height
     oracle_height="$(json_num "$(ZCL_DATADIR="$SRC_DATADIR" \
         ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" getblockcount 2>/dev/null || true)" result)"
     if [ -z "$oracle_height" ]; then
+        echo "replay-canary: zclassicd RPC 127.0.0.1:$ZD_RPC is open but getblockcount did not return a height (reindexing, auth, or not zclassicd)" >&2
         ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_rpc_unreachable"
-    fi
-    if ! command -v timeout >/dev/null 2>&1; then
-        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_probe_unavailable"
-    fi
-    if ! timeout 3 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' -- "$ZD_P2P" \
-            >/dev/null 2>&1; then
-        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_unreachable"
     fi
 
     # Disk preflight follows the tiny immutable executable capture so every

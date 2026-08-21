@@ -1722,5 +1722,113 @@ int test_connman_addnode_fallback(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    printf("connman_addnode_fallback: inbound from a host with a "
+           "handshaked outbound is evicted... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        struct p2p_node *outbound = NULL;
+        struct p2p_node *inbound = NULL;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        ok = ok && (outbound = add_test_peer(&cm, 205, 209, 104, 118,
+                                             PEER_HANDSHAKE_COMPLETE,
+                                             false, false)) != NULL;
+        ok = ok && (inbound = add_test_peer(&cm, 205, 209, 104, 118,
+                                            PEER_HANDSHAKE_COMPLETE,
+                                            true, false)) != NULL;
+        if (inbound)
+            inbound->addr.svc.port = 49152;
+        connman_evict_same_ip_inbound_when_outbound(&cm, outbound);
+        ok = ok && outbound && !outbound->disconnect;
+        ok = ok && inbound && inbound->disconnect;
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: inbound-only same-IP stays... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        struct p2p_node *inbound = NULL;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        ok = ok && (inbound = add_test_peer(&cm, 140, 174, 189, 17,
+                                            PEER_HANDSHAKE_COMPLETE,
+                                            true, false)) != NULL;
+        connman_evict_same_ip_inbound_when_outbound(&cm, inbound);
+        ok = ok && inbound && !inbound->disconnect;
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: operator-local mixed sockets stay... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        struct p2p_node *outbound = NULL;
+        struct p2p_node *inbound = NULL;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        ok = ok && (outbound = add_test_peer(&cm, 127, 0, 0, 1,
+                                             PEER_HANDSHAKE_COMPLETE,
+                                             false, false)) != NULL;
+        ok = ok && (inbound = add_test_peer(&cm, 127, 0, 0, 1,
+                                            PEER_HANDSHAKE_COMPLETE,
+                                            true, false)) != NULL;
+        if (inbound)
+            inbound->addr.svc.port = 49152;
+        connman_evict_same_ip_inbound_when_outbound(&cm, outbound);
+        ok = ok && outbound && !outbound->disconnect;
+        ok = ok && inbound && !inbound->disconnect;
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
+    printf("connman_addnode_fallback: feeler outbound does not evict "
+           "inbound... ");
+    {
+        chain_params_select(CHAIN_MAIN);
+        const struct chain_params *params = chain_params_get();
+        struct connman cm;
+        struct node_signals sigs;
+        struct p2p_node *feeler = NULL;
+        struct p2p_node *inbound = NULL;
+        memset(&sigs, 0, sizeof(sigs));
+        bool ok = connman_init(&cm, params, &sigs);
+
+        ok = ok && (feeler = add_test_peer(&cm, 140, 174, 189, 3,
+                                           PEER_HANDSHAKE_COMPLETE,
+                                           false, false)) != NULL;
+        ok = ok && (inbound = add_test_peer(&cm, 140, 174, 189, 3,
+                                            PEER_HANDSHAKE_COMPLETE,
+                                            true, false)) != NULL;
+        if (feeler)
+            feeler->is_feeler = true;
+        if (inbound)
+            inbound->addr.svc.port = 49152;
+        connman_evict_same_ip_inbound_when_outbound(&cm, feeler);
+        ok = ok && inbound && !inbound->disconnect;
+
+        connman_free(&cm);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     return failures;
 }

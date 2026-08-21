@@ -88,6 +88,9 @@ enum vcs_service_credit_result {
     VCS_SERVICE_CREDIT_BAD_INPUT,/* null/zero key, request id, or bytes */
     VCS_SERVICE_CREDIT_FULL,     /* a frozen bound was reached (no credit) */
     VCS_SERVICE_CREDIT_IO,       /* durable write failed (logged) */
+    VCS_SERVICE_CREDIT_UNVERIFIED, /* dual-signed receipt failed verify */
+    VCS_SERVICE_CREDIT_NOT_PARTY,  /* local key is neither receipt endpoint */
+    VCS_SERVICE_CREDIT_WINDOW,     /* civil day outside the receipt window */
 };
 
 const char *vcs_service_credit_result_string(
@@ -109,6 +112,22 @@ enum vcs_service_credit_result vcs_service_credit_upload(
 enum vcs_service_credit_result vcs_service_credit_download(
     struct vcs_service_book *book, const uint8_t contributor[33],
     const uint8_t request_id[32], uint64_t bytes, int64_t day);
+
+/* Admit one dual-signed verified-byte receipt (vcs/service_receipt.h) as
+ * a LOCAL service fact. The receipt is advisory reputation, never
+ * consensus: verify both signatures, require `local_pubkey` to be exactly
+ * one endpoint, require `day` inside [day_start, day_end], then credit
+ * the counterpart using the receipt id as the request id.
+ *
+ * Uploader local  -> credit_upload(downloader, receipt_id, bytes)
+ * Downloader local -> credit_download(uploader, receipt_id, bytes)
+ *
+ * Replay of the same receipt is CREDIT_DUPLICATE. A third-party key,
+ * a failed verify, or a day outside the window is refused by name and
+ * writes nothing. */
+enum vcs_service_credit_result vcs_service_book_accept_receipt(
+    struct vcs_service_book *book, const uint8_t *wire, size_t len,
+    const uint8_t local_pubkey[33], int64_t day);
 
 /* ── publication / offence / no-credit recording ────────────────────── */
 
