@@ -106,6 +106,11 @@ struct swarm_peer {
     uint64_t verified_from;
     bool allowance_exhausted;
     int64_t allowance_week;
+    /* Dominant verified transfer with this peer, for dual-signed
+     * receipts. One root: the first credited package this session. */
+    uint8_t xfer_root[32];
+    uint64_t xfer_served;
+    uint64_t xfer_fetched;
 };
 
 struct swarm_outbound {
@@ -283,11 +288,27 @@ static uint32_t book_offence(struct vcs_swarm_engine *engine,
     return totals.offence_total;
 }
 
+static void xfer_note(struct swarm_peer *peer, const uint8_t root[32],
+                      uint64_t bytes, bool upload)
+{
+    if (!peer || !root || bytes == 0)
+        return;
+    if ((peer->xfer_served + peer->xfer_fetched) == 0 ||
+        memcmp(peer->xfer_root, root, 32) == 0) {
+        memcpy(peer->xfer_root, root, 32);
+        if (upload)
+            peer->xfer_served += bytes;
+        else
+            peer->xfer_fetched += bytes;
+    }
+}
+
 static void book_credit_download(struct vcs_swarm_engine *engine,
                                  struct swarm_peer *peer, uint64_t request_id,
                                  const uint8_t root[32], uint64_t bytes,
                                  int64_t day)
 {
+    xfer_note(peer, root, bytes, false);
     if (!engine->book)
         return;
     uint8_t id32[32];
@@ -304,6 +325,7 @@ static void book_credit_upload(struct vcs_swarm_engine *engine,
                                const uint8_t root[32], uint64_t bytes,
                                int64_t day)
 {
+    xfer_note(peer, root, bytes, true);
     if (!engine->book)
         return;
     uint8_t id32[32];
@@ -1606,6 +1628,31 @@ size_t vcs_swarm_engine_announce_to(struct vcs_swarm_engine *engine,
     }
     pthread_mutex_unlock(&engine->lock);
     return queued;
+}
+
+bool vcs_swarm_engine_transfer_snapshot(
+    struct vcs_swarm_engine *engine, uint64_t peer,
+    struct vcs_swarm_transfer *out)
+{
+    if (!engine || !out || peer == 0)
+        return false;
+    memset(out, 0, sizeof(*out));
+    pthread_mutex_lock(&engine->lock);
+    int slot = peer_slot(engine, peer);
+    if (slot < 0) {
+        pthread_mutex_unlock(&engine->lock);
+        return false;
+    }
+    const struct swarm_peer *p = &engine->peers[slot];
+    if (p->xfer_served == 0 && p->xfer_fetched == 0) {
+        pthread_mutex_unlock(&engine->lock);
+        return false;
+    }
+    memcpy(out->package_root, p->xfer_root, 32);
+    out->served = p->xfer_served;
+    out->fetched = p->xfer_fetched;
+    pthread_mutex_unlock(&engine->lock);
+    return true;
 }
 
 struct vcs_swarm_frame_result vcs_swarm_engine_handle_frame(

@@ -91,6 +91,7 @@
 #include "vcs/package_policy.h"
 #include "vcs/package_swarm.h"
 #include "vcs/package_transport.h"
+#include "vcs/service_receipt.h"
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -176,6 +177,47 @@ size_t vcs_swarm_engine_peer_ids(struct vcs_swarm_engine *engine,
  * Returns the count queued. */
 size_t vcs_swarm_engine_announce_to(struct vcs_swarm_engine *engine,
                                     uint64_t peer);
+
+/* Dual-signed verified-byte receipts sit beside the frozen v1 swarm
+ * wire. The engine records the dominant verified transfer with a peer;
+ * the caller supplies real secp256k1 identities (not transport
+ * pseudo-keys), signs, and may accept the 286-byte receipt into a
+ * service book. Advisory reputation only. */
+struct vcs_swarm_transfer {
+    uint8_t package_root[32];
+    uint64_t served;
+    uint64_t fetched;
+};
+
+enum vcs_swarm_receipt_status {
+    VCS_SWARM_RECEIPT_OK = 0,
+    VCS_SWARM_RECEIPT_NO_TRANSFER,
+    VCS_SWARM_RECEIPT_BYTES_MISMATCH,
+    VCS_SWARM_RECEIPT_UNVERIFIED,
+    VCS_SWARM_RECEIPT_NOT_PARTY,
+    VCS_SWARM_RECEIPT_WINDOW,
+    VCS_SWARM_RECEIPT_DUPLICATE,
+    VCS_SWARM_RECEIPT_BAD_INPUT,
+};
+
+const char *vcs_swarm_receipt_status_string(
+    enum vcs_swarm_receipt_status status);
+
+bool vcs_swarm_engine_transfer_snapshot(
+    struct vcs_swarm_engine *engine, uint64_t peer,
+    struct vcs_swarm_transfer *out);
+
+bool vcs_swarm_receipt_draft(
+    const struct vcs_swarm_transfer *xfer,
+    const uint8_t local_pub[33], const uint8_t remote_pub[33],
+    int64_t day_start, int64_t day_end,
+    struct vcs_service_receipt *out,
+    enum vcs_service_receipt_role *local_role);
+
+enum vcs_swarm_receipt_status vcs_swarm_receipt_accept(
+    struct vcs_service_book *book, const struct vcs_swarm_transfer *xfer,
+    const uint8_t local_pub[33], int64_t day,
+    const uint8_t *wire, size_t len);
 
 /* ── inbound frames ─────────────────────────────────────────────────── */
 

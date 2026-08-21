@@ -61,6 +61,9 @@
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm_node.h"
+#include "vcs/service_receipt.h"
+
+#include <secp256k1.h>
 
 #include "chain/chainparams.h"
 #include "core/uint256.h"
@@ -1916,6 +1919,158 @@ static int t_swarm_event_driven_schedule(void)
     return failures;
 }
 
+static int t_swarm_receipt_exchange(void)
+{
+    int failures = 0;
+    struct sw_node n;
+    struct sw_pkg p;
+    uint8_t session_key[33];
+    sw_key(61, session_key);
+    if (!sw_node_open(&n, "receipt", sw_score_contributor) ||
+        !sw_make_package(&p, 2, 101))
+        return 1;
+    SW_CHECK("receipt: manifest admitted",
+             vcs_package_store_put_manifest(n.store, p.wire, p.wire_len,
+                                            NULL) == VCS_PACKAGE_STORE_OK);
+    for (size_t i = 0; i < p.count; i++)
+        SW_CHECK("receipt: chunk admitted",
+                 vcs_package_store_put_chunk(
+                     n.store, p.root, p.manifest.files[i].path, 0,
+                     p.contents[i], p.lens[i]) == VCS_PACKAGE_STORE_OK);
+    SW_CHECK("receipt: release published",
+             sw_publish_release(n.store, p.root, 0x61, "swarm-receipt/fx"));
+    const uint64_t peer = 9101;
+    SW_CHECK("receipt: peer add",
+             vcs_swarm_engine_peer_add(n.engine, peer, session_key));
+
+    struct vcs_package_swarm_message want;
+    memset(&want, 0, sizeof(want));
+    want.type = VCS_PACKAGE_SWARM_WANT;
+    want.body.want.request_id = 91001;
+    memcpy(want.body.want.package_root, p.root, 32);
+    want.body.want.object_kind = VCS_PACKAGE_SWARM_OBJECT_MANIFEST;
+    want.body.want.file_index = UINT32_MAX;
+    want.body.want.chunk_index = UINT32_MAX;
+    uint8_t frame[8 + 96 + SW_MAX_FILE];
+    size_t wlen = 0;
+    SW_CHECK("receipt: want serializes",
+             vcs_package_swarm_serialize(&want, frame, sizeof(frame),
+                                         &wlen));
+    struct vcs_swarm_frame_result res = vcs_swarm_engine_handle_frame(
+        n.engine, peer, frame, wlen, SW_DAY, 1);
+    SW_CHECK("receipt: manifest served",
+             res.reply != NULL && res.penalty == VCS_SWARM_PENALTY_NONE);
+    free(res.reply);
+
+    struct vcs_swarm_transfer xfer;
+    memset(&xfer, 0, sizeof(xfer));
+    SW_CHECK("receipt: snapshot after serve",
+             vcs_swarm_engine_transfer_snapshot(n.engine, peer, &xfer) &&
+             memcmp(xfer.package_root, p.root, 32) == 0 &&
+             xfer.served == p.wire_len && xfer.fetched == 0);
+
+    secp256k1_context *ctx = secp256k1_context_create(
+        SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    uint8_t up_sec[32] = {0};
+    uint8_t down_sec[32] = {0};
+    uint8_t other_sec[32] = {0};
+    up_sec[31] = 0x81;
+    down_sec[31] = 0x82;
+    other_sec[31] = 0x83;
+    uint8_t up_pub[33];
+    uint8_t down_pub[33];
+    uint8_t other_pub[33];
+    secp256k1_pubkey parsed;
+    size_t plen = 33;
+    bool keys = secp256k1_ec_pubkey_create(ctx, &parsed, up_sec) == 1 &&
+                secp256k1_ec_pubkey_serialize(ctx, up_pub, &plen, &parsed,
+                                              SECP256K1_EC_COMPRESSED) == 1 &&
+                secp256k1_ec_pubkey_create(ctx, &parsed, down_sec) == 1 &&
+                secp256k1_ec_pubkey_serialize(ctx, down_pub, &plen, &parsed,
+                                              SECP256K1_EC_COMPRESSED) == 1 &&
+                secp256k1_ec_pubkey_create(ctx, &parsed, other_sec) == 1 &&
+                secp256k1_ec_pubkey_serialize(ctx, other_pub, &plen, &parsed,
+                                              SECP256K1_EC_COMPRESSED) == 1;
+    SW_CHECK("receipt: secp keys", keys);
+
+    struct vcs_service_receipt draft;
+    enum vcs_service_receipt_role role = VCS_SERVICE_RECEIPT_DOWNLOADER;
+    SW_CHECK("receipt: seeder drafts as uploader",
+             vcs_swarm_receipt_draft(&xfer, up_pub, down_pub, SW_DAY,
+                                     SW_DAY, &draft, &role) &&
+             role == VCS_SERVICE_RECEIPT_UPLOADER &&
+             draft.verified_bytes == p.wire_len);
+    struct vcs_swarm_transfer leecher_xfer = xfer;
+    leecher_xfer.served = 0;
+    leecher_xfer.fetched = xfer.served;
+    struct vcs_service_receipt leecher_draft;
+    enum vcs_service_receipt_role leecher_role =
+        VCS_SERVICE_RECEIPT_UPLOADER;
+    SW_CHECK("receipt: leecher drafts matching body",
+             vcs_swarm_receipt_draft(&leecher_xfer, down_pub, up_pub,
+                                     SW_DAY, SW_DAY, &leecher_draft,
+                                     &leecher_role) &&
+             leecher_role == VCS_SERVICE_RECEIPT_DOWNLOADER &&
+             memcmp(leecher_draft.session_nonce, draft.session_nonce,
+                    32) == 0 &&
+             memcmp(leecher_draft.uploader_pubkey, draft.uploader_pubkey,
+                    33) == 0);
+
+    uint8_t wire[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+    SW_CHECK("receipt: both ends sign",
+             vcs_service_receipt_sign(&draft, VCS_SERVICE_RECEIPT_UPLOADER,
+                                      ctx, up_sec) ==
+                 VCS_SERVICE_RECEIPT_OK &&
+             vcs_service_receipt_sign(&draft,
+                                      VCS_SERVICE_RECEIPT_DOWNLOADER, ctx,
+                                      down_sec) ==
+                 VCS_SERVICE_RECEIPT_OK &&
+             vcs_service_receipt_serialize(&draft, wire, sizeof(wire)) ==
+                 VCS_SERVICE_RECEIPT_OK);
+
+    char leecher_dir[1200];
+    snprintf(leecher_dir, sizeof(leecher_dir), "%s/leecher-zcode",
+             n.datadir);
+    struct vcs_service_book *leecher_book =
+        vcs_service_book_load(leecher_dir);
+    SW_CHECK("receipt: leecher book", leecher_book != NULL);
+    SW_CHECK("receipt: seeder accepts matching serve",
+             vcs_swarm_receipt_accept(n.book, &xfer, up_pub, SW_DAY, wire,
+                                      sizeof(wire)) ==
+                 VCS_SWARM_RECEIPT_OK);
+    SW_CHECK("receipt: leecher accepts matching fetch",
+             leecher_book &&
+             vcs_swarm_receipt_accept(leecher_book, &leecher_xfer, down_pub,
+                                      SW_DAY, wire, sizeof(wire)) ==
+                 VCS_SWARM_RECEIPT_OK);
+    SW_CHECK("receipt: replay is duplicate",
+             vcs_swarm_receipt_accept(n.book, &xfer, up_pub, SW_DAY, wire,
+                                      sizeof(wire)) ==
+                 VCS_SWARM_RECEIPT_DUPLICATE);
+    SW_CHECK("receipt: stranger refused",
+             vcs_swarm_receipt_accept(n.book, &xfer, other_pub, SW_DAY,
+                                      wire, sizeof(wire)) ==
+                 VCS_SWARM_RECEIPT_NOT_PARTY);
+    struct vcs_swarm_transfer lied = xfer;
+    lied.served = 1;
+    SW_CHECK("receipt: inflated bytes refused",
+             vcs_swarm_receipt_accept(n.book, &lied, up_pub, SW_DAY, wire,
+                                      sizeof(wire)) ==
+                 VCS_SWARM_RECEIPT_BYTES_MISMATCH);
+    SW_CHECK("receipt: named statuses",
+             strcmp(vcs_swarm_receipt_status_string(
+                        VCS_SWARM_RECEIPT_BYTES_MISMATCH),
+                    "bytes-mismatch") == 0);
+
+    if (leecher_book)
+        vcs_service_book_free(leecher_book);
+    secp256k1_context_destroy(ctx);
+    sw_free_package(&p);
+    sw_node_close(&n);
+    test_rm_rf_recursive(n.datadir);
+    return failures;
+}
+
 int test_zcode_swarm(void)
 {
     int failures = 0;
@@ -1928,6 +2083,7 @@ int test_zcode_swarm(void)
     failures += t_swarm_disconnect_requeue();
     failures += t_swarm_resume();
     failures += t_swarm_serving_and_allowance();
+    failures += t_swarm_receipt_exchange();
     failures += t_swarm_disconnect_threshold();
     failures += t_swarm_blob_transfer();
     failures += t_swarm_provider_restricted();
