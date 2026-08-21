@@ -704,6 +704,7 @@ struct zwn_node {
     struct vcs_package_store *store;
     struct vcs_service_book *book;
     struct vcs_swarm_engine *engine;
+    struct vcs_swarm_receipt_session *receipts;
     uint64_t now;
     bool tamper_chunks; /* corrupt DATA replies carrying chunk objects */
     uint32_t chunk_data_replies[ZWN_MAX_FILES];
@@ -1196,6 +1197,14 @@ static void zwn_send(struct zwn_node *z, struct p2p_node *node,
     (void)p2p_node_end_message(node);
 }
 
+static bool zwn_receipt_payload(const uint8_t *payload, size_t len)
+{
+    return (len == VCS_SWARM_RECEIPT_IDENTITY_BYTES && payload &&
+            memcmp(payload, VCS_SWARM_RECEIPT_IDENTITY_MAGIC, 4) == 0) ||
+           (len == VCS_SERVICE_RECEIPT_WIRE_BYTES && payload &&
+            memcmp(payload, VCS_SERVICE_RECEIPT_MAGIC, 4) == 0);
+}
+
 /* The frame hook: config/src/boot_zcode_swarm.c's boot_zcode_swarm_frame
  * with the deterministic-clock + fixed-score substitutions (file header). */
 static bool zwn_frame(struct msg_processor *mp, struct p2p_node *node,
@@ -1206,6 +1215,26 @@ static bool zwn_frame(struct msg_processor *mp, struct p2p_node *node,
     if (!zwn_peer_key(node, key))
         return true;
     (void)vcs_swarm_engine_peer_add(z->engine, (uint64_t)node->id, key);
+    if (z->receipts && zwn_receipt_payload(payload, payload_len)) {
+        uint64_t peer = (uint64_t)node->id;
+        if (payload_len == VCS_SWARM_RECEIPT_IDENTITY_BYTES) {
+            (void)vcs_swarm_receipt_identity_note(z->receipts, peer, payload,
+                                                  payload_len);
+            return true;
+        }
+        struct vcs_swarm_transfer xfer;
+        if (!vcs_swarm_engine_transfer_snapshot(z->engine, peer, &xfer))
+            return true;
+        uint8_t *reply = NULL;
+        size_t reply_len = 0;
+        (void)vcs_swarm_receipt_session_handle(
+            z->receipts, z->book, &xfer, peer, ZWN_DAY, payload,
+            payload_len, &reply, &reply_len);
+        if (reply && reply_len > 0)
+            zwn_send(z, node, reply, reply_len);
+        free(reply);
+        return true;
+    }
     struct vcs_swarm_frame_result ev = vcs_swarm_engine_handle_frame(
         z->engine, (uint64_t)node->id, payload, payload_len, ZWN_DAY,
         ++z->now);
@@ -1258,6 +1287,22 @@ static void zwn_tick(struct msg_processor *mp, struct p2p_node *node,
             break;
         zwn_send(z, node, frame, frame_len);
     }
+    if (z->receipts) {
+        uint8_t ident[VCS_SWARM_RECEIPT_IDENTITY_BYTES];
+        size_t ident_len = 0;
+        if (vcs_swarm_receipt_identity_take(z->receipts, (uint64_t)node->id,
+                                            ident, sizeof(ident),
+                                            &ident_len))
+            zwn_send(z, node, ident, ident_len);
+        struct vcs_swarm_transfer xfer;
+        uint8_t offer[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+        if (vcs_swarm_engine_transfer_snapshot(z->engine, (uint64_t)node->id,
+                                               &xfer) &&
+            vcs_swarm_receipt_session_offer(z->receipts, &xfer,
+                                            (uint64_t)node->id, ZWN_DAY,
+                                            offer))
+            zwn_send(z, node, offer, sizeof(offer));
+    }
 }
 
 static bool zwn_node_init(struct zwn_node *z, const char *tag,
@@ -1293,7 +1338,12 @@ static bool zwn_node_init(struct zwn_node *z, const char *tag,
     }
     z->engine = vcs_swarm_engine_create(z->store, z->book, z->zcode_dir,
                                         zwn_score, NULL);
-    if (!z->engine) {
+    z->receipts = vcs_swarm_receipt_session_open(z->zcode_dir);
+    if (!z->engine || !z->receipts) {
+        vcs_swarm_receipt_session_free(z->receipts);
+        vcs_swarm_engine_free(z->engine);
+        z->receipts = NULL;
+        z->engine = NULL;
         vcs_service_book_free(z->book);
         vcs_package_store_close(z->store);
         z->book = NULL;
@@ -1310,9 +1360,11 @@ static bool zwn_node_init(struct zwn_node *z, const char *tag,
 
 static void zwn_node_free(struct zwn_node *z)
 {
+    vcs_swarm_receipt_session_free(z->receipts);
     vcs_swarm_engine_free(z->engine);
     vcs_service_book_free(z->book);
     vcs_package_store_close(z->store);
+    z->receipts = NULL;
     z->engine = NULL;
     z->book = NULL;
     z->store = NULL;
@@ -2074,6 +2126,14 @@ static int zwn_test_golden(enum zwn_golden_mode mode,
         ASSERT(b_a.node->misbehavior == 0);
         if (!dropped)
             ASSERT(a_b.node->misbehavior == 0);
+        if (mode == ZWN_GOLDEN_PLAIN) {
+            for (int i = 0; i < 8; i++)
+                ASSERT(zwn_round(&a_b, &b_a, params->pchMessageStart));
+            ASSERT(vcs_swarm_receipt_session_settled(
+                a.receipts, (uint64_t)a_b.node->id));
+            ASSERT(vcs_swarm_receipt_session_settled(
+                b.receipts, (uint64_t)b_a.node->id));
+        }
 
         /* Accounting: B credited the verified bytes it received under the
          * serving peers' session keys (two keys in the disconnect run —

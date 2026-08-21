@@ -14,7 +14,8 @@
  *   - derive each peer's LOCAL session pseudo-key (0x02 ||
  *     SHA3-256("zcl.zcode_swarm_peer.v1" || host identity)) — a transport
  *     session scope for the service book, NOT a contributor identity;
- *   - multiplex signed `ZCWS` work frames without adding another P2P command;
+ *   - multiplex signed `ZCWS` work frames and dual-signed `ZSR1` receipts
+ *     (plus `ZSID` identity) without adding another P2P command or swarm type;
  *   - fetch each accepted work request's content.v2 context root through the
  *     existing package scheduler before any worker can consume it;
  *   - map engine penalties onto typed peer offences (peer_scoring_record);

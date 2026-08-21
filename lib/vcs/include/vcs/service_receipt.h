@@ -113,4 +113,11 @@ enum vcs_service_receipt_error vcs_service_receipt_parse(
 enum vcs_service_receipt_error vcs_service_receipt_verify(
     const uint8_t *wire, size_t len, struct vcs_service_receipt *out);
 
+/* Verify ONE party's signature over the receipt id. Used for half-signed
+ * offers (the counterparty field is still zeros). A missing or all-zero
+ * signature is SIG_VERIFY, never a silent pass. */
+enum vcs_service_receipt_error vcs_service_receipt_verify_role(
+    const struct vcs_service_receipt *receipt,
+    enum vcs_service_receipt_role role);
+
 #endif /* ZCL_VCS_SERVICE_RECEIPT_H */

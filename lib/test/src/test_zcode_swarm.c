@@ -2071,6 +2071,148 @@ static int t_swarm_receipt_exchange(void)
     return failures;
 }
 
+static bool sw_secp_pair(secp256k1_context *ctx, uint8_t last,
+                         uint8_t sec[32], uint8_t pub[33])
+{
+    memset(sec, 0, 32);
+    sec[31] = last;
+    secp256k1_pubkey parsed;
+    size_t plen = 33;
+    return secp256k1_ec_pubkey_create(ctx, &parsed, sec) == 1 &&
+           secp256k1_ec_pubkey_serialize(ctx, pub, &plen, &parsed,
+                                         SECP256K1_EC_COMPRESSED) == 1;
+}
+
+static int t_swarm_receipt_session(void)
+{
+    int failures = 0;
+    struct sw_node seeder, leecher;
+    if (!sw_node_open(&seeder, "rcpt-s", sw_score_contributor) ||
+        !sw_node_open(&leecher, "rcpt-l", sw_score_contributor))
+        return 1;
+    secp256k1_context *ctx = secp256k1_context_create(
+        SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    uint8_t up_sec[32], down_sec[32], other_sec[32];
+    uint8_t up_pub[33], down_pub[33], other_pub[33];
+    SW_CHECK("session: secp keys",
+             ctx && sw_secp_pair(ctx, 0x91, up_sec, up_pub) &&
+             sw_secp_pair(ctx, 0x92, down_sec, down_pub) &&
+             sw_secp_pair(ctx, 0x93, other_sec, other_pub) &&
+             memcmp(up_pub, other_pub, 33) != 0);
+    struct vcs_swarm_receipt_session *up =
+        vcs_swarm_receipt_session_open_secret(up_sec);
+    struct vcs_swarm_receipt_session *down =
+        vcs_swarm_receipt_session_open_secret(down_sec);
+    struct vcs_swarm_receipt_session *stranger =
+        vcs_swarm_receipt_session_open_secret(other_sec);
+    uint8_t got[33];
+    SW_CHECK("session: open secrets",
+             up && down && stranger &&
+             vcs_swarm_receipt_session_local_pub(up, got) &&
+             memcmp(got, up_pub, 33) == 0 &&
+             vcs_swarm_receipt_session_local_pub(down, got) &&
+             memcmp(got, down_pub, 33) == 0);
+
+    uint8_t ident[VCS_SWARM_RECEIPT_IDENTITY_BYTES];
+    size_t ilen = 0;
+    const uint64_t peer = 77;
+    SW_CHECK("session: seeder identity once",
+             vcs_swarm_receipt_identity_take(up, peer, ident, sizeof(ident),
+                                             &ilen) &&
+             ilen == VCS_SWARM_RECEIPT_IDENTITY_BYTES);
+    SW_CHECK("session: seeder identity not resent",
+             !vcs_swarm_receipt_identity_take(up, peer, ident, sizeof(ident),
+                                              &ilen));
+    SW_CHECK("session: leecher notes seeder",
+             vcs_swarm_receipt_identity_note(down, peer, ident, ilen));
+    SW_CHECK("session: leecher identity",
+             vcs_swarm_receipt_identity_take(down, peer, ident, sizeof(ident),
+                                             &ilen));
+    SW_CHECK("session: seeder notes leecher",
+             vcs_swarm_receipt_identity_note(up, peer, ident, ilen));
+
+    struct vcs_swarm_transfer seed_x = {0}, leech_x = {0};
+    memset(seed_x.package_root, 0x44, 32);
+    memcpy(leech_x.package_root, seed_x.package_root, 32);
+    seed_x.served = 4096;
+    leech_x.fetched = 4096;
+
+    uint8_t offer[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+    SW_CHECK("session: seeder offers",
+             vcs_swarm_receipt_session_offer(up, &seed_x, peer, SW_DAY,
+                                             offer));
+    SW_CHECK("session: second identical offer withheld",
+             !vcs_swarm_receipt_session_offer(up, &seed_x, peer, SW_DAY,
+                                              offer));
+    uint8_t *reply = NULL;
+    size_t reply_len = 0;
+    SW_CHECK("session: leecher completes",
+             vcs_swarm_receipt_session_handle(down, leecher.book, &leech_x,
+                                              peer, SW_DAY, offer,
+                                              sizeof(offer), &reply,
+                                              &reply_len) ==
+                 VCS_SWARM_RECEIPT_OK &&
+             reply && reply_len == VCS_SERVICE_RECEIPT_WIRE_BYTES);
+    SW_CHECK("session: seeder accepts completed",
+             vcs_swarm_receipt_session_handle(up, seeder.book, &seed_x, peer,
+                                              SW_DAY, reply, reply_len, NULL,
+                                              NULL) == VCS_SWARM_RECEIPT_OK);
+    SW_CHECK("session: both settled",
+             vcs_swarm_receipt_session_settled(up, peer) &&
+             vcs_swarm_receipt_session_settled(down, peer));
+    SW_CHECK("session: replay is duplicate",
+             vcs_swarm_receipt_session_handle(up, seeder.book, &seed_x, peer,
+                                              SW_DAY, reply, reply_len, NULL,
+                                              NULL) ==
+                 VCS_SWARM_RECEIPT_DUPLICATE);
+    struct vcs_swarm_transfer grown = leech_x;
+    grown.fetched = leech_x.fetched + 1;
+    SW_CHECK("session: superseded offer is stale",
+             vcs_swarm_receipt_session_handle(down, leecher.book, &grown,
+                                              peer, SW_DAY, offer,
+                                              sizeof(offer), NULL, NULL) ==
+                 VCS_SWARM_RECEIPT_STALE);
+    SW_CHECK("session: stranger refused",
+             vcs_swarm_receipt_session_handle(stranger, seeder.book, &seed_x,
+                                              peer, SW_DAY, reply, reply_len,
+                                              NULL, NULL) ==
+                 VCS_SWARM_RECEIPT_NOT_PARTY);
+    uint8_t tamper[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+    memcpy(tamper, offer, sizeof(tamper));
+    tamper[40] ^= 0xff;
+    enum vcs_swarm_receipt_status tst = vcs_swarm_receipt_session_handle(
+        down, leecher.book, &leech_x, 78, SW_DAY, tamper, sizeof(tamper),
+        NULL, NULL);
+    SW_CHECK("session: tampered offer refused",
+             tst == VCS_SWARM_RECEIPT_UNVERIFIED ||
+             tst == VCS_SWARM_RECEIPT_NOT_PARTY);
+    free(reply);
+
+    struct vcs_swarm_receipt_session *persisted =
+        vcs_swarm_receipt_session_open(seeder.zcode_dir);
+    uint8_t pub_a[33], pub_b[33];
+    SW_CHECK("session: persist open",
+             persisted &&
+             vcs_swarm_receipt_session_local_pub(persisted, pub_a));
+    vcs_swarm_receipt_session_free(persisted);
+    persisted = vcs_swarm_receipt_session_open(seeder.zcode_dir);
+    SW_CHECK("session: persist reload",
+             persisted &&
+             vcs_swarm_receipt_session_local_pub(persisted, pub_b) &&
+             memcmp(pub_a, pub_b, 33) == 0);
+    vcs_swarm_receipt_session_free(persisted);
+    vcs_swarm_receipt_session_free(up);
+    vcs_swarm_receipt_session_free(down);
+    vcs_swarm_receipt_session_free(stranger);
+    if (ctx)
+        secp256k1_context_destroy(ctx);
+    sw_node_close(&seeder);
+    sw_node_close(&leecher);
+    test_rm_rf_recursive(seeder.datadir);
+    test_rm_rf_recursive(leecher.datadir);
+    return failures;
+}
+
 int test_zcode_swarm(void)
 {
     int failures = 0;
@@ -2084,6 +2226,7 @@ int test_zcode_swarm(void)
     failures += t_swarm_resume();
     failures += t_swarm_serving_and_allowance();
     failures += t_swarm_receipt_exchange();
+    failures += t_swarm_receipt_session();
     failures += t_swarm_disconnect_threshold();
     failures += t_swarm_blob_transfer();
     failures += t_swarm_provider_restricted();

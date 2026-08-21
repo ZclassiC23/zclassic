@@ -198,6 +198,7 @@ enum vcs_swarm_receipt_status {
     VCS_SWARM_RECEIPT_WINDOW,
     VCS_SWARM_RECEIPT_DUPLICATE,
     VCS_SWARM_RECEIPT_BAD_INPUT,
+    VCS_SWARM_RECEIPT_STALE, /* claimed bytes already superseded locally */
 };
 
 const char *vcs_swarm_receipt_status_string(
@@ -218,6 +219,52 @@ enum vcs_swarm_receipt_status vcs_swarm_receipt_accept(
     struct vcs_service_book *book, const struct vcs_swarm_transfer *xfer,
     const uint8_t local_pub[33], int64_t day,
     const uint8_t *wire, size_t len);
+
+/* Session beside the frozen v1 swarm types. Identity (ZSID) and the
+ * 286-byte ZSR1 receipt ride the existing zpkgswm command as magics the
+ * codec never sees. Local key is NOT a wallet key: advisory reputation
+ * only. Caller serializes every entry point. */
+#define VCS_SWARM_RECEIPT_IDENTITY_MAGIC "ZSID"
+#define VCS_SWARM_RECEIPT_IDENTITY_BYTES \
+    (4u + VCS_SERVICE_RECEIPT_PUBKEY_BYTES)
+#define VCS_SWARM_RECEIPT_KEY_FILE "receipt_secp256k1.key"
+
+struct vcs_swarm_receipt_session;
+
+struct vcs_swarm_receipt_session *vcs_swarm_receipt_session_open(
+    const char *zcode_dir);
+struct vcs_swarm_receipt_session *vcs_swarm_receipt_session_open_secret(
+    const uint8_t secret[32]);
+void vcs_swarm_receipt_session_free(struct vcs_swarm_receipt_session *s);
+
+bool vcs_swarm_receipt_session_local_pub(
+    const struct vcs_swarm_receipt_session *s, uint8_t out[33]);
+bool vcs_swarm_receipt_session_remote_pub(
+    const struct vcs_swarm_receipt_session *s, uint64_t peer,
+    uint8_t out[33]);
+bool vcs_swarm_receipt_session_settled(
+    const struct vcs_swarm_receipt_session *s, uint64_t peer);
+
+bool vcs_swarm_receipt_identity_encode(
+    const struct vcs_swarm_receipt_session *s, uint8_t *out, size_t cap,
+    size_t *len);
+/* Encode once per peer. False if already sent or the table is full. */
+bool vcs_swarm_receipt_identity_take(
+    struct vcs_swarm_receipt_session *s, uint64_t peer, uint8_t *out,
+    size_t cap, size_t *len);
+bool vcs_swarm_receipt_identity_note(
+    struct vcs_swarm_receipt_session *s, uint64_t peer,
+    const uint8_t *payload, size_t len);
+
+bool vcs_swarm_receipt_session_offer(
+    struct vcs_swarm_receipt_session *s,
+    const struct vcs_swarm_transfer *xfer, uint64_t peer, int64_t day,
+    uint8_t out[VCS_SERVICE_RECEIPT_WIRE_BYTES]);
+
+enum vcs_swarm_receipt_status vcs_swarm_receipt_session_handle(
+    struct vcs_swarm_receipt_session *s, struct vcs_service_book *book,
+    const struct vcs_swarm_transfer *xfer, uint64_t peer, int64_t day,
+    const uint8_t *wire, size_t len, uint8_t **reply, size_t *reply_len);
 
 /* ── inbound frames ─────────────────────────────────────────────────── */
 

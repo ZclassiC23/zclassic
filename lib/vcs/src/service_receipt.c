@@ -283,3 +283,46 @@ enum vcs_service_receipt_error vcs_service_receipt_verify(
         *out = tmp;
     return VCS_SERVICE_RECEIPT_OK;
 }
+
+enum vcs_service_receipt_error vcs_service_receipt_verify_role(
+    const struct vcs_service_receipt *receipt,
+    enum vcs_service_receipt_role role)
+{
+    if (!receipt)
+        LOG_RETURN(VCS_SERVICE_RECEIPT_ERR_NULL, "vcs.service-receipt",
+                   "verify_role: null receipt");
+    const uint8_t *pub = role == VCS_SERVICE_RECEIPT_UPLOADER
+                             ? receipt->uploader_pubkey
+                             : receipt->downloader_pubkey;
+    const uint8_t *sig = role == VCS_SERVICE_RECEIPT_UPLOADER
+                             ? receipt->uploader_signature
+                             : receipt->downloader_signature;
+    bool any = false;
+    for (size_t i = 0; i < VCS_SERVICE_RECEIPT_SIG_BYTES; i++)
+        if (sig[i] != 0) {
+            any = true;
+            break;
+        }
+    if (!any)
+        LOG_RETURN(VCS_SERVICE_RECEIPT_ERR_SIG_VERIFY, "vcs.service-receipt",
+                   "verify_role: missing signature role=%d", (int)role);
+    if (!receipt_low_s(sig))
+        LOG_RETURN(VCS_SERVICE_RECEIPT_ERR_SIG_LOW_S, "vcs.service-receipt",
+                   "verify_role: signature not low-S role=%d", (int)role);
+    uint8_t id[VCS_SERVICE_RECEIPT_ID_BYTES];
+    vcs_service_receipt_id(receipt, id);
+    receipt_verify_ctx_init();
+    secp256k1_pubkey pubkey;
+    if (!secp256k1_ec_pubkey_parse(receipt_verify_ctx, &pubkey, pub,
+                                   VCS_SERVICE_RECEIPT_PUBKEY_BYTES))
+        return VCS_SERVICE_RECEIPT_ERR_PUBKEY;
+    secp256k1_ecdsa_signature parsed;
+    if (!secp256k1_ecdsa_signature_parse_compact(receipt_verify_ctx, &parsed,
+                                                 sig))
+        return VCS_SERVICE_RECEIPT_ERR_SIG_VERIFY;
+    if (!secp256k1_ecdsa_verify(receipt_verify_ctx, &parsed, id, &pubkey))
+        LOG_RETURN(VCS_SERVICE_RECEIPT_ERR_SIG_VERIFY, "vcs.service-receipt",
+                   "verify_role: signature does not verify role=%d",
+                   (int)role);
+    return VCS_SERVICE_RECEIPT_OK;
+}

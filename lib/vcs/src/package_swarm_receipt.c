@@ -26,6 +26,7 @@ const char *vcs_swarm_receipt_status_string(
     case VCS_SWARM_RECEIPT_WINDOW: return "outside-window";
     case VCS_SWARM_RECEIPT_DUPLICATE: return "duplicate";
     case VCS_SWARM_RECEIPT_BAD_INPUT: return "bad-input";
+    case VCS_SWARM_RECEIPT_STALE: return "stale";
     }
     return "unknown";
 }

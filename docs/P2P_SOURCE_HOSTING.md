@@ -49,10 +49,19 @@ Read "pure codec" as a statement about the two lower layers only
 (`package_swarm.c` and the engine, both of which stay free of sockets, threads,
 and wall clock — the caller drives them with explicit ticks), never as "this
 subsystem cannot reach the network".
+
+The same `zpkgswm` command also carries dual-signed verified-byte receipts.
+`ZSID` advertises a node-local secp256k1 receipt identity (not a wallet key);
+`ZSR1` is the frozen 286-byte receipt. Neither is a swarm type: unknown
+ANNOUNCE/WANT/DATA/CANCEL values stay malformed. Both endpoints independently
+draft the same body from verified served/fetched bytes, sign their role, and
+accept only a matching transfer. Receipts are advisory reputation.
 <!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm.c # the swarm IS socket-wired -->
 <!-- claim: file-present lib/vcs/src/package_swarm_node.c # the transport half exists -->
 <!-- claim: symbol-absent socket lib/vcs/src/package_swarm.c # the codec half stays pure -->
 <!-- claim: symbol-present packagehost config/src/boot_zcode_swarm.c # hosting stays flag-gated, default off -->
+<!-- claim: symbol-present vcs_swarm_receipt_session_open lib/vcs/src/package_swarm_receipt_session.c # receipts ride zpkgswm beside frozen types -->
+<!-- claim: symbol-present boot_zcode_swarm_receipt_frame config/src/boot_zcode_swarm_receipt.c # boot glue consumes ZSID/ZSR1 -->
 
 
 Do not put source packages through the legacy file-market trust path. Its offer
