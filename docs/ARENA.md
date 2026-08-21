@@ -115,9 +115,10 @@ reconstructs the signed carrier; pin keeps the replica. After that this node
 announces the same root, so the original publisher can disappear and later
 peers still fetch the exact bytes from whoever still holds them. The swarm
 net test `useful C23 packages host redundantly` is that proof for `zprng`,
-`zdogfight`, `zdogace`, and `zdogview` (A publishes, B mirrors, A is removed,
-C fetches from B). The two-node arena script below is the match-play journey
-for the four match packages (`zprng`, `zdogfight`, `zdogace`, `zdogdrone`).
+`zdogfight`, `zdogdrone`, `zdogace`, and `zdogview` (A publishes, B mirrors,
+A is removed, C fetches from B). The two-node arena script below is the
+match-play journey for the four match packages (`zprng`, `zdogfight`,
+`zdogace`, `zdogdrone`).
 The raylib window is a local display of those verified bytes, not a swarm
 dependency.
 

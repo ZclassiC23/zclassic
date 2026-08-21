@@ -35,9 +35,9 @@
  *      in-flight work moves to the survivor and the download completes.
  *   7. Sovereign source: one signed workspace-head lookup fetches a bundled
  *      content.v2 evidence closure, then accepted source rebuilds Git-free.
- *   8. Useful C23 Arena packages (zprng, zdogfight, zdogace, zdogview)
- *      host redundantly: A publishes, B fetches and pins, A disappears,
- *      C still discovers and fetches the exact carriers from B. */
+ *   8. Useful C23 Arena packages (zprng, zdogfight, zdogdrone, zdogace,
+ *      zdogview) host redundantly: A publishes, B fetches and pins, A
+ *      disappears, C still discovers and fetches the exact carriers from B. */
 
 #include "test/test_core.h"
 
@@ -4177,12 +4177,13 @@ static bool zwn_hop_carrier(struct zwn_node *from, struct zwn_node *to,
                                  true) == VCS_PACKAGE_STORE_OK;
 }
 
-/* Useful C23 packages (entropy + match core + pursuit pilot + integer
- * 3D view) must survive the original publisher disappearing. Fetch is
- * inert; import reconstructs the signed carrier; pin keeps the replica;
- * B then serves C. Publish in dependency order: zprng, zdogfight, then
- * zdogace and zdogview (both lock zdogfight+zprng). NEW_USER unique-new
- * quota is the serving-set size; four roots sit inside that shelf. */
+/* Useful C23 packages (entropy + match core + patrol pilot + pursuit
+ * pilot + integer 3D view) must survive the original publisher
+ * disappearing. Fetch is inert; import reconstructs the signed carrier;
+ * pin keeps the replica; B then serves C. Publish in dependency order:
+ * zprng, zdogfight, then zdogdrone, zdogace and zdogview (those three
+ * lock zdogfight+zprng). NEW_USER unique-new quota is the serving-set
+ * size; these roots sit inside that shelf. */
 static int zwn_t_useful_c23_redundant(const struct chain_params *params)
 {
     int failures = 0;
@@ -4190,6 +4191,7 @@ static int zwn_t_useful_c23_redundant(const struct chain_params *params)
     static const char *const k_dirs[] = {
         "packages/zprng",
         "packages/zdogfight",
+        "packages/zdogdrone",
         "packages/zdogace",
         "packages/zdogview",
     };
@@ -4199,8 +4201,8 @@ static int zwn_t_useful_c23_redundant(const struct chain_params *params)
     memset(prepared, 0, sizeof(prepared));
     memset(transport, 0, sizeof(transport));
     TEST("useful C23 packages host redundantly: A publishes zprng/"
-         "zdogfight/zdogace/zdogview, B mirrors, A disappears, C fetches "
-         "from B") {
+         "zdogfight/zdogdrone/zdogace/zdogview, B mirrors, A disappears, "
+         "C fetches from B") {
         struct zwn_node a, b, c;
         const struct zwn_node_spec nodes[] = {
             {&a, "arena-a"}, {&b, "arena-b"}, {&c, "arena-c"},
