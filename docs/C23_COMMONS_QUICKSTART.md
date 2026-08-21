@@ -131,16 +131,33 @@ input spelling with `z23 discover schema <leaf>`.
 
 ## Consumer
 
-Obtain the author's exact `package_root` through any channel. There is no
-global remote name search today and no central tracker; `zcode package search`
-searches releases already verified in the local store. This avoids turning a
-name index into central technical truth. Discovery on the wire is peer
-inventory: a NEW_USER may learn unique *new* roots up to the serving-set
-size (64) per hour. Keep-alive of a root already heard is inventory, not
-flood. A node that imported and pinned a carrier re-announces that same
-root — that is how a later peer still fetches the exact C23 Apache-2.0
-bytes after the original publisher disappears. Verify the `package_root`;
-do not trust the announcer.
+A name is only a local label. Exact identity remains `package_root`. There is
+no global remote name search today and no central tracker; `zcode package
+search` searches releases already verified in the local store. This avoids
+turning a name index into central technical truth.
+
+Browse the local shelf first. `zcode package library` lists complete packages
+this node can seed and names one next command. When a persisted release in the
+rebuildable index names a root, that `name` is enough to fetch without copying
+64 hex by hand:
+
+```bash
+z23 zcode package library --datadir=/tmp/z23-commons
+z23 zcode package fetch --datadir=/tmp/z23-commons \
+  --input='{"name":"<library name>"}'
+```
+
+If both `name` and `root` are supplied they must identify the same 32-byte
+root. Unknown local names fail closed. A name here is not ZNAM and is not a
+network-wide lookup.
+
+Packages that are not yet on this node still need the author's exact
+`package_root` through any channel. Discovery on the wire is peer inventory: a
+NEW_USER may learn unique *new* roots up to the serving-set size (64) per
+hour. Keep-alive of a root already heard is inventory, not flood. A node that
+imported and pinned a carrier re-announces that same root — that is how a
+later peer still fetches the exact C23 Apache-2.0 bytes after the original
+publisher disappears. Verify the `package_root`; do not trust the announcer.
 
 1. Discover the signed POINTER for the exact root, then fetch its returned
    `transport_root`. Fetch is resumable and inert: it does not build, link, or

@@ -4,10 +4,13 @@
  * authenticated package swarm's operator surface:
  *
  *   zcode package fetch    start (or resume) a swarm download of one
- *                          package root: against the live node-global
- *                          engine when the hosting node is running,
- *                          otherwise a one-shot engine over the datadir
- *                          store persists the resumable download record
+ *                          package root: `root` (64 hex) is identity;
+ *                          optional `name` is a LOCAL library label from
+ *                          the rebuildable store index (never ZNAM).
+ *                          Against the live node-global engine when the
+ *                          hosting node is running, otherwise a one-shot
+ *                          engine over the datadir store persists the
+ *                          resumable download record
  *                          (<datadir>/zcode/downloads/<root-hex>) for the
  *                          next hosting boot to resume
  *   zcode package peers    the live swarm's view of the peers advertising
@@ -32,6 +35,7 @@
 
 #include "json/json.h"
 #include "platform/time_compat.h"
+#include "vcs/package_index.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
@@ -107,6 +111,103 @@ static bool zw_root(const struct zcl_command_request *request,
     return true;
 }
 
+/* Resolve fetch identity: `root` (64 hex) and/or a LOCAL library `name`
+ * from the rebuildable package index. Name is not ZNAM. False with the
+ * error body set. */
+static bool zw_resolve_fetch_root(const struct zcl_command_request *request,
+                                  struct zcl_command_reply *reply,
+                                  const char *zcode_dir, uint8_t out[32])
+{
+    const char *hex = zw_input_str(request->input, "root");
+    const char *name = zw_input_str(request->input, "name");
+    bool have_root = hex && hex[0];
+    bool have_name = name && name[0];
+    uint8_t from_root[32];
+    uint8_t from_name[32];
+    bool named = false;
+
+    if (!have_root && !have_name) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "MISSING_ROOT_OR_NAME", "normalize", false, false,
+            "supply root (64 hex package identity) or a local library name",
+            "zcode.package.fetch");
+        return false;
+    }
+    if (have_root && !zcl_hex_decode(hex, from_root, 32)) {
+        zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
+                               ZCL_COMMAND_EXIT_INVALID, "BAD_ROOT",
+                               "normalize", false, false,
+                               "root must be 64 lowercase hex chars (the "
+                               "package root)", hex);
+        return false;
+    }
+    if (have_name) {
+        struct vcs_package_index *index = vcs_package_index_build(zcode_dir);
+        if (!index) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                "INDEX_OPEN", "normalize", false, false,
+                "the local package index failed to rebuild", zcode_dir);
+            return false;
+        }
+        const struct vcs_package_index_entry *found = NULL;
+        bool ambiguous = false;
+        for (size_t i = 0; i < vcs_package_index_count(index); i++) {
+            const struct vcs_package_index_entry *e =
+                vcs_package_index_at(index, i);
+            if (!e || strcmp(e->name, name) != 0)
+                continue;
+            uint8_t candidate[32];
+            if (!zcl_hex_decode_lower(e->package_root_hex, candidate, 32)) {
+                vcs_package_index_free(index);
+                zcl_command_reply_fail(
+                    reply, ZCL_COMMAND_STATUS_FAILED,
+                    ZCL_COMMAND_EXIT_INTERNAL, "BAD_ROOT", "normalize",
+                    false, false,
+                    "local library name maps to a non-hex package root",
+                    e->package_root_hex);
+                return false;
+            }
+            if (!found) {
+                memcpy(from_name, candidate, 32);
+                found = e;
+            } else if (memcmp(from_name, candidate, 32) != 0) {
+                ambiguous = true;
+                break;
+            }
+        }
+        vcs_package_index_free(index);
+        if (ambiguous) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "AMBIGUOUS_NAME", "normalize", false, false,
+                "local library name maps to more than one package root",
+                name);
+            return false;
+        }
+        if (!found) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "UNKNOWN_NAME", "normalize", false, false,
+                "no local library name matches (name is a store-index "
+                "label, not ZNAM)", name);
+            return false;
+        }
+        named = true;
+    }
+    if (have_root && named && memcmp(from_root, from_name, 32) != 0) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+            "NAME_ROOT_MISMATCH", "normalize", false, false,
+            "name and root identify different 32-byte package roots",
+            name);
+        return false;
+    }
+    memcpy(out, named ? from_name : from_root, 32);
+    return true;
+}
+
 static void zw_push_status(struct json_value *obj,
                            const struct vcs_swarm_download_status *st)
 {
@@ -150,7 +251,7 @@ void zcl_native_handle_zcode_package_fetch(
     if (!zw_zcode_dir(request, reply, "zcode.package.fetch", zcode_dir))
         return;
     uint8_t root[32];
-    if (!zw_root(request, reply, "zcode.package.fetch", root))
+    if (!zw_resolve_fetch_root(request, reply, zcode_dir, root))
         return;
     /* Live engine first: a running hosting node downloads immediately. */
     struct vcs_swarm_engine *engine = vcs_swarm_engine_global();

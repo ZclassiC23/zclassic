@@ -2168,8 +2168,10 @@ ZCL_COMMAND_READY_READ(
     "engine lock), and `name` when a persisted release in the rebuildable "
     "index names that root. Capped at 64 (the local-announce bound); limit "
     "raises only within that cap. An empty store is a passed empty list, "
-    "not an error. dumpstate zcode_store reports totals; this leaf is the "
-    "per-root catalog.",
+    "not an error. `next_command` names one obvious next step: fetch by a "
+    "listed local name or root, or how to fetch when the shelf is empty. "
+    "dumpstate zcode_store reports totals; this leaf is the per-root "
+    "catalog.",
     ZCL_COMMAND_LIST_BUDGET,
     "zcode,package,library,store,shelf,seed,catalog",
     "zcl.zcode_package_library.input.v1", "zcl.zcode_package_library.v1",
@@ -2880,24 +2882,28 @@ ZCL_COMMAND_READY_READ(
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.fetch", "zcode.package", "",
     "Fetch a package from the authenticated swarm",
-    "Starts (or idempotently resumes) a swarm download of one 64-hex "
-    "package `root`: manifest-first, then chunks rarest-first across the "
+    "Starts (or idempotently resumes) a swarm download of one package: "
+    "`root` (64 hex) is exact identity; optional `name` is a LOCAL "
+    "store-index label — the same `name` `zcode package library` emits — "
+    "never ZNAM. Manifest-first, then chunks rarest-first across the "
     "peers advertising the root, every chunk SHA3-verified against the "
     "root-committed manifest BEFORE it is stored (the authentication), "
     "with bounded attempts naming a terminal failure. Against a running "
     "-packagehost=1 node this drives the live engine (live:true); a "
     "one-shot CLI persists the resumable record under "
     "<datadir>/zcode/downloads/<root-hex> and reports live:false — the "
-    "next hosting boot resumes it. ALREADY_COMPLETE (already_complete:"
+    "next hosting boot resumes it. Fetch is inert: no build, link, "
+    "execute, install, or deploy. ALREADY_COMPLETE (already_complete:"
     "true) is the idempotent redelivery. Rejections name the rule: "
-    "BAD_ROOT, NO_STORE, DOWNLOAD_SLOTS_FULL (16 tracked downloads), "
+    "MISSING_ROOT_OR_NAME, BAD_ROOT, UNKNOWN_NAME, NAME_ROOT_MISMATCH, "
+    "AMBIGUOUS_NAME, NO_STORE, DOWNLOAD_SLOTS_FULL (16 tracked downloads), "
     "RECORD_IO. `day` pins the accounting window for deterministic "
     "testing (host clock when omitted).",
     0,
-    "zcode,package,fetch,download,swarm,resume",
+    "zcode,package,fetch,download,swarm,resume,name",
     "zcl.zcode_package_fetch.input.v1", "zcl.zcode_package_fetch.v1",
-    "root,day,datadir,namespace,maximum_bytes", "root",
-    "z23 zcode package fetch --input='{\"root\":\"<64hex>\",\"namespace\":\"zclassic23.source\",\"maximum_bytes\":268435456}'",
+    "root,name,day,datadir,namespace,maximum_bytes", "",
+    "z23 zcode package fetch --input='{\"name\":\"<local-library-name>\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_APP_WRITE, ZCL_COMMAND_SCOPE_NODE,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_MODE_SYNC,
