@@ -45,6 +45,13 @@
  *  12. Provider-directed downloads issue no WANT to an unauthenticated
  *      advertiser; restart preserves the restriction with an empty transient
  *      allowlist until fresh authenticated peer handles are supplied.
+ *  13. An ordinary C23 library shelf (independent in-tree packages, not
+ *      the Arena set) is prepared, stored, and imported; announce_to
+ *      queues those complete public-serveable roots up to
+ *      VCS_SWARM_MAX_LOCAL_ANNOUNCES; a repeat is already-announced
+ *      keep-alive; a NEW_USER learns that many unique roots without
+ *      ANNOUNCE_FLOOD. The 65th distinct root still floods in
+ *      t_swarm_announce_policy.
  *
  * Every engine runs over a real store + real service book on ./test-tmp
  * datadirs; peers are driven through vcs_swarm_engine_handle_frame with
@@ -59,10 +66,13 @@
 #include "command/native_command.h"
 #include "config/boot_zcode_dht.h"
 #include "vcs/blob_store.h"
+#include "vcs/package_prepare.h"
+#include "vcs/package_public_shape.h"
 #include "vcs/package_release.h"
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 #include "vcs/package_swarm_node.h"
+#include "vcs/package_transport.h"
 #include "vcs/service_receipt.h"
 
 #include <secp256k1.h>
@@ -912,6 +922,247 @@ static int t_swarm_announce_policy(void)
     sw_node_close(&n2);
     test_rm_rf_recursive(n.datadir);
     test_rm_rf_recursive(n2.datadir);
+    return failures;
+}
+
+/* Prepare, sign, store, pin, and import one in-tree package as a public
+ * transport carrier. Distinct `seed` values pick distinct publisher keys
+ * so each title keeps its own sequence-1 release. */
+static bool sw_seed_in_tree_package(struct sw_node *n, const char *source_dir,
+                                    uint8_t seed, uint64_t sequence,
+                                    uint8_t transport_root[32])
+{
+    struct privkey sk;
+    struct pubkey pk;
+    if (!n || !source_dir || !transport_root || !n->store || !n->engine ||
+        !sw_keypair(seed, &sk, &pk))
+        return false;
+    struct vcs_package_prepare_options options = {
+        .dir = source_dir,
+        .publisher_sequence = sequence,
+        .reward_address = "",
+        .chain_id = "zclassic-main",
+    };
+    memcpy(options.publisher_pubkey, pk.vch, COMPRESSED_PUBLIC_KEY_SIZE);
+    struct vcs_package_prepared prepared;
+    vcs_package_prepared_init(&prepared);
+    char detail[160] = {0};
+    if (vcs_package_prepare(&options, &prepared, detail, sizeof(detail)) !=
+        VCS_PACKAGE_PREPARE_OK) {
+        fprintf(stderr, "zcode_swarm shelf prepare %s: %s\n", source_dir,
+                detail);
+        vcs_package_prepared_free(&prepared);
+        return false;
+    }
+    struct uint256 digest;
+    memcpy(digest.data, prepared.signing_digest, 32);
+    uint8_t compact[COMPACT_SIGNATURE_SIZE];
+    if (!privkey_sign_compact(&sk, &digest, compact)) {
+        vcs_package_prepared_free(&prepared);
+        return false;
+    }
+    memcpy(prepared.release.signature, compact + 1,
+           VCS_PACKAGE_RELEASE_SIGNATURE_BYTES);
+    uint8_t *release_wire = NULL;
+    size_t release_wire_len = 0;
+    struct vcs_package_transport transport;
+    vcs_package_transport_init(&transport);
+    bool ok =
+        vcs_package_release_verify(&prepared.release) ==
+            VCS_PACKAGE_RELEASE_OK &&
+        vcs_package_release_serialize(&prepared.release, &release_wire,
+                                      &release_wire_len) ==
+            VCS_PACKAGE_RELEASE_OK &&
+        vcs_package_transport_build(
+            release_wire, release_wire_len, prepared.recipe_wire,
+            prepared.recipe_wire_len, prepared.manifest_wire,
+            prepared.manifest_wire_len, &transport) ==
+            VCS_PACKAGE_TRANSPORT_OK &&
+        vcs_package_transport_store(n->store, &transport, source_dir) ==
+            VCS_PACKAGE_TRANSPORT_OK &&
+        vcs_package_store_pin(n->store, transport.transport_root, true) ==
+            VCS_PACKAGE_STORE_OK;
+    if (ok)
+        memcpy(transport_root, transport.transport_root, 32);
+    free(release_wire);
+    vcs_package_transport_free(&transport);
+    vcs_package_prepared_free(&prepared);
+    if (!ok)
+        return false;
+    struct vcs_package_store_status st;
+    if (!vcs_package_store_package_status(n->store, transport_root, &st) ||
+        !st.complete || !st.pinned)
+        return false;
+    struct vcs_package_transport_import imported;
+    memset(&imported, 0, sizeof(imported));
+    if (vcs_swarm_engine_import_transport(n->engine, transport_root,
+                                          &imported) !=
+        VCS_PACKAGE_TRANSPORT_OK)
+        return false;
+    struct vcs_package_public_verdict shape;
+    vcs_package_public_shape_classify(n->store, transport_root, &shape);
+    if (shape.shape == VCS_PACKAGE_PUBLIC_REFUSED) {
+        fprintf(stderr, "zcode_swarm shelf public_shape %s: %s (%s)\n",
+                source_dir, shape.rule ? shape.rule : "?",
+                shape.dependency_rule ? shape.dependency_rule : "-");
+        return false;
+    }
+    return true;
+}
+
+static size_t sw_drain_announces(struct sw_node *n, uint64_t peer,
+                                 uint8_t frames[][VCS_SWARM_OUTBOUND_FRAME_MAX],
+                                 size_t *lens, size_t max)
+{
+    uint64_t target = 0;
+    uint8_t frame[VCS_SWARM_OUTBOUND_FRAME_MAX];
+    size_t frame_len = 0, count = 0;
+    while (vcs_swarm_engine_next_outbound(n->engine, peer, &target, frame,
+                                          &frame_len)) {
+        struct vcs_package_swarm_message msg;
+        if (!vcs_package_swarm_parse(frame, frame_len, &msg) ||
+            msg.type != VCS_PACKAGE_SWARM_ANNOUNCE)
+            continue;
+        if (count < max) {
+            memcpy(frames[count], frame, frame_len);
+            lens[count] = frame_len;
+            count++;
+        }
+    }
+    return count;
+}
+
+static bool sw_announce_names_root(const uint8_t *frame, size_t len,
+                                   const uint8_t root[32])
+{
+    struct vcs_package_swarm_message msg;
+    return vcs_package_swarm_parse(frame, len, &msg) &&
+           msg.type == VCS_PACKAGE_SWARM_ANNOUNCE &&
+           memcmp(msg.body.announce.package_root, root, 32) == 0;
+}
+
+/* Independent in-tree titles, not the Arena set (zprng/zdogfight/
+ * zdogace/zdogview). zjson is omitted: its zcode-package.json pins a
+ * foreign zutf8 root. */
+static const char *const k_c23_shelf[] = {
+    "packages/zhex",   "packages/zstr", "packages/zbuf",  "packages/zsha256",
+    "packages/zring",  "packages/zmap", "packages/zvec",  "packages/zutf8",
+};
+enum { SW_SHELF_N = (int)(sizeof(k_c23_shelf) / sizeof(k_c23_shelf[0])) };
+
+static int t_swarm_c23_shelf_announce(void)
+{
+    int failures = 0;
+    struct sw_node seeder, learner;
+    if (!sw_node_open(&seeder, "shelf-seed", sw_score_contributor) ||
+        !sw_node_open(&learner, "shelf-learn", NULL /* NEW_USER */))
+        return 1;
+    uint8_t roots[SW_SHELF_N][32];
+    memset(roots, 0, sizeof(roots));
+    bool seeded = true;
+    for (size_t i = 0; i < SW_SHELF_N; i++) {
+        if (!sw_seed_in_tree_package(&seeder, k_c23_shelf[i],
+                                     (uint8_t)(0x61u + i), i + 1u,
+                                     roots[i])) {
+            fprintf(stderr, "zcode_swarm shelf: failed %s\n",
+                    k_c23_shelf[i]);
+            seeded = false;
+            break;
+        }
+    }
+    SW_CHECK("ordinary C23 shelf has at least eight titles",
+             SW_SHELF_N >= 8);
+    SW_CHECK("ordinary C23 shelf prepared and imported", seeded);
+    if (!seeded) {
+        sw_node_close(&seeder);
+        sw_node_close(&learner);
+        test_rm_rf_recursive(seeder.datadir);
+        test_rm_rf_recursive(learner.datadir);
+        return failures + 1;
+    }
+    bool unique_roots = true;
+    for (size_t i = 0; i < SW_SHELF_N; i++)
+        for (size_t j = i + 1u; j < SW_SHELF_N; j++)
+            if (memcmp(roots[i], roots[j], 32) == 0)
+                unique_roots = false;
+    SW_CHECK("shelf titles derive distinct transport roots", unique_roots);
+
+    uint8_t seed_key[33], learn_key[33];
+    sw_key(0x71, seed_key);
+    sw_key(0x72, learn_key);
+    const uint64_t seed_peer = 5101, learn_peer = 5102;
+    SW_CHECK("seeder peer add",
+             vcs_swarm_engine_peer_add(seeder.engine, seed_peer, seed_key));
+    size_t queued = vcs_swarm_engine_announce_to(seeder.engine, seed_peer);
+    SW_CHECK("announce_to queues the public-serveable shelf",
+             queued >= SW_SHELF_N && queued <= VCS_SWARM_MAX_LOCAL_ANNOUNCES);
+    uint8_t frames[VCS_SWARM_MAX_LOCAL_ANNOUNCES][VCS_SWARM_OUTBOUND_FRAME_MAX];
+    size_t lens[VCS_SWARM_MAX_LOCAL_ANNOUNCES];
+    memset(frames, 0, sizeof(frames));
+    memset(lens, 0, sizeof(lens));
+    size_t drained =
+        sw_drain_announces(&seeder, seed_peer, frames, lens,
+                           VCS_SWARM_MAX_LOCAL_ANNOUNCES);
+    SW_CHECK("queued announces drain", drained == queued);
+    bool all_seeded = true;
+    for (size_t i = 0; i < SW_SHELF_N; i++) {
+        bool found = false;
+        for (size_t j = 0; j < drained; j++)
+            if (sw_announce_names_root(frames[j], lens[j], roots[i]))
+                found = true;
+        if (!found)
+            all_seeded = false;
+    }
+    SW_CHECK("every seeded transport root was announced", all_seeded);
+    SW_CHECK("re-announce is already-announced keep-alive, not a flood",
+             vcs_swarm_engine_announce_to(seeder.engine, seed_peer) == 0);
+
+    SW_CHECK("learner peer add",
+             vcs_swarm_engine_peer_add(learner.engine, learn_peer,
+                                       learn_key));
+    bool learned = true;
+    uint32_t unique_accepted = 0;
+    for (size_t i = 0; i < drained; i++) {
+        struct vcs_swarm_frame_result res = vcs_swarm_engine_handle_frame(
+            learner.engine, learn_peer, frames[i], lens[i], SW_DAY, 1);
+        if (res.penalty != VCS_SWARM_PENALTY_NONE) {
+            learned = false;
+            break;
+        }
+        unique_accepted++;
+    }
+    SW_CHECK("NEW_USER learns the shelf unique roots without flood",
+             learned && unique_accepted == drained &&
+             unique_accepted <= VCS_POLICY_FREE_ANNOUNCE_PER_HOUR);
+    struct vcs_swarm_peer_info infos[4];
+    bool advertised = true;
+    for (size_t i = 0; i < SW_SHELF_N; i++)
+        if (vcs_swarm_engine_peers_for(learner.engine, roots[i], infos,
+                                       4) != 1)
+            advertised = false;
+    SW_CHECK("NEW_USER recorded each shelf transport root", advertised);
+    bool keep_alive = true;
+    for (size_t i = 0; i < drained; i++) {
+        struct vcs_swarm_frame_result res = vcs_swarm_engine_handle_frame(
+            learner.engine, learn_peer, frames[i], lens[i], SW_DAY, 2);
+        if (res.penalty != VCS_SWARM_PENALTY_NONE)
+            keep_alive = false;
+    }
+    struct vcs_service_key_totals totals;
+    SW_CHECK("keep-alive repeats of heard roots are not ANNOUNCE_FLOOD",
+             keep_alive &&
+             vcs_service_key_totals(learner.book, learn_key, SW_DAY,
+                                    &totals) &&
+             totals.offences[VCS_POLICY_OFFENCE_ANNOUNCE_FLOOD] == 0);
+    SW_CHECK("unique-flood bound is still the serving-set size",
+             VCS_POLICY_FREE_ANNOUNCE_PER_HOUR ==
+                 VCS_SWARM_MAX_LOCAL_ANNOUNCES &&
+             SW_SHELF_N < VCS_POLICY_FREE_ANNOUNCE_PER_HOUR);
+
+    sw_node_close(&seeder);
+    sw_node_close(&learner);
+    test_rm_rf_recursive(seeder.datadir);
+    test_rm_rf_recursive(learner.datadir);
     return failures;
 }
 
@@ -2254,6 +2505,7 @@ int test_zcode_swarm(void)
     failures += t_swarm_unsolicited_and_replay();
     failures += t_swarm_cancel_race();
     failures += t_swarm_announce_policy();
+    failures += t_swarm_c23_shelf_announce();
     failures += t_swarm_scheduler_order();
     failures += t_swarm_timeout_retry();
     failures += t_swarm_disconnect_requeue();
