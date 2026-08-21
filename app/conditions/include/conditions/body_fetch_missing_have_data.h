@@ -15,10 +15,13 @@
  *   stale-script/coin-backfill replay) — that height sits behind
  *   body_fetch's own cursor, so candidate (a) never matches it. The lower of
  *   the two candidates is targeted first.
- * REMEDY: sync_monitor_queue_active_frontier_body(target) — queue the body
- *   fetch; a failed queue returns COND_REMEDY_FAILED.
- * WITNESSED: the body is now observed (stage_repair_body_fetch_observed), OR
- *   the target's block data is readable on disk (target_has_readable_data).
+ * Candidate (a) is bound to the durable validate hash, best-header ancestry,
+ * and visible-parent identity, then queues through
+ * sync_monitor_queue_best_header_body(target, exact_hash). Candidate (b)
+ * retains the active-frontier queue path. A failed queue returns
+ * COND_REMEDY_FAILED.
+ * WITNESSED: an exact-hash body row is observed, OR that exact captured
+ *   target's block data is readable on disk.
  * COND_CRITICAL; poll_secs=5 (backoff 30s, max_attempts 5). Continue-with-
  *   cooldown: re-arms every 600s (unbounded) after exhaustion instead of
  *   latching permanently — the remedy depends on an external P2P fetch. */

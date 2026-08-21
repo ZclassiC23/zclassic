@@ -36,7 +36,7 @@ struct bfmhd_fixture {
     struct download_manager dm;
     struct block_index *tip;
     struct block_index *child;
-    struct uint256 hashes[3];
+    struct uint256 hashes[4];
     int tip_h;
     int target;
 };
@@ -165,6 +165,33 @@ static struct block_index *insert_index(struct main_state *ms,
     bi->nChainTx = prev ? prev->nChainTx + 1 : 1;
     bi->nFile = status & BLOCK_HAVE_DATA ? 0 : -1;
     bi->nDataPos = status & BLOCK_HAVE_DATA ? 8u : 0u;
+    arith_uint256_set_u64(&bi->nChainWork, (uint64_t)(height + 1));
+    return bi;
+}
+
+static struct block_index *insert_sibling(struct main_state *ms,
+                                          struct uint256 *hash,
+                                          int height,
+                                          struct block_index *prev,
+                                          unsigned status)
+{
+    memset(hash, 0, sizeof(*hash));
+    hash->data[0] = (uint8_t)height;
+    hash->data[1] = 0xBF;
+    hash->data[2] = 0x23;
+    hash->data[3] = 0xA5;
+
+    struct block_index *bi =
+        chainstate_insert_block_index((struct chainstate *)ms, hash);
+    if (!bi)
+        return NULL;
+    bi->nHeight = height;
+    bi->pprev = prev;
+    bi->nStatus = status;
+    bi->nTx = 1;
+    bi->nChainTx = prev ? prev->nChainTx + 1 : 1;
+    bi->nFile = status & BLOCK_HAVE_DATA ? 0 : -1;
+    bi->nDataPos = status & BLOCK_HAVE_DATA ? 16u : 0u;
     arith_uint256_set_u64(&bi->nChainWork, (uint64_t)(height + 1));
     return bi;
 }
@@ -339,6 +366,71 @@ int test_body_fetch_missing_have_data_condition(void)
         ok = ok && !stage_repair_body_fetch_observed(progress_store_db(),
                                                      fx.target);
         BFMHD_CHECK("cursor advance without row does not witness", ok);
+        teardown_fixture(&fx);
+    }
+
+    /* Exact C3 wedge: the finalized window ends at H, while two H+1 children
+     * exist. A stale sibling is data-flagged (and even owns the height-keyed
+     * body_fetch row), but the validate_headers row and best-header ancestry
+     * name the other child, whose body is missing. Height-only selection used
+     * to accept the stale sibling's HAVE_DATA/row and suppress the canonical
+     * fetch forever. */
+    {
+        struct bfmhd_fixture fx;
+        bool ok = setup_fixture(&fx, "canonical_hash_over_stale_sibling");
+        struct block_index *stale = insert_sibling(
+            &fx.ms, &fx.hashes[3], fx.target, fx.tip,
+            BLOCK_VALID_TREE | BLOCK_HAVE_DATA);
+        ok = ok && stale && stale != fx.child;
+        ok = ok && seed_body_row(progress_store_db(), fx.target,
+                                 stale->phashBlock);
+        msgprocessor_test_block_mark_seen(fx.child->phashBlock);
+
+        condition_engine_tick();
+
+        struct condition_runtime_snapshot snap;
+        ok = ok && condition_engine_get_registered_snapshot(
+            "body_fetch_missing_have_data", &snap);
+        ok = ok && body_fetch_missing_have_data_test_remedy_calls() == 1;
+        ok = ok && condition_engine_get_active_count() == 1;
+        ok = ok && snap.last_outcome == COND_REMEDY_UNWITNESSED;
+        ok = ok && queue_has_target(&fx);
+        ok = ok && uint256_eq(&fx.dm.queue[0], fx.child->phashBlock);
+        ok = ok && !uint256_eq(&fx.dm.queue[0], stale->phashBlock);
+        ok = ok && !msgprocessor_test_block_already_seen(
+            fx.child->phashBlock);
+        int cleared_before = snap.cleared_count;
+        BFMHD_CHECK("canonical validate hash queues over data-flagged stale "
+                    "sibling and wrong-hash body row", ok);
+
+        bool ok2 = seed_body_row(progress_store_db(), fx.target,
+                                 fx.child->phashBlock);
+        condition_engine_tick();
+        ok2 = ok2 && condition_engine_get_active_count() == 0;
+        ok2 = ok2 && condition_engine_get_registered_snapshot(
+            "body_fetch_missing_have_data", &snap);
+        ok2 = ok2 && snap.cleared_count == cleared_before + 1;
+        BFMHD_CHECK("only exact canonical body row witnesses repair", ok2);
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct bfmhd_fixture fx;
+        bool ok = setup_fixture(&fx, "canonical_parent_mismatch");
+        fx.child->pprev = NULL; /* best-header target no longer extends H */
+        struct block_index *other = insert_sibling(
+            &fx.ms, &fx.hashes[3], fx.target, fx.tip, BLOCK_VALID_TREE);
+        ok = ok && other;
+
+        condition_engine_tick();
+
+        uint64_t queued = 0;
+        dl_get_stats(&fx.dm, NULL, NULL, NULL, NULL, &queued);
+        ok = ok && body_fetch_missing_have_data_test_remedy_calls() == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && queued == 0;
+        BFMHD_CHECK("canonical target whose parent is not the visible H "
+                    "fails closed instead of queueing a sibling", ok);
         teardown_fixture(&fx);
     }
 

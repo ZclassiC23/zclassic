@@ -141,12 +141,22 @@ void stale_validate_headers_repair_test_set_peer_count(int n)
 #endif
 
 /* LANE D / #3b + Detective A2 — file-scope forward declaration; defined after
- * the remedy. Oracle-independent P2P re-fetch of the canonical block at
- * `height`: clears BLOCK_HAVE_DATA on the canonical block_index entry AND
- * actively enqueues a getdata via the existing download-manager machinery.
- * Returns the count of connected peers available to serve the re-fetch (0 =>
- * missing input), or -1 if the height is unindexed (nothing to re-fetch). */
-static int cure_request_peer_refetch(int height);
+ * the remedy. Oracle-independent P2P re-fetch of the exact best-header
+ * ancestor at `height`: clears BLOCK_HAVE_DATA on that hash-bound block_index
+ * entry AND actively enqueues a getdata via the existing download-manager
+ * machinery. Returns the count of connected peers available to serve the
+ * re-fetch (0 => missing input), or -1 if the best-header authority is absent
+ * or no longer agrees with `expected_hash`. */
+static int cure_request_peer_refetch(int height,
+                                     const struct uint256 *expected_hash);
+
+/* Resolve the same authoritative chain identity used by the normal
+ * best-header body queue. A target above the visible active tip is eligible
+ * only when its best-header parent is that visible tip; a target within the
+ * active window must be the exact active block. This keeps repair fail-closed
+ * across concurrent reorg/header publication boundaries. */
+static bool best_header_target_hash(struct main_state *ms, int height,
+                                    struct uint256 *out_hash);
 
 /* Connected-peer count, the single reader both the re-fetch and the refusal
  * text use so the two can never disagree about how many peers were there. */
@@ -158,8 +168,9 @@ static void maybe_escalate_runtime_row_quarantine(
 
 /* Name the refusal for the cause that actually held, not for the one that is
  * easiest to print. cure_request_peer_refetch() returns -1 when it did not even
- * ASK the network — the height is not on the active chain, so there is no
- * canonical block_index entry to clear HAVE_DATA on and no hash to getdata.
+ * ASK the network — the height has no best-header ancestor agreeing with the
+ * visible active-chain identity, so there is no authoritative block_index
+ * entry to clear HAVE_DATA on and no hash to getdata.
  * That -1 used to reach the caller's `peers <= 0` test and be reported as
  * "no connected peer can serve a P2P getdata re-fetch". Measured on a real
  * wiped-datadir C3 run (2026-08-20, H* pinned at 3,193,024): the node had a
@@ -176,7 +187,8 @@ static void raise_stale_header_no_source_blocker(int height,
     if (!refetch_attempted)
         snprintf(reason, sizeof(reason),
                  "header-solution repair h=%d: zclassicd oracle unreachable and "
-                 "h=%d is not on the active chain, so no P2P getdata re-fetch "
+                 "h=%d has no best-header ancestor agreeing with the visible "
+                 "active chain, so no P2P getdata re-fetch "
                  "was requested (%d peer(s) connected)", height, height, peers);
     else
         snprintf(reason, sizeof(reason),
@@ -309,13 +321,12 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
 
     if (validate_repairable_mode(mode)) {
         struct main_state *ms0 = condition_engine_main_state();
-        struct block_index *bi0 =
-            ms0 ? active_chain_at(&ms0->chain_active, target) : NULL;
-        const struct uint256 *canon = bi0 ? bi0->phashBlock : NULL;
-        bool solution_present = canon
-            ? stage_repair_header_solution_available(db, target, canon)
-            : (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS &&
-               stage_repair_header_solution_available(db, target, NULL));
+        struct uint256 canon_hash;
+        bool have_canon =
+            best_header_target_hash(ms0, target, &canon_hash);
+        const struct uint256 *canon = have_canon ? &canon_hash : NULL;
+        bool solution_present = have_canon &&
+            stage_repair_header_solution_available(db, target, canon);
 
         /* Already repaired (e.g. an async P2P getdata re-fetch fired on an
          * earlier tick has now delivered + saved the canonical solution).
@@ -344,12 +355,12 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
          * header_solution_repair (INSERT OR REPLACE by height — it OVERWRITES
          * any stale wrong-block row, which the hash-aware availability check
          * above does not accept). */
-        struct zcl_result r = header_probe_pull_range(target, 128, NULL);
+        struct zcl_result r = have_canon
+            ? header_probe_pull_range(target, 128, NULL)
+            : ZCL_ERR(-1, "best-header authority unavailable h=%d", target);
         if (r.ok) {
-            solution_present = canon
-                ? stage_repair_header_solution_available(db, target, canon)
-                : (mode == STAGE_REPAIR_POISON_VALIDATE_SOLUTIONLESS &&
-                   stage_repair_header_solution_available(db, target, NULL));
+            solution_present = stage_repair_header_solution_available(
+                db, target, canon);
             if (solution_present) {
                 /* Oracle served it synchronously — attribute inline. */
                 atomic_store(&g_repair_pending_source, HEADER_PROBE_SRC_NONE);
@@ -380,8 +391,9 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
          * never swaps a page for an unverified one. The solution arrives async,
          * so this tick only fires the request and defers; the "solution
          * present" branch above attributes + completes on a later tick. */
-        int refetch = cure_request_peer_refetch(target);
-        /* -1 is "not asked" (height off the active chain), NOT "zero peers".
+        int refetch = cure_request_peer_refetch(target, canon);
+        /* -1 is "not asked" (best-header authority absent/disagrees), NOT
+         * "zero peers".
          * Keep the two apart from here down: the peer count is read from the
          * one connman reader either way, so the refusal below can name which
          * of the two actually held. */
@@ -423,8 +435,8 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
                          "re-arms, no operator page) (repeats=%llu)", target,
                          refetch_attempted
                              ? "no peer can serve the re-fetch"
-                             : "h is not on the active chain so no re-fetch was "
-                               "requested",
+                             : "best-header authority is absent/disagrees so "
+                               "no re-fetch was requested",
                          peers, STALE_HEADER_NO_SOURCE_BLOCKER_ID,
                          (unsigned long long)defer_reps);
         } else {
@@ -466,32 +478,89 @@ static enum condition_remedy_result remedy_stale_validate_headers_repair(void)
 }
 
 /* LANE D / #3b + Detective A2 — oracle-independent P2P re-fetch of the
- * canonical block at `height`. Two coordinated steps, both through EXISTING
+ * canonical best-header block at `height`. Two coordinated steps, both through
+ * EXISTING
  * machinery (Law: one way in — no second header/body fetch stack):
  *   1. Drop BLOCK_HAVE_DATA on the canonical block_index entry and re-emit the
  *      header event, so the cleared re-fetch state persists across restarts
  *      (same discipline as body_persist_stage.c:requeue_body_for_refetch).
  *   2. ACTIVELY enqueue a getdata for that exact block via
- *      sync_monitor_queue_active_frontier_body → dl_queue_priority → the
+ *      sync_monitor_queue_best_header_body → dl_queue_priority →
+ *      the
  *      download-manager getdata loop, rather than passively waiting for a
  *      background scan to notice the cleared bit.
  * Returns the count of connected peers available to serve the re-fetch (0 =>
- * missing input; the caller names a typed blocker), or -1 if the height is
- * unindexed (nothing to re-fetch — the witness still governs and the next tick
- * retries). */
-static int cure_request_peer_refetch(int height)
+ * missing input; the caller names a typed blocker), or -1 if the exact
+ * best-header authority is absent or changed (nothing to re-fetch — the
+ * witness still governs and the next tick retries). */
+static struct block_index *best_header_target_locked(struct main_state *ms,
+                                                     int height)
 {
-    if (height < 0)
-        return -1; // raw-return-ok:nothing-to-refetch
+    if (!ms || height < 0 || !ms->pindex_best_header ||
+        height > ms->pindex_best_header->nHeight)
+        return NULL;
+
+    struct block_index *bi =
+        block_index_get_ancestor(ms->pindex_best_header, height);
+    if (!bi || bi->nHeight != height || !bi->phashBlock ||
+        (bi->nStatus & BLOCK_FAILED_ANY_MASK))
+        return NULL;
+
+    struct block_index *visible =
+        active_chain_at(&ms->chain_active, height);
+    if (visible && visible != bi)
+        return NULL;
+    if (!visible && height > 0) {
+        struct block_index *visible_parent =
+            active_chain_at(&ms->chain_active, height - 1);
+        if (!visible_parent || bi->pprev != visible_parent)
+            return NULL;
+    }
+    return bi;
+}
+
+static bool best_header_target_hash(struct main_state *ms, int height,
+                                    struct uint256 *out_hash)
+{
+    if (!ms || !out_hash || height < 0)
+        return false;
+
+    bool found = false;
+    zcl_mutex_lock(&ms->cs_main);
+    struct block_index *bi = best_header_target_locked(ms, height);
+    if (bi) {
+        *out_hash = *bi->phashBlock;
+        found = true;
+    }
+    zcl_mutex_unlock(&ms->cs_main);
+    return found;
+}
+
+static int cure_request_peer_refetch(int height,
+                                     const struct uint256 *expected_hash)
+{
+    if (height < 0 || !expected_hash)
+        return -1; // raw-return-ok:nothing-authoritative-to-refetch
     struct main_state *ms = condition_engine_main_state();
     if (!ms)
         return -1; // raw-return-ok:no-main-state
-    struct block_index *bi = active_chain_at(&ms->chain_active, height);
-    if (!bi || !bi->phashBlock)
-        return -1; // raw-return-ok:height-unindexed
+
+    struct block_index *bi = NULL;
+    bool cleared_have_data = false;
+    zcl_mutex_lock(&ms->cs_main);
+    bi = best_header_target_locked(ms, height);
+    if (!bi || !uint256_eq(bi->phashBlock, expected_hash)) {
+        zcl_mutex_unlock(&ms->cs_main);
+        return -1; // raw-return-ok:best-header-authority-changed
+    }
 
     if (bi->nStatus & BLOCK_HAVE_DATA) {
         bi->nStatus &= ~(unsigned)BLOCK_HAVE_DATA;
+        cleared_have_data = true;
+    }
+    zcl_mutex_unlock(&ms->cs_main);
+
+    if (cleared_have_data) {
         block_index_emit_header_event(bi, "stale_validate_headers_repair",
                                       NULL, NULL);
         LOG_WARN("condition",
@@ -502,13 +571,19 @@ static int cure_request_peer_refetch(int height)
     /* Active getdata via the existing sync machinery. A non-ok result just
      * means the sync context is not wired yet (e.g. an isolated fixture, or
      * pre-context boot) — not an error; the next tick retries. */
-    struct zcl_result qr =
-        sync_monitor_queue_active_frontier_body(height, "header_repair_p2p");
+    struct zcl_result qr = sync_monitor_queue_best_header_body(
+        height, expected_hash, "header_repair_p2p");
     if (!qr.ok)
         LOG_WARN("condition",
                  "[condition:stale_validate_headers_repair] P2P body queue "
                  "h=%d not accepted (code=%d msg=%s) — sync context may be "
                  "unset; retrying next tick", height, qr.code, qr.message);
+
+    /* A concurrent best-header change invalidates the exact plan. Refuse this
+     * attempt; the next condition tick resolves and reviews the new authority
+     * instead of reporting that a different hash was requested. */
+    if (qr.code == -3 || qr.code == -6)
+        return -1; // raw-return-ok:best-header-authority-changed-during-queue
 
     /* Connected-peer count = whether P2P can serve the re-fetch at all. */
     return connected_peer_count();

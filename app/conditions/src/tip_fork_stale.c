@@ -140,7 +140,7 @@ static bool tfs_default_rebuild(int from_height)
 static struct zcl_result tfs_default_queue_body(int height,
                                                 const char *reason)
 {
-    return sync_monitor_queue_best_header_body(height, reason);
+    return sync_monitor_queue_best_header_body(height, NULL, reason);
 }
 
 static int64_t tfs_default_anomaly_hold(void)

@@ -22,11 +22,14 @@ struct sqlite3;
 #define STAGE_REPAIR_SOLUTIONLESS_REASON "no-header-solution-backfill-required"
 
 /* A row read from validate_headers_log for `height`. `found` distinguishes a
- * missing row from a present row; `ok` mirrors the column, `fail_reason` the
- * (possibly empty) reason text. */
+ * missing row from a present row; `ok` mirrors the column, `hash` binds the
+ * verdict to exact header identity, and `fail_reason` is the possibly-empty
+ * reason text. */
 struct validate_row {
     bool found;
+    bool has_hash;
     int ok;
+    unsigned char hash[32];
     char fail_reason[96];
 };
 

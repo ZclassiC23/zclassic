@@ -173,6 +173,7 @@ last_blocker_ids="-"
 last_blocker_count="0"
 busy_streak_start=0
 boots=1
+supervised_launches=1
 last_respawn_reason=""
 # Provable-sample tracking. The provable sample is the authoritative full-read
 # H* when available, else the lock-free cached_provable_tip proxy the busy
@@ -341,6 +342,44 @@ bytes_reading_from_json() {
     esac
     [ "${#v}" -le 18 ] || { printf '%s' -1; return 0; }
     printf '%s' "$v"
+}
+
+# boot_count_from_log <node.log> — count actual node boots, including an
+# in-process execv self-respawn that retains its PID.  boot.c emits exactly one
+# top-level prologue marker per boot; use the same strict marker shape as the
+# phases[] parser so prose containing "[boot]" cannot mint a boot.
+boot_count_from_log() {
+    [ -n "${1:-}" ] && [ -r "$1" ] || { printf '%s' 0; return 0; }
+    awk '
+        /^\[boot\] prologue[[:space:]]+[0-9]+ms$/ { n++ }
+        END { print n + 0 }
+    ' "$1" 2>/dev/null
+}
+
+# last_self_respawn_from_log <node.log> — recover the last durable self-respawn
+# reason even when execv retained the PID and the harness therefore never read
+# the exit breadcrumb.  Only the closed set accepted by is_self_respawn_reason
+# is returned.
+last_self_respawn_from_log() {
+    [ -n "${1:-}" ] && [ -r "$1" ] || return 0
+    local reason
+    reason="$(sed -n 's/^.*exit-reason breadcrumb written: reason=\(self_respawn_[a-z_]*\)$/\1/p' "$1" 2>/dev/null | tail -1)"
+    is_self_respawn_reason "$reason" && printf '%s' "$reason"
+    return 0
+}
+
+# refresh_boot_observation — make the node's own boot markers authoritative
+# for evidence.  PID liveness alone cannot see execv, yet per-process node
+# counters such as download_bytes_received reset on that path.
+refresh_boot_observation() {
+    local observed reason log="${DATADIR:-}/node.log"
+    [ -n "${DATADIR:-}" ] && [ -s "$log" ] || return 0
+    observed="$(boot_count_from_log "$log")"
+    case "$observed" in ''|*[!0-9]*) observed=0 ;; esac
+    [ "$observed" -gt "$boots" ] 2>/dev/null && boots="$observed"
+    reason="$(last_self_respawn_from_log "$log")"
+    [ -n "$reason" ] && last_respawn_reason="$reason"
+    return 0
 }
 
 # bytes_delta_compute — set BYTES_DELTA + BYTES_UNAVAIL_REASON from the two
@@ -859,13 +898,11 @@ if [ "$SELFTEST" = "1" ]; then
     is_self_respawn_reason "";                                 st_check "empty/absent breadcrumb is NOT a respawn request (crash class)" 1 $?
     is_self_respawn_reason "self_respawn";                     st_check "bare 'self_respawn' (no suffix) is NOT a known respawn reason" 1 $?
 
-    # Provable-sample extraction: a FULL read yields the authoritative hstar; a
-    # busy partial doc (no hstar) falls back to cached_provable_tip WITHOUT ever
-    # promoting the proxy into the authoritative hstar; a busy doc whose proxy is
-    # still -1 (pre-fold) and a truly empty response both yield NO usable sample.
-    st_full_json='{"cached_provable_tip":3107000,"hstar":3107923,"network_tip":3190019,"network_tip_read_ok":true}'
-    st_busy_cpt_json='{"cached_provable_tip":3107923,"snapshot_status":"progress_store_busy","retryable":true}'
-    st_busy_nocpt_json='{"cached_provable_tip":-1,"snapshot_status":"progress_store_busy","retryable":true}'
+    st_boot_log='[boot] prologue                       211ms
+[boot] total                          65187ms
+2026-08-21T07:13:11Z INFO [shutdown] exit-reason breadcrumb written: reason=self_respawn_tip_watchdog
+[boot] prologue                       52ms
+[boot] total                          42496ms'
     st_ps_check() {  # desc, expect, actual
         if [ "$3" = "$2" ]; then
             echo "  ok: $1"
@@ -874,6 +911,21 @@ if [ "$SELFTEST" = "1" ]; then
             st_fail=1
         fi
     }
+    st_ps_check "boot evidence: in-process execv is counted from exact prologue markers" \
+        2 "$(printf '%s\n' "$st_boot_log" | boot_count_from_log /dev/stdin)"
+    st_ps_check "boot evidence: the durable in-process respawn reason is recovered" \
+        self_respawn_tip_watchdog \
+        "$(printf '%s\n' "$st_boot_log" | last_self_respawn_from_log /dev/stdin)"
+    st_ps_check "boot evidence: prose resembling a marker cannot mint a boot" \
+        0 "$(printf '%s\n' '[boot] prologue took 10ms today' | boot_count_from_log /dev/stdin)"
+
+    # Provable-sample extraction: a FULL read yields the authoritative hstar; a
+    # busy partial doc (no hstar) falls back to cached_provable_tip WITHOUT ever
+    # promoting the proxy into the authoritative hstar; a busy doc whose proxy is
+    # still -1 (pre-fold) and a truly empty response both yield NO usable sample.
+    st_full_json='{"cached_provable_tip":3107000,"hstar":3107923,"network_tip":3190019,"network_tip_read_ok":true}'
+    st_busy_cpt_json='{"cached_provable_tip":3107923,"snapshot_status":"progress_store_busy","retryable":true}'
+    st_busy_nocpt_json='{"cached_provable_tip":-1,"snapshot_status":"progress_store_busy","retryable":true}'
     st_ps_check "full read: provable sample IS the authoritative hstar" 3107923 "$(frontier_provable_sample "$st_full_json")"
     st_ps_check "full read: hstar_full IS the authoritative hstar" 3107923 "$(frontier_hstar_full "$st_full_json")"
     st_ps_check "busy doc: provable sample falls back to cached_provable_tip" 3107923 "$(frontier_provable_sample "$st_busy_cpt_json")"
@@ -954,6 +1006,10 @@ if [ "$SELFTEST" = "1" ]; then
     st_check "the per-tick samples.tsv sink is CALLED in the sample loop (not merely mentioned)" 0 $?
     grep -qE '^ {8}"\$NODE_BIN".*dumpstate boot_timings' "${BASH_SOURCE[0]}"
     st_check "boot_timings (the median source for phases[]) is actually captured by the bundle" 0 $?
+    st_ps_check "boot evidence is refreshed in both the sample loop and artifact capture" \
+        2 "$(grep -cE '^ {4}refresh_boot_observation$' "${BASH_SOURCE[0]}" | tr -d ' ')"
+    st_ps_check "boot evidence is refreshed once more at the verdict boundary" \
+        1 "$(grep -cE '^refresh_boot_observation$' "${BASH_SOURCE[0]}" | tr -d ' ')"
 
     # /proc parsers. The comm field is parenthesized AND may itself contain
     # spaces and parentheses, which is exactly what breaks a naive $14/$15 read
@@ -1329,6 +1385,9 @@ write_artifact() {
     capture_run_bundle
     # Refresh the process counters one last time so the harness.observed_sync
     # phase reports the counters as of capture, not as of the last sample tick.
+    # Refresh boot evidence FIRST: an in-process execv retains PID but resets
+    # node-owned counters, so bytes_window_close must see the new boot ordinal.
+    refresh_boot_observation
     refresh_process_counters
     # Close the byte window at the same instant, so the delta and the /proc
     # counters describe the same bracket.
@@ -1686,20 +1745,20 @@ while :; do
         reason="$(read_exit_reason)"
         if is_self_respawn_reason "$reason"; then
             last_respawn_reason="$reason"
-            if [ "$boots" -ge "$MAX_BOOTS" ] 2>/dev/null; then
+            if [ "$supervised_launches" -ge "$MAX_BOOTS" ] 2>/dev/null; then
                 echo "cold-start-wipe-stopwatch: node EXITED early (t=${elapsed}s) — log tail:"
                 tail -20 "$DATADIR/node.log" 2>/dev/null | sed 's/^/  /'
-                die "self-respawn budget exhausted: followed $boots boots (>= max $MAX_BOOTS), last reason=$reason — the node keeps asking to respawn without reaching tip (runaway)"
+                die "self-respawn budget exhausted: followed $supervised_launches supervised launches (>= max $MAX_BOOTS), observed boots=$boots, last reason=$reason — the node keeps asking to respawn without reaching tip (runaway)"
             fi
             # Consume the breadcrumb so a subsequent crash (which writes NO new
             # breadcrumb) can never be mis-read as another respawn request via
             # this now-stale one. Then relaunch on the SAME datadir, keeping the
             # wall clock (start) running across boots.
             rm -f "$DATADIR/boot-exit-reason.v1" 2>/dev/null || true
-            boots=$((boots + 1))
-            echo "cold-start-wipe-stopwatch: FOLLOWED self-respawn (reason=$reason ec=$node_ec) — relaunching boot $boots on same datadir (t=${elapsed}s, wall clock continues)"
+            supervised_launches=$((supervised_launches + 1))
+            echo "cold-start-wipe-stopwatch: FOLLOWED self-respawn (reason=$reason ec=$node_ec) — supervised launch $supervised_launches on same datadir (t=${elapsed}s, wall clock continues)"
             launch_node
-            echo "cold-start-wipe-stopwatch: launched pid=$PID (boot $boots)"
+            echo "cold-start-wipe-stopwatch: launched pid=$PID (supervised launch $supervised_launches)"
             sleep "$SAMPLE_SECS"
             continue
         fi
@@ -1708,6 +1767,10 @@ while :; do
         die "node process died before reaching network_tip (exit_reason=${reason:-<none: crash or no breadcrumb>} ec=$node_ec boots=$boots)"
     fi
 
+    # execv self-respawn keeps PID alive.  Observe the node's own prologue
+    # marker before sampling counters so the row and byte window use the real
+    # boot ordinal rather than the supervisor-launch count.
+    refresh_boot_observation
     fj="$(rpc_frontier)"
     bj="$(rpc dumpstate blocker)"
 
@@ -1794,10 +1857,14 @@ done
 
 now=$(date +%s); elapsed=$((now - start))
 
-# BOOTS=<n> is the total number of node launches this run spanned (1 = no
-# respawn; >1 = the harness FOLLOWED that many supervised self-respawns across
-# the single wiped datadir, total wall clock counted across all of them). The
-# recorder folds it into the durable ledger line.
+# Re-read the node-owned evidence at the verdict boundary.  This catches an
+# execv that landed after the final sample and keeps console/proof wording in
+# agreement with phases[].
+refresh_boot_observation
+
+# BOOTS=<n> is the number of actual boot prologues the node recorded (1 = no
+# respawn; >1 includes both in-process execv and harness-followed relaunches on
+# the single wiped datadir). The recorder folds it into the durable ledger.
 echo "BOOTS=$boots"
 
 if [ "$reached" = 1 ]; then

@@ -8,6 +8,8 @@
 #include "models/database.h"
 #include "chain/chainparams.h"
 #include "chain/chainparamsbase.h"
+#include "net/download.h"
+#include "services/sync_monitor.h"
 #include "storage/progress_store.h"
 #include "util/blocker.h"
 #include "validation/chainstate.h"
@@ -391,6 +393,7 @@ static void setup_main_state(struct main_state *ms,
             blocks[i].pprev = &blocks[i - 1];
     }
     active_chain_move_window_tip(&ms->chain_active, &blocks[1]);
+    ms->pindex_best_header = &blocks[1];
 }
 
 
@@ -430,12 +433,21 @@ static bool setup_condition_case(const char *tag, char *dir, size_t dir_n,
 
 static void teardown_condition_case(const char *dir, struct main_state *ms)
 {
+    sync_monitor_set_context(NULL, NULL, NULL);
     condition_engine_set_main_state(NULL);
     main_state_free(ms);
     progress_store_close();
     test_cleanup_tmpdir(dir);
     reducer_frontier_test_set_compiled_anchor(-1);
     condition_engine_reset_for_testing();
+}
+
+static bool svhr_queue_has_exact(struct download_manager *dm, int height,
+                                 const struct uint256 *hash)
+{
+    return dm && hash && dm->queue_len == 1 &&
+           dm->queue_heights[0] == height &&
+           uint256_eq(&dm->queue[0], hash);
 }
 
 int test_stale_validate_headers_repair_condition(void)
@@ -620,6 +632,7 @@ int test_stale_validate_headers_repair_condition(void)
         blocks[2].nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
         blocks[2].pprev = &blocks[1];
         ok = ok && active_chain_move_window_tip(&ms.chain_active, &blocks[2]);
+        ms.pindex_best_header = &blocks[2];
 
         for (int i = 0; i < 5; i++) {
             stale_validate_headers_repair_test_clear_backoff();
@@ -839,6 +852,7 @@ int test_stale_validate_headers_repair_condition(void)
         block2.nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
         block2.pprev = &blocks[1];
         ok = ok && active_chain_move_window_tip(&ms.chain_active, &block2);
+        ms.pindex_best_header = &block2;
 
         /* Seed the durable poisoned `blocks` row keyed by canon (hash2) and
          * inject the handle; force 0 peers so cure_request_peer_refetch takes
@@ -897,9 +911,10 @@ int test_stale_validate_headers_repair_condition(void)
     }
 
     /* ── A refusal must name the cause that actually held ────────────────────
-     * cure_request_peer_refetch() returns -1 when the repair target is not on
-     * the active chain: there is no canonical block_index entry to clear
-     * HAVE_DATA on and no hash to getdata, so the network was never asked. That
+     * cure_request_peer_refetch() returns -1 when the repair target has no
+     * best-header authority agreeing with the visible active chain: there is
+     * no exact block_index entry or hash to request, so the network was never
+     * asked. That
      * -1 used to fall into the caller's `peers <= 0` test and be reported as
      * "no connected peer can serve a P2P getdata re-fetch".
      *
@@ -910,9 +925,166 @@ int test_stale_validate_headers_repair_condition(void)
      * and the blocker sent the recovery ladder looking for peers that were
      * already there.
      *
-     * Here: peers are present (5) and the target (2) is one above the active
-     * chain tip (1). The blocker must say so, and must NOT claim there is no
+     * The cases below hold peers at 5 and distinguish usable exact H*+1
+     * authority from absent or disagreeing authority. Refusal must NOT claim
      * peer. ───────────────────────────────────────────────────────────────── */
+    /* Exact C3 shape: H*+1 is absent from the active window but is a
+     * nonfailed child of the visible tip on best-header ancestry. */
+    {
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[3];
+        struct uint256 hashes[3];
+        struct download_manager dm;
+        bool ok = setup_condition_case("hstar_next_best_header_refetch", dir,
+                                       sizeof(dir), &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+
+        block_index_init(&blocks[2]);
+        memset(&hashes[2], 0, sizeof(hashes[2]));
+        hashes[2].data[0] = 2;
+        hashes[2].data[1] = 0xB8;
+        blocks[2].phashBlock = &hashes[2];
+        blocks[2].nHeight = 2;
+        blocks[2].nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        blocks[2].pprev = &blocks[1];
+        ms.pindex_best_header = &blocks[2];
+
+        dl_init(&dm);
+        sync_monitor_init();
+        sync_monitor_set_context(NULL, &dm, &ms);
+        stale_validate_headers_repair_test_set_peer_count(5);
+        struct zcl_result exact_mismatch =
+            sync_monitor_queue_best_header_body(
+                2, &hashes[1], "test:stale_validate_exact_mismatch");
+        ok = ok && !exact_mismatch.ok && exact_mismatch.code == -6;
+        ok = ok && dm.queue_len == 0;
+        ok = ok && seed_cursors(db, 5, 5);
+        ok = ok && seed_poison_rows(
+            db, 2, "'no-header-solution-backfill-required'", 0);
+
+        blocker_clear("header_repair_no_source");
+        stale_validate_headers_repair_test_clear_backoff();
+        condition_engine_tick();
+
+        struct blocker_snapshot bs;
+        ok = ok && !svhr_no_source_blocker(&bs);
+        ok = ok && (blocks[2].nStatus & BLOCK_HAVE_DATA) == 0;
+        ok = ok && svhr_queue_has_exact(&dm, 2, &hashes[2]);
+        ok = ok && condition_engine_get_active_count() == 1;
+        SVHR_CHECK("H*+1 best-header child is hash-bound and queued with "
+                   "peers, without a false no-source blocker", ok);
+
+        sync_monitor_set_context(NULL, NULL, NULL);
+        dl_free(&dm);
+        teardown_condition_case(dir, &ms);
+    }
+
+    /* A best-header block on a sibling of the visible active tip is not an
+     * authority for H*+1. It must remain data-flagged and unqueued. */
+    {
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[3];
+        struct uint256 hashes[3];
+        struct block_index sibling_parent;
+        struct uint256 sibling_hash;
+        struct download_manager dm;
+        bool ok = setup_condition_case("best_header_parent_disagrees", dir,
+                                       sizeof(dir), &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+
+        block_index_init(&sibling_parent);
+        memset(&sibling_hash, 0, sizeof(sibling_hash));
+        sibling_hash.data[0] = 1;
+        sibling_hash.data[1] = 0xCC;
+        sibling_parent.phashBlock = &sibling_hash;
+        sibling_parent.nHeight = 1;
+        sibling_parent.nStatus = BLOCK_VALID_TREE;
+        sibling_parent.pprev = &blocks[0];
+        block_index_init(&blocks[2]);
+        memset(&hashes[2], 0, sizeof(hashes[2]));
+        hashes[2].data[0] = 2;
+        hashes[2].data[1] = 0xCC;
+        blocks[2].phashBlock = &hashes[2];
+        blocks[2].nHeight = 2;
+        blocks[2].nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        blocks[2].pprev = &sibling_parent;
+        ms.pindex_best_header = &blocks[2];
+
+        dl_init(&dm);
+        sync_monitor_init();
+        sync_monitor_set_context(NULL, &dm, &ms);
+        stale_validate_headers_repair_test_set_peer_count(5);
+        ok = ok && seed_cursors(db, 5, 5);
+        ok = ok && seed_poison_rows(
+            db, 2, "'no-header-solution-backfill-required'", 0);
+
+        blocker_clear("header_repair_no_source");
+        stale_validate_headers_repair_test_clear_backoff();
+        condition_engine_tick();
+
+        struct blocker_snapshot bs;
+        ok = ok && svhr_no_source_blocker(&bs);
+        ok = ok && (blocks[2].nStatus & BLOCK_HAVE_DATA) != 0;
+        ok = ok && dm.queue_len == 0;
+        SVHR_CHECK("best-header child whose parent disagrees with the visible "
+                   "tip fails closed with zero queue", ok);
+
+        sync_monitor_set_context(NULL, NULL, NULL);
+        dl_free(&dm);
+        blocker_clear("header_repair_no_source");
+        teardown_condition_case(dir, &ms);
+    }
+
+    /* Missing visible-parent publication also refuses, even when best-header
+     * ancestry itself is well-linked. */
+    {
+        char dir[256];
+        struct main_state ms;
+        struct block_index blocks[3];
+        struct uint256 hashes[3];
+        struct download_manager dm;
+        bool ok = setup_condition_case("best_header_visible_parent_absent", dir,
+                                       sizeof(dir), &ms, blocks, hashes);
+        sqlite3 *db = progress_store_db();
+
+        block_index_init(&blocks[2]);
+        memset(&hashes[2], 0, sizeof(hashes[2]));
+        hashes[2].data[0] = 2;
+        hashes[2].data[1] = 0xDD;
+        blocks[2].phashBlock = &hashes[2];
+        blocks[2].nHeight = 2;
+        blocks[2].nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        blocks[2].pprev = &blocks[1];
+        ms.pindex_best_header = &blocks[2];
+        active_chain_free(&ms.chain_active);
+        active_chain_init(&ms.chain_active);
+
+        dl_init(&dm);
+        sync_monitor_init();
+        sync_monitor_set_context(NULL, &dm, &ms);
+        stale_validate_headers_repair_test_set_peer_count(5);
+        ok = ok && seed_cursors(db, 5, 5);
+        ok = ok && seed_poison_rows(
+            db, 2, "'no-header-solution-backfill-required'", 0);
+
+        blocker_clear("header_repair_no_source");
+        stale_validate_headers_repair_test_clear_backoff();
+        condition_engine_tick();
+
+        struct blocker_snapshot bs;
+        ok = ok && svhr_no_source_blocker(&bs);
+        ok = ok && (blocks[2].nStatus & BLOCK_HAVE_DATA) != 0;
+        ok = ok && dm.queue_len == 0;
+        SVHR_CHECK("missing visible parent fails closed with zero queue", ok);
+
+        sync_monitor_set_context(NULL, NULL, NULL);
+        dl_free(&dm);
+        blocker_clear("header_repair_no_source");
+        teardown_condition_case(dir, &ms);
+    }
+
     {
         char dir[256];
         struct main_state ms;
@@ -922,7 +1094,7 @@ int test_stale_validate_headers_repair_condition(void)
                                        sizeof(dir), &ms, blocks, hashes);
         sqlite3 *db = progress_store_db();
 
-        /* Active chain tip stays at height 1 — target 2 is NOT on it. */
+        /* Best-header tip stays at height 1 — target 2 has no ancestor. */
         stale_validate_headers_repair_test_set_peer_count(5);
         ok = ok && seed_cursors(db, 5, 5);
         ok = ok && seed_poison_rows(
@@ -941,10 +1113,10 @@ int test_stale_validate_headers_repair_condition(void)
         /* The cause that actually held, and the peer count that was really
          * there — both readable straight off the blocker. */
         ok = ok && raised &&
-             strstr(bs.reason, "is not on the active chain") != NULL;
+             strstr(bs.reason, "no best-header ancestor") != NULL;
         ok = ok && raised && strstr(bs.reason, "5 peer(s) connected") != NULL;
 
-        SVHR_CHECK("target off the active chain is named as such, not as "
+        SVHR_CHECK("missing best-header authority is named as such, not as "
                    "\"no connected peer\", and carries the real peer count",
                    ok);
 

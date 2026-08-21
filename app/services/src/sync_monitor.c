@@ -424,19 +424,8 @@ static bool ensure_blocks_download_state(const char *reason)
            sync_get_state() == SYNC_CONNECTING_BLOCKS;
 }
 
-enum body_queue_selector {
-    BODY_QUEUE_ACTIVE_FRONTIER = 0,
-    BODY_QUEUE_BEST_HEADER_ANCESTOR = 1,
-};
-
-static const char *body_queue_selector_name(enum body_queue_selector selector)
-{
-    switch (selector) {
-    case BODY_QUEUE_ACTIVE_FRONTIER: return "active frontier";
-    case BODY_QUEUE_BEST_HEADER_ANCESTOR: return "best-header ancestor";
-    }
-    return "unknown";
-}
+enum body_queue_selector { BODY_QUEUE_ACTIVE_FRONTIER = 0,
+                           BODY_QUEUE_BEST_HEADER_ANCESTOR = 1 };
 
 static struct block_index *resolve_body_queue_target(
     struct main_state *ms,
@@ -455,12 +444,15 @@ static struct block_index *resolve_body_queue_target(
 static struct zcl_result queue_body_target(
     int target_height,
     const char *reason,
-    enum body_queue_selector selector)
+    enum body_queue_selector selector,
+    const struct uint256 *expected_hash)
 {
     struct main_state *ms = sync_monitor_main_state();
     struct download_manager *dm = sync_monitor_download_manager();
     if (!ms || !dm)
         return ZCL_ERR(-1, "frontier body queue: missing ms or dm");
+    const char *selector_name = selector == BODY_QUEUE_ACTIVE_FRONTIER
+        ? "active frontier" : "best-header ancestor";
 
     struct uint256 target_hash;
     memset(&target_hash, 0, sizeof(target_hash));
@@ -480,14 +472,19 @@ static struct zcl_result queue_body_target(
         zcl_mutex_unlock(&ms->cs_main);
         return ZCL_ERR(-3,
                        "frontier body queue: no %s block at h=%d",
-                       body_queue_selector_name(selector), target_height);
+                       selector_name, target_height);
     }
     if (target->nStatus & BLOCK_FAILED_ANY_MASK) {
         zcl_mutex_unlock(&ms->cs_main);
         return ZCL_ERR(-4,
                        "frontier body queue: %s block failed h=%d status=%u",
-                       body_queue_selector_name(selector), target_height,
+                       selector_name, target_height,
                        target->nStatus);
+    }
+    if (expected_hash && !uint256_eq(target->phashBlock, expected_hash)) {
+        zcl_mutex_unlock(&ms->cs_main);
+        return ZCL_ERR(-6, "frontier body queue: %s hash changed at h=%d",
+                       selector_name, target_height);
     }
     already_have_data = (target->nStatus & BLOCK_HAVE_DATA) != 0;
     target_hash = *target->phashBlock;
@@ -526,15 +523,17 @@ struct zcl_result sync_monitor_queue_active_frontier_body(
     const char *reason)
 {
     return queue_body_target(target_height, reason,
-                             BODY_QUEUE_ACTIVE_FRONTIER);
+                             BODY_QUEUE_ACTIVE_FRONTIER, NULL);
 }
 
 struct zcl_result sync_monitor_queue_best_header_body(
     int target_height,
+    const struct uint256 *expected_hash,
     const char *reason)
 {
     return queue_body_target(target_height, reason,
-                             BODY_QUEUE_BEST_HEADER_ANCESTOR);
+                             BODY_QUEUE_BEST_HEADER_ANCESTOR,
+                             expected_hash);
 }
 
 bool sync_monitor_active_next_child_exists(struct main_state *ms,

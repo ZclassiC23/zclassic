@@ -45,7 +45,7 @@ app/services/src/node_db_catchup_service.c 862
 app/services/src/rolling_anchor_service.c 801
 
 app/services/src/sticky_escalator.c 1271
-app/services/src/sync_monitor.c 811
+app/services/src/sync_monitor.c 810
 # ZCODE Scientific Metaverse S4: closed benchmark/reproduction executor —
 # the confined runner (fork + Landlock/seccomp/rlimits + sandbox self-check
 # canaries + crash discipline) is one fail-closed ritual that must stay

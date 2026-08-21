@@ -25,7 +25,7 @@ bool stage_repair_read_validate_row(sqlite3 *db, int height,
     memset(out, 0, sizeof(*out));
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT ok, COALESCE(fail_reason,'') "
+            "SELECT ok, hash, COALESCE(fail_reason,'') "
             "FROM validate_headers_log WHERE height = ?",
             -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("stage_repair",
@@ -38,7 +38,13 @@ bool stage_repair_read_validate_row(sqlite3 *db, int height,
     if (rc == SQLITE_ROW) {
         out->found = true;
         out->ok = sqlite3_column_int(st, 0);
-        const unsigned char *txt = sqlite3_column_text(st, 1);
+        const void *hash = sqlite3_column_blob(st, 1);
+        int hash_len = sqlite3_column_bytes(st, 1);
+        if (hash && hash_len == 32) {
+            memcpy(out->hash, hash, 32);
+            out->has_hash = true;
+        }
+        const unsigned char *txt = sqlite3_column_text(st, 2);
         if (txt)
             snprintf(out->fail_reason, sizeof(out->fail_reason),
                      "%s", (const char *)txt);
@@ -80,14 +86,15 @@ bool stage_repair_cursor_at_unlocked(sqlite3 *db, const char *name, int *out)
     return true;
 }
 
-static bool body_fetch_row_observed_unlocked(sqlite3 *db, int height,
-                                             bool *found, bool *observed)
+static bool body_fetch_row_observed_unlocked(
+    sqlite3 *db, int height, const struct uint256 *expected_hash,
+    bool *found, bool *observed)
 {
     *found = false;
     *observed = false;
     sqlite3_stmt *st = NULL;
     if (sqlite3_prepare_v2(db,
-            "SELECT ok FROM body_fetch_log WHERE height = ?",
+            "SELECT hash, ok FROM body_fetch_log WHERE height = ?",
             -1, &st, NULL) != SQLITE_OK) {
         LOG_WARN("stage_repair",
                  "[stage_repair] body_fetch observed prepare failed: %s",
@@ -98,7 +105,12 @@ static bool body_fetch_row_observed_unlocked(sqlite3 *db, int height,
     int rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
         *found = true;
-        *observed = sqlite3_column_int(st, 0) == 1;
+        const void *hash = sqlite3_column_blob(st, 0);
+        int hash_len = sqlite3_column_bytes(st, 0);
+        bool hash_matches = !expected_hash ||
+            (hash && hash_len == 32 &&
+             memcmp(hash, expected_hash->data, 32) == 0);
+        *observed = hash_matches && sqlite3_column_int(st, 1) == 1;
     } else if (rc != SQLITE_DONE) {
         LOG_WARN("stage_repair",
                  "[stage_repair] body_fetch observed step failed rc=%d: %s",
@@ -112,13 +124,19 @@ static bool body_fetch_row_observed_unlocked(sqlite3 *db, int height,
 
 bool stage_repair_body_fetch_observed(sqlite3 *db, int height)
 {
+    return stage_repair_body_fetch_observed_hash(db, height, NULL);
+}
+
+bool stage_repair_body_fetch_observed_hash(
+    sqlite3 *db, int height, const struct uint256 *expected_hash)
+{
     if (!db || height < 0)
         return false;
     progress_store_tx_lock();
     bool found = false;
     bool observed = false;
-    bool ok = body_fetch_row_observed_unlocked(db, height, &found,
-                                               &observed);
+    bool ok = body_fetch_row_observed_unlocked(
+        db, height, expected_hash, &found, &observed);
     progress_store_tx_unlock();
     return ok && found && observed;
 }
@@ -153,8 +171,14 @@ bool stage_repair_body_fetch_missing_have_data_candidate(
 
     bool body_row_found = false;
     bool body_observed = false;
-    if (!body_fetch_row_observed_unlocked(db, height, &body_row_found,
-                                          &body_observed)) {
+    struct uint256 validate_hash;
+    const struct uint256 *expected_hash = NULL;
+    if (vh.has_hash) {
+        memcpy(validate_hash.data, vh.hash, 32);
+        expected_hash = &validate_hash;
+    }
+    if (!body_fetch_row_observed_unlocked(
+            db, height, expected_hash, &body_row_found, &body_observed)) {
         progress_store_tx_unlock();
         return false;
     }
@@ -162,11 +186,14 @@ bool stage_repair_body_fetch_missing_have_data_candidate(
 
     bool ready = body_fetch_cursor == height &&
                  validate_cursor > height &&
-                 vh.found && vh.ok == 1 &&
-                 !body_row_found;
+                 vh.found && vh.has_hash && vh.ok == 1 &&
+                 !body_observed;
     if (out) {
         out->ready = ready;
-        out->body_observed = body_row_found && body_observed;
+        out->body_observed = body_observed;
+        out->has_target_hash = vh.has_hash;
+        if (vh.has_hash)
+            memcpy(out->target_hash.data, vh.hash, 32);
         out->target_height = height;
         out->validate_cursor = validate_cursor;
         out->body_fetch_cursor = body_fetch_cursor;

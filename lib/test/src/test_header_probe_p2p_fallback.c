@@ -25,6 +25,7 @@
 #include "jobs/reducer_frontier.h"
 #include "jobs/stage_repair.h"
 #include "services/header_probe.h"
+#include "services/sync_monitor.h"
 #include "storage/progress_store.h"
 #include "validation/chainstate.h"
 #include "validation/main_state.h"
@@ -33,6 +34,7 @@
 
 /* Case 3 (net scoring) harness. */
 #include "mining/miner.h"
+#include "net/download.h"
 #include "net/msg_internal.h"
 #include "net/msgprocessor.h"
 #include "net/peer_scoring.h"
@@ -285,6 +287,7 @@ static void setup_main_state_wired(struct main_state *ms,
     blocks[1].nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
     blocks[1].pprev = &blocks[0];
     active_chain_move_window_tip(&ms->chain_active, &blocks[1]);
+    ms->pindex_best_header = &blocks[1];
 }
 
 /* Point header_probe's oracle at a dead port so the pull genuinely attempts a
@@ -306,7 +309,8 @@ static void init_dead_oracle(struct main_state *ms)
 static bool case_setup(const char *tag, char *dir, size_t dir_n,
                        struct main_state *ms, struct block_index blocks[2],
                        struct uint256 hashes[2],
-                       const struct uint256 *repair_hash)
+                       const struct uint256 *repair_hash,
+                       struct download_manager *dm)
 {
     condition_engine_reset_for_testing();
     stale_validate_headers_repair_test_reset();
@@ -318,6 +322,9 @@ static bool case_setup(const char *tag, char *dir, size_t dir_n,
     if (!progress_store_open(dir))
         return false;
     setup_main_state_wired(ms, blocks, hashes, repair_hash);
+    dl_init(dm);
+    sync_monitor_init();
+    sync_monitor_set_context(NULL, dm, ms);
     condition_engine_set_main_state(ms);
     init_dead_oracle(ms);
     register_stale_validate_headers_repair();
@@ -325,10 +332,13 @@ static bool case_setup(const char *tag, char *dir, size_t dir_n,
            seed_proven_authority(progress_store_db(), 1);
 }
 
-static void case_teardown(const char *dir, struct main_state *ms)
+static void case_teardown(const char *dir, struct main_state *ms,
+                          struct download_manager *dm)
 {
+    sync_monitor_set_context(NULL, NULL, NULL);
     condition_engine_set_main_state(NULL);
     header_probe_reset_for_test();
+    dl_free(dm);
     main_state_free(ms);
     progress_store_close();
     test_cleanup_tmpdir(dir);
@@ -408,6 +418,7 @@ static int run_p2p_repair_case(void)
     struct main_state ms;
     struct block_index blocks[2];
     struct uint256 hashes[2];
+    struct download_manager dm;
 
     struct block_header rh;
     build_repair_header(1, &rh);
@@ -415,7 +426,7 @@ static int run_p2p_repair_case(void)
     block_header_get_hash(&rh, &rhash);
 
     bool ok = case_setup("p2p_repair", dir, sizeof(dir), &ms, blocks, hashes,
-                         &rhash);
+                         &rhash, &dm);
     sqlite3 *db = progress_store_db();
     ok = ok && seed_cursors(db, 5, 5);
     ok = ok && seed_poison_rows(
@@ -436,6 +447,8 @@ static int run_p2p_repair_case(void)
     ok = ok && s1.p2p_no_peer_events == 0;                   /* peers available */
     ok = ok && s1.p2p_repairs == 0;                          /* not served yet */
     ok = ok && s1.last_repair_height == 1;
+    ok = ok && dm.queue_len == 1 && dm.queue_heights[0] == 1;
+    ok = ok && uint256_eq(&dm.queue[0], &rhash);
     ok = ok && !blocker_exists(HPF_NO_SOURCE_BLOCKER_ID);
     HPF_CHECK("oracle dead → P2P getdata re-fetch requested + observable "
               "(no premature repair, no missing-input blocker)", ok);
@@ -478,7 +491,7 @@ static int run_p2p_repair_case(void)
     HPF_CHECK("repaired frontier folds through + H* advances → Condition "
               "clears (no latch)", ok);
 
-    case_teardown(dir, &ms);
+    case_teardown(dir, &ms, &dm);
     return failures;
 }
 
@@ -489,6 +502,7 @@ static int run_missing_input_case(void)
     struct main_state ms;
     struct block_index blocks[2];
     struct uint256 hashes[2];
+    struct download_manager dm;
 
     struct block_header rh;
     build_repair_header(1, &rh);
@@ -496,7 +510,7 @@ static int run_missing_input_case(void)
     block_header_get_hash(&rh, &rhash);
 
     bool ok = case_setup("missing_input", dir, sizeof(dir), &ms, blocks, hashes,
-                         &rhash);
+                         &rhash, &dm);
     sqlite3 *db = progress_store_db();
     ok = ok && seed_cursors(db, 5, 5);
     ok = ok && seed_poison_rows(
@@ -537,7 +551,7 @@ static int run_missing_input_case(void)
     HPF_CHECK("blocker clears + repair serves once a P2P source returns "
               "(recoverable class never permanently gives up)", ok);
 
-    case_teardown(dir, &ms);
+    case_teardown(dir, &ms, &dm);
     return failures;
 }
 

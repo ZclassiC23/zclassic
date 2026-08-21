@@ -77,6 +77,8 @@ struct zcl_result sync_monitor_queue_active_frontier_body(
     const char *reason);
 struct zcl_result sync_monitor_queue_best_header_body(
     int target_height,
+    /* Optional: refuse if the best ancestor changed since review. */
+    const struct uint256 *expected_hash,
     const char *reason);
 int sync_monitor_local_header_refill(struct connman *cm,
                                      int next_h,

@@ -105,7 +105,7 @@ static enum condition_remedy_result remedy_local_header_refill_needed(void)
         atomic_store(&g_last_best_header_body_target, body_h);
         if (body_h >= 0) {
             struct zcl_result qr = sync_monitor_queue_best_header_body(
-                body_h,
+                body_h, NULL,
                 "condition:local_header_refill_needed same-height fork body");
             if (!qr.ok) {
                 LOG_WARN("condition",

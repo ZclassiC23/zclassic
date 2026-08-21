@@ -60,6 +60,8 @@ struct stage_repair_header_solution_result {
 struct stage_repair_body_fetch_gap {
     bool ready;
     bool body_observed;
+    bool has_target_hash;
+    struct uint256 target_hash;
     int target_height;
     int validate_cursor;
     int body_fetch_cursor;
@@ -150,6 +152,8 @@ bool stage_repair_body_fetch_missing_have_data_frontier_candidate(
     struct stage_repair_body_fetch_gap *out);
 
 bool stage_repair_body_fetch_observed(struct sqlite3 *db, int height);
+bool stage_repair_body_fetch_observed_hash(
+    struct sqlite3 *db, int height, const struct uint256 *expected_hash);
 
 struct stage_reconcile_result {
     bool clamped;   /* the tip_finalize cursor was strictly above floor and moved */

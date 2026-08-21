@@ -15,9 +15,20 @@
 
 #include <sqlite3.h>
 #include <stdatomic.h>
+#include <string.h>
 
 static _Atomic int g_target_at_detect = -1;
 static _Atomic int g_remedy_calls = 0;
+
+enum bfmhd_target_route {
+    BFMHD_TARGET_NONE = 0,
+    BFMHD_TARGET_ACTIVE_FRONTIER,
+    BFMHD_TARGET_BEST_HEADER,
+};
+
+static _Atomic int g_target_route = BFMHD_TARGET_NONE;
+static _Atomic bool g_target_hash_valid;
+static struct uint256 g_target_hash;
 
 /* Test seam: the mid-chain candidate reads utxo_apply's own select-idle
  * record (see jobs/utxo_apply_stage.h) — real side effects a unit test
@@ -33,8 +44,8 @@ static bfmhd_select_idle_height_fn g_select_idle_height_fn =
 static bfmhd_select_idle_is_read_failure_fn g_select_idle_is_read_failure_fn =
     utxo_apply_stage_select_idle_is_read_failure;
 
-static struct block_index *target_index_locked(struct main_state *ms,
-                                               int target)
+static struct block_index *active_target_index_locked(struct main_state *ms,
+                                                      int target)
 {
     if (!ms || target < 0)
         return NULL;
@@ -60,11 +71,57 @@ static struct block_index *target_index_locked(struct main_state *ms,
     return NULL;
 }
 
-static bool target_has_readable_data(struct main_state *ms, int target)
+/* Candidate 1 is a durable validate_headers verdict above the finalized
+ * active window. Resolve it by the verdict's exact hash on best-header
+ * ancestry, then prove that ancestry still extends the visible parent. A
+ * height-only block-map scan may select a data-bearing stale sibling and
+ * suppress the canonical fetch indefinitely. */
+static struct block_index *validated_best_header_target_locked(
+    struct main_state *ms, int target, const struct uint256 *expected_hash)
+{
+    if (!ms || target < 0 || !expected_hash || !ms->pindex_best_header ||
+        target > ms->pindex_best_header->nHeight)
+        return NULL;
+
+    struct block_index *bi = block_index_get_ancestor(
+        ms->pindex_best_header, target);
+    if (!bi || bi->nHeight != target || !bi->phashBlock ||
+        block_has_any_failure(bi) ||
+        !uint256_eq(bi->phashBlock, expected_hash))
+        return NULL;
+    if (target == 0)
+        return bi;
+
+    struct block_index *visible_parent =
+        active_chain_at(&ms->chain_active, target - 1);
+    if (!visible_parent || !visible_parent->phashBlock || !bi->pprev ||
+        !bi->pprev->phashBlock ||
+        !uint256_eq(bi->pprev->phashBlock, visible_parent->phashBlock))
+        return NULL;
+    return bi;
+}
+
+static struct block_index *target_for_route_locked(
+    struct main_state *ms, int target, enum bfmhd_target_route route,
+    const struct uint256 *expected_hash)
+{
+    struct block_index *bi = route == BFMHD_TARGET_BEST_HEADER
+        ? validated_best_header_target_locked(ms, target, expected_hash)
+        : active_target_index_locked(ms, target);
+    if (!bi || !bi->phashBlock ||
+        (expected_hash && !uint256_eq(bi->phashBlock, expected_hash)))
+        return NULL;
+    return bi;
+}
+
+static bool target_has_readable_data(
+    struct main_state *ms, int target, enum bfmhd_target_route route,
+    const struct uint256 *expected_hash)
 {
     bool readable = false;
     zcl_mutex_lock(&ms->cs_main);
-    struct block_index *bi = target_index_locked(ms, target);
+    struct block_index *bi = target_for_route_locked(
+        ms, target, route, expected_hash);
     if (bi && (bi->nStatus & BLOCK_HAVE_DATA)) {
         char datadir[2048];
         GetDataDir(true, datadir, sizeof(datadir));
@@ -74,13 +131,17 @@ static bool target_has_readable_data(struct main_state *ms, int target)
     return readable;
 }
 
-static bool target_missing_data(struct main_state *ms, int target)
+static bool active_target_missing_data(struct main_state *ms, int target,
+                                       struct uint256 *out_hash)
 {
     bool missing = false;
     zcl_mutex_lock(&ms->cs_main);
-    struct block_index *bi = target_index_locked(ms, target);
-    if (bi)
+    struct block_index *bi = active_target_index_locked(ms, target);
+    if (bi) {
         missing = (bi->nStatus & BLOCK_HAVE_DATA) == 0;
+        if (missing && out_hash)
+            *out_hash = *bi->phashBlock;
+    }
     zcl_mutex_unlock(&ms->cs_main);
     return missing;
 }
@@ -97,6 +158,9 @@ static bool detect_body_fetch_missing_have_data(void)
         return false;
 
     int target = -1;
+    enum bfmhd_target_route route = BFMHD_TARGET_NONE;
+    struct uint256 target_hash;
+    memset(&target_hash, 0, sizeof(target_hash));
 
     /* Candidate 1: the body_fetch stage's own frontier cursor — the class
      * this Condition originally healed (validate_headers led body_fetch with
@@ -104,12 +168,25 @@ static bool detect_body_fetch_missing_have_data(void)
     struct stage_repair_body_fetch_gap gap;
     if (stage_repair_body_fetch_missing_have_data_frontier_candidate(
             db, &gap) && !gap.body_observed) {
-        if (target_missing_data(ms, gap.target_height)) {
+        bool missing = false;
+        if (gap.has_target_hash) {
+            zcl_mutex_lock(&ms->cs_main);
+            struct block_index *bi = validated_best_header_target_locked(
+                ms, gap.target_height, &gap.target_hash);
+            if (bi && !(bi->nStatus & BLOCK_HAVE_DATA)) {
+                missing = true;
+                target_hash = gap.target_hash;
+            }
+            zcl_mutex_unlock(&ms->cs_main);
+        }
+        if (missing) {
             target = gap.target_height;
+            route = BFMHD_TARGET_BEST_HEADER;
         } else {
             LOG_WARN("condition",
-                     "[condition:body_fetch_missing_have_data] target h=%d "
-                     "already has data or is unindexable; skipping",
+                     "[condition:body_fetch_missing_have_data] canonical "
+                     "validated target h=%d already has data or fails "
+                     "best-header/visible-parent identity; skipping",
                      gap.target_height);
         }
     }
@@ -124,26 +201,51 @@ static bool detect_body_fetch_missing_have_data(void)
     if (g_select_idle_is_read_failure_fn()) {
         int64_t ua_h = g_select_idle_height_fn();
         if (ua_h >= 0 && (target < 0 || ua_h < target) &&
-            target_missing_data(ms, (int)ua_h))
+            active_target_missing_data(ms, (int)ua_h, &target_hash)) {
             target = (int)ua_h;
+            route = BFMHD_TARGET_ACTIVE_FRONTIER;
+        }
     }
 
     if (target < 0)
         return false;
 
     atomic_store(&g_target_at_detect, target);
+    g_target_hash = target_hash;
+    atomic_store(&g_target_hash_valid, true);
+    atomic_store(&g_target_route, route);
     return true;
 }
 
 static enum condition_remedy_result remedy_body_fetch_missing_have_data(void)
 {
     int target = atomic_load(&g_target_at_detect);
-    if (target < 0)
+    enum bfmhd_target_route route =
+        (enum bfmhd_target_route)atomic_load(&g_target_route);
+    if (target < 0 || route == BFMHD_TARGET_NONE ||
+        !atomic_load(&g_target_hash_valid))
+        return COND_REMEDY_SKIP;
+
+    /* Re-prove detect's exact identity before asking the shared queue path.
+     * A concurrent best-header switch is safe but belongs to the next detect
+     * tick, never to this captured remedy. */
+    struct main_state *ms = sync_monitor_main_state();
+    if (!ms)
+        return COND_REMEDY_FAILED;
+    zcl_mutex_lock(&ms->cs_main);
+    bool still_exact = target_for_route_locked(
+        ms, target, route, &g_target_hash) != NULL;
+    zcl_mutex_unlock(&ms->cs_main);
+    if (!still_exact)
         return COND_REMEDY_SKIP;
 
     atomic_fetch_add(&g_remedy_calls, 1);
-    struct zcl_result r = sync_monitor_queue_active_frontier_body(
-        target, "condition:body_fetch_missing_have_data");
+    struct zcl_result r = route == BFMHD_TARGET_BEST_HEADER
+        ? sync_monitor_queue_best_header_body(
+              target, &g_target_hash,
+              "condition:body_fetch_missing_have_data canonical")
+        : sync_monitor_queue_active_frontier_body(
+              target, "condition:body_fetch_missing_have_data mid-chain");
     if (!r.ok) {
         LOG_WARN("condition",
                  "[condition:body_fetch_missing_have_data] queue failed "
@@ -163,15 +265,19 @@ static bool witness_body_fetch_missing_have_data(int64_t target_at_detect)
     (void)target_at_detect;
 
     int target = atomic_load(&g_target_at_detect);
+    enum bfmhd_target_route route =
+        (enum bfmhd_target_route)atomic_load(&g_target_route);
     sqlite3 *db = progress_store_db();
-    if (db && target >= 0 &&
-        stage_repair_body_fetch_observed(db, target))
+    if (db && target >= 0 && atomic_load(&g_target_hash_valid) &&
+        stage_repair_body_fetch_observed_hash(
+            db, target, &g_target_hash))
         return true;
 
     struct main_state *ms = sync_monitor_main_state();
     if (!ms || target < 0)
         return false;
-    return target_has_readable_data(ms, target);
+    return atomic_load(&g_target_hash_valid) &&
+        target_has_readable_data(ms, target, route, &g_target_hash);
 }
 
 static struct condition c_body_fetch_missing_have_data = {
@@ -205,6 +311,9 @@ void body_fetch_missing_have_data_test_reset(void)
 {
     atomic_store(&g_target_at_detect, -1);
     atomic_store(&g_remedy_calls, 0);
+    atomic_store(&g_target_route, BFMHD_TARGET_NONE);
+    atomic_store(&g_target_hash_valid, false);
+    memset(&g_target_hash, 0, sizeof(g_target_hash));
     g_select_idle_height_fn = bfmhd_test_no_select_idle_height;
     g_select_idle_is_read_failure_fn = bfmhd_test_no_select_idle_read_failure;
     condition_reset_state(&c_body_fetch_missing_have_data);
