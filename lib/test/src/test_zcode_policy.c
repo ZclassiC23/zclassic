@@ -328,10 +328,14 @@ static int t_decisions(void)
                          VCS_POLICY_FREE_ANNOUNCE_PER_HOUR)
                          .rule,
                      "announce-rate-limit") == 0 &&
-              vcs_policy_check_announce(VCS_POLICY_TIER_EARNED_CONTRIBUTOR,
-                                        7).allow &&
-              !vcs_policy_check_announce(VCS_POLICY_TIER_EARNED_CONTRIBUTOR,
-                                         8).allow);
+              vcs_policy_check_announce(
+                  VCS_POLICY_TIER_EARNED_CONTRIBUTOR,
+                  VCS_POLICY_FREE_ANNOUNCE_PER_HOUR - 1)
+                  .allow &&
+              !vcs_policy_check_announce(
+                  VCS_POLICY_TIER_EARNED_CONTRIBUTOR,
+                  VCS_POLICY_FREE_ANNOUNCE_PER_HOUR)
+                   .allow);
     ZPY_CHECK("burst: the request burst allowance is exact",
               vcs_policy_check_request_burst(VCS_POLICY_TIER_NEW_USER,
                                              VCS_POLICY_FREE_REQUEST_BURST_PER_WINDOW - 1u).allow &&

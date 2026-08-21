@@ -50,7 +50,7 @@ static const struct vcs_policy_limits
         4u,                                        /* concurrent downloads */
         1u,                                        /* queue_priority */
         UINT64_C(256) * 1024u * 1024u,             /* pin allowance: 256 MiB */
-        8u,                                        /* announces_per_hour */
+        VCS_POLICY_FREE_ANNOUNCE_PER_HOUR,         /* announces_per_hour */
         1024u,                                     /* request burst */
     },
     /* VERIFIED_SEEDER */

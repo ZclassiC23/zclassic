@@ -404,10 +404,12 @@ review and tests.
   and covers the golden path, malicious wrong-hash chunks, unrequested DATA,
   restart-mid-download resume, disconnect requeue, and the A→B→C hop:
   A publishes the C23 Arena library shelf (`zprng`, `zdogfight`, `zdogdrone`,
-  `zdogace`, `zdogview`), B mirrors and pins, A disappears, C fetches the exact
-  carriers from B. The in-process engine gate (`lib/test/src/test_zcode_swarm.c`) seeds
-  an ordinary independent C23 shelf from `packages/` and proves keep-alive of
-  those roots is inventory, not unique-root flood. Still uncovered: reorg.
+  `zdogace`, `zdogview`) and a second ordinary catalog (`zhex`, `zstr`, `zbuf`,
+  `zsha256`, `zring`, `zmap`, `zvec`, `zutf8`); B mirrors and pins; A
+  disappears; C fetches the exact carriers from B. The in-process engine gate
+  (`lib/test/src/test_zcode_swarm.c`) seeds that ordinary shelf and proves
+  keep-alive of those roots is inventory, not unique-root flood. Still
+  uncovered: reorg.
 <!-- claim: file-present lib/test/src/test_zcode_swarm_net.c # the real-wire swarm harness exists -->
 <!-- claim: file-present lib/test/src/test_zcode_swarm.c # the in-process engine gate seeds an ordinary C23 shelf -->
 

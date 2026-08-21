@@ -157,7 +157,10 @@ NEW_USER may learn unique *new* roots up to the serving-set size (64) per
 hour. Keep-alive of a root already heard is inventory, not flood. A node that
 imported and pinned a carrier re-announces that same root — that is how a
 later peer still fetches the exact C23 Apache-2.0 bytes after the original
-publisher disappears. Verify the `package_root`; do not trust the announcer.
+publisher disappears. The swarm net hop proves that for both the Arena
+shelf and an ordinary independent catalog (`zhex`, `zstr`, `zbuf`,
+`zsha256`, `zring`, `zmap`, `zvec`, `zutf8`). Verify the `package_root`;
+do not trust the announcer.
 
 1. Discover the signed POINTER for the exact root, then fetch its returned
    `transport_root`. Fetch is resumable and inert: it does not build, link, or

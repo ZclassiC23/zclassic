@@ -23,7 +23,8 @@
  *                          unique-root serving-set inventory so one
  *                          library shelf is deliverable over the swarm
  *     earned contributor — larger queue, more frequent publication, pin
- *                          allowance (earned score >= the threshold)
+ *                          allowance, unique-root inventory at least the
+ *                          serving-set size (earned score >= the threshold)
  *     active verified seeder — best local bandwidth ratio, highest request
  *                          priority (earned score + verified upload volume
  *                          + local ratio >= 1)

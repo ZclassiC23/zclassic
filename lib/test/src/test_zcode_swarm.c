@@ -1670,8 +1670,8 @@ static int t_swarm_serving_and_allowance(void)
     /* Download allowance: pre-fill the peer's weekly download bucket
      * with its full tier allowance; the scheduler must then refuse to
      * pull from it (named allowance exhausted, NO offence). The peer is
-     * an earned contributor (a NEW_USER may not announce at all under
-     * the frozen 0/hour rate). */
+     * an earned contributor (unique-root inventory is the serving-set
+     * size at this tier, same as NEW_USER). */
     struct sw_node n2;
     uint8_t key2[33];
     sw_key(42, key2);

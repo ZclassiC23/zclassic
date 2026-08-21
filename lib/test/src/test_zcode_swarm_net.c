@@ -14,10 +14,10 @@
  * session pseudo-key derivation (0x02 || SHA3-256(domain || host)),
  * same penalty→peer_offence mapping, same reply/drain sends — with two
  * deliberate, documented substitutions: the score callback returns a
- * fixed contributor score (the production glue reads the reward ledger;
- * a NEW_USER peer has a 0/hour announce rate in the frozen slice-11
- * table, so honest announces would otherwise be flood-penalized), and
- * the tick clock is a deterministic counter instead of wall time.
+ * fixed contributor score (the production glue reads the reward ledger),
+ * and the tick clock is a deterministic counter instead of wall time.
+ * Contributor unique-root inventory is the serving-set size, same as
+ * NEW_USER, so an honest library shelf is not announce-flood.
  *
  * Covered:
  *   1. Golden path: two engines, end-to-end verified fetch into the CAS,
@@ -37,7 +37,10 @@
  *      content.v2 evidence closure, then accepted source rebuilds Git-free.
  *   8. Useful C23 Arena packages (zprng, zdogfight, zdogdrone, zdogace,
  *      zdogview) host redundantly: A publishes, B fetches and pins, A
- *      disappears, C still discovers and fetches the exact carriers from B. */
+ *      disappears, C still discovers and fetches the exact carriers from B.
+ *   9. Ordinary independent C23 library titles (zhex, zstr, zbuf, zsha256,
+ *      zring, zmap, zvec, zutf8) take the same A→B→C hop: a catalog, not
+ *      only the Arena demo, survives the original publisher disappearing. */
 
 #include "test/test_core.h"
 
@@ -107,7 +110,7 @@
 } while (0)
 
 #define ZWN_DAY 20500
-#define ZWN_SCORE UINT64_C(100) /* EARNED_CONTRIBUTOR: announces allowed */
+#define ZWN_SCORE UINT64_C(100) /* EARNED_CONTRIBUTOR */
 #define ZWN_MAX_FILES 13u
 #define ZWN_MAX_FILE 1200u
 #define ZWN_KEY_DOMAIN "zcl.zcode_swarm_peer.v1"
@@ -4177,86 +4180,95 @@ static bool zwn_hop_carrier(struct zwn_node *from, struct zwn_node *to,
                                  true) == VCS_PACKAGE_STORE_OK;
 }
 
-/* Useful C23 packages (entropy + match core + patrol pilot + pursuit
- * pilot + integer 3D view) must survive the original publisher
- * disappearing. Fetch is inert; import reconstructs the signed carrier;
- * pin keeps the replica; B then serves C. Publish in dependency order:
- * zprng, zdogfight, then zdogdrone, zdogace and zdogview (those three
- * lock zdogfight+zprng). NEW_USER unique-new quota is the serving-set
- * size; these roots sit inside that shelf. */
-static int zwn_t_useful_c23_redundant(const struct chain_params *params)
+/* A publishes these in-tree packages, B mirrors and pins, A is removed,
+ * C fetches the exact carriers from B. Fetch is inert; import
+ * reconstructs the signed carrier; pin keeps the replica. NEW_USER
+ * unique-new quota is the serving-set size; n sits inside that shelf. */
+enum { ZWN_REDUNDANT_MAX = 16 };
+
+static int zwn_t_redundant_publish_disappear(
+    const struct chain_params *params, const char *test_name,
+    const char *label, const char *const *dirs, size_t n, uint64_t now_base)
 {
     int failures = 0;
     struct zwn_fixture fixture = {0};
-    static const char *const k_dirs[] = {
-        "packages/zprng",
-        "packages/zdogfight",
-        "packages/zdogdrone",
-        "packages/zdogace",
-        "packages/zdogview",
-    };
-    enum { k_useful_n = (int)(sizeof(k_dirs) / sizeof(k_dirs[0])) };
-    struct vcs_package_prepared prepared[k_useful_n];
-    struct vcs_package_transport transport[k_useful_n];
+    struct vcs_package_prepared prepared[ZWN_REDUNDANT_MAX];
+    struct vcs_package_transport transport[ZWN_REDUNDANT_MAX];
+    char name_a[40], name_b[40], name_c[40];
+    size_t i;
+    int wa, wb, wc;
+
+    if (!params || !test_name || !label || !dirs || n == 0 ||
+        n > ZWN_REDUNDANT_MAX) {
+        fprintf(stderr,
+                "zwn redundant hop: bad args name=%s label=%s n=%zu\n",
+                test_name ? test_name : "(null)",
+                label ? label : "(null)", n);
+        return 1;
+    }
+    wa = snprintf(name_a, sizeof(name_a), "%s-a", label);
+    wb = snprintf(name_b, sizeof(name_b), "%s-b", label);
+    wc = snprintf(name_c, sizeof(name_c), "%s-c", label);
+    if (wa < 0 || (size_t)wa >= sizeof(name_a) || wb < 0 ||
+        (size_t)wb >= sizeof(name_b) || wc < 0 ||
+        (size_t)wc >= sizeof(name_c)) {
+        fprintf(stderr, "zwn redundant hop: node label '%s' too long\n",
+                label);
+        return 1;
+    }
     memset(prepared, 0, sizeof(prepared));
     memset(transport, 0, sizeof(transport));
-    TEST("useful C23 packages host redundantly: A publishes zprng/"
-         "zdogfight/zdogdrone/zdogace/zdogview, B mirrors, A disappears, "
-         "C fetches from B") {
+    TEST(test_name) {
         struct zwn_node a, b, c;
         const struct zwn_node_spec nodes[] = {
-            {&a, "arena-a"}, {&b, "arena-b"}, {&c, "arena-c"},
+            {&a, name_a}, {&b, name_b}, {&c, name_c},
         };
         ASSERT(zwn_fixture_nodes(&fixture, params, nodes,
                                  sizeof(nodes) / sizeof(nodes[0])));
-        for (size_t i = 0; i < k_useful_n; i++) {
+        for (i = 0; i < n; i++) {
             struct zwn_package_scenario sc = {
-                .name = k_dirs[i],
+                .name = dirs[i],
                 .dht_namespace = "package.c23-commons",
-                .source_dir = k_dirs[i],
+                .source_dir = dirs[i],
                 .publisher_sequence = i + 1u,
                 .expected_package_root_hex = NULL,
             };
             vcs_package_transport_init(&transport[i]);
             ASSERT(zwn_prepare_package_transport(
-                &sc, k_dirs[i], i + 1u, NULL, &prepared[i],
-                &transport[i]));
-            ASSERT(vcs_package_transport_store(
-                       a.store, &transport[i], k_dirs[i]) ==
+                &sc, dirs[i], i + 1u, NULL, &prepared[i], &transport[i]));
+            ASSERT(vcs_package_transport_store(a.store, &transport[i],
+                                               dirs[i]) ==
                    VCS_PACKAGE_TRANSPORT_OK);
-            ASSERT(vcs_package_store_pin(a.store,
-                                         transport[i].transport_root,
+            ASSERT(vcs_package_store_pin(a.store, transport[i].transport_root,
                                          true) == VCS_PACKAGE_STORE_OK);
             struct vcs_package_store_status seeded;
             ASSERT(vcs_package_store_package_status(
                 a.store, transport[i].transport_root, &seeded));
             ASSERT(seeded.complete && seeded.pinned);
             struct vcs_package_public_verdict shape;
-            vcs_package_public_shape_classify(
-                a.store, transport[i].transport_root, &shape);
+            vcs_package_public_shape_classify(a.store,
+                                              transport[i].transport_root,
+                                              &shape);
             if (shape.shape == VCS_PACKAGE_PUBLIC_REFUSED)
-                fprintf(stderr, "zwn public_shape %s: %s (%s)\n",
-                        k_dirs[i],
+                fprintf(stderr, "zwn public_shape %s: %s (%s)\n", dirs[i],
                         shape.rule ? shape.rule : "?",
-                        shape.dependency_rule ? shape.dependency_rule
-                                              : "-");
+                        shape.dependency_rule ? shape.dependency_rule : "-");
             ASSERT(shape.shape != VCS_PACKAGE_PUBLIC_REFUSED);
         }
 
         struct zwn_link a_b, b_a;
         const struct zwn_link_spec a_b_links[] = {
-            {&a, &a_b, {11, 0, 0, 1}, "arena-b"},
-            {&b, &b_a, {11, 0, 0, 2}, "arena-a"},
+            {&a, &a_b, {11, 0, 0, 1}, name_b},
+            {&b, &b_a, {11, 0, 0, 2}, name_a},
         };
         ASSERT(zwn_fixture_links(&fixture, a_b_links,
-                                 sizeof(a_b_links) /
-                                     sizeof(a_b_links[0])));
+                                 sizeof(a_b_links) / sizeof(a_b_links[0])));
         ASSERT(zwn_meet_side(&a, &a_b));
         ASSERT(zwn_meet_side(&b, &b_a));
-        for (size_t i = 0; i < k_useful_n; i++)
+        for (i = 0; i < n; i++)
             ASSERT(zwn_hop_carrier(&a, &b, &a_b, &b_a, &transport[i],
                                    params->pchMessageStart,
-                                   1400u + (uint64_t)i * 10u));
+                                   now_base + (uint64_t)i * 10u));
 
         zwn_fixture_release_link(&fixture, &a_b);
         zwn_fixture_release_link(&fixture, &b_a);
@@ -4264,18 +4276,17 @@ static int zwn_t_useful_c23_redundant(const struct chain_params *params)
 
         struct zwn_link b_c, c_b;
         const struct zwn_link_spec b_c_links[] = {
-            {&b, &b_c, {11, 0, 0, 3}, "arena-c"},
-            {&c, &c_b, {11, 0, 0, 4}, "arena-b"},
+            {&b, &b_c, {11, 0, 0, 3}, name_c},
+            {&c, &c_b, {11, 0, 0, 4}, name_b},
         };
         ASSERT(zwn_fixture_links(&fixture, b_c_links,
-                                 sizeof(b_c_links) /
-                                     sizeof(b_c_links[0])));
+                                 sizeof(b_c_links) / sizeof(b_c_links[0])));
         ASSERT(zwn_meet_side(&b, &b_c));
         ASSERT(zwn_meet_side(&c, &c_b));
-        for (size_t i = 0; i < k_useful_n; i++) {
+        for (i = 0; i < n; i++) {
             ASSERT(zwn_hop_carrier(&b, &c, &b_c, &c_b, &transport[i],
                                    params->pchMessageStart,
-                                   1500u + (uint64_t)i * 10u));
+                                   now_base + 100u + (uint64_t)i * 10u));
             struct vcs_package_store_status st;
             ASSERT(vcs_package_store_package_status(
                 b.store, transport[i].transport_root, &st));
@@ -4290,12 +4301,48 @@ static int zwn_t_useful_c23_redundant(const struct chain_params *params)
         }
         PASS();
     } _test_next:
-    for (size_t i = 0; i < k_useful_n; i++) {
+    for (i = 0; i < n && i < ZWN_REDUNDANT_MAX; i++) {
         vcs_package_transport_free(&transport[i]);
         vcs_package_prepared_free(&prepared[i]);
     }
     zwn_fixture_cleanup(&fixture);
     return failures;
+}
+
+/* Arena match packages in dependency order: zprng, zdogfight, then the
+ * three titles that lock those two. */
+static int zwn_t_useful_c23_redundant(const struct chain_params *params)
+{
+    static const char *const k_dirs[] = {
+        "packages/zprng",
+        "packages/zdogfight",
+        "packages/zdogdrone",
+        "packages/zdogace",
+        "packages/zdogview",
+    };
+    return zwn_t_redundant_publish_disappear(
+        params,
+        "useful C23 packages host redundantly: A publishes zprng/"
+        "zdogfight/zdogdrone/zdogace/zdogview, B mirrors, A disappears, "
+        "C fetches from B",
+        "arena", k_dirs, sizeof(k_dirs) / sizeof(k_dirs[0]), 1400u);
+}
+
+/* Independent in-tree titles, not the Arena set. zjson is omitted: its
+ * zcode-package.json pins a foreign zutf8 root. */
+static int zwn_t_ordinary_c23_redundant(const struct chain_params *params)
+{
+    static const char *const k_dirs[] = {
+        "packages/zhex",    "packages/zstr", "packages/zbuf",
+        "packages/zsha256", "packages/zring", "packages/zmap",
+        "packages/zvec",    "packages/zutf8",
+    };
+    return zwn_t_redundant_publish_disappear(
+        params,
+        "ordinary C23 library hosts redundantly: A publishes zhex/zstr/"
+        "zbuf/zsha256/zring/zmap/zvec/zutf8, B mirrors, A disappears, "
+        "C fetches from B",
+        "lib", k_dirs, sizeof(k_dirs) / sizeof(k_dirs[0]), 1600u);
 }
 
 int test_zcode_swarm_net(void)
@@ -4324,6 +4371,7 @@ int test_zcode_swarm_net(void)
     failures += zwn_t_quota_exhaustion(params);
     failures += zwn_t_deterministic_replay(params);
     failures += zwn_t_useful_c23_redundant(params);
+    failures += zwn_t_ordinary_c23_redundant(params);
     if (failures == 0 && g_zwn_sovereign_receipt.ready)
         zwn_print_sovereign_receipt();
     return failures;
