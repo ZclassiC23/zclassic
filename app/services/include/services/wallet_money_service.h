@@ -91,4 +91,9 @@ bool wallet_money_snapshot_after_reservation(
 struct zcl_result wallet_money_snapshot_to_json(
     const struct wallet_money_snapshot *snapshot, struct json_value *out);
 
+/* Apply the development allocation to a caller's explicit owner-reviewed
+ * reserve floor. Non-development scopes retain their normal availability. */
+int64_t wallet_money_agent_available_for_floor(
+    const struct wallet_money_snapshot *snapshot, int64_t reserve_floor_zat);
+
 #endif

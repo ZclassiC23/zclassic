@@ -21,6 +21,7 @@
 #include "crypto/random_secret.h"
 #include "models/database.h"
 #include "models/principal.h"
+#include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "services/vault_read.h"
 #include "services/wallet_money_service.h"
@@ -28,6 +29,7 @@
 #include "platform/time_compat.h"
 
 #include <stdio.h>
+#include <pthread.h>
 #include <string.h>
 
 #define ASS_TAG "agent_session_service"
@@ -36,6 +38,10 @@
  * agent_session_save is an INSERT OR REPLACE upsert, so a hit would silently
  * overwrite the collided grant — redraw instead. */
 #define ASS_MINT_DRAWS 4
+
+/* Serializes the cross-row session-window + intent-debit transaction. The
+ * lower agent-session model separately serializes ordinary window writes. */
+static pthread_mutex_t g_ass_intent_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static void ass_why(char *why, size_t why_cap, const char *token)
 {
@@ -71,6 +77,8 @@ bool agent_session_service_mint(const struct agent_session_mint_request *req,
         req->max_per_tx_zat < 0 || req->max_per_tx_zat > AGENT_SESSION_MAX_ZAT ||
         req->max_per_window_zat < 0 ||
         req->max_per_window_zat > AGENT_SESSION_MAX_ZAT ||
+        req->reserve_floor_zat < 0 ||
+        req->reserve_floor_zat > AGENT_SESSION_MAX_ZAT ||
         req->window_seconds <= 0 || req->expires_in_seconds < 0 ||
         (strcmp(req->wallet_scope, "dev") != 0 &&
          strcmp(req->wallet_scope, "prod") != 0))
@@ -121,6 +129,7 @@ bool agent_session_service_mint(const struct agent_session_mint_request *req,
         snprintf(s.account, sizeof(s.account), "%s", req->account);
         s.max_per_tx_zat = req->max_per_tx_zat;
         s.max_per_window_zat = req->max_per_window_zat;
+        s.reserve_floor_zat = req->reserve_floor_zat;
         s.window_seconds = req->window_seconds;
         s.window_start_epoch = now;
         s.spent_in_window_zat = 0;
@@ -208,15 +217,16 @@ bool agent_session_service_revoke(const char *session_id,
 
 enum agent_session_authz agent_session_service_authorize(
     const char *session_id, int64_t amount_zat, const char *recipient,
-    const char *wallet_scope, bool commit,
+    const char *wallet_scope, bool commit, bool canonical_plan,
     int64_t *window_remaining_zat, int64_t *charged_zat)
 {
     if (charged_zat)
         *charged_zat = 0;
     struct node_db *ndb = app_runtime_node_db();
-    if (!app_runtime_node_db_handle_open(ndb))
+    if (!app_runtime_node_db_handle_open(ndb) ||
+        (canonical_plan && commit))
         LOG_RETURN(AGENT_SESSION_AUTHZ_STORE, ASS_TAG,
-                   "runtime node_db unavailable to authorize a spend");
+                   "invalid runtime/canonical-plan authorization context");
     struct wallet_identity_row identity;
     if (!wallet_identity_find(ndb, &identity))
         LOG_RETURN(AGENT_SESSION_AUTHZ_WALLET_MISMATCH, ASS_TAG,
@@ -253,9 +263,18 @@ enum agent_session_authz agent_session_service_authorize(
             LOG_RETURN(AGENT_SESSION_AUTHZ_STORE, ASS_TAG,
                        "development money snapshot is not current: %s",
                        mr.ok ? money.reason : mr.message);
-        if (charge_zat > money.agent_available_zat)
+        int64_t available = money.agent_available_zat;
+        if (canonical_plan) {
+            struct db_agent_session session;
+            if (!agent_session_find(ndb, session_id, &session))
+                LOG_RETURN(AGENT_SESSION_AUTHZ_INVALID, ASS_TAG,
+                           "canonical plan grant is unavailable");
+            available = wallet_money_agent_available_for_floor(
+                &money, session.reserve_floor_zat);
+        }
+        if (charge_zat > available)
             LOG_RETURN(AGENT_SESSION_AUTHZ_WALLET_MISMATCH, ASS_TAG,
-                       "development reserve or 0.05000000-ZCL lab allocation would be exceeded");
+                       "development reserve or lab allocation would be exceeded");
     }
 
     enum agent_session_authz verdict = agent_session_authorize(
@@ -275,6 +294,235 @@ bool agent_session_service_release(const char *session_id, int64_t amount_zat)
         LOG_FAIL(ASS_TAG, "runtime node_db unavailable to release a debit");
     return agent_session_release(ndb, session_id, amount_zat,
                                  (int64_t)platform_time_wall_time_t());
+}
+
+static enum agent_session_authz ass_authorize_exact_intent(
+    struct node_db *ndb, const struct vault_intent_row *row,
+    const char *session_id, const char *recipient, bool commit,
+    int64_t *window_remaining_zat)
+{
+    struct wallet_identity_row identity;
+    if (!wallet_identity_find(ndb, &identity))
+        return AGENT_SESSION_AUTHZ_WALLET_MISMATCH;
+    if (!row || row->reserved_zat <= 0 ||
+        row->reserved_zat != row->recipient_value_zat + row->max_fee_zat)
+        return AGENT_SESSION_AUTHZ_STORE;
+    if (commit)
+        return agent_session_authorize_bound_intent(
+            ndb, session_id, row->reserved_zat, row->wallet_scope,
+            &identity, (int64_t)platform_time_wall_time_t(), true,
+            window_remaining_zat);
+    return agent_session_authorize(
+        ndb, session_id, row->reserved_zat, recipient, row->wallet_scope,
+        &identity, (int64_t)platform_time_wall_time_t(), false,
+        window_remaining_zat);
+}
+
+bool agent_session_service_plan_intent(
+    const char *session_id, const char *wallet_scope,
+    int64_t reservation_zat, const char *const *recipients,
+    size_t recipient_count, int64_t *reserve_floor_zat,
+    char *why, size_t why_cap)
+{
+    if (reserve_floor_zat) *reserve_floor_zat = 0;
+    struct node_db *ndb = app_runtime_node_db();
+    if (!app_runtime_node_db_handle_open(ndb) || !session_id ||
+        !session_id[0] || !wallet_scope || !wallet_scope[0] ||
+        reservation_zat <= 0 || !recipients || recipient_count == 0)
+        return ass_refuse("BAD_ARGS", "intent preflight requires grant, "
+                          "scope, reservation, and recipients", why, why_cap);
+    struct wallet_identity_row identity;
+    if (!wallet_identity_find(ndb, &identity))
+        return ass_refuse("POLICY_WALLET_MISMATCH",
+                          "wallet identity is unavailable", why, why_cap);
+    int64_t remaining = 0;
+    for (size_t i = 0; i < recipient_count; i++) {
+        if (!recipients[i] || !recipients[i][0])
+            return ass_refuse("BAD_ARGS", "intent recipient is empty",
+                              why, why_cap);
+        enum agent_session_authz verdict = agent_session_authorize(
+            ndb, session_id, i == 0 ? reservation_zat : 0,
+            recipients[i], wallet_scope, &identity,
+            (int64_t)platform_time_wall_time_t(), false, &remaining);
+        if (verdict != AGENT_SESSION_AUTHZ_OK)
+            return ass_refuse(agent_session_authz_token(verdict),
+                              "grant refused canonical intent planning",
+                              why, why_cap);
+    }
+    struct db_agent_session session;
+    if (!agent_session_find(ndb, session_id, &session))
+        return ass_refuse("SESSION_INVALID", "grant disappeared during "
+                          "intent preflight", why, why_cap);
+    if (reserve_floor_zat)
+        *reserve_floor_zat = session.reserve_floor_zat;
+    return true;
+}
+
+bool agent_session_service_bind_intent(
+    const char *session_id, const uint8_t plan_id[32], const char *recipient,
+    char *why, size_t why_cap)
+{
+    struct node_db *ndb = app_runtime_node_db();
+    if (!app_runtime_node_db_handle_open(ndb) || !session_id || !plan_id ||
+        !recipient || !recipient[0])
+        return ass_refuse("BAD_ARGS", "intent binding requires grant, plan, "
+                          "and reviewed recipient", why, why_cap);
+    struct vault_intent_row row;
+    if (!vault_intent_find(ndb, plan_id, &row) ||
+        row.state != VAULT_INTENT_PLANNED)
+        return ass_refuse("PLAN_NOT_BINDABLE", "intent is not a durable "
+                          "planned row", why, why_cap);
+    if (row.agent_session_id[0] &&
+        strcmp(row.agent_session_id, session_id) != 0)
+        return ass_refuse("POLICY_INTENT_SESSION", "intent is bound to a "
+                          "different grant", why, why_cap);
+    int64_t remaining = 0;
+    enum agent_session_authz verdict = ass_authorize_exact_intent(
+        ndb, &row, session_id, recipient, false, &remaining);
+    if (verdict != AGENT_SESSION_AUTHZ_OK)
+        return ass_refuse(agent_session_authz_token(verdict),
+                          "grant refused the exact intent reservation",
+                          why, why_cap);
+    if (row.agent_session_id[0])
+        return true;
+    if (!vault_intent_bind_agent_session(
+            ndb, plan_id, session_id,
+            (int64_t)platform_time_wall_time_t()))
+        return ass_refuse("PERSIST_FAILED", "intent grant binding was not "
+                          "persisted", why, why_cap);
+    return true;
+}
+
+bool agent_session_service_authorize_intent(
+    const char *session_id, const uint8_t plan_id[32],
+    bool *debit_managed, int64_t *charged_zat,
+    char *why, size_t why_cap)
+{
+    if (debit_managed) *debit_managed = false;
+    if (charged_zat) *charged_zat = 0;
+    struct node_db *ndb = app_runtime_node_db();
+    if (!app_runtime_node_db_handle_open(ndb) || !session_id || !plan_id)
+        return ass_refuse("BAD_ARGS", "intent authorization requires grant "
+                          "and plan", why, why_cap);
+
+    bool ok = false;
+    pthread_mutex_lock(&g_ass_intent_lock);
+    do {
+        struct vault_intent_row row;
+        if (!vault_intent_find(ndb, plan_id, &row)) {
+            ass_why(why, why_cap, "PLAN_NOT_FOUND");
+            break;
+        }
+        if (!row.agent_session_id[0] ||
+            strcmp(row.agent_session_id, session_id) != 0) {
+            ass_why(why, why_cap, "POLICY_INTENT_SESSION");
+            break;
+        }
+        if (row.state >= VAULT_INTENT_MEMPOOL_ACCEPTED &&
+            row.state <= VAULT_INTENT_REORGED) {
+            ok = true; /* exact transaction already owns the debit */
+            break;
+        }
+        if (row.state != VAULT_INTENT_PLANNED &&
+            row.state != VAULT_INTENT_PROVING) {
+            ass_why(why, why_cap, "PLAN_NOT_COMMITTABLE");
+            break;
+        }
+        if (debit_managed) *debit_managed = true;
+        if (row.agent_debited_zat == row.reserved_zat) {
+            ok = true; /* crash/retry resumes the existing debit */
+            break;
+        }
+        if (row.agent_debited_zat != 0 || !node_db_begin_immediate(ndb)) {
+            ass_why(why, why_cap, "POLICY_STORE");
+            break;
+        }
+        int64_t remaining = 0;
+        enum agent_session_authz verdict = ass_authorize_exact_intent(
+            ndb, &row, session_id, NULL, true, &remaining);
+        if (verdict != AGENT_SESSION_AUTHZ_OK ||
+            !vault_intent_mark_agent_debited(
+                ndb, plan_id, session_id, row.reserved_zat,
+                (int64_t)platform_time_wall_time_t()) ||
+            !node_db_commit(ndb)) {
+            (void)node_db_rollback(ndb);
+            ass_why(why, why_cap,
+                    verdict == AGENT_SESSION_AUTHZ_OK
+                        ? "POLICY_STORE" : agent_session_authz_token(verdict));
+            break;
+        }
+        if (charged_zat) *charged_zat = row.reserved_zat;
+        ok = true;
+    } while (0);
+    pthread_mutex_unlock(&g_ass_intent_lock);
+    if (!ok)
+        LOG_ERROR(ASS_TAG, "intent authorization refused: %s",
+                  why && why[0] ? why : "POLICY_STORE");
+    return ok;
+}
+
+static bool ass_release_intent(struct node_db *ndb, const char *session_id,
+                               const uint8_t plan_id[32], bool bound_only)
+{
+    if (!ndb || !ndb->open || !plan_id || (!bound_only && !session_id))
+        LOG_FAIL(ASS_TAG, "release intent: invalid argument");
+    bool ok = false;
+    pthread_mutex_lock(&g_ass_intent_lock);
+    do {
+        struct vault_intent_row row;
+        if (!vault_intent_find(ndb, plan_id, &row))
+            break;
+        if (!row.agent_session_id[0]) {
+            ok = bound_only;
+            break;
+        }
+        if (!bound_only && strcmp(row.agent_session_id, session_id) != 0)
+            break;
+        if (row.agent_debited_zat == 0) {
+            ok = true;
+            break;
+        }
+        /* Once proving owns durable bytes, or the transaction reached the
+         * network, recovery—not credit—is the only safe action. */
+        if (row.state == VAULT_INTENT_PROVING ||
+            (row.state >= VAULT_INTENT_MEMPOOL_ACCEPTED &&
+             row.state <= VAULT_INTENT_REORGED)) {
+            ok = true;
+            break;
+        }
+        if (!node_db_begin_immediate(ndb))
+            break;
+        if (!agent_session_release(
+                ndb, row.agent_session_id, row.agent_debited_zat,
+                (int64_t)platform_time_wall_time_t()) ||
+            !vault_intent_clear_agent_debit(
+                ndb, plan_id, row.agent_session_id,
+                (int64_t)platform_time_wall_time_t()) ||
+            !node_db_commit(ndb)) {
+            (void)node_db_rollback(ndb);
+            break;
+        }
+        ok = true;
+    } while (0);
+    pthread_mutex_unlock(&g_ass_intent_lock);
+    if (!ok)
+        LOG_FAIL(ASS_TAG, "release intent: exact debit could not be released");
+    return true;
+}
+
+bool agent_session_service_release_intent(
+    const char *session_id, const uint8_t plan_id[32])
+{
+    struct node_db *ndb = app_runtime_node_db();
+    if (!app_runtime_node_db_handle_open(ndb))
+        LOG_FAIL(ASS_TAG, "release intent: runtime node_db unavailable");
+    return ass_release_intent(ndb, session_id, plan_id, false);
+}
+
+bool agent_session_service_release_bound_intent(
+    struct node_db *ndb, const uint8_t plan_id[32])
+{
+    return ass_release_intent(ndb, NULL, plan_id, true);
 }
 
 const char *agent_session_authz_token(enum agent_session_authz v)

@@ -243,6 +243,108 @@ bool tip_finalize_run_mempool_reconcile(struct block_index *pindex_new)
     return true;
 }
 
+/* Idempotent wallet subset of post-finalize publication. A body can become
+ * visible after another authority already published this height; in that
+ * case MMR/MMB must not append twice, but wallet confirmation, Sapling note,
+ * nullifier, and derived wallet rows still have to observe the exact body. */
+static void tip_finalize_reconcile_wallet_body(
+    struct block_index *pindex_new, const struct block *blk)
+{
+    if (!pindex_new || !blk ||
+        atomic_load_explicit(&g_body_pull_active, memory_order_relaxed))
+        return;
+
+    struct wallet *wallet = app_runtime_wallet();
+    struct node_db *ndb = app_runtime_node_db();
+    const struct chain_params *cp_regtest = chain_params_get();
+    const bool regtest_on_demand =
+        cp_regtest && cp_regtest->fMineBlocksOnDemand;
+    if (!wallet)
+        return;
+
+    if (regtest_on_demand)
+        (void)wallet_advance_confirmations(wallet, pindex_new->nHeight);
+
+    for (size_t i = 0; i < blk->num_vtx; i++) {
+        const struct transaction *tx = &blk->vtx[i];
+        bool wallet_involved = wallet_sync_transaction(wallet, tx, pindex_new);
+        if (!regtest_on_demand && wallet_involved && ndb &&
+            !node_db_sync_wallet_tx_confirmed_async(
+                ndb, tx, wallet, pindex_new->nHeight,
+                pindex_new->phashBlock->data, pindex_new->nTime)) {
+            LOG_WARN("tip_finalize",
+                     "wallet confirmation projection enqueue failed "
+                     "at height %d tx %zu",
+                     pindex_new->nHeight, i);
+        }
+        if (tx->num_shielded_output > 0 &&
+            wallet->sapling_keys.num_keys > 0) {
+            struct uint256 txid;
+            if (!transaction_hash_serialized(tx, &txid))
+                continue;
+            zcl_mutex_lock(&wallet->cs);
+            size_t notes_before = wallet->num_sapling_notes;
+            zcl_mutex_unlock(&wallet->cs);
+            wallet_try_sapling_decrypt(wallet, tx, &txid);
+            if (ndb) {
+                size_t n_notes = 0;
+                struct sapling_received_note *snap =
+                    wallet_copy_sapling_notes(wallet, &n_notes);
+                for (size_t ni = notes_before; ni < n_notes; ni++) {
+                    struct sapling_received_note *note = &snap[ni];
+                    node_db_sync_sapling_note(ndb,
+                        note->txid.data, note->output_index,
+                        (int64_t)note->value, note->rcm,
+                        note->memo, 512, note->ivk,
+                        note->diversifier, note->pk_d,
+                        note->cm, note->nf, pindex_new->nHeight);
+                    zmsg_ingest_onchain_note(ndb, note->memo,
+                                             note->txid.data);
+                }
+                free(snap);
+            }
+        }
+        if (tx->num_shielded_spend > 0)
+            wallet_mark_sapling_nullifiers_spent(wallet, tx);
+    }
+    zcl_mutex_lock(&wallet->cs);
+    wallet->best_block_height = pindex_new->nHeight;
+    zcl_mutex_unlock(&wallet->cs);
+
+    if (ndb && regtest_on_demand &&
+        !node_db_sync_connect_block_async_with_wallet(
+            ndb, blk, pindex_new, wallet)) {
+        LOG_WARN("tip_finalize",
+                 "regtest projection: async connect_block enqueue failed "
+                 "at height %d", pindex_new->nHeight);
+    }
+}
+
+bool tip_finalize_run_wallet_reconcile(struct block_index *pindex_new)
+{
+    if (!pindex_new)
+        return false;
+    char datadir[2048];
+    GetDataDir(true, datadir, sizeof(datadir));
+    struct block owned;
+    struct block_parse_handle handle;
+    const struct block *blk = NULL;
+    bool borrowed = false;
+    if (!stage_acquire_block_view(&owned, &handle, &blk, &borrowed,
+                                  pindex_new, pindex_new->nHeight, datadir,
+                                  NULL, NULL)) {
+        LOG_WARN("tip_finalize",
+                 "wallet reconcile skipped h=%d have_data=%d: body unreadable",
+                 pindex_new->nHeight,
+                 (pindex_new->nStatus & BLOCK_HAVE_DATA) ? 1 : 0);
+        block_free(&owned);
+        return false;
+    }
+    tip_finalize_reconcile_wallet_body(pindex_new, blk);
+    stage_release_block_view(&owned, &handle, borrowed);
+    return true;
+}
+
 void tip_finalize_run_post_finalize(struct block_index *pindex_new)
 {
     if (!pindex_new)
@@ -319,145 +421,9 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new)
         }
     }
 
-    /* Notify wallet of transactions in the connected block.
-     * Skipped during fast-sync body-pull: evidence-mode caller runs a
-     * single wallet_rescan over the imported range at the end. */
-    if (!atomic_load_explicit(&g_body_pull_active, memory_order_relaxed))
-    {
-        struct wallet *wallet = app_runtime_wallet();
-        struct node_db *ndb = app_runtime_node_db();
-        const struct chain_params *cp_regtest = chain_params_get();
-        const bool regtest_on_demand =
-            cp_regtest && cp_regtest->fMineBlocksOnDemand;
-
-        if (wallet) {
-            /* REGTEST ONLY — raise every stored confirmation depth by the tip
-             * advance BEFORE stamping this block's transactions.
-             *
-             * wallet_sync_transaction() stamps confirms once and nothing ever
-             * raises it, so a coinbase mined at the tip keeps confirms=1 and
-             * wallet_tx_get_blocks_to_maturity() never reaches 0 — the in-RAM
-             * coin selector behind sendtoaddress can never spend it, however
-             * many blocks follow. Doing it here also fixes the stamp itself:
-             * best_block_height was previously published AFTER the loop, so
-             * every new transaction was stamped at depth 0 and clamped to 1.
-             *
-             * Gated on fMineBlocksOnDemand — true ONLY for regtest — so the
-             * mainnet/testnet wallet keeps exactly the depth bookkeeping it
-             * had before. */
-            if (regtest_on_demand)
-                (void)wallet_advance_confirmations(wallet, pindex_new->nHeight);
-
-            for (size_t i = 0; i < blk->num_vtx; i++) {
-                const struct transaction *tx = &blk->vtx[i];
-                bool wallet_involved =
-                    wallet_sync_transaction(wallet, tx, pindex_new);
-                /* Mainnet/testnet use a narrow async projection only for
-                 * wallet-relevant transactions. The reducer never waits on
-                 * SQLite, and blocks with no wallet activity enqueue nothing.
-                 * Regtest keeps its existing whole-block async job below. */
-                if (!regtest_on_demand && wallet_involved && ndb &&
-                    !node_db_sync_wallet_tx_confirmed_async(
-                        ndb, tx, wallet, pindex_new->nHeight,
-                        pindex_new->phashBlock->data, pindex_new->nTime)) {
-                    LOG_WARN("tip_finalize",
-                             "wallet confirmation projection enqueue failed "
-                             "at height %d tx %zu",
-                             pindex_new->nHeight, i);
-                }
-                /* Trial-decrypt Sapling shielded outputs for our wallet */
-                if (tx->num_shielded_output > 0 &&
-                    wallet->sapling_keys.num_keys > 0) {
-                    struct uint256 txid;
-                    if (!transaction_hash_serialized(tx, &txid))
-                        continue;
-                    size_t notes_before = wallet->num_sapling_notes;
-                    wallet_try_sapling_decrypt(wallet, tx, &txid);
-                    /* Persist newly discovered notes to SQLite. Snapshot the
-                     * notes under the wallet lock first: iterating the live
-                     * array here would race a concurrent note-append realloc
-                     * (e.g. an RPC rescan) and read freed memory. */
-                    if (ndb) {
-                        size_t n_notes = 0;
-                        struct sapling_received_note *snap =
-                            wallet_copy_sapling_notes(wallet, &n_notes);
-                        for (size_t ni = notes_before; ni < n_notes; ni++) {
-                            struct sapling_received_note *note = &snap[ni];
-                            node_db_sync_sapling_note(ndb,
-                                note->txid.data, note->output_index,
-                                (int64_t)note->value, note->rcm,
-                                note->memo, 512, note->ivk,
-                                note->diversifier, note->pk_d,
-                                note->cm, note->nf,
-                                pindex_new->nHeight);
-                            /* If this note's memo is an on-chain ZMSG, land it
-                             * in the message store/inbox (dedup by msg_id).
-                             * Non-ZMSG memos return false quietly. */
-                            zmsg_ingest_onchain_note(ndb, note->memo,
-                                                     note->txid.data);
-                        }
-                        free(snap);
-                    }
-                }
-                /* Mark spent nullifiers */
-                if (tx->num_shielded_spend > 0)
-                    wallet_mark_sapling_nullifiers_spent(wallet, tx);
-            }
-            zcl_mutex_lock(&wallet->cs);
-            wallet->best_block_height = pindex_new->nHeight;
-            zcl_mutex_unlock(&wallet->cs);
-
-            /* REGTEST ONLY — feed the node.db wallet projection for the block
-             * we just connected.
-             *
-             * getbalance / listunspent / the spend coin-selector all read
-             * `wallet_utxos`, and mature a coinbase against
-             * `SELECT MAX(height) FROM blocks`. Nothing writes either table at
-             * block-connect time, so on a regtest chain — where on-demand
-             * mining is the ONLY way coins can enter a wallet, with no peer to
-             * receive from and no restart rescan in a throwaway datadir — a
-             * mined coinbase stayed invisible to getbalance forever and no
-             * transaction could ever be funded. wallet_sync_transaction above
-             * only updates the in-RAM wallet, whose `confirms` is frozen at 1
-             * on the block it was mined in and never advances, so the RAM
-             * fallback cannot mature it either.
-             *
-             * Gated on fMineBlocksOnDemand — true ONLY for regtest — so the
-             * mainnet/testnet tip-finalize path performs exactly the work it
-             * did before, byte for byte. The same projection gap on a live
-             * network is deliberately left alone here: closing it there adds
-             * per-block SQLite writes to the hot fold path and is an owner
-             * decision, not a side effect of a regtest fix. */
-            if (ndb) {
-                if (regtest_on_demand) {
-                    /* ASYNC is load-bearing here, not an optimization. This
-                     * feed runs on the reducer drive inside stage_run_once,
-                     * which holds the GLOBAL progress_store_tx_lock across the
-                     * whole stage step. The synchronous variants
-                     * (node_db_sync_connect_block / node_db_sync_wallet_tx)
-                     * wait on db-service job completion; a db-service job
-                     * that reads progress.kv (e.g. the catchup lane's
-                     * sapling_tree_flat_checkpoint_note fold-cursor guard)
-                     * waits on that same mutex — a hard AB-BA deadlock with
-                     * no timeout on either side (reproduced 2026-08-02:
-                     * mining + catchup at h=21/59 wedged every RPC worker
-                     * behind sovereignty_guard_allow and froze the
-                     * tick-runner in chain_tip_watchdog; /tmp/wedge-bt.txt).
-                     * The enqueued job folds the block write + per-tx wallet
-                     * projection into one db-service write so ordering
-                     * (blocks row before the wallet_tx time lookup) is kept.
-                     * The projection is derived and repairable, so async
-                     * ordering vs the tip is safe. */
-                    if (!node_db_sync_connect_block_async_with_wallet(
-                            ndb, blk, pindex_new, wallet))
-                        LOG_WARN("tip_finalize",
-                                 "regtest projection: async connect_block "
-                                 "enqueue failed at height %d",
-                                 pindex_new->nHeight);
-                }
-            }
-        }
-    }
+    /* Wallet publication is idempotent and is also reused when this body
+     * becomes visible after served-tip authority already reached the height. */
+    tip_finalize_reconcile_wallet_body(pindex_new, blk);
 
     /* Publish the committed coins_kv generation to the long-lived read cache
      * before any later relay or block-template selection can consult it. The

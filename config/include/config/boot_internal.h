@@ -42,6 +42,11 @@
 void boot_wallet_migrate_envelopes_or_exit(
     const char *datadir, struct wallet_sqlite *wallet_db,
     struct wallet *wallet);
+void boot_wallet_read_keypool_or_exit(struct wallet_sqlite *wallet_db,
+                                      struct wallet *wallet);
+void boot_wallet_top_up_legacy_keypool_or_exit(
+    int64_t pre_open_key_rows, struct wallet_sqlite *wallet_db,
+    struct wallet *wallet);
 
 /* ── boot_index.c ───────────────────────────────────────────── */
 

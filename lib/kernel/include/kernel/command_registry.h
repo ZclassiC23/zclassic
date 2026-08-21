@@ -42,7 +42,7 @@ extern "C" {
  * `budget_bytes` the describe document now emits. */
 #define ZCL_COMMAND_SPEC_BUDGET 2816U
 #define ZCL_COMMAND_STATUS_BUDGET 2048U
-#define ZCL_COMMAND_ERROR_BUDGET 2048U
+#define ZCL_COMMAND_ERROR_BUDGET 3072U
 #define ZCL_COMMAND_RESULT_BUDGET 4096U
 #define ZCL_COMMAND_LIST_BUDGET 8192U
 /* Complete, unpaged catalogs whose bounded row count legitimately exceeds the
@@ -274,9 +274,12 @@ struct zcl_command_error {
     char code[64];
     char message[192];
     char phase[64];
+    char current_state[64];
+    char next_action[256];
     char evidence[256];
     char failure_id[96];
     bool retryable;
+    bool human_action_required;
     bool mutated;
 };
 

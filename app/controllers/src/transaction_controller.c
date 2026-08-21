@@ -17,7 +17,14 @@ void rpc_rawtx_set_state(struct main_state *ms, struct tx_mempool *mp,
     ctx->main_state = ms;
     ctx->mempool = mp;
     ctx->coins_tip = coins_tip;
-    ctx->datadir = datadir;
+    if (datadir && datadir[0]) {
+        (void)snprintf(ctx->datadir_storage, sizeof(ctx->datadir_storage),
+                       "%s", datadir);
+        ctx->datadir = ctx->datadir_storage;
+    } else {
+        ctx->datadir_storage[0] = '\0';
+        ctx->datadir = NULL;
+    }
 }
 
 void rpc_rawtx_set_keystore(struct basic_keystore *ks)
@@ -131,6 +138,18 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
     if (!found)
         found = rawtx_find_in_node_db(ctx, &hash, &tx, &hash_block);
 
+    /* Wallet-owned transactions are projected synchronously from the exact
+     * finalized body before the global transaction index is guaranteed to
+     * catch up. */
+    if (!found)
+        found = rawtx_find_in_wallet_db(ctx, &hash, &tx, &hash_block);
+
+    if (!found)
+        found = rawtx_find_by_wallet_note(ctx, &hash, &tx, &hash_block);
+
+    if (!found)
+        found = rawtx_find_in_wallet(ctx, &hash, &tx, &hash_block);
+
     /* 1b. Check the txindex projection when present (first-class, integrity-
      * tagged). A hit locates (height, tx_n) directly; a behind/absent/busy
      * result never asserts "not found" here — it falls through to the paths
@@ -205,6 +224,11 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
         }
     }
 
+    /* Index projections are derived and can briefly lag the authoritative
+     * reducer. Keep newly confirmed transactions queryable during that gap. */
+    if (!found)
+        found = rawtx_find_in_recent_chain(ctx, &hash, &tx, &hash_block);
+
     /* 3. Fallback: use coins DB to find block, then scan block */
     if (!found && ctx->coins_tip && ctx->main_state && ctx->datadir) {
         if (!rpc_require_chainstate_lookup_ready(ctx->main_state, result,
@@ -259,6 +283,8 @@ static bool rpc_getrawtransaction(const struct json_value *params, bool help,
         free(hex);
     } else {
         tx_to_json(&tx, &hash_block, result);
+        json_push_kv_int(result, "confirmations",
+                         rawtx_confirmations(ctx, &hash_block));
     }
 
     transaction_free(&tx);

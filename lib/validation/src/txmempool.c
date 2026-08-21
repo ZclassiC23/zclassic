@@ -224,6 +224,7 @@ void tx_mempool_free(struct tx_mempool *pool)
 void tx_mempool_clear(struct tx_mempool *pool)
 {
     zcl_mutex_lock(&pool->cs);
+    pool->cleared_total += pool->num_entries;
     for (size_t i = 0; i < pool->num_entries; i++)
         mempool_entry_free(&pool->entries[i]);
     pool->num_entries = 0;
@@ -248,6 +249,25 @@ uint64_t tx_mempool_total_size(struct tx_mempool *pool)
     uint64_t s = pool->total_tx_size;
     zcl_mutex_unlock(&pool->cs);
     return s;
+}
+
+void tx_mempool_stats_snapshot(struct tx_mempool *pool,
+                               struct tx_mempool_stats *out)
+{
+    if (!out)
+        return;
+    memset(out, 0, sizeof(*out));
+    if (!pool)
+        return;
+    zcl_mutex_lock(&pool->cs);
+    out->size = pool->num_entries;
+    out->bytes = pool->total_tx_size;
+    out->added_total = pool->added_total;
+    out->removed_direct_total = pool->removed_direct_total;
+    out->removed_for_block_total = pool->removed_for_block_total;
+    out->removed_for_branch_total = pool->removed_for_branch_total;
+    out->cleared_total = pool->cleared_total;
+    zcl_mutex_unlock(&pool->cs);
 }
 
 unsigned int tx_mempool_txs_updated(struct tx_mempool *pool)
@@ -357,6 +377,7 @@ bool tx_mempool_add_unchecked(struct tx_mempool *pool,
                        entry->spends_coinbase, entry->branch_id);
     size_t idx = pool->num_entries;
     pool->num_entries++;
+    pool->added_total++;
 
     for (size_t i = 0; i < e->tx.num_vin; i++) {
         struct outpoint op;
@@ -456,8 +477,10 @@ void tx_mempool_remove(struct tx_mempool *pool, const struct uint256 *hash)
 {
     zcl_mutex_lock(&pool->cs);
     int idx = find_entry_by_hash(pool, hash);
-    if (idx >= 0)
+    if (idx >= 0) {
+        pool->removed_direct_total++;
         remove_entry_at(pool, (size_t)idx);
+    }
     zcl_mutex_unlock(&pool->cs);
 }
 
@@ -470,8 +493,10 @@ void tx_mempool_remove_for_block(struct tx_mempool *pool,
     zcl_mutex_lock(&pool->cs);
     for (size_t t = 0; t < num_txs; t++) {
         int idx = find_entry_by_hash(pool, &txs[t].hash);
-        if (idx >= 0)
+        if (idx >= 0) {
+            pool->removed_for_block_total++;
             remove_entry_at(pool, (size_t)idx);
+        }
     }
     zcl_mutex_unlock(&pool->cs);
 }
@@ -481,9 +506,10 @@ void tx_mempool_remove_without_branch_id(struct tx_mempool *pool,
 {
     zcl_mutex_lock(&pool->cs);
     for (size_t i = 0; i < pool->num_entries; ) {
-        if (pool->entries[i].branch_id != branch_id)
+        if (pool->entries[i].branch_id != branch_id) {
+            pool->removed_for_branch_total++;
             remove_entry_at(pool, i);
-        else
+        } else
             i++;
     }
     zcl_mutex_unlock(&pool->cs);

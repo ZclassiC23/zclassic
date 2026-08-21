@@ -273,7 +273,8 @@ static void read_utxo_spent(sqlite3_stmt *s, int col, struct db_wallet_utxo *u)
 
 bool db_wallet_tx_save(struct node_db *ndb, const struct db_wallet_tx *t)
 {
-    if (!ndb->open) return false;
+    if (!ndb->open)
+        return false; /* raw-return-ok:closed store cannot delete a UTXO */
     if (t->time_received == 0)
         ((struct db_wallet_tx *)t)->time_received = (int64_t)platform_time_wall_time_t();
 
@@ -340,14 +341,6 @@ int db_wallet_tx_count(struct node_db *ndb)
 {
     if (!ndb->open) return 0;
     AR_QUERY_COUNT_SQL(ndb, "SELECT COUNT(*) FROM wallet_transactions");
-}
-
-void db_wallet_tx_free(struct db_wallet_tx *t)
-{
-    if (!t) return;
-    free(t->raw_tx);
-    t->raw_tx = NULL;
-    t->raw_tx_len = 0;
 }
 
 void db_wallet_utxo_free(struct db_wallet_utxo *u)
@@ -668,6 +661,36 @@ bool db_wallet_utxo_delete(struct node_db *ndb,
     AR_FINALIZE_STEP_DONE(s, ok);
     ok = ok && sqlite3_changes(ndb->db) > 0;
     AR_FINISH_DESTROY(cbs, &u, ok);
+}
+
+bool db_wallet_utxo_release_spent_by(struct node_db *ndb,
+                                     const uint8_t spent_by[32])
+{
+    if (!ndb || !ndb->open || !spent_by)
+        return false;
+    for (;;) {
+        sqlite3_stmt *s = NULL;
+        struct db_wallet_utxo row;
+        AR_PREPARE_BOOL(ndb, s,
+            "SELECT txid,vout,value,address_hash,script,height,is_coinbase,"
+            "spent_txid,spent_vin FROM wallet_utxos"
+            " WHERE spent_txid=? LIMIT 1");
+        AR_BIND_BLOB(s, 1, spent_by, 32);
+        if (!AR_STEP_ROW(s)) {
+            AR_FINALIZE(s);
+            return true;
+        }
+        db_wallet_utxo_read_row(s, 0, &row);
+        read_utxo_spent(s, 7, &row);
+        AR_FINALIZE(s);
+        row.is_spent = false;
+        memset(row.spent_txid, 0, sizeof(row.spent_txid));
+        row.spent_vin = 0;
+        bool ok = db_wallet_utxo_save(ndb, &row);
+        db_wallet_utxo_free(&row);
+        if (!ok)
+            return false;
+    }
 }
 
 int db_wallet_utxo_count_for_tx(struct node_db *ndb,

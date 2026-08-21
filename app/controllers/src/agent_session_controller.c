@@ -18,6 +18,7 @@
 #include "json/json.h"
 #include "models/agent_session.h"
 #include "controllers/strong_params.h"
+#include "encoding/utilstrencodings.h"
 #include "rpc/server.h"
 #include "services/agent_session_service.h"
 #include "services/wallet_money_service.h"
@@ -87,6 +88,8 @@ static bool ags_mint(const struct json_value *in, struct json_value *result)
     (void)snprintf(req.account, sizeof(req.account), "%s", account);
     req.max_per_tx_zat = ags_int(in, "max_per_tx_zat", -1);
     req.max_per_window_zat = ags_int(in, "max_per_window_zat", -1);
+    req.reserve_floor_zat = ags_int(
+        in, "reserve_floor_zat", AGENT_SESSION_DEV_RESERVE_DEFAULT_ZAT);
     req.window_seconds = ags_int(in, "window_seconds", 0);
     req.expires_in_seconds = ags_int(in, "expires_in_seconds", 0);
     const char *allow = ags_str(in, "recipient_allowlist");
@@ -152,6 +155,8 @@ static bool ags_list(const struct json_value *in, struct json_value *result)
         (void)json_push_kv_int(&o, "max_per_tx_zat", rows[i].max_per_tx_zat);
         (void)json_push_kv_int(&o, "max_per_window_zat",
                                rows[i].max_per_window_zat);
+        (void)json_push_kv_int(&o, "reserve_floor_zat",
+                               rows[i].reserve_floor_zat);
         (void)json_push_kv_int(&o, "window_seconds", rows[i].window_seconds);
         (void)json_push_kv_int(&o, "window_start_epoch",
                                rows[i].window_start_epoch);
@@ -208,11 +213,13 @@ static bool ags_authorize(const struct json_value *in,
         return ags_refuse(result, "BAD_ARGS");
     int64_t amount_zat = ags_int(in, "amount_zat", -1);
     bool commit = json_get_bool_or(in, "commit", false);
+    bool canonical_plan = json_get_bool_or(in, "canonical_plan", false);
     int64_t remaining = 0;
     int64_t charged = 0;
     enum agent_session_authz v = agent_session_service_authorize(
         sid, amount_zat, ags_str(in, "recipient"),
-        ags_str(in, "wallet_scope"), commit, &remaining, &charged);
+        ags_str(in, "wallet_scope"), commit, canonical_plan,
+        &remaining, &charged);
     if (v != AGENT_SESSION_AUTHZ_OK)
         return ags_refuse(result, agent_session_authz_token(v));
     json_set_object(result);
@@ -233,6 +240,67 @@ static bool ags_release(const struct json_value *in, struct json_value *result)
     json_set_object(result);
     (void)json_push_kv_bool(result, "ok", true);
     (void)json_push_kv_bool(result, "released", true);
+    return true;
+}
+
+static bool ags_plan_id(const struct json_value *in, uint8_t out[32])
+{
+    const char *hex = ags_str(in, "plan_id");
+    return hex && strlen(hex) == 64 && IsHex(hex) &&
+        ParseHex(hex, out, 32) == 32;
+}
+
+static bool ags_intent_bind(const struct json_value *in,
+                            struct json_value *result)
+{
+    const char *sid = ags_str(in, "session_id");
+    const char *recipient = ags_str(in, "recipient");
+    uint8_t plan_id[32];
+    if (!sid || !recipient || !ags_plan_id(in, plan_id))
+        return ags_refuse(result, "BAD_ARGS");
+    char why[64] = { 0 };
+    if (!agent_session_service_bind_intent(
+            sid, plan_id, recipient, why, sizeof(why)))
+        return ags_refuse(result, why[0] ? why : "POLICY_STORE");
+    json_set_object(result);
+    (void)json_push_kv_bool(result, "ok", true);
+    (void)json_push_kv_bool(result, "bound", true);
+    return true;
+}
+
+static bool ags_intent_authorize(const struct json_value *in,
+                                 struct json_value *result)
+{
+    const char *sid = ags_str(in, "session_id");
+    uint8_t plan_id[32];
+    if (!sid || !ags_plan_id(in, plan_id))
+        return ags_refuse(result, "BAD_ARGS");
+    bool debit_managed = false;
+    int64_t charged_zat = 0;
+    char why[64] = { 0 };
+    if (!agent_session_service_authorize_intent(
+            sid, plan_id, &debit_managed, &charged_zat,
+            why, sizeof(why)))
+        return ags_refuse(result, why[0] ? why : "POLICY_STORE");
+    json_set_object(result);
+    (void)json_push_kv_bool(result, "ok", true);
+    (void)json_push_kv_bool(result, "debit_managed", debit_managed);
+    (void)json_push_kv_int(result, "charged_zat", charged_zat);
+    return true;
+}
+
+static bool ags_intent_release(const struct json_value *in,
+                               struct json_value *result)
+{
+    const char *sid = ags_str(in, "session_id");
+    uint8_t plan_id[32];
+    if (!sid || !ags_plan_id(in, plan_id))
+        return ags_refuse(result, "BAD_ARGS");
+    if (!agent_session_service_release_intent(sid, plan_id))
+        return ags_refuse(result, "POLICY_STORE");
+    json_set_object(result);
+    (void)json_push_kv_bool(result, "ok", true);
+    (void)json_push_kv_bool(result, "released_if_safe", true);
     return true;
 }
 
@@ -433,7 +501,7 @@ static bool rpc_agentsession(const struct json_value *params, bool help,
         "agentsession \"<action>\" { ...fields }\n"
         "\nThe node-side surface onto the agent_sessions store — scoped,\n"
         "revocable agent spend grants. Actions:\n"
-        "  mint      {account, max_per_tx_zat, max_per_window_zat,\n"
+        "  mint      {account, max_per_tx_zat, max_per_window_zat, reserve_floor_zat,\n"
         "             window_seconds, recipient_allowlist, expires_in_seconds,\n"
         "             wallet_scope}\n"
         "            -> {ok, session_id}  (the ONE time the token is returned)\n"
@@ -444,6 +512,11 @@ static bool rpc_agentsession(const struct json_value *params, bool help,
         "               the window debit in one indivisible step\n"
         "  release   {session_id, amount_zat} -> {ok, released}; credit back a\n"
         "               debit whose spend never happened\n"
+        "  intent_bind {session_id, plan_id, recipient} -> {ok, bound}\n"
+        "  intent_authorize {session_id, plan_id} -> {ok, debit_managed,\n"
+        "               charged_zat}; exact once-only canonical commit debit\n"
+        "  intent_release {session_id, plan_id} -> {ok}; releases only before\n"
+        "               durable proving bytes or network acceptance exist\n"
         "  custody   {wallet_scope} -> {ok, snapshot}; identity-bound money\n"
         "               state with no endpoint/path/address/key fields\n"
         "  custody_current {} -> {ok, snapshot}; same aggregate, with scope\n"
@@ -471,6 +544,12 @@ static bool rpc_agentsession(const struct json_value *params, bool help,
         return ags_authorize(in, result);
     if (strcmp(action, "release") == 0)
         return ags_release(in, result);
+    if (strcmp(action, "intent_bind") == 0)
+        return ags_intent_bind(in, result);
+    if (strcmp(action, "intent_authorize") == 0)
+        return ags_intent_authorize(in, result);
+    if (strcmp(action, "intent_release") == 0)
+        return ags_intent_release(in, result);
     if (strcmp(action, "custody") == 0)
         return ags_custody(in, result);
     if (strcmp(action, "custody_current") == 0)

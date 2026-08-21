@@ -1187,6 +1187,128 @@ int test_activerecord(void)
         else { printf("FAIL\n"); failures++; }
     }
 
+    /* Reorg projection: confirmed rows become pending and losing outputs are
+     * removed through their model lifecycles. */
+    {
+        printf("AR wallet disconnect projection... ");
+        struct node_db ndb;
+        bool ok = node_db_open(&ndb, ":memory:");
+        uint8_t losing_txid[32], source_txid[32], block_hash[32];
+        memset(losing_txid, 0xA1, sizeof(losing_txid));
+        memset(source_txid, 0xB2, sizeof(source_txid));
+        memset(block_hash, 0xC3, sizeof(block_hash));
+
+        uint8_t raw[] = {0x04, 0x00};
+        struct db_wallet_tx tx;
+        memset(&tx, 0, sizeof(tx));
+        memcpy(tx.txid, losing_txid, sizeof(tx.txid));
+        tx.raw_tx = raw;
+        tx.raw_tx_len = sizeof(raw);
+        memcpy(tx.block_hash, block_hash, sizeof(tx.block_hash));
+        tx.block_height = 105;
+        tx.has_block = true;
+        tx.time_received = 1700000000;
+        tx.from_me = true;
+        ok = ok && db_wallet_tx_save(&ndb, &tx);
+
+        uint8_t script[] = {0x51};
+        struct db_wallet_utxo source;
+        memset(&source, 0, sizeof(source));
+        memcpy(source.txid, source_txid, sizeof(source.txid));
+        source.vout = 0;
+        source.value = 90000;
+        memset(source.address_hash, 0xD4, sizeof(source.address_hash));
+        source.script = script;
+        source.script_len = sizeof(script);
+        source.height = 100;
+        ok = ok && db_wallet_utxo_save(&ndb, &source);
+        ok = ok && db_wallet_utxo_mark_spent(
+            &ndb, source_txid, 0, losing_txid, 0);
+
+        struct db_wallet_utxo created = source;
+        memcpy(created.txid, losing_txid, sizeof(created.txid));
+        created.vout = 1;
+        created.value = 40000;
+        created.height = 105;
+        created.is_spent = false;
+        memset(created.spent_txid, 0, sizeof(created.spent_txid));
+        ok = ok && db_wallet_utxo_save(&ndb, &created);
+
+        struct db_sapling_note note;
+        memset(&note, 0, sizeof(note));
+        memcpy(note.txid, losing_txid, sizeof(note.txid));
+        note.output_index = 0;
+        note.value = 50000;
+        memset(note.rcm, 0x11, sizeof(note.rcm));
+        memset(note.ivk, 0x22, sizeof(note.ivk));
+        memset(note.diversifier, 0x33, sizeof(note.diversifier));
+        memset(note.pk_d, 0x44, sizeof(note.pk_d));
+        memset(note.cm, 0x55, sizeof(note.cm));
+        memset(note.nullifier, 0x66, sizeof(note.nullifier));
+        note.block_height = 105;
+        snprintf(note.source, sizeof(note.source), "%s",
+                 DB_SAPLING_NOTE_SOURCE_LOCAL);
+        ok = ok && db_sapling_note_save(&ndb, &note);
+        struct db_sapling_witness_summary witness_summary;
+        ok = ok && db_sapling_note_witness_summary(
+            &ndb, 105, &witness_summary);
+        ok = ok && witness_summary.local_unspent_notes == 1 &&
+             witness_summary.ready_notes == 0 &&
+             witness_summary.missing_notes == 1 &&
+             witness_summary.stale_notes == 0;
+        uint8_t witness_blob[] = {0x01, 0x02, 0x03};
+        ok = ok && db_sapling_note_save_witness(
+            &ndb, losing_txid, 0, witness_blob, sizeof(witness_blob), 105);
+        ok = ok && db_sapling_note_witness_summary(
+            &ndb, 105, &witness_summary);
+        ok = ok && witness_summary.ready_notes == 1 &&
+             witness_summary.missing_notes == 0;
+        ok = ok && db_sapling_note_witness_summary(
+            &ndb, 106, &witness_summary);
+        ok = ok && witness_summary.ready_notes == 0 &&
+             witness_summary.stale_notes == 1;
+
+        struct db_sapling_note source_note = note;
+        memcpy(source_note.txid, source_txid, sizeof(source_note.txid));
+        source_note.output_index = 2;
+        source_note.value = 70000;
+        source_note.block_height = 100;
+        source_note.is_spent = true;
+        memcpy(source_note.spent_txid, losing_txid,
+               sizeof(source_note.spent_txid));
+        ok = ok && db_sapling_note_save(&ndb, &source_note);
+
+        bool found = false;
+        ok = ok && db_wallet_utxo_delete_for_tx(&ndb, losing_txid);
+        ok = ok && db_sapling_note_delete_for_tx(&ndb, losing_txid);
+        ok = ok && db_wallet_tx_mark_unconfirmed(&ndb, losing_txid, &found);
+        ok = ok && found;
+        ok = ok && db_wallet_utxo_encumbered_balance(&ndb) == 90000;
+        ok = ok && db_sapling_note_encumbered_balance(&ndb) == 70000;
+        ok = ok && db_wallet_utxo_release_spent_by(&ndb, losing_txid);
+        ok = ok && db_sapling_note_release_reservation(&ndb, losing_txid);
+        ok = ok && db_wallet_utxo_encumbered_balance(&ndb) == 0;
+        ok = ok && db_sapling_note_encumbered_balance(&ndb) == 0;
+
+        struct db_wallet_tx pending;
+        memset(&pending, 0, sizeof(pending));
+        ok = ok && db_wallet_tx_find(&ndb, losing_txid, &pending);
+        ok = ok && !pending.has_block && pending.block_height == 0;
+        db_wallet_tx_free(&pending);
+        ok = ok && db_wallet_utxo_count_for_tx(&ndb, losing_txid) == 0;
+        struct db_sapling_note notes[1];
+        ok = ok && db_wallet_tx_notes(&ndb, losing_txid, notes, 1) == 0;
+        struct db_wallet_utxo restored;
+        memset(&restored, 0, sizeof(restored));
+        ok = ok && db_wallet_utxo_find(&ndb, source_txid, 0, &restored);
+        ok = ok && !restored.is_spent;
+        db_wallet_utxo_free(&restored);
+
+        node_db_close(&ndb);
+        if (ok) printf("OK\n");
+        else { printf("FAIL\n"); failures++; }
+    }
+
     /* AR has_many: wallet_tx → wallet_utxos */
     {
         printf("AR has_many: wallet_tx -> wallet_utxos... ");

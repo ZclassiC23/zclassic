@@ -16,25 +16,25 @@
  * (owner directive), each asserted below against a REAL coins_view_cache built
  * with the REAL update_coins consensus path:
  *
- *   (1) a coin RECEIVED on the losing branch DISAPPEARS from the balance after
- *       the reorg (wallet_verify_utxos prunes it: the authoritative winning
- *       coins view has no such UTXO);
+ *   (1) a coin RECEIVED on the losing branch leaves confirmed balance and is
+ *       retained as pending when ordinary mempool admission accepts it;
  *   (2) a coin SPENT on the losing branch becomes UNSPENT again (the losing
- *       spend is retracted via wallet_rollback_transaction, which un-marks the
- *       input outpoint — the coin returns to the balance);
+ *       spend is refused by the mempool and exact disconnect releases its
+ *       input reservation — the coin returns to the balance);
  *   (3) the WINNING branch's own coins APPEAR (wallet_sync_transaction on the
  *       winning-branch tx).
  *
  * These are the production wallet's restatement primitives; a correct reorg
- * handler composes exactly them (prune-against-the-new-tip + retract-the-undone
- * + connect-the-new). The test asserts the composed balance is exactly right.
+ * handler composes exactly them (confirmed-to-pending + retract-the-refused +
+ * rewind-depth + connect-the-new). The test asserts the composed balance is
+ * exactly right.
  *
  * SHIELDED (params-gated; SKIP without ~/.zcash-params): the same restatement
  * shape at the Sapling note layer — a note received on the losing branch is
  * removed, and a note whose nullifier was marked spent on the losing branch has
  * that nullifier UN-marked on rollback, so z-balance restates. Driven through
  * the real wallet_get_sapling_balance / wallet_mark_sapling_nullifiers_spent /
- * wallet_rollback_transaction (shielded nullifier un-mark) primitives. The full
+ * wallet_disconnect_transaction primitives. The full
  * Groth16 shielded send cannot be driven end-to-end today (see the pre-existing
  * prover<->verifier blocker documented in test_simnet_sapling_shielded_send.c),
  * so the shielded leg exercises the wallet-side note restatement logic with
@@ -189,6 +189,42 @@ static int wr_transparent(void)
     WR_CHECK("transparent: balance == V0 after pre-fork receive",
              wallet_get_balance(w) == V0);
 
+    /* Broadcast-restart regression: an unconfirmed wallet transaction is
+     * durable and reloaded before its block exists in chainstate.  Its owned
+     * change must remain pending; wallet_verify_utxos used to compare it to
+     * the confirmed coins view, mark it spent, and never restore it when the
+     * transaction later confirmed. */
+    const int64_t VU = 3 * COIN;
+    struct transaction pending;
+    {
+        struct uint256 in_h[1]; memset(in_h[0].data, 0x71, 32);
+        uint32_t in_n[1] = { 0 };
+        int64_t v[1] = { VU };
+        struct script s[1] = { mine };
+        wr_build_tx(&pending, in_h, in_n, 1, v, s, 1);
+    }
+    struct wallet_tx pending_wtx;
+    memset(&pending_wtx, 0, sizeof(pending_wtx));
+    pending_wtx.tx = pending;
+    pending_wtx.used = true;
+    pending_wtx.from_me = true;
+    pending_wtx.confirms = 0;
+    WR_CHECK("transparent: durable pending change enters wallet",
+             wallet_add_to_wallet(w, &pending_wtx));
+    wallet_verify_utxos(w, &cw);
+    WR_CHECK("transparent: restart verification preserves pending change",
+             !wallet_is_outpoint_spent(w, &pending.hash, 0));
+    WR_CHECK("transparent: pending change remains reported as unconfirmed",
+             wallet_get_unconfirmed_balance(w) == VU);
+    struct tx_mempool pending_mp;
+    tx_mempool_init(&pending_mp, 1000);
+    struct zcl_result pending_rollback =
+        wallet_rollback_transaction(w, &pending_wtx, &pending_mp);
+    WR_CHECK("transparent: pending fixture retracts cleanly",
+             pending_rollback.ok);
+    tx_mempool_free(&pending_mp);
+    transaction_free(&pending);
+
     /* ── Losing branch: receive VL, and SPEND P0:0 to a non-wallet sink. ── */
     struct transaction prl, psl;
     {
@@ -223,25 +259,24 @@ static int wr_transparent(void)
 
     /* ── REORG. Reconcile the wallet against the winning coins view `cw`. ── */
 
-    /* (1) Prune coins that no longer exist on the winning tip: this drops the
-     * losing-branch received coin (PRL:0 is absent from `cw`). P0:0 is present
-     * in `cw` but is currently marked spent in the wallet, so verify_utxos
-     * (which only prunes) leaves it — the spent state is undone in step (2). */
-    wallet_verify_utxos(w, &cw);
-    WR_CHECK("transparent: (1) losing receive pruned -> balance 0",
+    /* (1) The losing receive was accepted back into the mempool. It remains
+     * visible as pending money but immediately leaves confirmed balance. */
+    WR_CHECK("transparent: (1) losing receive becomes pending",
+             wallet_disconnect_transaction(w, &prl, true));
+    WR_CHECK("transparent: (1) pending receive excluded from confirmed",
              wallet_get_balance(w) == 0);
+    WR_CHECK("transparent: (1) pending receive remains discoverable",
+             wallet_get_unconfirmed_balance(w) == VL);
 
-    /* (2) Retract the losing-branch spend: un-marks P0:0, so the coin the
-     * losing branch consumed is spendable again. */
-    struct tx_mempool mp;
-    tx_mempool_init(&mp, 1000);
-    struct wallet_tx psl_wtx;
-    memset(&psl_wtx, 0, sizeof(psl_wtx));
-    psl_wtx.tx = psl; /* aliases vin/vout for the outpoint-unmark walk */
-    struct zcl_result rr = wallet_rollback_transaction(w, &psl_wtx, &mp);
-    WR_CHECK("transparent: (2) losing spend retracts cleanly", rr.ok);
+    /* (2) Model a conflicting losing spend that ordinary mempool admission
+     * refused. Its reservation is released, so P0 becomes spendable again. */
+    WR_CHECK("transparent: (2) refused losing spend retracts cleanly",
+             wallet_disconnect_transaction(w, &psl, false));
     WR_CHECK("transparent: (2) P0 coin unspent again -> balance == V0",
              wallet_get_balance(w) == V0);
+    WR_CHECK("transparent: reorg lowers stored confirmation depths",
+             wallet_rewind_confirmations(w, 999) > 0 &&
+             w->best_block_height == 999);
 
     /* (3) Connect the winning branch's coin to us. */
     struct block_index bi_w; struct uint256 hw;
@@ -260,7 +295,6 @@ static int wr_transparent(void)
     WR_CHECK("transparent: balance non-negative after full reconcile",
              final_bal >= 0);
 
-    tx_mempool_free(&mp);
     transaction_free(&fc);
     transaction_free(&p0);
     transaction_free(&pw);
@@ -317,6 +351,12 @@ static int wr_shielded(void)
     memset(nl->nf, 0x22, 32);
     w->num_sapling_notes = 2;
 
+    struct transaction tr;
+    transaction_init(&tr);
+    tr.version = 4;
+    memset(tr.hash.data, 0x44, sizeof(tr.hash.data));
+    nl->txid = tr.hash;
+
     WR_CHECK("shielded: z-balance == VK+VL initially",
              wallet_get_sapling_balance(w) == (int64_t)(VK + VL));
 
@@ -348,22 +388,21 @@ static int wr_shielded(void)
     WR_CHECK("shielded: z-balance non-negative after spend",
              wallet_get_sapling_balance(w) >= 0);
 
-    /* REORG (a): retract the losing spend -> NK's nullifier un-marked. */
-    struct tx_mempool mp;
-    tx_mempool_init(&mp, 1000);
-    struct zcl_result rr = wallet_rollback_transaction(w, &ts_wtx, &mp);
-    WR_CHECK("shielded: losing spend retracts cleanly", rr.ok);
+    /* REORG (a): a refused losing spend releases NK's reservation. */
+    WR_CHECK("shielded: losing spend retracts cleanly",
+             wallet_disconnect_transaction(w, &ts, false));
     WR_CHECK("shielded: (a) NK nullifier un-marked -> z-balance == VK+VL",
              wallet_get_sapling_balance(w) == (int64_t)(VK + VL));
 
     /* REORG (b): the note received on the losing branch is removed. */
-    nl->used = false;
+    WR_CHECK("shielded: exact losing receive retract succeeds",
+             wallet_disconnect_transaction(w, &tr, true));
     WR_CHECK("shielded: (b) losing-branch note removed -> z-balance == VK",
              wallet_get_sapling_balance(w) == (int64_t)VK);
     WR_CHECK("shielded: z-balance non-negative after full reconcile",
              wallet_get_sapling_balance(w) >= 0);
 
-    tx_mempool_free(&mp);
+    transaction_free(&tr);
     transaction_free(&ts);
     wallet_free(w);
     free(w);

@@ -20,6 +20,7 @@
 #include "platform/time_compat.h"
 #include "primitives/transaction.h"
 #include "services/wallet_money_service.h"
+#include "services/agent_session_service.h"
 #include "support/cleanse.h"
 #include "util/log_macros.h"
 #include "validation/main_state.h"
@@ -389,6 +390,7 @@ static void vip_render_plan_details(const struct vip_payload *p,
 
 static bool vip_refresh_money_for_reservation(
     struct wallet_rpc_context *ctx, const char *scope, int64_t reservation,
+    const char *agent_session, int64_t session_reserve_floor,
     struct wallet_money_snapshot *money, struct json_value *result)
 {
     memset(money, 0, sizeof(*money));
@@ -401,9 +403,13 @@ static bool vip_refresh_money_for_reservation(
     }
     int64_t available = money->confirmed_zat >= money->intent_reserved_zat
         ? money->confirmed_zat - money->intent_reserved_zat : 0;
+    int64_t agent_available = agent_session && agent_session[0]
+        ? wallet_money_agent_available_for_floor(
+            money, session_reserve_floor)
+        : money->agent_available_zat;
     if (reservation > available ||
         (strcmp(scope, "dev") == 0 &&
-         reservation > money->agent_available_zat)) {
+         reservation > agent_available)) {
         vip_error(result, strcmp(scope, "dev") == 0
             ? "DEVELOPMENT_RESERVE_OR_LAB_CAP"
             : "INSUFFICIENT_CONFIRMED_FUNDS",
@@ -442,6 +448,24 @@ bool vault_intent_private_plan(const struct json_value *input,
         memory_cleanse(&p, sizeof(p));
         return true;
     }
+    const char *agent_session =
+        json_get_str(json_get(input, "_agent_session"));
+    int64_t session_reserve_floor = VAULT_INTENT_DEV_RESERVE_FLOOR_ZAT;
+    if (agent_session && agent_session[0]) {
+        const char *recipients[VIP_EFFECTS_MAX];
+        for (size_t i = 0; i < p.effects_len; i++)
+            recipients[i] = p.effects[i].to;
+        char why[64] = { 0 };
+        if (!agent_session_service_plan_intent(
+                agent_session, scope, target + p.fee, recipients,
+                p.effects_len, &session_reserve_floor,
+                why, sizeof(why))) {
+            vip_error(result, why[0] ? why : "POLICY_STORE",
+                      "bounded session refused the exact intent plan");
+            memory_cleanse(&p, sizeof(p));
+            return true;
+        }
+    }
     uint8_t plain[WALLET_METADATA_PLAINTEXT_MAX]; size_t plain_len = 0;
     if (!vip_encode(&p, plain, sizeof(plain), &plain_len)) {
         vip_error(result, "PLAN_TOO_LARGE",
@@ -455,6 +479,15 @@ bool vault_intent_private_plan(const struct json_value *input,
     struct vault_intent_row existing;
     if (vault_intent_find_application_idempotency(
             ctx->node_db, scope, VIP_APP_KIND, idem, &existing)) {
+        if (agent_session && agent_session[0] &&
+            existing.agent_session_id[0] &&
+            strcmp(existing.agent_session_id, agent_session) != 0) {
+            memory_cleanse(plain, sizeof(plain));
+            memory_cleanse(&p, sizeof(p));
+            vip_error(result, "POLICY_INTENT_SESSION",
+                      "that idempotency key is bound to another grant");
+            return true;
+        }
         bool same = existing.has_request_digest &&
             memcmp(existing.request_digest, request_digest, 32) == 0;
         memory_cleanse(plain, sizeof(plain));
@@ -475,7 +508,8 @@ bool vault_intent_private_plan(const struct json_value *input,
     int64_t reservation = target + p.fee;
     struct wallet_money_snapshot money;
     if (!vip_refresh_money_for_reservation(
-            ctx, scope, reservation, &money, result))
+            ctx, scope, reservation, agent_session,
+            session_reserve_floor, &money, result))
         goto plan_clean;
 
     /* Non-broadcast monetary preflight: prove the current source, witnesses,
@@ -509,7 +543,8 @@ bool vault_intent_private_plan(const struct json_value *input,
      * every authority after proof generation; only this post-proof snapshot
      * feeds identity, allocation, anchor, digest, and atomic reservation. */
     if (!vip_refresh_money_for_reservation(
-            ctx, scope, reservation, &money, result))
+            ctx, scope, reservation, agent_session,
+            session_reserve_floor, &money, result))
         goto plan_clean;
 
     struct wallet_money_snapshot reserved_money;
@@ -541,6 +576,9 @@ bool vault_intent_private_plan(const struct json_value *input,
                    VIP_APP_KIND);
     (void)snprintf(row.idempotency_key, sizeof(row.idempotency_key), "%s", idem);
     memcpy(row.request_digest, request_digest, 32); row.has_request_digest = true;
+    if (agent_session && agent_session[0])
+        (void)snprintf(row.agent_session_id,
+                       sizeof(row.agent_session_id), "%s", agent_session);
     vault_intent_digest_payload(plain, plain_len, &row, row.digest);
     bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
         plain, plain_len, row.encrypted_payload, sizeof(row.encrypted_payload),

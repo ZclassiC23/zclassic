@@ -12,6 +12,8 @@
 #include "core/serialize.h"
 #include "json/json.h"
 #include "models/database.h"
+#include "models/agent_session.h"
+#include "models/principal.h"
 #include "models/vault_intent.h"
 #include "models/wallet_identity.h"
 #include "models/wallet_metadata_crypto.h"
@@ -1300,8 +1302,17 @@ int test_transaction_intent(void)
         ASSERT_EQ(vault_intent_reserved_total_at(
                       &ndb, "dev", identity.wallet_instance_id, -1), -1);
         ASSERT(!vault_intent_reserve(&ndb, &over, 30000000));
+        ASSERT(vault_intent_set_state(&ndb, a.plan_id,
+                                      VAULT_INTENT_CONFIRMED, NULL, "", 180));
+        ASSERT_EQ(vault_intent_reserved_total(
+                      &ndb, "dev", identity.wallet_instance_id), 2000000);
+        ASSERT_EQ(vault_intent_unbound_completed_total(
+                      &ndb, "dev", identity.wallet_instance_id), 3000000);
+        ASSERT(!vault_intent_reserve(&ndb, &over, 30000000));
         ASSERT(vault_intent_set_state(&ndb, a.plan_id, VAULT_INTENT_FAILED,
                                       NULL, "LAB_ROLLBACK", 200));
+        ASSERT_EQ(vault_intent_unbound_completed_total(
+                      &ndb, "dev", identity.wallet_instance_id), 0);
         ASSERT(vault_intent_reserve(&ndb, &over, 30000000));
         ASSERT_EQ(vault_intent_reserved_total(
                       &ndb, "dev", identity.wallet_instance_id), 2000001);
@@ -1341,6 +1352,68 @@ int test_transaction_intent(void)
                       &ndb, "test", identity.wallet_instance_id), 21000);
         node_db_close(&ndb);
         test_rm_rf(dir);
+        PASS();
+    }
+
+    TEST("an owner-minted wallet-bound dev floor permits only the bounded "
+         "canonical reservation") {
+        if (ndb.open) node_db_close(&ndb);
+        ASSERT(node_db_open(&ndb, ":memory:"));
+        const uint8_t genesis[32] = { 0x62 };
+        struct wallet_identity_row identity;
+        ASSERT(wallet_identity_ensure(&ndb, genesis, "dev", &identity));
+
+        struct db_principal principal;
+        memset(&principal, 0, sizeof(principal));
+        snprintf(principal.address, sizeof(principal.address), "%s",
+                 "t1MissionReserveFloorPrincipal000000");
+        snprintf(principal.pubkey_hex, sizeof(principal.pubkey_hex),
+                 "02%064x", 0x74U);
+        principal.key_kind = PRINCIPAL_KEY_SECP256K1;
+        principal.role = PRINCIPAL_ROLE_OPERATOR;
+        principal.status = PRINCIPAL_STATUS_ACTIVE;
+        principal.sybil_proof_height = -1;
+        ASSERT(db_principal_save(&ndb, &principal));
+
+        struct db_agent_session session;
+        memset(&session, 0, sizeof(session));
+        snprintf(session.session_id, sizeof(session.session_id), "%s",
+                 "74747474747474747474747474747474");
+        snprintf(session.account, sizeof(session.account), "%s",
+                 principal.address);
+        session.max_per_tx_zat = 2000000;
+        session.max_per_window_zat = 2000000;
+        session.reserve_floor_zat = 8000000;
+        session.window_seconds = AGENT_SESSION_WINDOW_SECONDS_MAX;
+        session.window_start_epoch = 100;
+        session.created_at = 100;
+        snprintf(session.wallet_scope, sizeof(session.wallet_scope), "dev");
+        snprintf(session.wallet_instance_id,
+                 sizeof(session.wallet_instance_id), "%s",
+                 identity.wallet_instance_id);
+        wallet_identity_genesis_hex(&identity, session.wallet_genesis);
+        ASSERT(agent_session_save(&ndb, &session));
+
+        struct vault_intent_row owner_plan, bounded_plan;
+        ti_bound_row(&owner_plan, 0x73, &identity, 1900000);
+        ti_bound_row(&bounded_plan, 0x74, &identity, 1900000);
+        ASSERT(!vault_intent_reserve(&ndb, &owner_plan, 10000000));
+        snprintf(bounded_plan.agent_session_id,
+                 sizeof(bounded_plan.agent_session_id), "%s",
+                 session.session_id);
+        ASSERT(vault_intent_reserve(&ndb, &bounded_plan, 10000000));
+        ASSERT_EQ(vault_intent_reserved_total(
+            &ndb, "dev", identity.wallet_instance_id), 1900000);
+        int64_t remaining = 0;
+        ASSERT_EQ(agent_session_authorize_bound_intent(
+            &ndb, session.session_id, bounded_plan.reserved_zat, "dev",
+            &identity, 101, true, &remaining), AGENT_SESSION_AUTHZ_OK);
+        ASSERT(vault_intent_set_state(&ndb, bounded_plan.plan_id,
+                                      VAULT_INTENT_CONFIRMED, NULL, "", 102));
+        ASSERT_EQ(agent_session_scope_lifetime_spent(&ndb, "dev"), 1900000);
+        ASSERT_EQ(vault_intent_unbound_completed_total(
+            &ndb, "dev", identity.wallet_instance_id), 0);
+        node_db_close(&ndb);
         PASS();
     }
 

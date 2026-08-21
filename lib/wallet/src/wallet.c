@@ -5,6 +5,7 @@
  * file COPYING or http://www.opensource.org/licenses/mit-license.php. */
 
 #include "wallet/wallet.h"
+#include "wallet_internal.h"
 #include "wallet/bip44.h"
 #include "wallet/mnemonic.h"
 #include "chain/chainparams.h"
@@ -33,8 +34,6 @@
 #include <stdlib.h>
 #include <string.h>
 #include "util/safe_alloc.h"
-
-static size_t wallet_find_slot(const struct wallet *w, const struct uint256 *hash);
 
 static uint32_t spent_hash(const struct uint256 *txid, uint32_t vout)
 {
@@ -165,7 +164,7 @@ void wallet_rebuild_spent_set(struct wallet *w)
         for (size_t j = 0; j < tx->num_vin; j++) {
             const struct uint256 *prev_hash = &tx->vin[j].prevout.hash;
             uint32_t n = tx->vin[j].prevout.n;
-            size_t idx = wallet_find_slot(w, prev_hash);
+            size_t idx = wallet_find_slot_internal(w, prev_hash);
             if (idx < MAX_WALLET_TX) {
                 const struct wallet_tx *prev = &w->map_wallet[idx];
                 if (n < prev->tx.num_vout &&
@@ -175,37 +174,6 @@ void wallet_rebuild_spent_set(struct wallet *w)
         }
     }
     LOG_INFO("wallet", "Wallet spent set rebuilt: %zu spent outpoints", w->num_spent);
-}
-
-void wallet_verify_utxos(struct wallet *w, struct coins_view_cache *coins_tip)
-{
-    if (!coins_tip) return;
-
-    size_t verified = 0, pruned = 0;
-    for (size_t i = 0; i < MAX_WALLET_TX; i++) {
-        if (!w->map_wallet[i].used)
-            continue;
-        const struct wallet_tx *wtx = &w->map_wallet[i];
-        for (size_t j = 0; j < wtx->tx.num_vout; j++) {
-            if (!wallet_is_mine(w, &wtx->tx.vout[j]))
-                continue;
-            if (wallet_is_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j))
-                continue;
-
-            struct coins c;
-            coins_init(&c);
-            bool found = coins_view_cache_get_coins(coins_tip,
-                    &wtx->tx.hash, &c);
-            if (!found || !coins_is_available(&c, (unsigned int)j)) {
-                wallet_mark_outpoint_spent(w, &wtx->tx.hash, (uint32_t)j);
-                pruned++;
-            }
-            coins_free(&c);
-            verified++;
-        }
-    }
-    LOG_INFO("wallet", "Wallet UTXO verification: %zu checked, %zu pruned (spent on-chain)",
-             verified, pruned);
 }
 
 void wallet_free(struct wallet *w)
@@ -512,7 +480,8 @@ bool wallet_get_key_from_pool(struct wallet *w, struct pubkey *pk_out)
     return true;
 }
 
-static size_t wallet_find_slot(const struct wallet *w, const struct uint256 *hash)
+size_t wallet_find_slot_internal(const struct wallet *w,
+                                 const struct uint256 *hash)
 {
     for (size_t i = 0; i < MAX_WALLET_TX; i++) {
         if (w->map_wallet[i].used &&
@@ -538,7 +507,7 @@ bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
 
     zcl_mutex_lock(&w->cs);
 
-    size_t idx = wallet_find_slot(w, &wtx->tx.hash);
+    size_t idx = wallet_find_slot_internal(w, &wtx->tx.hash);
     if (idx < MAX_WALLET_TX) {
         w->map_wallet[idx].hash_block = wtx->hash_block;
         w->map_wallet[idx].confirms = wtx->confirms;
@@ -579,7 +548,7 @@ bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx)
 const struct wallet_tx *wallet_get_tx(const struct wallet *w,
                                        const struct uint256 *hash)
 {
-    size_t idx = wallet_find_slot(w, hash);
+    size_t idx = wallet_find_slot_internal(w, hash);
     if (idx < MAX_WALLET_TX)
         return &w->map_wallet[idx];
     return NULL;
@@ -634,7 +603,7 @@ int64_t wallet_get_debit(const struct wallet *w, const struct transaction *tx)
     int64_t debit = 0;
     for (size_t i = 0; i < tx->num_vin; i++) {
         const struct outpoint *prevout = &tx->vin[i].prevout;
-        size_t idx = wallet_find_slot(w, &prevout->hash);
+        size_t idx = wallet_find_slot_internal(w, &prevout->hash);
         if (idx < MAX_WALLET_TX) {
             const struct wallet_tx *prev = &w->map_wallet[idx];
             if (prevout->n < prev->tx.num_vout) {
@@ -1074,6 +1043,7 @@ struct zcl_result wallet_commit_transaction(
     for (size_t i = 0; i < wtx->tx.num_vin; i++)
         wallet_mark_outpoint_spent(w, &wtx->tx.vin[i].prevout.hash,
                                     wtx->tx.vin[i].prevout.n);
+    wallet_key_pool_consume_transaction_outputs_locked(w, &wtx->tx);
     zcl_mutex_unlock(&w->cs);
 
     return ZCL_OK;
@@ -1092,7 +1062,7 @@ struct zcl_result wallet_rollback_transaction(
     tx_mempool_remove(mempool, &wtx->tx.hash);
 
     zcl_mutex_lock(&w->cs);
-    size_t idx = wallet_find_slot(w, &wtx->tx.hash);
+    size_t idx = wallet_find_slot_internal(w, &wtx->tx.hash);
     if (idx >= MAX_WALLET_TX) {
         zcl_mutex_unlock(&w->cs);
         return ZCL_ERR(-2,
@@ -1155,7 +1125,13 @@ bool wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
 {
     zcl_mutex_lock(&w->cs);
 
-    bool dominated = false;
+    /* Durable wallet membership is itself ownership evidence. After restart,
+     * a locally committed outgoing transaction can survive even when its
+     * parent is absent from the bounded in-memory map or none of its outputs
+     * are ours (for example, exact-value shielding with no transparent
+     * change). It must still be upgraded from mempool to confirmed state. */
+    size_t existing = wallet_find_slot_internal(w, &tx->hash);
+    bool dominated = existing < MAX_WALLET_TX;
     for (size_t i = 0; i < tx->num_vout; i++) {
         if (wallet_is_mine(w, &tx->vout[i])) {
             dominated = true;
@@ -1164,7 +1140,8 @@ bool wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
     }
     if (!dominated) {
         for (size_t i = 0; i < tx->num_vin; i++) {
-            size_t idx = wallet_find_slot(w, &tx->vin[i].prevout.hash);
+            size_t idx = wallet_find_slot_internal(w,
+                                                   &tx->vin[i].prevout.hash);
             if (idx < MAX_WALLET_TX) {
                 dominated = true;
                 break;
@@ -1197,7 +1174,7 @@ bool wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
     }
 
     for (size_t i = 0; i < tx->num_vin; i++) {
-        size_t idx = wallet_find_slot(w, &tx->vin[i].prevout.hash);
+        size_t idx = wallet_find_slot_internal(w, &tx->vin[i].prevout.hash);
         if (idx < MAX_WALLET_TX) {
             wtx.from_me = true;
             uint32_t n = tx->vin[i].prevout.n;
@@ -1208,7 +1185,6 @@ bool wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
         }
     }
 
-    size_t existing = wallet_find_slot(w, &tx->hash);
     if (existing < MAX_WALLET_TX) {
         w->map_wallet[existing].hash_block = wtx.hash_block;
         w->map_wallet[existing].confirms = wtx.confirms;
@@ -1264,7 +1240,8 @@ static void wallet_process_block_for_spent(struct wallet *w,
 
         /* Check if any input spends a wallet output we own */
         for (size_t j = 0; j < tx->num_vin; j++) {
-            size_t idx = wallet_find_slot(w, &tx->vin[j].prevout.hash);
+            size_t idx = wallet_find_slot_internal(w,
+                                                   &tx->vin[j].prevout.hash);
             if (idx < MAX_WALLET_TX) {
                 const struct wallet_tx *prev = &w->map_wallet[idx];
                 uint32_t n = tx->vin[j].prevout.n;
@@ -1288,13 +1265,13 @@ static void wallet_process_block_for_spent(struct wallet *w,
             struct uint256 txhash;
             transaction_compute_hash((struct transaction *)tx);
             txhash = tx->hash;
-            size_t existing = wallet_find_slot(w, &txhash);
+            size_t existing = wallet_find_slot_internal(w, &txhash);
             if (existing < MAX_WALLET_TX) {
                 if (w->map_wallet[existing].confirms < 1)
                     w->map_wallet[existing].confirms = 1;
             } else {
                 wallet_sync_transaction(w, tx, NULL);
-                existing = wallet_find_slot(w, &txhash);
+                existing = wallet_find_slot_internal(w, &txhash);
                 if (existing < MAX_WALLET_TX)
                     w->map_wallet[existing].confirms = 1;
             }

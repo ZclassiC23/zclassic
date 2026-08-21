@@ -90,7 +90,15 @@ void tip_finalize_reconcile_visible_cursor_body(
                  height, (unsigned long long)cursor);
         return;
     }
+    if (!tip_finalize_run_wallet_reconcile(bi)) {
+        /* The body was readable for mempool reconciliation immediately above;
+         * retain retry eligibility if the second bounded acquisition raced a
+         * cache/disk transition. */
+        tip_finalize_visible_body_reset();
+        return;
+    }
     LOG_INFO("tip_finalize",
-             "[tip_finalize] visible-body mempool reconcile h=%d cursor=%llu",
+             "[tip_finalize] visible-body wallet/mempool reconcile h=%d "
+             "cursor=%llu",
              height, (unsigned long long)cursor);
 }

@@ -7,6 +7,7 @@
  * build spend/output descriptions, sign, and broadcast. */
 
 #include "controllers/wallet_shielded_internal.h"
+#include "jobs/reducer_frontier.h"
 
 /* Shielded-spend path (from-address is a zaddr): spend selected notes,
  * build spend/output descriptions, sign, broadcast. Recipients have
@@ -52,8 +53,7 @@ bool z_sendmany_shielded(
                 json_set_str(result,
                              "view-only balance synced from zclassicd");
                 LOG_FAIL("wallet_shielded",
-                         "z_sendmany: view-only zclassicd balance for %s",
-                         from_addr);
+                         "z_sendmany: view-only zclassicd balance is not spendable");
             }
             json_set_str(result, "No unspent shielded notes for this address");
             LOG_FAIL("wallet_shielded", "z_sendmany: no unspent notes for from z-address");
@@ -121,8 +121,7 @@ bool z_sendmany_shielded(
         struct incremental_merkle_tree dummy_tree;
         sapling_tree_init(&dummy_tree);
 
-        int witness_height = 0;
-        (void)witness_height;
+        int authoritative_tip = reducer_frontier_external_tip_height();
         for (size_t i = 0; i < num_sel_notes; i++) {
             uint8_t *wblob = NULL;
             size_t wlen = 0;
@@ -134,7 +133,14 @@ bool z_sendmany_shielded(
                 json_set_str(result, "Witness not available (run rescanwitnesses)");
                 LOG_FAIL("wallet_shielded", "z_sendmany: witness not available for note %zu", i);
             }
-            if (i == 0) witness_height = wheight;
+            if (wheight != authoritative_tip) {
+                free(wblob); free(witnesses);
+                json_set_str(result,
+                             "Witness stale (run rescanwitnesses)");
+                LOG_FAIL("wallet_shielded",
+                         "z_sendmany: witness height=%d authoritative_tip=%d note=%zu",
+                         wheight, authoritative_tip, i);
+            }
             struct byte_stream ws;
             stream_init_from_data(&ws, wblob, wlen);
             if (!incremental_witness_deserialize(&witnesses[i], &ws,

@@ -16,6 +16,70 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+/* Keep the transaction identity and lifecycle state ahead of potentially
+ * large vin/vout/hex fields.  The native bridge deliberately pages bounded
+ * objects in source order, so forwarding the legacy RPC order verbatim could
+ * make a confirmed transaction look state-less whenever an earlier script or
+ * shielded payload filled the first page. */
+static char *rawtx_state_first(char *rpc_json,
+                               struct zcl_native_body_err *err)
+{
+    static const char *const prefix[] = {
+        "txid", "confirmations", "blockhash", "version", "locktime",
+    };
+    struct json_value source;
+    json_init(&source);
+    if (!rpc_json || !json_read(&source, rpc_json, strlen(rpc_json)) ||
+        source.type != JSON_OBJ ||
+        !json_get_str(json_get(&source, "txid"))) {
+        json_free(&source);
+        return rpc_json;
+    }
+
+    struct json_value ordered;
+    json_init(&ordered);
+    json_set_object(&ordered);
+    bool ok = true;
+    for (size_t p = 0; ok && p < sizeof(prefix) / sizeof(prefix[0]); p++) {
+        const struct json_value *value = json_get(&source, prefix[p]);
+        if (value)
+            ok = json_push_kv(&ordered, prefix[p], value);
+    }
+    for (size_t i = 0; ok && i < source.num_children; i++) {
+        bool already_added = false;
+        for (size_t p = 0; p < sizeof(prefix) / sizeof(prefix[0]); p++) {
+            if (strcmp(source.keys[i], prefix[p]) == 0) {
+                already_added = true;
+                break;
+            }
+        }
+        if (!already_added)
+            ok = json_push_kv(&ordered, source.keys[i], &source.children[i]);
+    }
+
+    size_t need = ok ? json_write(&ordered, NULL, 0) : 0;
+    char *stable = need > 0
+        ? zcl_malloc(need + 1, "native raw transaction state-first body")
+        : NULL;
+    if (stable && json_write(&ordered, stable, need + 1) == 0) {
+        free(stable);
+        stable = NULL;
+    }
+    json_free(&ordered);
+    json_free(&source);
+    if (!stable) {
+        free(rpc_json);
+        err->status = ZCL_NATIVE_BODY_INTERNAL;
+        snprintf(err->message, sizeof(err->message),
+                 "could not serialize transaction lifecycle state");
+        LOG_NULL("native.chain",
+                 "raw transaction state-first serialization failed");
+        return NULL;
+    }
+    free(rpc_json);
+    return stable;
+}
+
 char *zcl_native_getrawtransaction_body(const struct json_value *args,
                                          struct zcl_native_body_err *err)
 {
@@ -131,7 +195,7 @@ char *zcl_native_getrawtransaction_body(const struct json_value *args,
         }
         json_free(&raw);
     }
-    return out;
+    return verbosity == 0 ? out : rawtx_state_first(out, err);
 }
 
 char *zcl_native_getblock_body(const struct json_value *args,

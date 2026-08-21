@@ -41,14 +41,17 @@
 #include "config/db_service.h"
 #include "config/runtime.h"
 #include "controllers/agent_session_controller.h"
+#include "controllers/agent_session_client.h"
 #include "controllers/rpc_client.h"
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "models/agent_session.h"
 #include "models/database.h"
 #include "models/principal.h"
+#include "models/vault_intent.h"
 #include "platform/time_compat.h"
 #include "rpc/server.h"
+#include "services/agent_session_service.h"
 #include "services/agent_spend_policy.h"
 #include "services/wallet_money_service.h"
 #include "wallet/wallet.h"
@@ -63,6 +66,9 @@ static const char *const k_sid_missing = "dddddddddddddddddddddddddddddddd";
 static const char *const k_recipient = "t1Recipient00000000000";
 static const char *const k_txid =
     "\"aa11bb22cc33dd44ee55ff6600112233445566778899aabbccddeeff00112233\"";
+static const char *const k_plan_a =
+    "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1";
 
 /* ── fixture ─────────────────────────────────────────────────────────────── */
 
@@ -267,6 +273,35 @@ static int64_t spent_now(struct asp_fixture *f, const char *sid)
     if (!agent_session_find(&f->ndb, sid, &got))
         return -1;
     return got.spent_in_window_zat;
+}
+
+static void asp_bound_intent(struct asp_fixture *f,
+                             struct vault_intent_row *row,
+                             int64_t recipient_zat, int64_t fee_zat)
+{
+    memset(row, 0, sizeof(*row));
+    memset(row->plan_id, 0xa1, sizeof(row->plan_id));
+    memset(row->digest, 0xa2, sizeof(row->digest));
+    row->state = VAULT_INTENT_PLANNED;
+    row->route = VAULT_INTENT_ROUTE_TRANSPARENT;
+    row->created_at = (int64_t)platform_time_wall_time_t();
+    row->expires_at = row->created_at + 600;
+    row->anchor_height = 1;
+    memset(row->anchor_hash, 0xa3, sizeof(row->anchor_hash));
+    memset(row->encrypted_payload, 0xa4, 32);
+    row->encrypted_payload_len = 32;
+    struct wallet_identity_row identity;
+    (void)wallet_identity_find(&f->ndb, &identity);
+    (void)snprintf(row->wallet_scope, sizeof(row->wallet_scope), "prod");
+    (void)snprintf(row->wallet_instance_id,
+                   sizeof(row->wallet_instance_id), "%s",
+                   identity.wallet_instance_id);
+    wallet_identity_genesis_hex(&identity, row->wallet_genesis);
+    row->has_snapshot_root = true;
+    memset(row->snapshot_root, 0xa5, sizeof(row->snapshot_root));
+    row->recipient_value_zat = recipient_zat;
+    row->max_fee_zat = fee_zat;
+    row->reserved_zat = recipient_zat + fee_zat;
 }
 
 /* ── 1. local-operator exemption ─────────────────────────────────────────── */
@@ -973,6 +1008,92 @@ static int test_fixture_thread_scope(void)
     return failures;
 }
 
+static int test_canonical_intent_session(void)
+{
+    int failures = 0;
+    struct asp_fixture f;
+    TEST("canonical intent session binds once, charges value plus fee once, "
+         "recovers retries, and releases only before broadcast") {
+        ASSERT(asp_open(&f, "canonical_intent"));
+        f.wallet.default_fee = 10000;
+        struct db_agent_session s;
+        mk_session(&s, k_sid_a, 2000000, 2000000); /* mission-style .02 */
+        snprintf(s.recipient_allowlist, sizeof(s.recipient_allowlist), "%s",
+                 k_recipient);
+        ASSERT(agent_session_save(&f.ndb, &s));
+
+        /* Planning sees the exact canonical effects and includes the current
+         * maximum fee in the grant check, but does not debit. */
+        struct json_value in, effects, effect;
+        json_init(&in); json_set_object(&in);
+        json_init(&effects); json_set_array(&effects);
+        json_init(&effect); json_set_object(&effect);
+        (void)json_push_kv_str(&effect, "asset", "ZCL");
+        (void)json_push_kv_str(&effect, "to", k_recipient);
+        (void)json_push_kv_str(&effect, "amount", "0.01900000");
+        (void)json_push_back(&effects, &effect);
+        (void)json_push_kv(&in, "effects", &effects);
+        (void)json_push_kv_str(&in, "wallet_scope", "prod");
+        struct agent_spend_policy_decision d;
+        agent_spend_policy_evaluate(
+            k_sid_a, spec_for("vault.intent.plan"), &in, true, &d);
+        ASSERT(d.allowed);
+        ASSERT_EQ(d.debited_zat, 0);
+        ASSERT_EQ(spent_now(&f, k_sid_a), 0);
+        json_free(&effect); json_free(&effects); json_free(&in);
+
+        struct vault_intent_row row;
+        asp_bound_intent(&f, &row, 1900000, 10000);
+        ASSERT(vault_intent_save(&f.ndb, &row));
+        char why[64] = { 0 };
+        ASSERT(agent_session_client_bind_intent(
+            k_sid_a, k_plan_a, k_recipient, why, sizeof(why)));
+        ASSERT(!agent_session_client_bind_intent(
+            k_sid_missing, k_plan_a, k_recipient, why, sizeof(why)));
+
+        bool managed = false;
+        int64_t charged = 0;
+        ASSERT(agent_session_client_authorize_intent(
+            k_sid_a, k_plan_a, &managed, &charged, why, sizeof(why)));
+        ASSERT(managed);
+        ASSERT_EQ(charged, 1910000);
+        ASSERT_EQ(spent_now(&f, k_sid_a), 1910000);
+        ASSERT(agent_session_client_authorize_intent(
+            k_sid_a, k_plan_a, &managed, &charged, why, sizeof(why)));
+        ASSERT(managed);
+        ASSERT_EQ(charged, 0);
+        ASSERT_EQ(spent_now(&f, k_sid_a), 1910000);
+
+        /* A known pre-broadcast terminal failure releases the marker and
+         * window. A network-accepted transaction never does. */
+        ASSERT(vault_intent_set_state(&f.ndb, row.plan_id,
+            VAULT_INTENT_FAILED, NULL, "EXACT_BUILD_FAILED",
+            (int64_t)platform_time_wall_time_t()));
+        ASSERT(agent_session_service_release_bound_intent(
+            &f.ndb, row.plan_id));
+        ASSERT_EQ(spent_now(&f, k_sid_a), 0);
+        ASSERT(vault_intent_find(&f.ndb, row.plan_id, &row));
+        ASSERT_EQ(row.agent_debited_zat, 0);
+
+        ASSERT(vault_intent_set_state(&f.ndb, row.plan_id,
+            VAULT_INTENT_PLANNED, NULL, "",
+            (int64_t)platform_time_wall_time_t()));
+        ASSERT(agent_session_client_authorize_intent(
+            k_sid_a, k_plan_a, &managed, &charged, why, sizeof(why)));
+        ASSERT_EQ(charged, 1910000);
+        ASSERT(vault_intent_set_state(&f.ndb, row.plan_id,
+            VAULT_INTENT_MEMPOOL_ACCEPTED, row.txid, "",
+            (int64_t)platform_time_wall_time_t()));
+        ASSERT(agent_session_service_release_bound_intent(
+            &f.ndb, row.plan_id));
+        ASSERT_EQ(spent_now(&f, k_sid_a), 1910000);
+
+        asp_close(&f);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_agent_spend_policy(void);
 int test_agent_spend_policy(void)
 {
@@ -990,6 +1111,7 @@ int test_agent_spend_policy(void)
     failures += test_kernel_hook_rendered_bytes();
     failures += test_vault_send_debits_once();
     failures += test_failed_handler_releases_debit();
+    failures += test_canonical_intent_session();
     failures += test_fixture_thread_scope();
     printf("agent_spend_policy: %s (%d failures)\n",
            failures == 0 ? "OK" : "FAIL", failures);

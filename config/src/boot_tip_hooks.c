@@ -23,6 +23,8 @@
 #include "services/chain_tip.h"          /* chain_set_active_tip, TIP_FROM_* (ZCL_TESTING paths) */
 #include "services/gap_fill_service.h"
 #include "validation/mirror_consensus.h"
+#include "controllers/sync_controller.h"
+#include "jobs/tip_finalize_wallet_reconcile.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
 #include "util/util.h"  /* GetDataDir(true): net-specific block body root */
@@ -131,8 +133,23 @@ static bool boot_process_block_restore_mempool(
             }
             tx_mempool_remove_for_block(svc->mempool, blk.vtx, blk.num_vtx,
                                          (unsigned int)path[i]->nHeight);
+            if (svc->wallet && !tip_finalize_run_wallet_reconcile(path[i])) {
+                LOG_WARN("validation",
+                         "reconsider: wallet reconciliation failed h=%d",
+                         path[i]->nHeight);
+                complete = false;
+            }
             block_free(&blk);
             continue;
+        }
+
+        bool *keep_pending = zcl_calloc(
+            blk.num_vtx, sizeof(*keep_pending),
+            "invalidate wallet pending decisions");
+        if (blk.num_vtx > 0 && !keep_pending) {
+            block_free(&blk);
+            complete = false;
+            break;
         }
 
         for (size_t t = 0; t < blk.num_vtx; t++) {
@@ -146,6 +163,7 @@ static bool boot_process_block_restore_mempool(
                 svc->mempool, svc->coins_tip, svc->state, svc->params, tx,
                 detail, sizeof(detail));
             if (ar == MEMPOOL_ACCEPT_OK || ar == MEMPOOL_ACCEPT_DUPLICATE) {
+                keep_pending[t] = true;
                 if (out)
                     out->txs_accepted++;
                 if (svc->connman) {
@@ -167,8 +185,33 @@ static bool boot_process_block_restore_mempool(
                      path[i]->nHeight, txid, (int)ar,
                      detail[0] ? detail : "none");
         }
+
+
+        if (svc->wallet) {
+            for (size_t t = 0; t < blk.num_vtx; t++) {
+                if (!wallet_disconnect_transaction(
+                        svc->wallet, &blk.vtx[t], keep_pending[t])) {
+                    LOG_WARN("validation",
+                             "invalidate: live wallet retract failed h=%d tx=%zu",
+                             path[i]->nHeight, t);
+                    complete = false;
+                }
+            }
+        }
+        if (svc->node_db &&
+            !node_db_sync_wallet_disconnect_block(
+                svc->node_db, &blk, keep_pending)) {
+            LOG_WARN("validation",
+                     "invalidate: durable wallet retract failed h=%d",
+                     path[i]->nHeight);
+            complete = false;
+        }
+        free(keep_pending);
         block_free(&blk);
     }
+    if (action == PROCESS_BLOCK_MEMPOOL_RESTORE_DISCONNECTED && svc->wallet)
+        (void)wallet_rewind_confirmations(
+            svc->wallet, first_disconnected->nHeight - 1);
     free(path);
     return complete;
 }

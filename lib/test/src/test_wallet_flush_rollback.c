@@ -34,6 +34,8 @@ static const char *k_flush_schema =
     "  privkey BLOB NOT NULL,"
     "  compressed INTEGER NOT NULL DEFAULT 1,"
     "  created_at INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE wallet_keypool ("
+    "  pubkey_hash BLOB PRIMARY KEY,generation INTEGER NOT NULL UNIQUE);"
     "CREATE TABLE wallet_sapling_keys ("
     "  ivk BLOB PRIMARY KEY,xsk BLOB NOT NULL,xfvk BLOB NOT NULL,"
     "  diversifier BLOB NOT NULL,pk_d BLOB NOT NULL,"

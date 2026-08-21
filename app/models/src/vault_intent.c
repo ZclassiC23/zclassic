@@ -132,6 +132,14 @@ bool vault_intent_validate(const struct vault_intent_row *r,
     validates_custom(errors, legacy || r->recipient_value_zat > 0 ||
                      application_bound, "fee_only_intent",
                      "requires a named idempotent application workflow");
+    const bool agent_empty = r->agent_session_id[0] == '\0' &&
+        r->agent_debited_zat == 0;
+    const bool agent_bound = bound &&
+        zcl_is_hex_string(r->agent_session_id, AGENT_SESSION_ID_MAX) &&
+        (r->agent_debited_zat == 0 ||
+         r->agent_debited_zat == r->reserved_zat);
+    validates_custom(errors, agent_empty || agent_bound, "agent_binding",
+                     "must be empty or bind one exact reservation debit");
     return !ar_errors_any(errors);
 }
 
@@ -146,8 +154,9 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *r)
         "anchor_hash,encrypted_payload,txid,confirm_height,confirm_hash,"
         "error_code,updated_at,wallet_scope,wallet_instance_id,wallet_genesis,"
         "snapshot_root,recipient_value_zat,max_fee_zat,reserved_zat,"
-        "application_kind,idempotency_key,request_digest) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+        "application_kind,idempotency_key,request_digest,agent_session_id,"
+        "agent_debited_zat) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
         "ON CONFLICT(plan_id) DO UPDATE SET "
         "digest=excluded.digest,state=excluded.state,route=excluded.route,"
         "created_at=excluded.created_at,expires_at=excluded.expires_at,"
@@ -163,7 +172,9 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *r)
         "max_fee_zat=excluded.max_fee_zat,reserved_zat=excluded.reserved_zat,"
         "application_kind=excluded.application_kind,"
         "idempotency_key=excluded.idempotency_key,"
-        "request_digest=excluded.request_digest",
+        "request_digest=excluded.request_digest,"
+        "agent_session_id=excluded.agent_session_id,"
+        "agent_debited_zat=excluded.agent_debited_zat",
         db_vault_intent_callbacks(), "vault_intent", r,
         vault_intent_validate,
         AR_BIND_BLOB(s, 1, r->plan_id, 32);
@@ -194,7 +205,9 @@ bool vault_intent_save(struct node_db *ndb, const struct vault_intent_row *r)
         AR_BIND_TEXT(s, 23, r->idempotency_key);
         if (r->has_request_digest)
             AR_BIND_BLOB(s, 24, r->request_digest, 32);
-        else AR_BIND_NULL(s, 24));
+        else AR_BIND_NULL(s, 24);
+        AR_BIND_TEXT(s, 25, r->agent_session_id);
+        AR_BIND_INT(s, 26, r->agent_debited_zat));
 }
 
 static bool vault_intent_reserve_internal(
@@ -214,16 +227,35 @@ static bool vault_intent_reserve_internal(
     bool inputs_ready = vault_intent_inputs_release_terminal(ndb);
     int64_t reserved = vault_intent_reserved_total_at(
         ndb, r->wallet_scope, r->wallet_instance_id, r->created_at);
-    int64_t lifetime = agent_session_scope_lifetime_spent(
+    int64_t direct_lifetime = agent_session_scope_lifetime_spent(
         ndb, r->wallet_scope);
-    bool allowed = reserved >= 0 && lifetime >= 0 &&
+    int64_t completed = vault_intent_unbound_completed_total(
+        ndb, r->wallet_scope, r->wallet_instance_id);
+    bool allowed = reserved >= 0 && direct_lifetime >= 0 && completed >= 0 &&
         (!require_expected_reserved || reserved == expected_reserved_zat) &&
-        reserved <= INT64_MAX - r->reserved_zat;
+        reserved <= INT64_MAX - r->reserved_zat &&
+        direct_lifetime <= INT64_MAX - completed;
     if (allowed && strcmp(r->wallet_scope, "dev") == 0) {
         const int64_t next = reserved + r->reserved_zat;
-        allowed = confirmed_zat >= 25000000LL &&
-            next <= confirmed_zat - 25000000LL &&
-            lifetime <= 5000000LL && next <= 5000000LL - lifetime;
+        const int64_t lifetime = direct_lifetime + completed;
+        int64_t reserve_floor = VAULT_INTENT_DEV_RESERVE_FLOOR_ZAT;
+        if (r->agent_session_id[0]) {
+            struct db_agent_session session;
+            allowed = agent_session_find(
+                    ndb, r->agent_session_id, &session) &&
+                !session.revoked &&
+                (session.expires_at == 0 || r->created_at < session.expires_at) &&
+                strcmp(session.wallet_scope, r->wallet_scope) == 0 &&
+                strcmp(session.wallet_instance_id,
+                       r->wallet_instance_id) == 0 &&
+                strcmp(session.wallet_genesis, r->wallet_genesis) == 0;
+            if (allowed)
+                reserve_floor = session.reserve_floor_zat;
+        }
+        allowed = allowed && confirmed_zat >= reserve_floor &&
+            next <= confirmed_zat - reserve_floor &&
+            lifetime <= VAULT_INTENT_DEV_LIFETIME_CAP_ZAT &&
+            next <= VAULT_INTENT_DEV_LIFETIME_CAP_ZAT - lifetime;
     } else if (allowed) {
         allowed = reserved + r->reserved_zat <= confirmed_zat;
     }
@@ -321,13 +353,17 @@ static void intent_read(struct vault_intent_row *r, sqlite3_stmt *s)
         AR_READ_BLOB(s, 23, r->request_digest, 32);
         r->has_request_digest = true;
     }
+    AR_READ_STR(s, 24, r->agent_session_id,
+                sizeof(r->agent_session_id));
+    r->agent_debited_zat = AR_COL_INT(s, 25);
 }
 
 #define INTENT_COLUMNS "plan_id,digest,state,route,created_at,expires_at," \
     "anchor_height,anchor_hash,encrypted_payload,txid,confirm_height," \
     "confirm_hash,error_code,updated_at,wallet_scope,wallet_instance_id," \
     "wallet_genesis,snapshot_root,recipient_value_zat,max_fee_zat,reserved_zat," \
-    "application_kind,idempotency_key,request_digest"
+    "application_kind,idempotency_key,request_digest,agent_session_id," \
+    "agent_debited_zat"
 
 bool vault_intent_find(struct node_db *ndb, const uint8_t plan_id[32],
                        struct vault_intent_row *out)
@@ -544,6 +580,64 @@ bool vault_intent_has_raw(struct node_db *ndb, const uint8_t plan_id[32])
         AR_BIND_BLOB(s, 1, plan_id, 32), ;);
 }
 
+bool vault_intent_bind_agent_session(
+    struct node_db *ndb, const uint8_t plan_id[32], const char *session_id,
+    int64_t now_unix)
+{
+    if (!ndb || !ndb->open || !plan_id ||
+        !zcl_is_hex_string(session_id, AGENT_SESSION_ID_MAX) || now_unix < 0)
+        LOG_FAIL("vault_intent", "bind agent: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_EXEC_CHANGED_BOOL(ndb, s,
+        "UPDATE vault_intents SET agent_session_id=?,updated_at=? "
+        "WHERE plan_id=? AND state=? AND agent_debited_zat=0 AND "
+        "(agent_session_id='' OR agent_session_id=?)",
+        AR_BIND_TEXT(s, 1, session_id);
+        AR_BIND_INT(s, 2, now_unix);
+        AR_BIND_BLOB(s, 3, plan_id, 32);
+        AR_BIND_INT(s, 4, VAULT_INTENT_PLANNED);
+        AR_BIND_TEXT(s, 5, session_id));
+}
+
+bool vault_intent_mark_agent_debited(
+    struct node_db *ndb, const uint8_t plan_id[32], const char *session_id,
+    int64_t amount_zat, int64_t now_unix)
+{
+    if (!ndb || !ndb->open || !plan_id ||
+        !zcl_is_hex_string(session_id, AGENT_SESSION_ID_MAX) ||
+        amount_zat <= 0 || now_unix < 0)
+        LOG_FAIL("vault_intent", "mark agent debit: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_EXEC_CHANGED_BOOL(ndb, s,
+        "UPDATE vault_intents SET agent_debited_zat=?,updated_at=? "
+        "WHERE plan_id=? AND agent_session_id=? AND agent_debited_zat=0 "
+        "AND reserved_zat=? AND state IN (?,?)",
+        AR_BIND_INT(s, 1, amount_zat);
+        AR_BIND_INT(s, 2, now_unix);
+        AR_BIND_BLOB(s, 3, plan_id, 32);
+        AR_BIND_TEXT(s, 4, session_id);
+        AR_BIND_INT(s, 5, amount_zat);
+        AR_BIND_INT(s, 6, VAULT_INTENT_PLANNED);
+        AR_BIND_INT(s, 7, VAULT_INTENT_PROVING));
+}
+
+bool vault_intent_clear_agent_debit(
+    struct node_db *ndb, const uint8_t plan_id[32], const char *session_id,
+    int64_t now_unix)
+{
+    if (!ndb || !ndb->open || !plan_id ||
+        !zcl_is_hex_string(session_id, AGENT_SESSION_ID_MAX) || now_unix < 0)
+        LOG_FAIL("vault_intent", "clear agent debit: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_EXEC_CHANGED_BOOL(ndb, s,
+        "UPDATE vault_intents SET agent_debited_zat=0,updated_at=? "
+        "WHERE plan_id=? AND agent_session_id=? AND agent_debited_zat>0 "
+        "AND state IN (0,6,7,8)",
+        AR_BIND_INT(s, 1, now_unix);
+        AR_BIND_BLOB(s, 2, plan_id, 32);
+        AR_BIND_TEXT(s, 3, session_id));
+}
+
 static int64_t vault_intent_reserved_total_query(
     struct node_db *ndb, const char *wallet_scope,
     const char *wallet_instance_id, bool apply_expiry, int64_t now_unix)
@@ -585,6 +679,28 @@ int64_t vault_intent_reserved_total_at(struct node_db *ndb,
         LOG_ERR("vault_intent", "reserved_total_at: invalid observation time");
     return vault_intent_reserved_total_query(
         ndb, wallet_scope, wallet_instance_id, true, now_unix);
+}
+
+int64_t vault_intent_unbound_completed_total(
+    struct node_db *ndb, const char *wallet_scope,
+    const char *wallet_instance_id)
+{
+    if (!ndb || !ndb->open || !wallet_scope || !wallet_scope[0] ||
+        !wallet_instance_id || !wallet_instance_id[0])
+        LOG_ERR("vault_intent", "unbound_completed_total: invalid argument");
+    sqlite3_stmt *s = NULL;
+    AR_PREPARE_RET(ndb, s,
+        "SELECT COALESCE(SUM(reserved_zat),0) FROM vault_intents "
+        "WHERE wallet_scope=? AND wallet_instance_id=? AND state IN (3,4) "
+        "AND agent_session_id=''",
+        -1);
+    AR_BIND_TEXT(s, 1, wallet_scope);
+    AR_BIND_TEXT(s, 2, wallet_instance_id);
+    int64_t total = -1;
+    if (AR_STEP_ROW(s))
+        total = AR_COL_INT(s, 0);
+    AR_FINALIZE(s);
+    return total;
 }
 
 const char *vault_intent_state_name(enum vault_intent_state state)

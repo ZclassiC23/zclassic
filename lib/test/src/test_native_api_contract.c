@@ -25,6 +25,7 @@
 #include "test/test_core.h"
 
 #include "base/hex.h"
+#include "chain/chainparams.h"
 #include "core/core_io.h"
 #include "config/command_catalog.h"
 #include "controllers/transaction_controller.h"
@@ -42,6 +43,7 @@
 #include "support/cleanse.h"
 #include "util/safe_alloc.h"
 #include "wallet/keystore.h"
+#include "wallet/sapling_keys.h"
 #include "zanc/zanc.h"
 
 #include <arpa/inet.h>
@@ -652,7 +654,8 @@ static int test_status_frontdoor_preserves_rpc_error(void)
         node_rpc_client_set_test_hook(status_frontdoor_mock_rpc);
         static const char cookie_error[] =
             "{\"error\":{\"code\":-32603,\"message\":"
-            "\"cannot read RPC auth cookie at /tmp/dev/.cookie\"}}";
+            "\"cannot read RPC auth cookie — is the node running and is the "
+            "selected datadir correct?\"}}";
         g_status_body_rpc_fixture = cookie_error;
         struct zcl_native_body_err err = {0};
         char *body = zcl_native_status_body(NULL, &err);
@@ -660,6 +663,8 @@ static int test_status_frontdoor_preserves_rpc_error(void)
         ASSERT_EQ((int)err.status, (int)ZCL_NATIVE_BODY_UNAVAILABLE);
         ASSERT(strstr(err.message, "RPC failed") != NULL);
         ASSERT(strstr(err.message, "cannot read RPC auth cookie") != NULL);
+        ASSERT(strstr(err.message, "/tmp/") == NULL);
+        ASSERT(strstr(err.message, ".cookie") == NULL);
         ASSERT(strstr(err.message, "missing state object") == NULL);
 
         static const char healthy[] =
@@ -839,11 +844,20 @@ static int g_wallet_raw_broadcast_calls;
 static int g_wallet_multisig_compose_calls;
 static bool g_wallet_raw_reject;
 static char g_wallet_z_sendmany_params[4096];
+static char g_wallet_sapling_address[128];
 
 static char *wallet_stub_rpc(const char *method, const char *params_json)
 {
+    if (method && strcmp(method, "rescanwitnesses") == 0)
+        return strdup("\"No readable header-bound endpoint\"");
     if (method && strcmp(method, "getnewaddress") == 0)
         return strdup("\"t1StubTransparentAddress00000000000\"");
+    if (method && strcmp(method, "z_getnewaddress") == 0) {
+        char wire[132];
+        (void)snprintf(wire, sizeof(wire), "\"%s\"",
+                       g_wallet_sapling_address);
+        return strdup(wire);
+    }
     if (method && strcmp(method, "validateaddress") == 0)
         return strdup(
             "{\"isvalid\":true,\"ismine\":true,"
@@ -921,6 +935,35 @@ static int test_wallet_mutating_native_e2e(void)
         ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "address")),
                       "t1StubTransparentAddress00000000000");
+        ASSERT(json_get_bool(json_get(&reply.data, "created")));
+        ASSERT(reply.error.mutated);
+        zcl_command_reply_free(&reply);
+        json_free(&empty);
+
+        /* The native CLI can target a regtest node without itself receiving
+         * -regtest. Validate the node-returned Sapling encoding instead of
+         * rejecting it against the CLI process's default mainnet HRP. */
+        const struct zcl_command_spec *znew_spec =
+            find_spec(reg, "core.wallet.shielded.address");
+        ASSERT(znew_spec != NULL);
+        uint8_t diversifier[11] = {0};
+        uint8_t pk_d[32] = {0};
+        chain_params_select(CHAIN_REGTEST);
+        ASSERT(sapling_encode_payment_address(
+            diversifier, pk_d,
+            chain_params_get()->bech32HRPs[BECH32_SAPLING_PAYMENT_ADDRESS],
+            g_wallet_sapling_address, sizeof(g_wallet_sapling_address)));
+        chain_params_select(CHAIN_MAIN);
+        json_init(&empty);
+        json_set_object(&empty);
+        struct zcl_command_request req_znew = {
+            .spec = znew_spec, .input = &empty, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, znew_spec->output_schema);
+        zcl_native_handle_wallet_shielded_address(&req_znew, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_OK);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "address")),
+                      g_wallet_sapling_address);
         ASSERT(json_get_bool(json_get(&reply.data, "created")));
         ASSERT(reply.error.mutated);
         zcl_command_reply_free(&reply);
@@ -1366,6 +1409,25 @@ static int test_wallet_mutating_native_e2e(void)
         ASSERT_EQ(g_wallet_send_calls, 1);
         zcl_command_reply_free(&reply);
         json_free(&bad_in);
+
+        /* A legacy bare-string RPC refusal is not a completed rescan. */
+        const struct zcl_command_spec *rescan_spec =
+            find_spec(reg, "core.wallet.rescan-witnesses");
+        ASSERT(rescan_spec != NULL);
+        struct json_value rescan_in;
+        json_init(&rescan_in);
+        json_set_object(&rescan_in);
+        struct zcl_command_request req_rescan = {
+            .spec = rescan_spec, .input = &rescan_in, .view = "normal",
+        };
+        zcl_command_reply_init(&reply, rescan_spec->output_schema);
+        zcl_native_handle_wallet_rescan_witnesses(&req_rescan, &reply);
+        ASSERT_EQ(reply.exit_code, ZCL_COMMAND_EXIT_FAILED);
+        ASSERT_STR_EQ(reply.error.code, "WITNESS_RESCAN_FAILED");
+        ASSERT(!reply.error.mutated);
+        ASSERT(json_get(&reply.data, "completed") == NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&rescan_in);
 
         node_rpc_client_set_test_hook(NULL);
         PASS();

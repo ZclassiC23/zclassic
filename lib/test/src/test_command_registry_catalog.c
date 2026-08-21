@@ -393,7 +393,11 @@ static char *raw_transaction_string_mock(const char *method,
         return strdup("\"02a1ff\"");
     if (strstr(params_json, ",1]"))
         return strdup("{\"txid\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
-                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}");
+                      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\","
+                      "\"vin\":[{\"scriptSig\":{\"hex\":\"0123\"}}],"
+                      "\"blockhash\":\"cccccccccccccccccccccccccccccccc"
+                      "cccccccccccccccccccccccccccccccc\","
+                      "\"confirmations\":3}");
     return NULL;
 }
 
@@ -453,6 +457,11 @@ static int test_raw_transaction_verbose_bool(void)
         node_rpc_client_set_test_hook(NULL);
         ASSERT(body != NULL);
         ASSERT(strstr(body, "\"txid\"") != NULL);
+        const char *confirmations = strstr(body, "\"confirmations\"");
+        const char *inputs = strstr(body, "\"vin\"");
+        ASSERT(confirmations != NULL);
+        ASSERT(inputs != NULL);
+        ASSERT(confirmations < inputs);
         ASSERT(strstr(body, "zcl.raw_transaction.v1") == NULL);
         free(body);
         json_free(&args);
@@ -651,6 +660,7 @@ static char *status_brief_mock_rpc(const char *method,
 
 static bool g_status_journey_plaintext;
 static bool g_status_journey_typed_blocker;
+static bool g_status_journey_witness_ready = true;
 
 static char *status_journey_mock_rpc(const char *method,
                                      const char *params_json)
@@ -702,16 +712,20 @@ static char *status_journey_mock_rpc(const char *method,
             "\"agent_available_zat\":10000000,"
             "\"wallet_instance_id\":\"must-not-cross-front-door\"}}"
         );
-    if (strcmp(method, "getwalletinfo") == 0)
-        return strdup(g_status_journey_plaintext
-            ? "{\"persistence\":{\"healthy\":true},"
-              "\"lock\":{\"encrypted_at_rest\":false,\"unlocked\":true},"
-              "\"sapling\":{\"prover_ready\":true,"
-              "\"checkpoint_healthy\":true}}"
-            : "{\"persistence\":{\"healthy\":true},"
-              "\"lock\":{\"encrypted_at_rest\":true,\"unlocked\":true},"
-              "\"sapling\":{\"prover_ready\":true,"
-              "\"checkpoint_healthy\":true}}");
+    if (strcmp(method, "getwalletinfo") == 0) {
+        char body[512];
+        (void)snprintf(body, sizeof(body),
+            "{\"persistence\":{\"healthy\":true},"
+            "\"lock\":{\"encrypted_at_rest\":%s,\"unlocked\":true},"
+            "\"sapling\":{\"prover_ready\":true,"
+            "\"checkpoint_healthy\":true,\"witness_ready\":%s,"
+            "\"witness_state\":\"%s\"}}",
+            g_status_journey_plaintext ? "false" : "true",
+            g_status_journey_witness_ready ? "true" : "false",
+            g_status_journey_witness_ready ? "ready"
+                                           : "rescan_required_stale");
+        return strdup(body);
+    }
     if (strcmp(method, "walletbackupstatus") == 0)
         return strdup(
             "{\"healthy\":true,\"encrypted_backup_available\":true,"
@@ -851,9 +865,9 @@ static int test_status_journey_safe_money_frontdoor(void)
         ASSERT_EQ(json_get_int(json_get(data, "reserved_zat")), (int64_t)0);
         ASSERT_EQ(json_get_int(json_get(data, "mempool_transactions")),
                   (int64_t)1);
-        ASSERT(json_is_null(json_get(data, "sapling_witness_ready")));
+        ASSERT(json_get_bool(json_get(data, "sapling_witness_ready")));
         ASSERT_STR_EQ(json_get_str(json_get(data, "sapling_witness_state")),
-                      "plan_required");
+                      "ready");
         ASSERT_STR_EQ(json_get_str(json_get(data, "error_code")), "NONE");
         ASSERT_STR_EQ(json_get_str(json_get(data, "operator_status")),
                       "healthy");
@@ -887,6 +901,22 @@ static int test_status_journey_safe_money_frontdoor(void)
         json_free(&root);
 
         g_status_journey_plaintext = false;
+        g_status_journey_witness_ready = false;
+        code = ZCL_COMMAND_EXIT_INTERNAL;
+        ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
+        ASSERT_EQ(code, ZCL_COMMAND_EXIT_OK);
+        ASSERT(json_read(&root, out, strlen(out)) && root.type == JSON_OBJ);
+        data = json_get(&root, "data");
+        ASSERT(!json_get_bool(json_get(data, "can_send_sapling")));
+        ASSERT_STR_EQ(json_get_str(json_get(data, "error_code")),
+                      "WITNESS_RESCAN_REQUIRED");
+        ASSERT_STR_EQ(json_get_str(json_get(data, "current_state")),
+                      "SHIELDED_WITNESS_NOT_READY");
+        ASSERT_STR_EQ(json_get_str(json_get(data, "next_action")),
+                      "z23 core wallet rescan-witnesses");
+        json_free(&root);
+
+        g_status_journey_witness_ready = true;
         g_status_journey_typed_blocker = true;
         code = ZCL_COMMAND_EXIT_INTERNAL;
         ASSERT(exec_leaf(reg, s, out, sizeof(out), &code));
@@ -905,6 +935,7 @@ static int test_status_journey_safe_money_frontdoor(void)
     } _test_next:;
     g_status_journey_plaintext = false;
     g_status_journey_typed_blocker = false;
+    g_status_journey_witness_ready = true;
     node_rpc_client_set_test_hook(NULL);
     return failures;
 }
@@ -2618,6 +2649,18 @@ static int test_next_actions_fail_closed(void)
             ASSERT(n > 0);
             ASSERT_EQ(code, ZCL_COMMAND_EXIT_INTERNAL);
             ASSERT(strstr(out, "\"ok\":false") != NULL);
+            struct json_value reply;
+            ASSERT(json_read(&reply, out, n));
+            const struct json_value *error = json_get(&reply, "error");
+            ASSERT(error && error->type == JSON_OBJ);
+            ASSERT(json_get_str(json_get(error, "code")) != NULL);
+            ASSERT_STR_EQ(json_get_str(json_get(error, "error_code")),
+                          json_get_str(json_get(error, "code")));
+            ASSERT(json_get_str(json_get(error, "current_state")) != NULL);
+            ASSERT(json_get(error, "retryable") != NULL);
+            ASSERT(json_get(error, "human_action_required") != NULL);
+            ASSERT(json_get_str(json_get(error, "next_action")) != NULL);
+            json_free(&reply);
         }
         json_free(&input);
 

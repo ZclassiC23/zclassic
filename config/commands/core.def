@@ -750,9 +750,9 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_bridge_command)
 ZCL_COMMAND_READY_READ(
     "core.wallet.balance", "core.wallet", "", "Confirmed and total balance",
-    "Confirmed and total wallet balance in zatoshi, computed live from "
-    "the running node's UTXO set at call time; total includes "
-    "unconfirmed mempool-visible outputs.", 0,
+    "Spendable, encumbered, and total wallet balance in zatoshi, computed "
+    "live from wallet state; total retains inputs reserved by an "
+    "unconfirmed wallet transaction.", 0,
     "wallet,balance", "zcl.command.empty_input.v1", "zcl.wallet_balance.v1",
     "", "", "z23 core wallet balance",
     ZCL_COMMAND_LAYER_CORE, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,

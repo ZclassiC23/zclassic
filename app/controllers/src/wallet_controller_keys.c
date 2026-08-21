@@ -423,6 +423,23 @@ bool wallet_direct_getnewaddresses(
         }
     }
 
+    /* A legacy address consumes a pre-persisted key. The private key was
+     * already durable, but its removal from the unused pool is new state: if
+     * that membership survives a restart the same address can be handed out
+     * twice. Persist the reduced pool before returning any address. */
+    if (ctx->wallet_db && !direct_generated) {
+        struct zcl_result pool_flush = wallet_flush_from_context(ctx);
+        if (!pool_flush.ok) {
+            memset(addresses, 0, count * WALLET_DIRECT_ADDRESS_MAX);
+            (void)snprintf(err_out, err_max,
+                           "keypool consumption persistence failed");
+            LOG_FAIL("wallet",
+                     "new_durable_addresses: keypool consumption flush "
+                     "failed code=%d: %s",
+                     pool_flush.code, pool_flush.message);
+        }
+    }
+
     /* Success: one coalesced backup trigger for the whole durable batch. */
     if (ctx->wallet_db)
         wallet_backup_service_on_key_change();

@@ -261,14 +261,22 @@ bool rpc_getmempoolinfo(const struct json_value *params, bool help,
                                 struct json_value *result)
 {
     struct blockchain_context *ctx = blockchain_ctx();
+    struct tx_mempool_stats stats = {0};
     (void)params;
     RPC_HELP(help, result, "getmempoolinfo\nReturns mempool state.");
 
     json_set_object(result);
-    json_push_kv_int(result, "size",
-                     ctx->mempool ? (int64_t)ctx->mempool->num_entries : 0);
-    json_push_kv_int(result, "bytes",
-                     ctx->mempool ? (int64_t)ctx->mempool->total_tx_size : 0);
+    tx_mempool_stats_snapshot(ctx->mempool, &stats);
+    json_push_kv_int(result, "size", (int64_t)stats.size);
+    json_push_kv_int(result, "bytes", (int64_t)stats.bytes);
+    json_push_kv_int(result, "added_total", (int64_t)stats.added_total);
+    json_push_kv_int(result, "removed_direct_total",
+                     (int64_t)stats.removed_direct_total);
+    json_push_kv_int(result, "removed_for_block_total",
+                     (int64_t)stats.removed_for_block_total);
+    json_push_kv_int(result, "removed_for_branch_total",
+                     (int64_t)stats.removed_for_branch_total);
+    json_push_kv_int(result, "cleared_total", (int64_t)stats.cleared_total);
     return true;
 }
 

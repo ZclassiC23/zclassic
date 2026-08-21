@@ -241,6 +241,8 @@ static const char *k_schema =
     " pubkey BLOB NOT NULL, privkey BLOB NOT NULL,"
     " compressed INTEGER NOT NULL DEFAULT 1,"
     " created_at INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE wallet_keypool (pubkey_hash BLOB PRIMARY KEY,"
+    " generation INTEGER NOT NULL UNIQUE);"
     "CREATE TABLE wallet_transactions (txid BLOB PRIMARY KEY,"
     " raw_tx BLOB NOT NULL, block_hash BLOB,"
     " block_height INTEGER, time_received INTEGER NOT NULL,"

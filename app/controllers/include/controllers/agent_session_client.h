@@ -33,6 +33,7 @@
  * out_session_id receives the full token on success. */
 bool agent_session_client_mint(const char *account, int64_t max_per_tx_zat,
                                int64_t max_per_window_zat,
+                               int64_t reserve_floor_zat,
                                int64_t window_seconds,
                                const char *recipient_allowlist,
                                int64_t expires_in_seconds,
@@ -58,11 +59,24 @@ bool agent_session_client_revoke(const char *session_id, char *why,
 bool agent_session_client_authorize(const char *session_id, int64_t amount_zat,
                                     const char *recipient,
                                     const char *wallet_scope, bool commit,
+                                    bool canonical_plan,
                                     int64_t *window_remaining_zat,
                                     int64_t *charged_zat,
                                     char *why, size_t why_cap);
 
 /* Credit a debit back after the spend it paid for did not happen. */
 bool agent_session_client_release(const char *session_id, int64_t amount_zat);
+
+/* Canonical durable-intent grant lifecycle. plan_id is display-order 64-hex;
+ * no helper ever returns or logs the bearer session id. */
+bool agent_session_client_bind_intent(
+    const char *session_id, const char *plan_id, const char *recipient,
+    char *why, size_t why_cap);
+bool agent_session_client_authorize_intent(
+    const char *session_id, const char *plan_id,
+    bool *debit_managed, int64_t *charged_zat,
+    char *why, size_t why_cap);
+bool agent_session_client_release_intent(
+    const char *session_id, const char *plan_id);
 
 #endif

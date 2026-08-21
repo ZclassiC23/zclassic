@@ -270,6 +270,13 @@ bool node_db_reconcile_canonical_sapling_notes(
 bool node_db_sync_wallet_tx_delete(struct node_db *ndb,
                                    const uint8_t txid[32]);
 
+/* Retract wallet-derived rows created by an exact disconnected block.  The
+ * per-transaction keep_pending flags are true only when ordinary mempool
+ * admission accepted that non-coinbase transaction after the coin unwind. */
+bool node_db_sync_wallet_disconnect_block(struct node_db *ndb,
+                                           const struct block *blk,
+                                           const bool *keep_pending);
+
 /* Persist a peer address we learned about. */
 bool node_db_sync_peer(struct node_db *ndb,
                        const uint8_t ip[16], uint16_t port,

@@ -32,6 +32,7 @@
  * include is the honest shape, and mirrors lib-layer-ok:agent-spend-policy-gate
  * in lib/kernel. */
 #include "controllers/agent_session_client.h"  // shape-layer-ok:agent-grant-store-is-node-owned
+#include "controllers/vault_intent_controller.h"  // shape-layer-ok:canonical-intent-amount-grammar
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "models/agent_session.h"
@@ -49,6 +50,8 @@
 
 enum asp_class {
     ASP_SPEND,       /* moves funds — gated on amount + recipient */
+    ASP_INTENT_PLAN, /* exact effects; binds grant after durable planning */
+    ASP_INTENT_COMMIT, /* exact once-only debit loaded by durable plan id */
     ASP_WALLET_READ, /* reads wallet state, reveals no key material */
     ASP_UNBOUNDABLE, /* a read whose REACH the policy cannot bound — listed so
                       * the refusal is deliberate rather than a default-deny
@@ -94,6 +97,9 @@ static const struct asp_surface g_surface[] = {
     { "app.market.buy",               ASP_SPEND, "amount", NULL },
     { "app.swap.initiate",            ASP_SPEND, "amount", NULL },
     { "app.swap.participate",         ASP_SPEND, "amount", NULL },
+    { "vault.intent.plan",            ASP_INTENT_PLAN, NULL, NULL },
+    { "vault.intent.commit",          ASP_INTENT_COMMIT, NULL, NULL },
+    { "vault.intent.submit",          ASP_INTENT_COMMIT, NULL, NULL },
     /* wallet reads */
     { "core.wallet.status",            ASP_WALLET_READ, NULL, NULL },
     { "core.wallet.balance",           ASP_WALLET_READ, NULL, NULL },
@@ -114,6 +120,9 @@ static const struct asp_surface g_surface[] = {
     { "vault.list",                    ASP_WALLET_READ, NULL, NULL },
     { "vault.show",                    ASP_WALLET_READ, NULL, NULL },
     { "vault.encumbered",              ASP_WALLET_READ, NULL, NULL },
+    { "vault.intent.issue",             ASP_WALLET_READ, NULL, NULL },
+    { "vault.intent.status",            ASP_WALLET_READ, NULL, NULL },
+    { "vault.intent.list",              ASP_WALLET_READ, NULL, NULL },
     /* Arbitrary SQL. Declared READ + CAP_CHAIN_READ, so the default-deny
      * branch below classifies it as a plain read and lets it through — but
      * its REACH is every row in node.db, and node.db holds material whose
@@ -162,6 +171,110 @@ static void asp_refuse(struct agent_spend_policy_decision *out,
     (void)snprintf(out->detail, sizeof(out->detail), "%s", detail);
     LOG_ERROR(ASP_TAG, "refusing %s for session %s: %s — %s",
               leaf ? leaf : "(unknown leaf)", out->evidence, code, detail);
+}
+
+static bool asp_wallet_scope(const struct json_value *input,
+                             const char **scope_out)
+{
+    const char *scope = input && input->type == JSON_OBJ
+        ? json_get_str(json_get(input, "wallet_scope")) : NULL;
+    if (!scope || (strcmp(scope, "dev") != 0 &&
+                   strcmp(scope, "prod") != 0))
+        return false;
+    *scope_out = scope;
+    return true;
+}
+
+static void asp_authorize_intent_plan(
+    const char *session_id, const char *leaf,
+    const struct json_value *input, struct agent_spend_policy_decision *out)
+{
+    const char *scope = NULL;
+    const struct json_value *effects = input && input->type == JSON_OBJ
+        ? json_get(input, "effects") : NULL;
+    if (!asp_wallet_scope(input, &scope)) {
+        asp_refuse(out, "POLICY_WALLET_SCOPE",
+                   "every agent intent must explicitly name dev or prod",
+                   leaf);
+        return;
+    }
+    if (!effects || effects->type != JSON_ARR ||
+        effects->num_children == 0 || effects->num_children > 50) {
+        asp_refuse(out, "POLICY_AMOUNT",
+                   "intent effects must contain 1..50 exact recipients",
+                   leaf);
+        return;
+    }
+    int64_t total = 0;
+    for (size_t i = 0; i < effects->num_children; i++) {
+        const struct json_value *effect = json_at(effects, i);
+        const char *asset = effect && effect->type == JSON_OBJ
+            ? json_get_str(json_get(effect, "asset")) : NULL;
+        const char *to = effect && effect->type == JSON_OBJ
+            ? json_get_str(json_get(effect, "to")) : NULL;
+        const char *amount = effect && effect->type == JSON_OBJ
+            ? json_get_str(json_get(effect, "amount")) : NULL;
+        int64_t value = 0;
+        if (!asset || strcmp(asset, "ZCL") != 0 || !to || !to[0] ||
+            !vault_intent_parse_zcl_amount(amount, &value) ||
+            total > INT64_MAX - value) {
+            asp_refuse(out, "POLICY_AMOUNT",
+                       "each intent effect needs asset=ZCL, recipient, and "
+                       "an exact decimal amount", leaf);
+            return;
+        }
+        total += value;
+    }
+    for (size_t i = 0; i < effects->num_children; i++) {
+        const struct json_value *effect = json_at(effects, i);
+        const char *to = json_get_str(json_get(effect, "to"));
+        int64_t remaining = 0, charged = 0;
+        char why[64] = { 0 };
+        if (!agent_session_client_authorize(
+                session_id, i == 0 ? total : 0, to, scope, false, true,
+                &remaining, &charged, why, sizeof(why))) {
+            asp_refuse(out, why[0] ? why : "POLICY_STORE",
+                       "the session refused the exact intent plan", leaf);
+            return;
+        }
+        out->window_remaining_zat = remaining;
+    }
+    asp_allow(out);
+}
+
+static void asp_authorize_intent_commit(
+    const char *session_id, const char *leaf,
+    const struct json_value *input, struct agent_spend_policy_decision *out)
+{
+    const char *scope = NULL;
+    const char *plan = input && input->type == JSON_OBJ
+        ? json_get_str(json_get(input, "plan_id")) : NULL;
+    if (!asp_wallet_scope(input, &scope)) {
+        asp_refuse(out, "POLICY_WALLET_SCOPE",
+                   "every agent intent commit must explicitly name dev or prod",
+                   leaf);
+        return;
+    }
+    (void)scope; /* the node rechecks the row's bound wallet identity */
+    if (!plan || strlen(plan) != 64) {
+        asp_refuse(out, "POLICY_AMOUNT",
+                   "intent commit requires one durable 64-hex plan_id", leaf);
+        return;
+    }
+    bool managed = false;
+    int64_t charged = 0;
+    char why[64] = { 0 };
+    if (!agent_session_client_authorize_intent(
+            session_id, plan, &managed, &charged, why, sizeof(why))) {
+        asp_refuse(out, why[0] ? why : "POLICY_STORE",
+                   "the session refused the exact durable intent", leaf);
+        return;
+    }
+    out->intent_debit_managed = managed;
+    out->debited_zat = charged;
+    (void)snprintf(out->intent_plan_id, sizeof(out->intent_plan_id), "%s",
+                   plan);
+    asp_allow(out);
 }
 
 /* Coerce an amount JSON value (int / real / decimal string) to zatoshis,
@@ -263,6 +376,14 @@ void agent_spend_policy_evaluate(const char *session_id,
                    "ZCL_AGENT_SESSION unset", spec->path);
         return;
     }
+    if (s->klass == ASP_INTENT_PLAN) {
+        asp_authorize_intent_plan(session_id, spec->path, input, out);
+        return;
+    }
+    if (s->klass == ASP_INTENT_COMMIT) {
+        asp_authorize_intent_commit(session_id, spec->path, input, out);
+        return;
+    }
 
     /* ── an understood spend ─────────────────────────────────────────────── */
     const struct json_value *amt =
@@ -313,7 +434,7 @@ void agent_spend_policy_evaluate(const char *session_id,
     char why[64] = { 0 };
     int64_t charged_zat = 0;
     if (!agent_session_client_authorize(session_id, amount_zat, recipient,
-                                        wallet_scope, committing,
+                                        wallet_scope, committing, false,
                                         &out->window_remaining_zat,
                                         &charged_zat,
                                         why, sizeof(why))) {
@@ -330,7 +451,14 @@ void agent_spend_policy_evaluate(const char *session_id,
 void agent_spend_policy_release(
     const char *session_id, const struct agent_spend_policy_decision *d)
 {
-    if (!session_id || !session_id[0] || !d || d->debited_zat <= 0)
+    if (!session_id || !session_id[0] || !d)
+        return;
+    if (d->intent_debit_managed && d->intent_plan_id[0]) {
+        (void)agent_session_client_release_intent(
+            session_id, d->intent_plan_id);
+        return;
+    }
+    if (d->debited_zat <= 0)
         return;
     (void)agent_session_client_release(session_id, d->debited_zat);
 }

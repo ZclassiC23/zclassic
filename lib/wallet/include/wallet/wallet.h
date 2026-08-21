@@ -185,10 +185,19 @@ void wallet_key_pool_mark_persisted_through(struct wallet *w,
                                             int64_t generation);
 size_t wallet_key_pool_persisted_size(const struct wallet *w);
 bool wallet_get_key_from_pool(struct wallet *w, struct pubkey *pk_out);
+/* Restore one DB-backed unused entry during boot. The key must already exist
+ * in the keystore; duplicates, invalid generations, and over-capacity rows
+ * are refused. */
+bool wallet_key_pool_restore(struct wallet *w, const struct key_id *keyid,
+                             int64_t generation);
 
 bool wallet_add_to_wallet(struct wallet *w, const struct wallet_tx *wtx);
 const struct wallet_tx *wallet_get_tx(const struct wallet *w,
                                        const struct uint256 *hash);
+/* Take a deep, lock-safe snapshot of one wallet transaction. The caller owns
+ * out->tx and must transaction_free() it. */
+bool wallet_get_tx_copy(const struct wallet *w, const struct uint256 *hash,
+                        struct wallet_tx *out);
 
 void wallet_mark_dirty(struct wallet_tx *wtx);
 bool wallet_is_mine(const struct wallet *w, const struct tx_out *txout);
@@ -338,6 +347,20 @@ bool wallet_sync_transaction(struct wallet *w, const struct transaction *tx,
  * number of transactions whose depth was raised, 0 when there was nothing to
  * do, or -1 on a NULL wallet. */
 int wallet_advance_confirmations(struct wallet *w, int new_best_height);
+
+/* Retract one exact block transaction from the live wallet after its block is
+ * disconnected.  A non-coinbase transaction accepted back into the mempool
+ * remains an owned, unconfirmed transaction (and keeps its input/nullifier
+ * reservations); a rejected transaction and every coinbase are removed.
+ * Notes created by the disconnected transaction are always removed so a
+ * later reconnect can trial-decrypt and witness them at their new position. */
+bool wallet_disconnect_transaction(struct wallet *w,
+                                   const struct transaction *tx,
+                                   bool keep_pending);
+
+/* Lower confirmation depths and publish the exact post-disconnect H*.  Call
+ * after every transaction in the disconnected segment has been handled. */
+int wallet_rewind_confirmations(struct wallet *w, int new_best_height);
 
 /* HD wallet initialization */
 bool wallet_init_hd(struct wallet *w, const unsigned char *seed, size_t seed_len);

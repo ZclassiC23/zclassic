@@ -25,6 +25,7 @@ struct tx_destination;
 struct wallet_rpc_context {
     struct wallet *wallet;
     struct main_state *main_state;
+    char datadir_storage[4096];
     const char *datadir;
     struct wallet_sqlite *wallet_db;
     struct tx_mempool *mempool;
@@ -87,6 +88,26 @@ static inline struct coins_view_cache *wallet_rpc_coins_tip(void)
  * and the in-memory fallback. Defined in wallet_helpers.c so callers
  * need not pull in the full struct node_db definition. */
 bool wallet_ctx_db_ready(const struct wallet_rpc_context *ctx);
+
+/* Transparent spendable balance from the freshest complete wallet view. The
+ * finalized in-memory view leads async SQLite projection at the live tip;
+ * boot/recovery fixtures with no complete memory view retain the durable DB
+ * fallback. */
+int64_t wallet_transparent_spendable_balance(
+    const struct wallet_rpc_context *ctx);
+
+struct wallet_balance_freshness {
+    const char *source;
+    bool sources_agree;
+    int wallet_height;
+    int chain_height;
+    size_t memory_confirmed_txs;
+    int durable_confirmed_txs;
+};
+
+int64_t wallet_transparent_spendable_balance_diagnose(
+    const struct wallet_rpc_context *ctx,
+    struct wallet_balance_freshness *freshness);
 
 /* Submit a locally-authored transaction through the shared validation gate.
  * This is the only controller-side wallet commit entry point. */

@@ -48,7 +48,15 @@ void rpc_blockchain_set_state(struct main_state *ms, struct tx_mempool *mp,
 {
     g_blockchain_ctx.main_state = ms;
     g_blockchain_ctx.mempool = mp;
-    g_blockchain_ctx.datadir = datadir;
+    if (datadir && datadir[0]) {
+        (void)snprintf(g_blockchain_ctx.datadir_storage,
+                       sizeof(g_blockchain_ctx.datadir_storage), "%s",
+                       datadir);
+        g_blockchain_ctx.datadir = g_blockchain_ctx.datadir_storage;
+    } else {
+        g_blockchain_ctx.datadir_storage[0] = '\0';
+        g_blockchain_ctx.datadir = NULL;
+    }
 }
 
 void rpc_blockchain_set_coins_db(struct coins_view_db *cvdb,

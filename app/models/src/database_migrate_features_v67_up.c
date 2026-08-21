@@ -205,6 +205,88 @@ int node_db_migrate_features_v67_up(struct node_db *ndb, int *version)
         current_ver = 70;
         applied++;
     }
+    if (current_ver < 71) {
+        /* v71: the last verified encrypted wallet backup survives a process
+         * restart as a byte-bound receipt. This is custody readiness evidence,
+         * not a substitute for the external backup itself: startup reopens and
+         * hashes the named regular file before restoring authority. */
+        if (!node_db_exec(ndb,
+                "CREATE TABLE IF NOT EXISTS wallet_backup_receipts("
+                "singleton_id INTEGER PRIMARY KEY CHECK(singleton_id=1),"
+                "completed_unix INTEGER NOT NULL CHECK(completed_unix>0),"
+                "key_count INTEGER NOT NULL CHECK(key_count>=0),"
+                "tables_verified INTEGER NOT NULL CHECK(tables_verified>0),"
+                "size_bytes INTEGER NOT NULL CHECK(size_bytes>0),"
+                "file_sha3 BLOB NOT NULL CHECK(length(file_sha3)=32),"
+                "backup_path TEXT NOT NULL CHECK(length(backup_path) BETWEEN 1 AND 511))"))
+            LOG_ERR("db", "migrate v71: wallet backup receipt table failed");
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('071')"))
+            LOG_ERR("db", "migrate v71: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 71);
+        current_ver = 71;
+        applied++;
+    }
+    if (current_ver < 72) {
+        /* v72: unused transparent change keys are durable state. Private key
+         * rows alone cannot distinguish an unused keypool entry from an
+         * already-issued receive/change key after restart. */
+        if (!node_db_exec(ndb,
+                "CREATE TABLE IF NOT EXISTS wallet_keypool("
+                "pubkey_hash BLOB PRIMARY KEY CHECK(length(pubkey_hash)=20),"
+                "generation INTEGER NOT NULL UNIQUE CHECK(generation>=0),"
+                "FOREIGN KEY(pubkey_hash) REFERENCES wallet_keys(pubkey_hash) "
+                "ON DELETE CASCADE)"))
+            LOG_ERR("db", "migrate v72: wallet keypool table failed");
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('072')"))
+            LOG_ERR("db", "migrate v72: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 72);
+        current_ver = 72;
+        applied++;
+    }
+    if (current_ver < 73) {
+        /* v73: bind a bounded agent grant to the canonical durable intent and
+         * remember its exact once-only debit across crashes/retries. The full
+         * bearer id never leaves node.db after the local CLI presents it. */
+        if (!node_db_exec(ndb,
+                "ALTER TABLE vault_intents ADD COLUMN agent_session_id "
+                "TEXT NOT NULL DEFAULT '' CHECK(length(agent_session_id) "
+                "IN (0,32))"))
+            LOG_ERR("db", "migrate v73: intent agent binding failed");
+        if (!node_db_exec(ndb,
+                "ALTER TABLE vault_intents ADD COLUMN agent_debited_zat "
+                "INTEGER NOT NULL DEFAULT 0 CHECK(agent_debited_zat>=0)"))
+            LOG_ERR("db", "migrate v73: intent debit marker failed");
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('073')"))
+            LOG_ERR("db", "migrate v73: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 73);
+        current_ver = 73;
+        applied++;
+    }
+    if (current_ver < 74) {
+        /* v74: an owner-minted dev grant may narrow the generic custody
+         * policy to an explicit wallet floor. Existing grants retain the
+         * historical 0.25-ZCL floor; only a newly confirmed grant can name a
+         * different floor, and every grant remains wallet-identity bound. */
+        if (!node_db_exec(ndb,
+                "ALTER TABLE agent_sessions ADD COLUMN reserve_floor_zat "
+                "INTEGER NOT NULL DEFAULT 25000000 "
+                "CHECK(reserve_floor_zat>=0 AND "
+                "reserve_floor_zat<=2100000000000000)"))
+            LOG_ERR("db", "migrate v74: session reserve floor failed");
+        if (!node_db_exec(ndb,
+                "INSERT OR IGNORE INTO schema_migrations(version) "
+                "VALUES('074')"))
+            LOG_ERR("db", "migrate v74: migration stamp failed");
+        DB_MIGRATE_PERSIST_VERSION(ndb, 74);
+        current_ver = 74;
+        applied++;
+    }
     *version = current_ver;
     return applied;
 }

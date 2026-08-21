@@ -12,6 +12,7 @@
 
 #include "platform/time_compat.h"
 #include "wallet/wallet_sqlite.h"
+#include "wallet_sqlite_internal.h"
 #include "wallet/wallet_keystore.h"
 #include "wallet/wallet_lock.h"
 #include "wallet/wallet_sqlite_key_crypto.h"
@@ -90,41 +91,6 @@ int wallet_sqlite_read_keys_corrupt_count(void)
 /* Capture a failure into ws->last_error so wallet_sqlite_get_health
  * can surface the most recent reason without the caller threading
  * state through the health struct. */
-static struct zcl_result wsql_fail(struct wallet_sqlite *ws,
-                                    struct zcl_result r)
-{
-    if (ws && !r.ok) {
-        size_t n = sizeof(ws->last_error) - 1;
-        strncpy(ws->last_error, r.message, n);
-        ws->last_error[n] = '\0';
-    }
-    return r;
-}
-
-static void wallet_sqlite_reset_all_statements(struct wallet_sqlite *ws)
-{
-    if (!ws)
-        return;
-    if (ws->stmt_key_write) sqlite3_reset(ws->stmt_key_write);
-    if (ws->stmt_key_read) sqlite3_reset(ws->stmt_key_read);
-    if (ws->stmt_key_read_one) sqlite3_reset(ws->stmt_key_read_one);
-    if (ws->stmt_key_delete) sqlite3_reset(ws->stmt_key_delete);
-    if (ws->stmt_tx_write) sqlite3_reset(ws->stmt_tx_write);
-    if (ws->stmt_tx_read) sqlite3_reset(ws->stmt_tx_read);
-    if (ws->stmt_seed_write) sqlite3_reset(ws->stmt_seed_write);
-    if (ws->stmt_seed_read) sqlite3_reset(ws->stmt_seed_read);
-    if (ws->stmt_zkey_write) sqlite3_reset(ws->stmt_zkey_write);
-    if (ws->stmt_zkey_read) sqlite3_reset(ws->stmt_zkey_read);
-    if (ws->stmt_script_write) sqlite3_reset(ws->stmt_script_write);
-    if (ws->stmt_script_read) sqlite3_reset(ws->stmt_script_read);
-    if (ws->stmt_watch_write) sqlite3_reset(ws->stmt_watch_write);
-    if (ws->stmt_watch_read) sqlite3_reset(ws->stmt_watch_read);
-    if (ws->stmt_best_block_write) sqlite3_reset(ws->stmt_best_block_write);
-    if (ws->stmt_best_block_read) sqlite3_reset(ws->stmt_best_block_read);
-    if (ws->stmt_scan_height_write) sqlite3_reset(ws->stmt_scan_height_write);
-    if (ws->stmt_scan_height_read) sqlite3_reset(ws->stmt_scan_height_read);
-}
-
 /* ── Wallet-at-rest encryption helpers ────────────────────────── */
 
 /* Returns the effective wallet passphrase, or NULL when the wallet is locked
@@ -359,6 +325,16 @@ struct zcl_result wallet_sqlite_open_r(struct wallet_sqlite *ws, sqlite3 *db)
         { &ws->stmt_key_delete,
           "DELETE FROM wallet_keys WHERE pubkey_hash=?",
           "wallet_keys", "key_delete" },
+        { &ws->stmt_keypool_write,
+          "INSERT INTO wallet_keypool(pubkey_hash,generation) VALUES(?,?)",
+          "wallet_keypool", "keypool_write" },
+        { &ws->stmt_keypool_read,
+          "SELECT pubkey_hash,generation FROM wallet_keypool "
+          "ORDER BY generation",
+          "wallet_keypool", "keypool_read" },
+        { &ws->stmt_keypool_clear,
+          "DELETE FROM wallet_keypool",
+          "wallet_keypool", "keypool_clear" },
         { &ws->stmt_tx_write,
           "INSERT OR REPLACE INTO wallet_transactions"
           " (txid, raw_tx, block_hash, block_height, time_received, from_me)"
@@ -444,6 +420,9 @@ void wallet_sqlite_close(struct wallet_sqlite *ws)
     if (ws->stmt_key_read)     { sqlite3_finalize(ws->stmt_key_read);     ws->stmt_key_read = NULL; }
     if (ws->stmt_key_read_one) { sqlite3_finalize(ws->stmt_key_read_one); ws->stmt_key_read_one = NULL; }
     if (ws->stmt_key_delete)   { sqlite3_finalize(ws->stmt_key_delete);   ws->stmt_key_delete = NULL; }
+    if (ws->stmt_keypool_write) { sqlite3_finalize(ws->stmt_keypool_write); ws->stmt_keypool_write = NULL; }
+    if (ws->stmt_keypool_read)  { sqlite3_finalize(ws->stmt_keypool_read);  ws->stmt_keypool_read = NULL; }
+    if (ws->stmt_keypool_clear) { sqlite3_finalize(ws->stmt_keypool_clear); ws->stmt_keypool_clear = NULL; }
     if (ws->stmt_tx_write)     { sqlite3_finalize(ws->stmt_tx_write);     ws->stmt_tx_write = NULL; }
     if (ws->stmt_tx_read)      { sqlite3_finalize(ws->stmt_tx_read);      ws->stmt_tx_read = NULL; }
     if (ws->stmt_seed_write)   { sqlite3_finalize(ws->stmt_seed_write);   ws->stmt_seed_write = NULL; }
@@ -1453,6 +1432,7 @@ static struct zcl_result wallet_sqlite_flush_scope_r(
      * more doomed writes. */
     struct zcl_result first_fail = ZCL_OK;
     int n_key_fail = 0;
+    int n_keypool_fail = 0;
     int n_tx_fail = 0;
     int n_zseed_fail = 0;
     int n_zkey_fail = 0;
@@ -1478,6 +1458,12 @@ static struct zcl_result wallet_sqlite_flush_scope_r(
             n_key_fail++;
             goto rollback;
         }
+    }
+    if (!wallet_sqlite_replace_keypool_locked(ws, w)) {
+        n_keypool_fail++;
+        if (first_fail.ok) first_fail = ZCL_ERR(WSQL_WRITE_FAIL,
+            "flush: replace_keypool failed: %s", sqlite3_errmsg(ws->db));
+        goto rollback;
     }
     for (size_t i = 0; i < MAX_WALLET_TX; i++) {
         if (!w->map_wallet[i].used) continue;
@@ -1561,10 +1547,10 @@ rollback:
         }
     }
     return wsql_fail(ws, ZCL_ERR(WSQL_WRITE_FAIL,
-        "flush: rolled back — keys=%d tx=%d zseed=%d zkey=%d script=%d "
-        "scanh=%d; first failure: [%d] %s",
-        n_key_fail, n_tx_fail, n_zseed_fail, n_zkey_fail, n_script_fail,
-        n_scanh_fail,
+        "flush: rolled back — keys=%d keypool=%d tx=%d zseed=%d zkey=%d "
+        "script=%d scanh=%d; first failure: [%d] %s",
+        n_key_fail, n_keypool_fail, n_tx_fail, n_zseed_fail, n_zkey_fail,
+        n_script_fail, n_scanh_fail,
         first_fail.ok ? 0 : first_fail.code,
         first_fail.ok ? "(none captured)" : first_fail.message));
 }

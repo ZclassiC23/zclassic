@@ -320,28 +320,49 @@ bool rpc_z_gettotalbalance(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    /* Transparent balance from SQLite model layer. Spendable balance EXCLUDES
-     * immature coinbase (matches listunspent + the coin selector). */
-    int64_t t_balance = wallet_ctx_db_ready(ctx)
-        ? db_wallet_utxo_spendable_balance(ctx->node_db, NULL)
-        : wallet_get_balance(ctx->wallet);
+    /* Transparent state is finalized in the locked wallet before the
+     * wallet_utxos SQLite projection runs. Reading that exact state prevents
+     * a confirmed transaction from leaving total balance stale. */
+    struct wallet_balance_freshness freshness;
+    int64_t t_balance = wallet_transparent_spendable_balance_diagnose(
+        ctx, &freshness);
 
     /* Shielded balance: always from SQLite (authoritative source) */
     int64_t z_balance = 0;
-    if (ctx->node_db)
+    int64_t encumbered = 0;
+    if (ctx->node_db) {
         z_balance = db_sapling_note_balance(ctx->node_db);
+        encumbered = db_wallet_utxo_encumbered_balance(ctx->node_db) +
+                     db_sapling_note_encumbered_balance(ctx->node_db);
+    }
 
-    int64_t total = t_balance + z_balance;
+    /* A reorg can resurrect an outgoing transaction into the mempool. Its
+     * inputs remain ours but are deliberately unavailable for a second spend.
+     * Report them as encumbered ownership so total money never vanishes while
+     * keeping both spendable balances conservative. */
+    int64_t total = t_balance + z_balance + encumbered;
 
-    char t_str[32], z_str[32], tot_str[32];
+    char t_str[32], z_str[32], enc_str[32], tot_str[32];
     format_amount(t_balance, t_str, sizeof(t_str));
     format_amount(z_balance, z_str, sizeof(z_str));
+    format_amount(encumbered, enc_str, sizeof(enc_str));
     format_amount(total, tot_str, sizeof(tot_str));
 
     json_set_object(result);
     json_push_kv_str(result, "transparent", t_str);
     json_push_kv_str(result, "private", z_str);
+    json_push_kv_str(result, "encumbered", enc_str);
     json_push_kv_str(result, "total", tot_str);
+    json_push_kv_str(result, "transparent_source",
+                     freshness.source ? freshness.source : "unavailable");
+    json_push_kv_bool(result, "transparent_sources_agree",
+                      freshness.sources_agree);
+    json_push_kv_int(result, "wallet_height", freshness.wallet_height);
+    json_push_kv_int(result, "chain_height", freshness.chain_height);
+    json_push_kv_int(result, "memory_confirmed_transactions",
+                     (int64_t)freshness.memory_confirmed_txs);
+    json_push_kv_int(result, "durable_confirmed_transactions",
+                     freshness.durable_confirmed_txs);
     return true;
 }
 

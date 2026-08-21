@@ -107,6 +107,12 @@ static const char *SCHEMA[] = {
     "privkey BLOB NOT NULL,compressed INTEGER NOT NULL DEFAULT 1,"
     "created_at INTEGER NOT NULL DEFAULT 0)",
 
+    "CREATE TABLE IF NOT EXISTS wallet_keypool ("
+    "pubkey_hash BLOB PRIMARY KEY CHECK(length(pubkey_hash)=20),"
+    "generation INTEGER NOT NULL UNIQUE CHECK(generation>=0),"
+    "FOREIGN KEY(pubkey_hash) REFERENCES wallet_keys(pubkey_hash) "
+    "ON DELETE CASCADE)",
+
     "CREATE TABLE IF NOT EXISTS wallet_key_encryption ("
     "id INTEGER PRIMARY KEY CHECK (id=1),"
     "wrapped_dek BLOB NOT NULL)",

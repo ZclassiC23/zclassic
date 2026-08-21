@@ -81,6 +81,9 @@ struct wallet_sqlite {
     sqlite3_stmt *stmt_key_read;
     sqlite3_stmt *stmt_key_read_one;   /* SELECT ... WHERE pubkey_hash = ? */
     sqlite3_stmt *stmt_key_delete;     /* DELETE ... WHERE pubkey_hash = ? */
+    sqlite3_stmt *stmt_keypool_write;
+    sqlite3_stmt *stmt_keypool_read;
+    sqlite3_stmt *stmt_keypool_clear;
     sqlite3_stmt *stmt_tx_write;
     sqlite3_stmt *stmt_tx_read;
     sqlite3_stmt *stmt_seed_write;
@@ -134,7 +137,9 @@ struct zcl_result wallet_sqlite_self_test(struct wallet_sqlite *ws);
  * Returns ZCL_OK once all rows are consumed; WSQL_NULL_ARG if ws or w is
  * NULL, WSQL_DB_NOT_OPEN if not open, or WSQL_READ_FAIL on a step error. */
 struct zcl_result wallet_sqlite_read_keys_r(struct wallet_sqlite *ws,
-                                            struct wallet *w);
+                                             struct wallet *w);
+struct zcl_result wallet_sqlite_read_keypool_r(struct wallet_sqlite *ws,
+                                                struct wallet *w);
 /* Read the single wallet_keys row whose pubkey_hash matches pk and
  * decode/decrypt its private key into *out_key. Returns ZCL_OK and fills
  * out_key on success; WSQL_NULL_ARG if ws/pk/out_key is NULL,

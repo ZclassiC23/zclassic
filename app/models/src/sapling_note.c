@@ -306,6 +306,22 @@ int64_t db_sapling_note_balance(struct node_db *ndb)
     return db_sapling_note_balance_with_count(ndb, NULL);
 }
 
+int64_t db_sapling_note_encumbered_balance(struct node_db *ndb)
+{
+    int64_t total = 0;
+    int count = 0;
+
+    (void)wallet_tx_query_total_and_count(ndb,
+        "SELECT COALESCE(SUM(n.value),0), COUNT(*) "
+        "FROM wallet_sapling_notes n "
+        "JOIN wallet_transactions w ON w.txid=n.spent_txid "
+        "WHERE n.spent_txid IS NOT NULL "
+        "AND (w.block_hash IS NULL OR length(w.block_hash)!=32 "
+        "OR w.block_hash=zeroblob(32))",
+        NULL, 0, &total, &count);
+    return total;
+}
+
 int64_t db_sapling_note_balance_with_count(struct node_db *ndb, int *note_count)
 {
     int64_t total = 0;
@@ -401,6 +417,50 @@ int db_sapling_note_count_unspent(struct node_db *ndb)
     if (!ndb || !ndb->open) return 0;
     AR_QUERY_COUNT_SQL(ndb,
         "SELECT COUNT(*) FROM wallet_sapling_notes WHERE spent_txid IS NULL");
+}
+
+bool db_sapling_note_witness_summary(
+    struct node_db *ndb, int tip_height,
+    struct db_sapling_witness_summary *out)
+{
+    sqlite3_stmt *s = NULL;
+
+    if (!out)
+        return false;
+    memset(out, 0, sizeof(*out));
+    out->tip_height = tip_height;
+    if (!ndb || !ndb->open || tip_height < 0)
+        return false;
+    if (sqlite3_prepare_v2(ndb->db,
+            "SELECT COUNT(*),"
+            " COALESCE(SUM(CASE WHEN witness_data IS NOT NULL"
+            " AND length(witness_data)>0 AND witness_height=?"
+            " THEN 1 ELSE 0 END),0),"
+            " COALESCE(SUM(CASE WHEN witness_data IS NULL"
+            " OR length(witness_data)=0 THEN 1 ELSE 0 END),0),"
+            " COALESCE(SUM(CASE WHEN witness_data IS NOT NULL"
+            " AND length(witness_data)>0 AND witness_height!=?"
+            " THEN 1 ELSE 0 END),0)"
+            " FROM wallet_sapling_notes"
+            " WHERE spent_txid IS NULL AND source=?",
+            -1, &s, NULL) != SQLITE_OK || !s)
+        return false;
+    AR_BIND_INT(s, 1, tip_height);
+    AR_BIND_INT(s, 2, tip_height);
+    AR_BIND_TEXT(s, 3, DB_SAPLING_NOTE_SOURCE_LOCAL);
+    if (!AR_STEP_ROW(s)) {
+        AR_FINALIZE(s);
+        return false;
+    }
+    out->local_unspent_notes = (int)AR_COL_INT(s, 0);
+    out->ready_notes = (int)AR_COL_INT(s, 1);
+    out->missing_notes = (int)AR_COL_INT(s, 2);
+    out->stale_notes = (int)AR_COL_INT(s, 3);
+    AR_FINALIZE(s);
+    return out->local_unspent_notes >= 0 && out->ready_notes >= 0 &&
+           out->missing_notes >= 0 && out->stale_notes >= 0 &&
+           out->ready_notes + out->missing_notes + out->stale_notes ==
+               out->local_unspent_notes;
 }
 
 int db_sapling_note_count_unspent_view_for_address(struct node_db *ndb,
@@ -602,6 +662,47 @@ bool db_sapling_note_delete_all(struct node_db *ndb)
     if (!ndb || !ndb->open)
         return false;
     return node_db_exec(ndb, "DELETE FROM wallet_sapling_notes");
+}
+
+bool db_sapling_note_delete(struct node_db *ndb, const uint8_t txid[32],
+                            uint32_t output_index)
+{
+    if (!ndb || !ndb->open || !txid)
+        return false; /* raw-return-ok:invalid delete key is caller error */
+    struct db_sapling_note note;
+    memset(&note, 0, sizeof(note));
+    memcpy(note.txid, txid, sizeof(note.txid));
+    note.output_index = output_index;
+    struct ar_callbacks *cbs = db_sapling_note_callbacks();
+    sqlite3_stmt *s = NULL;
+    AR_ADHOC_DESTROY(ndb, s,
+        "DELETE FROM wallet_sapling_notes WHERE txid=? AND output_index=?",
+        cbs, &note,
+        AR_BIND_BLOB(s, 1, txid, 32);
+        AR_BIND_INT(s, 2, (int)output_index));
+}
+
+bool db_sapling_note_delete_for_tx(struct node_db *ndb,
+                                   const uint8_t txid[32])
+{
+    if (!ndb || !ndb->open || !txid)
+        return false;
+    for (;;) {
+        sqlite3_stmt *s = NULL;
+        AR_PREPARE_BOOL(ndb, s,
+            "SELECT output_index FROM wallet_sapling_notes"
+            " WHERE txid=? LIMIT 1");
+        AR_BIND_BLOB(s, 1, txid, 32);
+        if (!AR_STEP_ROW(s)) {
+            AR_FINALIZE(s);
+            return true;
+        }
+        uint32_t output_index = (uint32_t)AR_COL_INT(s, 0);
+        AR_FINALIZE(s);
+        if (!db_sapling_note_delete(ndb, txid, output_index))
+            LOG_FAIL("sapling_note",
+                     "delete_for_tx: deleting one note row failed");
+    }
 }
 
 bool db_sapling_note_replace_all(struct node_db *ndb,

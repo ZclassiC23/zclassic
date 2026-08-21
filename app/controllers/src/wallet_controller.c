@@ -67,12 +67,11 @@ static bool rpc_getbalance(const struct json_value *params, bool help,
 
     ENSURE_WALLET(result);
 
-    /* Use SQLite model layer as authoritative source. Spendable balance
-     * EXCLUDES immature coinbase (matches listunspent + the coin selector),
-     * so the reported number is what the user can actually send. */
-    int64_t balance = wallet_ctx_db_ready(ctx)
-        ? db_wallet_utxo_spendable_balance(ctx->node_db, NULL)
-        : wallet_get_balance(ctx->wallet);
+    /* The in-memory wallet is updated directly from each finalized block;
+     * wallet_utxos is an asynchronous durable projection and can briefly lag
+     * that exact state. Read the same locked source the coin selector uses so
+     * confirmation, history, and balance become visible together. */
+    int64_t balance = wallet_transparent_spendable_balance(ctx);
     char buf[32];
     format_amount(balance, buf, sizeof(buf));
     json_set_str(result, buf);
@@ -110,12 +109,10 @@ static bool rpc_getwalletinfo(const struct json_value *params, bool help,
 
     json_set_object(result);
     char bal[32], ubal[32], ibal[32], fee[32];
-    /* Spendable balance EXCLUDES immature coinbase (matches listunspent + the
-     * coin selector). Emit money fields as strings to preserve full precision
-     * (the JSON real serializer uses %.8g, which rounds large balances). */
-    int64_t balance = wallet_ctx_db_ready(ctx)
-        ? db_wallet_utxo_spendable_balance(ctx->node_db, NULL)
-        : wallet_get_balance(ctx->wallet);
+    /* Use the finalized in-memory wallet, not its asynchronous wallet_utxos
+     * projection, so the summary cannot report a stale balance immediately
+     * after saying a transaction is confirmed. */
+    int64_t balance = wallet_transparent_spendable_balance(ctx);
     format_amount(balance, bal, sizeof(bal));
     format_amount(wallet_get_unconfirmed_balance(ctx->wallet), ubal, sizeof(ubal));
     format_amount(wallet_get_immature_balance(ctx->wallet), ibal, sizeof(ibal));

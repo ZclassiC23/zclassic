@@ -24,6 +24,7 @@
 #include "models/block.h"
 #include "models/database.h"
 #include "models/tx_index.h"
+#include "models/wallet_tx.h"
 #include "net/connman.h"
 #include "rpc/server.h"
 #include "storage/coins_kv.h"
@@ -253,6 +254,37 @@ int test_rpc_safety(void)
 {
     int failures = 0;
 
+    printf("rpc_safety: wallet freshness follows authoritative H*... ");
+    {
+        struct wallet wallet;
+        wallet_init(&wallet);
+        wallet.best_block_height = 1;
+        wallet.map_wallet[0].used = true;
+        wallet.map_wallet[0].confirms = 1;
+        wallet.num_wallet_tx = 1;
+
+        struct main_state ms;
+        build_unresolved_tip_state(&ms, 3);
+        reducer_frontier_provable_tip_set(1);
+        struct wallet_rpc_context ctx = {
+            .wallet = &wallet,
+            .main_state = &ms,
+        };
+        struct wallet_balance_freshness freshness;
+        (void)wallet_transparent_spendable_balance_diagnose(
+            &ctx, &freshness);
+        bool ok = freshness.chain_height == 1 &&
+                  freshness.wallet_height == 1 &&
+                  freshness.source &&
+                  strcmp(freshness.source, "memory") == 0;
+
+        reducer_frontier_provable_tip_reset();
+        main_state_free(&ms);
+        wallet_free(&wallet);
+        if (ok) printf("OK\n");
+        else    { printf("FAIL\n"); failures++; }
+    }
+
     printf("rpc_safety: fanout preflight failure creates no address... ");
     {
         ensure_rpc_warmup_finished_once();
@@ -407,7 +439,7 @@ int test_rpc_safety(void)
         else    { printf("FAIL\n"); failures++; }
     }
 
-    printf("rpc_safety: confirmed shielded tx uses verified node-db locator... ");
+    printf("rpc_safety: confirmed tx uses verified node/wallet locator... ");
     {
         ensure_rpc_warmup_finished_once();
         char dir[256];
@@ -493,6 +525,7 @@ int test_rpc_safety(void)
         rpc_table_init(&tbl);
         if (ok) {
             rpc_rawtx_set_state(&ms, NULL, NULL, dir);
+            wallet_rpc_context_set_base(NULL, &ms, dir, NULL, NULL, NULL);
             wallet_rpc_context_set_node_db(&ndb);
             register_rawtransaction_rpc_commands(&tbl);
             rpc_blockchain_set_state(&ms, NULL, dir);
@@ -517,11 +550,145 @@ int test_rpc_safety(void)
         }
         const char *got_txid = json_get_str(json_get(&result, "txid"));
         const char *got_block = json_get_str(json_get(&result, "blockhash"));
+        const struct json_value *got_confirmations =
+            json_get(&result, "confirmations");
         char block_hex[65] = "";
         uint256_get_hex(&body_hash, block_hex);
         ok = ok && got_txid && strcmp(got_txid, txid_hex) == 0 &&
-             got_block && strcmp(got_block, block_hex) == 0;
+             got_block && strcmp(got_block, block_hex) == 0 &&
+             got_confirmations && json_get_int(got_confirmations) == 1;
 
+        json_free(&params);
+        json_free(&result);
+        json_free(&txid_arg);
+        json_free(&verbose_arg);
+
+        /* The wallet projection is finalized from the exact block body
+         * before the global transaction catalog is guaranteed to catch up.
+         * Removing the catalog row reproduces that window: chain lookup must
+         * still agree with confirmed wallet/intent history. */
+        struct byte_stream wallet_raw;
+        stream_init(&wallet_raw, 512);
+        struct db_wallet_tx wallet_row;
+        memset(&wallet_row, 0, sizeof(wallet_row));
+        if (ok) {
+            ok = db_tx_delete(&ndb, shielded.hash.data) &&
+                transaction_serialize(&shielded, &wallet_raw);
+        }
+        if (ok) {
+            memcpy(wallet_row.txid, shielded.hash.data,
+                   sizeof(wallet_row.txid));
+            wallet_row.raw_tx = wallet_raw.data;
+            wallet_row.raw_tx_len = wallet_raw.size;
+            memcpy(wallet_row.block_hash, body_hash.data,
+                   sizeof(wallet_row.block_hash));
+            wallet_row.has_block = true;
+            wallet_row.block_height = 0;
+            wallet_row.time_received = 1700000000;
+            ok = db_wallet_tx_save(&ndb, &wallet_row);
+        }
+        ok = ok && db_wallet_tx_confirmed_count(&ndb) == 1;
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        json_init(&txid_arg);
+        json_init(&verbose_arg);
+        if (ok) {
+            json_set_str(&txid_arg, txid_hex);
+            json_set_int(&verbose_arg, 1);
+            (void)json_push_back(&params, &txid_arg);
+            (void)json_push_back(&params, &verbose_arg);
+            ok = rpc_table_execute(&tbl, "getrawtransaction", &params,
+                                   &result);
+        }
+        got_txid = json_get_str(json_get(&result, "txid"));
+        got_block = json_get_str(json_get(&result, "blockhash"));
+        got_confirmations = json_get(&result, "confirmations");
+        ok = ok && got_txid && strcmp(got_txid, txid_hex) == 0 &&
+             got_block && strcmp(got_block, block_hex) == 0 &&
+             got_confirmations && json_get_int(got_confirmations) == 1;
+        json_free(&params);
+        json_free(&result);
+        json_free(&txid_arg);
+        json_free(&verbose_arg);
+        stream_free(&wallet_raw);
+
+        /* The finalized in-memory wallet leads even the wallet SQLite row.
+         * Prove lookup remains exact in that smaller projection window too. */
+        struct wallet owned_wallet;
+        wallet_init(&owned_wallet);
+        struct wallet_tx owned_wtx;
+        memset(&owned_wtx, 0, sizeof(owned_wtx));
+        if (ok) {
+            ok = db_wallet_tx_delete(&ndb, shielded.hash.data) &&
+                transaction_copy(&owned_wtx.tx, &shielded);
+        }
+        ok = ok && db_wallet_tx_confirmed_count(&ndb) == 0;
+        if (ok) {
+            owned_wtx.hash_block = body_hash;
+            owned_wtx.confirms = 1;
+            owned_wtx.used = true;
+            ok = wallet_add_to_wallet(&owned_wallet, &owned_wtx);
+            transaction_free(&owned_wtx.tx);
+            wallet_rpc_context_set_base(&owned_wallet, &ms, dir,
+                                        NULL, NULL, NULL);
+            wallet_rpc_context_set_node_db(&ndb);
+        }
+
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        json_init(&txid_arg);
+        json_init(&verbose_arg);
+        if (ok) {
+            json_set_str(&txid_arg, txid_hex);
+            json_set_int(&verbose_arg, 1);
+            (void)json_push_back(&params, &txid_arg);
+            (void)json_push_back(&params, &verbose_arg);
+            ok = rpc_table_execute(&tbl, "getrawtransaction", &params,
+                                   &result);
+        }
+        got_txid = json_get_str(json_get(&result, "txid"));
+        got_block = json_get_str(json_get(&result, "blockhash"));
+        got_confirmations = json_get(&result, "confirmations");
+        ok = ok && got_txid && strcmp(got_txid, txid_hex) == 0 &&
+             got_block && strcmp(got_block, block_hex) == 0 &&
+             got_confirmations && json_get_int(got_confirmations) == 1;
+        json_free(&params);
+        json_free(&result);
+        json_free(&txid_arg);
+        json_free(&verbose_arg);
+
+        /* A non-wallet peer must expose a just-confirmed transaction while
+         * every derived index is absent.  This is the real chain-fold window
+         * seen by the two-node payment acceptance. */
+        if (ok) {
+            wallet_rpc_context_set_base(NULL, &ms, dir,
+                                        NULL, NULL, NULL);
+            wallet_rpc_context_set_node_db(&ndb);
+            ok = db_wallet_tx_delete(&ndb, shielded.hash.data) &&
+                db_tx_delete(&ndb, shielded.hash.data);
+        }
+        json_init(&params);
+        json_set_array(&params);
+        json_init(&result);
+        json_init(&txid_arg);
+        json_init(&verbose_arg);
+        if (ok) {
+            json_set_str(&txid_arg, txid_hex);
+            json_set_int(&verbose_arg, 1);
+            (void)json_push_back(&params, &txid_arg);
+            (void)json_push_back(&params, &verbose_arg);
+            ok = rpc_table_execute(&tbl, "getrawtransaction", &params,
+                                   &result);
+        }
+        got_txid = json_get_str(json_get(&result, "txid"));
+        got_block = json_get_str(json_get(&result, "blockhash"));
+        got_confirmations = json_get(&result, "confirmations");
+        ok = ok && got_txid && strcmp(got_txid, txid_hex) == 0 &&
+             got_block && strcmp(got_block, block_hex) == 0 &&
+             got_confirmations && json_get_int(got_confirmations) == 1;
         json_free(&params);
         json_free(&result);
         json_free(&txid_arg);
@@ -558,6 +725,7 @@ int test_rpc_safety(void)
         reducer_frontier_provable_tip_reset();
 
         wallet_rpc_context_set_node_db(NULL);
+        wallet_rpc_context_set_base(NULL, NULL, NULL, NULL, NULL, NULL);
         rpc_rawtx_set_state(NULL, NULL, NULL, NULL);
         rpc_blockchain_set_state(NULL, NULL, NULL);
         if (ndb.open)
@@ -565,6 +733,7 @@ int test_rpc_safety(void)
         main_state_free(&ms);
         block_free(&body);
         transaction_free(&shielded);
+        wallet_free(&owned_wallet);
         test_rm_rf(dir);
 
         if (ok) printf("OK\n");

@@ -3,6 +3,7 @@
 
 #include "command/native_command.h"
 #include "controllers/rpc_params.h"
+#include "controllers/agent_session_client.h"
 #include "controllers/vault_intent_controller.h"
 #include "controllers/wallet_native_handlers.h"
 #include "json/json.h"
@@ -28,10 +29,23 @@ static void vni_fail(struct zcl_command_reply *reply, const char *code,
 static bool vni_rpc(const struct zcl_command_request *request,
                     struct zcl_command_reply *reply, const char *method)
 {
+    struct json_value rpc_input;
+    json_init(&rpc_input);
+    json_copy(&rpc_input, request->input);
+    const char *session = request->context
+        ? request->context->agent_session : NULL;
+    /* Planning must apply a lowered owner-reviewed reserve floor inside the
+     * node's atomic reservation, not in the CLI after the fact. This bearer
+     * field exists only in the authenticated local RPC packet and is never
+     * copied into output or logs. */
+    if (session && session[0] &&
+        strcmp(method, "vault_intent_plan") == 0)
+        (void)json_push_kv_str(&rpc_input, "_agent_session", session);
     struct rpc_arg_builder args;
     rpc_arg_builder_init(&args);
-    rpc_arg_builder_push_value(&args, request->input);
+    rpc_arg_builder_push_value(&args, &rpc_input);
     char *params = rpc_arg_builder_to_json(&args);
+    json_free(&rpc_input);
     if (!params) {
         vni_fail(reply, "ARG_BUILD_FAILED", "could not encode intent input",
                  method);
@@ -55,8 +69,29 @@ static bool vni_rpc(const struct zcl_command_request *request,
     if (!ok) {
         const char *code = json_get_str(json_get(&body, "code"));
         const char *message = json_get_str(json_get(&body, "message"));
+        const char *current_state =
+            json_get_str(json_get(&body, "current_state"));
+        const char *next_action =
+            json_get_str(json_get(&body, "next_action"));
+        bool retryable = json_get_bool_or(&body, "retryable", false);
+        bool human_action_required = json_get_bool_or(
+            &body, "human_action_required", false);
         vni_fail(reply, code ? code : "INTENT_FAILED",
                  message ? message : "intent operation failed", method);
+        reply->error.retryable = retryable;
+        reply->error.human_action_required = human_action_required;
+        (void)snprintf(reply->error.current_state,
+                       sizeof(reply->error.current_state), "%s",
+                       current_state && current_state[0]
+                           ? current_state : "REQUEST_FAILED");
+        (void)snprintf(reply->error.next_action,
+                       sizeof(reply->error.next_action), "%s",
+                       next_action && next_action[0]
+                           ? next_action : "inspect the intent request and retry safely");
+        if (retryable) {
+            reply->status = ZCL_COMMAND_STATUS_BLOCKED;
+            reply->exit_code = ZCL_COMMAND_EXIT_TRANSIENT;
+        }
         json_free(&body);
         return false;
     }
@@ -109,7 +144,30 @@ void zcl_native_handle_vault_intent_plan(
                  "vault.intent.plan");
         return;
     }
-    (void)vni_rpc(request, reply, "vault_intent_plan");
+    if (!vni_rpc(request, reply, "vault_intent_plan"))
+        return;
+    const char *session = request->context
+        ? request->context->agent_session : NULL;
+    if (!session || !session[0])
+        return;
+    const char *plan_id = json_get_str(json_get(&reply->data, "plan_id"));
+    const struct json_value *effects = json_get(request->input, "effects");
+    const struct json_value *first = effects && effects->type == JSON_ARR
+        ? json_at(effects, 0) : NULL;
+    const char *recipient = first && first->type == JSON_OBJ
+        ? json_get_str(json_get(first, "to")) : NULL;
+    char why[64] = { 0 };
+    if (!plan_id || !recipient ||
+        !agent_session_client_bind_intent(
+            session, plan_id, recipient, why, sizeof(why))) {
+        vni_fail(reply, why[0] ? why : "INTENT_BIND_FAILED",
+                 "the durable plan could not be bound to this bounded session; "
+                 "retry the same idempotency key", "vault.intent.plan");
+        (void)snprintf(reply->error.next_action,
+                       sizeof(reply->error.next_action), "%s",
+                       "retry vault intent plan with the same input and "
+                       "idempotency_key");
+    }
 }
 
 void zcl_native_handle_vault_intent_fanout_plan(

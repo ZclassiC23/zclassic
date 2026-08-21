@@ -52,6 +52,7 @@
 #include "util/ar_step_readonly.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "util/util.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -74,10 +75,20 @@ bool rpc_coinanalysis(const struct json_value *params, bool help,
 bool rescan_result_consensus_valid(const struct uint256 *our_root,
                                    const struct uint256 *header_root,
                                    int witness_mismatches);
+bool rescan_endpoint_header_addressable(const struct block_index *index);
+const struct block_index *rescan_find_replay_endpoint(
+    const struct active_chain *chain, int replay_start,
+    int *endpoint_height_out);
+size_t rescan_append_block_commitments(
+    const struct block *block, struct incremental_merkle_tree *tree,
+    struct incremental_witness *witnesses, bool *witness_active,
+    const struct db_sapling_note *notes, int n_notes,
+    int *witnesses_built);
 struct sqlite3;
 bool rescan_seed_before_oldest_note_from_db(
     struct sqlite3 *anchor_db, const struct active_chain *chain,
     const struct db_sapling_note *notes, int n_notes,
+    int sapling_activation_height,
     struct incremental_merkle_tree *tree_out, int *start_height_out,
     int *seed_height_out);
 bool rpc_rescanwitnesses(const struct json_value *params, bool help,

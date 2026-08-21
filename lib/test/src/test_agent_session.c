@@ -75,6 +75,7 @@ static void mk_session(struct db_agent_session *s, const char *sid,
     snprintf(s->account, sizeof(s->account), "%s", account);
     s->max_per_tx_zat = 1000000;        /* 0.01 ZCL */
     s->max_per_window_zat = 5000000;    /* 0.05 ZCL */
+    s->reserve_floor_zat = AGENT_SESSION_DEV_RESERVE_DEFAULT_ZAT;
     s->window_seconds = 100;
     s->window_start_epoch = 1000;
     s->spent_in_window_zat = 0;
@@ -155,6 +156,8 @@ static int test_save_find_roundtrip(void)
         ASSERT_STR_EQ(got.account, k_account);
         ASSERT_EQ(got.max_per_tx_zat, 1000000);
         ASSERT_EQ(got.max_per_window_zat, 5000000);
+        ASSERT_EQ(got.reserve_floor_zat,
+                  AGENT_SESSION_DEV_RESERVE_DEFAULT_ZAT);
         ASSERT_EQ(got.window_seconds, 100);
         ASSERT_EQ(got.window_start_epoch, 1000);
         ASSERT_EQ(got.spent_in_window_zat, 0);

@@ -93,8 +93,23 @@ struct tx_mempool {
 
     unsigned int txs_updated;
     uint64_t total_tx_size;
+    uint64_t added_total;
+    uint64_t removed_direct_total;
+    uint64_t removed_for_block_total;
+    uint64_t removed_for_branch_total;
+    uint64_t cleared_total;
 
     int64_t min_relay_fee;
+};
+
+struct tx_mempool_stats {
+    size_t size;
+    uint64_t bytes;
+    uint64_t added_total;
+    uint64_t removed_direct_total;
+    uint64_t removed_for_block_total;
+    uint64_t removed_for_branch_total;
+    uint64_t cleared_total;
 };
 
 void tx_mempool_init(struct tx_mempool *pool, int64_t min_relay_fee);
@@ -103,6 +118,8 @@ void tx_mempool_clear(struct tx_mempool *pool);
 
 size_t tx_mempool_size(struct tx_mempool *pool);
 uint64_t tx_mempool_total_size(struct tx_mempool *pool);
+void tx_mempool_stats_snapshot(struct tx_mempool *pool,
+                               struct tx_mempool_stats *out);
 unsigned int tx_mempool_txs_updated(struct tx_mempool *pool);
 void tx_mempool_add_txs_updated(struct tx_mempool *pool, unsigned int n);
 

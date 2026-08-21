@@ -226,6 +226,17 @@ void zcl_native_handle_vault_session_create(
                 "e.g. \"max_per_window\":\"10\"");
         return;
     }
+    mreq.reserve_floor_zat = AGENT_SESSION_DEV_RESERVE_DEFAULT_ZAT;
+    const struct json_value *reserve_floor =
+        json_get(request->input, "reserve_floor");
+    if (reserve_floor &&
+        !vs_amount_zat(reserve_floor, &mreq.reserve_floor_zat)) {
+        vs_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "BAD_RESERVE_FLOOR", "normalize", false,
+                "reserve_floor must be a ZCL decimal within the model cap",
+                "e.g. \"reserve_floor\":\"0.08000000\"");
+        return;
+    }
     /* Upper bound as well as lower. An unbounded window_seconds does not just
      * make a silly grant: it overflows the window-roll arithmetic, every check
      * then reads as "the window already elapsed", and the per-window cap
@@ -277,6 +288,9 @@ void zcl_native_handle_vault_session_create(
         (void)snprintf(amt, sizeof(amt), "%.8f",
                        (double)mreq.max_per_window_zat / 1.0e8);
         (void)json_push_kv_str(&ci, "max_per_window", amt);
+        (void)snprintf(amt, sizeof(amt), "%.8f",
+                       (double)mreq.reserve_floor_zat / 1.0e8);
+        (void)json_push_kv_str(&ci, "reserve_floor", amt);
         (void)snprintf(amt, sizeof(amt), "%lld",
                        (long long)mreq.window_seconds);
         (void)json_push_kv_str(&ci, "window_seconds", amt);
@@ -294,6 +308,8 @@ void zcl_native_handle_vault_session_create(
                                mreq.max_per_tx_zat);
         (void)json_push_kv_int(&reply->data, "max_per_window_zat",
                                mreq.max_per_window_zat);
+        (void)json_push_kv_int(&reply->data, "reserve_floor_zat",
+                               mreq.reserve_floor_zat);
         (void)json_push_kv_int(&reply->data, "window_seconds",
                                mreq.window_seconds);
         (void)json_push_kv_str(&reply->data, "recipient_allowlist",
@@ -312,6 +328,7 @@ void zcl_native_handle_vault_session_create(
     char why[64] = { 0 };
     if (!agent_session_client_mint(mreq.account, mreq.max_per_tx_zat,
                                    mreq.max_per_window_zat,
+                                   mreq.reserve_floor_zat,
                                    mreq.window_seconds,
                                    mreq.recipient_allowlist,
                                    mreq.expires_in_seconds, wallet_scope,
@@ -330,6 +347,8 @@ void zcl_native_handle_vault_session_create(
     (void)json_push_kv_int(&reply->data, "max_per_tx_zat", mreq.max_per_tx_zat);
     (void)json_push_kv_int(&reply->data, "max_per_window_zat",
                            mreq.max_per_window_zat);
+    (void)json_push_kv_int(&reply->data, "reserve_floor_zat",
+                           mreq.reserve_floor_zat);
     (void)json_push_kv_int(&reply->data, "window_seconds",
                            mreq.window_seconds);
     (void)json_push_kv_str(&reply->data, "recipient_allowlist",
@@ -395,6 +414,8 @@ void zcl_native_handle_vault_session_list(
         (void)json_push_kv_int(&o, "max_per_tx_zat", rows[i].max_per_tx_zat);
         (void)json_push_kv_int(&o, "max_per_window_zat",
                                rows[i].max_per_window_zat);
+        (void)json_push_kv_int(&o, "reserve_floor_zat",
+                               rows[i].reserve_floor_zat);
         (void)json_push_kv_int(&o, "window_seconds", rows[i].window_seconds);
         (void)json_push_kv_int(&o, "window_start_epoch",
                                rows[i].window_start_epoch);

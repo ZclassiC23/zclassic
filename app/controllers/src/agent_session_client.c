@@ -97,6 +97,7 @@ static bool asc_call(const char *action, const char *params_obj,
 
 bool agent_session_client_mint(const char *account, int64_t max_per_tx_zat,
                                int64_t max_per_window_zat,
+                               int64_t reserve_floor_zat,
                                int64_t window_seconds,
                                const char *recipient_allowlist,
                                int64_t expires_in_seconds,
@@ -117,6 +118,7 @@ bool agent_session_client_mint(const char *account, int64_t max_per_tx_zat,
     (void)json_push_kv_str(&req, "account", account);
     (void)json_push_kv_int(&req, "max_per_tx_zat", max_per_tx_zat);
     (void)json_push_kv_int(&req, "max_per_window_zat", max_per_window_zat);
+    (void)json_push_kv_int(&req, "reserve_floor_zat", reserve_floor_zat);
     (void)json_push_kv_int(&req, "window_seconds", window_seconds);
     (void)json_push_kv_int(&req, "expires_in_seconds", expires_in_seconds);
     (void)json_push_kv_str(&req, "recipient_allowlist",
@@ -206,6 +208,8 @@ int agent_session_client_list(const char *account,
             r->max_per_tx_zat = json_get_int(json_get(o, "max_per_tx_zat"));
             r->max_per_window_zat =
                 json_get_int(json_get(o, "max_per_window_zat"));
+            r->reserve_floor_zat =
+                json_get_int(json_get(o, "reserve_floor_zat"));
             r->window_seconds = json_get_int(json_get(o, "window_seconds"));
             r->window_start_epoch =
                 json_get_int(json_get(o, "window_start_epoch"));
@@ -252,6 +256,7 @@ bool agent_session_client_revoke(const char *session_id, char *why,
 bool agent_session_client_authorize(const char *session_id, int64_t amount_zat,
                                     const char *recipient,
                                     const char *wallet_scope, bool commit,
+                                    bool canonical_plan,
                                     int64_t *window_remaining_zat,
                                     int64_t *charged_zat,
                                     char *why, size_t why_cap)
@@ -271,6 +276,7 @@ bool agent_session_client_authorize(const char *session_id, int64_t amount_zat,
     (void)json_push_kv_str(&req, "session_id", session_id);
     (void)json_push_kv_int(&req, "amount_zat", amount_zat);
     (void)json_push_kv_bool(&req, "commit", commit);
+    (void)json_push_kv_bool(&req, "canonical_plan", canonical_plan);
     (void)json_push_kv_str(&req, "wallet_scope", wallet_scope);
     if (recipient && recipient[0])
         (void)json_push_kv_str(&req, "recipient", recipient);
@@ -315,6 +321,83 @@ bool agent_session_client_release(const char *session_id, int64_t amount_zat)
         LOG_FAIL(ASC_TAG, "release: %lld zat could not be credited back to "
                           "the session window (%s) — the window stays debited",
                  (long long)amount_zat, why);
+    json_free(&ans);
+    return true;
+}
+
+static bool asc_intent_body(const char *session_id, const char *plan_id,
+                            const char *recipient, char *body, size_t body_cap)
+{
+    if (!session_id || !session_id[0] || !plan_id || strlen(plan_id) != 64 ||
+        !body || body_cap == 0)
+        return false;
+    struct json_value req;
+    json_init(&req);
+    json_set_object(&req);
+    (void)json_push_kv_str(&req, "session_id", session_id);
+    (void)json_push_kv_str(&req, "plan_id", plan_id);
+    if (recipient && recipient[0])
+        (void)json_push_kv_str(&req, "recipient", recipient);
+    size_t n = json_write(&req, body, body_cap);
+    json_free(&req);
+    return n > 0 && n < body_cap;
+}
+
+bool agent_session_client_bind_intent(
+    const char *session_id, const char *plan_id, const char *recipient,
+    char *why, size_t why_cap)
+{
+    char body[512];
+    if (!recipient || !recipient[0] ||
+        !asc_intent_body(session_id, plan_id, recipient,
+                         body, sizeof(body))) {
+        asc_why(why, why_cap, "BAD_ARGS");
+        LOG_FAIL(ASC_TAG, "intent bind: bad args");
+    }
+    struct json_value ans;
+    json_init(&ans);
+    if (!asc_call("intent_bind", body, &ans, why, why_cap))
+        return false; /* raw-return-ok:typed refusal already returned */
+    json_free(&ans);
+    return true;
+}
+
+bool agent_session_client_authorize_intent(
+    const char *session_id, const char *plan_id,
+    bool *debit_managed, int64_t *charged_zat,
+    char *why, size_t why_cap)
+{
+    if (debit_managed) *debit_managed = false;
+    if (charged_zat) *charged_zat = 0;
+    char body[320];
+    if (!asc_intent_body(session_id, plan_id, NULL, body, sizeof(body))) {
+        asc_why(why, why_cap, "BAD_ARGS");
+        LOG_FAIL(ASC_TAG, "intent authorize: bad args");
+    }
+    struct json_value ans;
+    json_init(&ans);
+    if (!asc_call("intent_authorize", body, &ans, why, why_cap))
+        return false; /* raw-return-ok:typed refusal already returned */
+    if (debit_managed)
+        *debit_managed = json_get_bool_or(&ans, "debit_managed", false);
+    if (charged_zat)
+        *charged_zat = json_get_int(json_get(&ans, "charged_zat"));
+    json_free(&ans);
+    return true;
+}
+
+bool agent_session_client_release_intent(
+    const char *session_id, const char *plan_id)
+{
+    char body[320];
+    if (!asc_intent_body(session_id, plan_id, NULL, body, sizeof(body)))
+        return false; /* raw-return-ok:no valid managed debit was named */
+    char why[64] = { 0 };
+    struct json_value ans;
+    json_init(&ans);
+    if (!asc_call("intent_release", body, &ans, why, sizeof(why)))
+        LOG_FAIL(ASC_TAG, "intent release could not safely settle (%s)",
+                 why[0] ? why : "POLICY_STORE");
     json_free(&ans);
     return true;
 }

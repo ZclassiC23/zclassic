@@ -2,6 +2,7 @@
  * Purpose: durable exact-input planning and idempotent transparent commits. */
 
 #include "controllers/vault_intent_controller.h"
+#include "vault_intent_transparent_internal.h"
 #include "controllers/vault_intent_private.h"
 #include "controllers/vault_intent_publish.h"
 #include "controllers/native_handler_body.h"
@@ -24,6 +25,7 @@
 #include "primitives/transaction.h"
 #include "rpc/server.h"
 #include "services/wallet_backup_service.h"
+#include "services/agent_session_service.h"
 #include "services/vault_intent_decision_service.h"
 #include "services/wallet_money_service.h"
 #include "support/cleanse.h"
@@ -42,41 +44,18 @@
 #include <string.h>
 #include <unistd.h>
 
-#define VI_EFFECTS_MAX 50
-#define VI_INPUTS_MAX 128
-#define VI_ADDR_MAX 127
 #define VI_TTL 600
 #define VI_PROVING_LEASE 300
 #define VI_APP_KIND VAULT_INTENT_TRANSPARENT_APPLICATION
-
-struct vi_effect { char to[VI_ADDR_MAX + 1]; int64_t amount; };
-struct vi_input { uint8_t txid[32]; uint32_t vout; };
-struct vi_payload {
-    struct vi_effect effects[VI_EFFECTS_MAX];
-    struct vi_input inputs[VI_INPUTS_MAX];
-    size_t effects_len, inputs_len;
-    int64_t fee;
-};
 
 static void vi_error(struct json_value *out, const char *code, const char *msg)
 {
     vault_intent_error_response(out, code, msg);
 }
 
-static void vi_hex(const uint8_t in[32], char out[65])
-{
-    HexStr(in, 32, false, out, 65);
-}
-
 static bool vi_unhex(const char *s, uint8_t out[32])
 {
     return s && strlen(s) == 64 && IsHex(s) && ParseHex(s, out, 32) == 32;
-}
-
-static void vi_amount_text(int64_t amount, char out[32])
-{
-    snprintf(out, 32, "%lld.%08lld", (long long)(amount / 100000000LL),
-             (long long)(amount % 100000000LL));
 }
 
 static bool vi_encode(const struct vi_payload *p, uint8_t *out, size_t cap,
@@ -139,7 +118,8 @@ static void vi_request_digest(const struct vi_payload *p, const char *scope,
 static bool vi_render_idempotent(struct wallet_rpc_context *ctx,
                                  struct json_value *result,
                                  const struct vault_intent_row *row,
-                                 const uint8_t request_digest[32])
+                                 const uint8_t request_digest[32],
+                                 const struct vi_payload *payload)
 {
     if (!row->has_request_digest ||
         memcmp(row->request_digest, request_digest, 32) != 0) {
@@ -150,6 +130,7 @@ static bool vi_render_idempotent(struct wallet_rpc_context *ctx,
     json_set_object(result);
     json_push_kv_bool(result, "ok", true);
     vault_intent_render_row(ctx, result, row);
+    vault_intent_transparent_render_plan(payload, row, result);
     json_push_kv_bool(result, "idempotent_plan", true);
     return true;
 }
@@ -328,12 +309,38 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
     if (p.fee < 0 || target > INT64_MAX - p.fee) {
         vi_error(result, "FEE_INVALID", "wallet fee is invalid"); return true;
     }
+    const char *agent_session =
+        json_get_str(json_get(input, "_agent_session"));
+    int64_t session_reserve_floor = VAULT_INTENT_DEV_RESERVE_FLOOR_ZAT;
+    if (agent_session && agent_session[0]) {
+        const char *recipients[VI_EFFECTS_MAX];
+        for (size_t i = 0; i < p.effects_len; i++)
+            recipients[i] = p.effects[i].to;
+        char why[64] = { 0 };
+        if (!agent_session_service_plan_intent(
+                agent_session, wallet_scope, target + p.fee,
+                recipients, p.effects_len, &session_reserve_floor,
+                why, sizeof(why))) {
+            vi_error(result, why[0] ? why : "POLICY_STORE",
+                     "bounded session refused the exact intent plan");
+            return true;
+        }
+    }
     uint8_t request_digest[32];
     vi_request_digest(&p, wallet_scope, request_digest);
     struct vault_intent_row existing;
     if (vault_intent_find_application_idempotency(
-            ctx->node_db, wallet_scope, VI_APP_KIND, idem, &existing))
-        return vi_render_idempotent(ctx, result, &existing, request_digest);
+            ctx->node_db, wallet_scope, VI_APP_KIND, idem, &existing)) {
+        if (agent_session && agent_session[0] &&
+            existing.agent_session_id[0] &&
+            strcmp(existing.agent_session_id, agent_session) != 0) {
+            vi_error(result, "POLICY_INTENT_SESSION",
+                     "that idempotency key is bound to another grant");
+            return true;
+        }
+        return vi_render_idempotent(ctx, result, &existing, request_digest,
+                                    &p);
+    }
     struct wallet_money_snapshot money;
     struct zcl_result money_result = wallet_money_snapshot_build(
         ctx->node_db, ctx->main_state, wallet_scope, &money);
@@ -349,7 +356,10 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
         .already_reserved_zat = money_result.ok
             ? money.intent_reserved_zat : 0,
         .agent_available_zat = money_result.ok
-            ? money.agent_available_zat : 0,
+            ? (agent_session && agent_session[0]
+                ? wallet_money_agent_available_for_floor(
+                    &money, session_reserve_floor)
+                : money.agent_available_zat) : 0,
     };
     struct vault_intent_plan_decision decision;
     if (!vault_intent_plan_decide(&decision_snapshot, &decision)) {
@@ -424,6 +434,9 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
     snprintf(row.idempotency_key, sizeof(row.idempotency_key), "%s", idem);
     memcpy(row.request_digest, request_digest, 32);
     row.has_request_digest = true;
+    if (agent_session && agent_session[0])
+        (void)snprintf(row.agent_session_id,
+                       sizeof(row.agent_session_id), "%s", agent_session);
     vault_intent_digest_payload(plain, plen, &row, row.digest);
     bool encrypted = wallet_metadata_encrypt(ctx->node_db, row.plan_id, 32,
         plain, plen, row.encrypted_payload, sizeof(row.encrypted_payload),
@@ -439,30 +452,15 @@ static bool rpc_vi_plan_checked(const struct json_value *params, bool help,
         if (vault_intent_find_application_idempotency(
                 ctx->node_db, wallet_scope, VI_APP_KIND, idem, &existing))
             return vi_render_idempotent(ctx, result, &existing,
-                                        request_digest);
+                                        request_digest, &p);
         vi_error(result, "PLAN_PERSIST_FAILED",
                  "plan was not reserved; retry the same idempotency_key");
         return true;
     }
     json_set_object(result); json_push_kv_bool(result, "ok", true);
     vault_intent_render_row(ctx, result, &row);
-    char digest[65], fee[32]; vi_hex(row.digest, digest); vi_amount_text(p.fee, fee);
-    json_push_kv_str(result, "digest", digest);
-    json_push_kv_str(result, "fee", fee);
-    json_push_kv_int(result, "confirmation_policy", 6);
-    json_push_kv_str(result, "route", "transparent");
+    vault_intent_transparent_render_plan(&p, &row, result);
     json_push_kv_bool(result, "idempotent_plan", false);
-    json_push_kv_str(result, "privacy", "PUBLIC: recipients, values, inputs, change, and transaction graph are visible");
-    struct json_value effects; json_init(&effects); json_set_array(&effects);
-    for (size_t i = 0; i < p.effects_len; i++) {
-        struct json_value e; json_init(&e); json_set_object(&e);
-        char amount[32]; vi_amount_text(p.effects[i].amount, amount);
-        json_push_kv_str(&e, "asset", "ZCL");
-        json_push_kv_str(&e, "to", p.effects[i].to);
-        json_push_kv_str(&e, "amount", amount);
-        json_push_back(&effects, &e); json_free(&e);
-    }
-    json_push_kv(result, "effects", &effects); json_free(&effects);
     return true;
 }
 

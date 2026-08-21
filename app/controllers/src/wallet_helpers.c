@@ -16,12 +16,94 @@
 #include "validation/main_state.h"
 #include "models/database.h"
 #include "models/wallet_tx.h"
+#include "jobs/reducer_frontier.h"
 #include "core/serialize.h"
 #include <stdio.h>
 #include <string.h>
 #include "util/log_macros.h"
 
 struct wallet_rpc_context g_wallet_ctx = {0};
+
+int64_t wallet_transparent_spendable_balance_diagnose(
+    const struct wallet_rpc_context *ctx,
+    struct wallet_balance_freshness *freshness)
+{
+    if (freshness)
+        memset(freshness, 0, sizeof(*freshness));
+    if (!ctx || !ctx->wallet)
+        return 0;
+
+    int wallet_height = 0;
+    size_t wallet_txs = 0;
+    size_t wallet_confirmed_txs = 0;
+    zcl_mutex_lock(&ctx->wallet->cs);
+    wallet_height = ctx->wallet->best_block_height;
+    wallet_txs = ctx->wallet->num_wallet_tx;
+    for (size_t i = 0; i < MAX_WALLET_TX; i++) {
+        if (ctx->wallet->map_wallet[i].used &&
+            ctx->wallet->map_wallet[i].confirms > 0)
+            wallet_confirmed_txs++;
+    }
+    zcl_mutex_unlock(&ctx->wallet->cs);
+
+    int chain_height = -1;
+    int external_height = reducer_frontier_external_tip_height();
+    if (reducer_frontier_provable_tip_is_published() ||
+        external_height > 0) {
+        /* Use the same external H* contract as getblockcount.  During the
+         * short unpublished-cache window it recovers the durable finalized
+         * height; the speculative active window is never money authority. */
+        chain_height = external_height;
+    } else if (ctx->main_state) {
+        /* Hermetic/genesis fixtures can have neither a published nor durable
+         * H*. Retain their local active-chain fallback only in that empty
+         * authority state. */
+        zcl_mutex_lock(&ctx->main_state->cs_main);
+        chain_height = active_chain_height(&ctx->main_state->chain_active);
+        zcl_mutex_unlock(&ctx->main_state->cs_main);
+    }
+
+    int db_confirmed_txs = wallet_ctx_db_ready(ctx)
+        ? db_wallet_tx_confirmed_count(ctx->node_db) : 0;
+    int64_t memory_balance = wallet_get_balance(ctx->wallet);
+    int64_t durable_balance = wallet_ctx_db_ready(ctx)
+        ? db_wallet_utxo_spendable_balance(ctx->node_db, NULL)
+        : memory_balance;
+
+    /* best_block_height is a scan cursor, not proof that every wallet effect
+     * at that height has reached RAM.  In particular, a restarted sender can
+     * observe a confirmed outgoing transaction in the durable projection
+     * before the live wallet entry is upgraded from confirms=0.  Prefer RAM
+     * only when it covers at least every confirmation already durable in the
+     * wallet model; otherwise the exact SQLite UTXO projection owns the read. */
+    if (wallet_txs > 0 && chain_height >= 0 &&
+        wallet_height >= chain_height &&
+        wallet_confirmed_txs >= (size_t)db_confirmed_txs) {
+        if (freshness)
+            freshness->source = "memory";
+    } else if (freshness) {
+        freshness->source = "durable_projection";
+    }
+    if (freshness) {
+        freshness->sources_agree = memory_balance == durable_balance;
+        freshness->wallet_height = wallet_height;
+        freshness->chain_height = chain_height;
+        freshness->memory_confirmed_txs = wallet_confirmed_txs;
+        freshness->durable_confirmed_txs = db_confirmed_txs;
+    }
+    return freshness && strcmp(freshness->source, "memory") == 0
+        ? memory_balance
+        : ((wallet_txs > 0 && chain_height >= 0 &&
+            wallet_height >= chain_height &&
+            wallet_confirmed_txs >= (size_t)db_confirmed_txs)
+               ? memory_balance : durable_balance);
+}
+
+int64_t wallet_transparent_spendable_balance(
+    const struct wallet_rpc_context *ctx)
+{
+    return wallet_transparent_spendable_balance_diagnose(ctx, NULL);
+}
 
 struct wallet_flush_lane_ctx {
     struct wallet_sqlite *wallet_db;
@@ -182,7 +264,14 @@ void wallet_rpc_context_set_base(struct wallet *wallet,
 {
     g_wallet_ctx.wallet = wallet;
     g_wallet_ctx.main_state = main_state;
-    g_wallet_ctx.datadir = datadir;
+    if (datadir && datadir[0]) {
+        (void)snprintf(g_wallet_ctx.datadir_storage,
+                       sizeof(g_wallet_ctx.datadir_storage), "%s", datadir);
+        g_wallet_ctx.datadir = g_wallet_ctx.datadir_storage;
+    } else {
+        g_wallet_ctx.datadir_storage[0] = '\0';
+        g_wallet_ctx.datadir = NULL;
+    }
     g_wallet_ctx.wallet_db = wallet_db;
     g_wallet_ctx.mempool = mempool;
     g_wallet_ctx.connman = connman;

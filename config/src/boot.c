@@ -1641,7 +1641,6 @@ bool app_init(struct app_context *ctx)
                     wsql_open_r.code, (long long)pre_open_key_rows);
         exit(1);
     }
-
     if (sqlite_open) { /* STATE C: load everything. */
         {
             struct zcl_result _r = wallet_sqlite_read_keys_r(
@@ -1653,6 +1652,7 @@ bool app_init(struct app_context *ctx)
                     _r.source_file ? _r.source_file : "?", _r.source_line);
             }
         }
+        boot_wallet_read_keypool_or_exit(&g_wallet_sqlite, &g_wallet);
         wallet_sqlite_read_txs(&g_wallet_sqlite, &g_wallet);
         wallet_rebuild_spent_set(&g_wallet);
         wallet_sqlite_read_sapling_keys(&g_wallet_sqlite, &g_wallet);
@@ -1670,7 +1670,6 @@ bool app_init(struct app_context *ctx)
                g_wallet.keystore.num_watching,
                g_wallet.num_wallet_tx,
                g_wallet.best_block_height);
-
         /* Backward compat: an existing wallet opens regardless of the
          * at-rest policy, but without a passphrase its keys are plaintext
          * on disk — warn every boot rather than imply it is encrypted. */
@@ -1679,7 +1678,6 @@ bool app_init(struct app_context *ctx)
             fprintf(stderr, "WARNING: wallet private keys are stored "
                 "UNENCRYPTED at rest in node.db (no ZCL_WALLET_PASSPHRASE); "
                 "anyone with datadir read access can drain every coin.\n");
-
         /* STATE E: canary self-test. Writes then reads a fresh random
          * probe through the same sqlite handle the node will use for
          * user RPCs. A failure here is STATE E — if keys exist on
@@ -1718,6 +1716,8 @@ bool app_init(struct app_context *ctx)
             exit(1);
         }
         boot_wallet_migrate_envelopes_or_exit(ctx->datadir, &g_wallet_sqlite, &g_wallet);
+        boot_wallet_top_up_legacy_keypool_or_exit(
+            pre_open_key_rows, &g_wallet_sqlite, &g_wallet);
     } else {
         /* STATE A/B: new datadir, no user keys at risk. */
         printf("New wallet created.\n");

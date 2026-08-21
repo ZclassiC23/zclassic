@@ -164,6 +164,7 @@ static struct agent_session_mint_request vsf_mint_req(const char *account)
     snprintf(r.account, sizeof(r.account), "%s", account);
     r.max_per_tx_zat = 150000000;             /* 1.5 ZCL */
     r.max_per_window_zat = 1000000000;        /* 10 ZCL */
+    r.reserve_floor_zat = 8000000;             /* 0.08 ZCL */
     r.window_seconds = 86400;
     snprintf(r.recipient_allowlist, sizeof(r.recipient_allowlist), "%s",
              "t1AllowedA0000000000000000");
@@ -201,6 +202,7 @@ static int test_service_mint_and_find(void)
         ASSERT_STR_EQ(s.account, k_account);
         ASSERT_EQ(s.max_per_tx_zat, 150000000);
         ASSERT_EQ(s.max_per_window_zat, 1000000000);
+        ASSERT_EQ(s.reserve_floor_zat, 8000000);
         ASSERT_EQ(s.window_seconds, 86400);
         ASSERT_STR_EQ(s.recipient_allowlist, "t1AllowedA0000000000000000");
         ASSERT(s.created_at > 0);
@@ -346,6 +348,7 @@ static struct json_value vsf_create_input(bool confirm)
     vsf_push_str(&input, "account", k_account);
     vsf_push_str(&input, "max_per_tx", "1.5");
     vsf_push_str(&input, "max_per_window", "10");
+    vsf_push_str(&input, "reserve_floor", "0.08000000");
     vsf_push_str(&input, "window_seconds", "3600");
     vsf_push_str(&input, "wallet_scope", "dev");
     vsf_push_str(&input, "allowlist", "t1AllowedA0000000000000000");
@@ -394,6 +397,11 @@ static int test_handler_create_plan_commit(void)
         ASSERT(vsf_is_lower_hex32(sid));
         ASSERT_EQ(json_get_int(json_get(&reply.data, "max_per_tx_zat")),
                   150000000);
+        ASSERT_EQ(json_get_int(json_get(&reply.data, "reserve_floor_zat")),
+                  8000000);
+        struct db_agent_session persisted;
+        ASSERT(agent_session_find(&f.ndb, sid, &persisted));
+        ASSERT_EQ(persisted.reserve_floor_zat, 8000000);
         ASSERT_EQ(agent_session_count(&f.ndb), 1);
         ASSERT(reply.error.mutated);
         zcl_command_reply_free(&reply);

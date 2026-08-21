@@ -53,6 +53,7 @@
 #include "sim/simnet_sapling.h"
 
 #include <errno.h>
+#include <limits.h>
 #include <sqlite3.h>
 #include <stdatomic.h>
 
@@ -87,8 +88,17 @@ static bool p11_4_make_tmpdir(char *tmpdir, size_t tmpdir_size)
 {
     if (!tmpdir || tmpdir_size < 32)
         return false;
-    snprintf(tmpdir, tmpdir_size, "./test-tmp/p11_4_%d", (int)getpid());
-    mkdir("./test-tmp", 0755);
+    char cwd[PATH_MAX];
+    char test_root[PATH_MAX];
+    if (!getcwd(cwd, sizeof(cwd)))
+        return false;
+    int root_n = snprintf(test_root, sizeof(test_root), "%s/test-tmp", cwd);
+    int dir_n = snprintf(tmpdir, tmpdir_size, "%s/p11_4_%d", test_root,
+                         (int)getpid());
+    if (root_n <= 0 || (size_t)root_n >= sizeof(test_root) ||
+        dir_n <= 0 || (size_t)dir_n >= tmpdir_size)
+        return false;
+    mkdir(test_root, 0755);
     if (mkdir(tmpdir, 0700) != 0 && errno != EEXIST)
         return false;
     return true;

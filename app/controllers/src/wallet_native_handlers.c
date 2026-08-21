@@ -25,6 +25,7 @@
 #include "services/wallet_money_service.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
+#include "wallet/sapling_keys.h"
 
 #include <ctype.h>
 #include <stdbool.h>
@@ -334,7 +335,15 @@ void zcl_native_handle_wallet_shielded_address(
                                RPC_WALLET_MUTATION_TIMEOUT_MS, &body))
         return;
     const char *addr = wnh_string_result(&body);
-    if (!addr || !wallet_addr_is_sapling(addr)) {
+    uint8_t diversifier[11], pk_d[32];
+    /* This adapter is a separate CLI process and its local chain_params may
+     * still be the mainnet default while the authenticated target node is a
+     * testnet/regtest process.  The node just generated this address for its
+     * own active chain, so validate the complete Sapling encoding here; do
+     * not misclassify it using the CLI process's unrelated active HRP. User
+     * supplied send recipients continue to use wallet_addr_is_sapling(),
+     * whose active-chain HRP check remains fail-closed. */
+    if (!addr || !sapling_decode_payment_address(addr, diversifier, pk_d)) {
         const char *failure = addr && addr[0]
             ? addr
             : "z_getnewaddress did not return a shielded address";

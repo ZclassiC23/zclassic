@@ -37,6 +37,9 @@ static const char *k_full_schema =
     "  privkey BLOB NOT NULL,"
     "  compressed INTEGER NOT NULL DEFAULT 1,"
     "  created_at INTEGER NOT NULL DEFAULT 0);"
+    "CREATE TABLE wallet_keypool ("
+    "  pubkey_hash BLOB PRIMARY KEY,"
+    "  generation INTEGER NOT NULL UNIQUE);"
     "CREATE TABLE wallet_sapling_keys ("
     "  ivk BLOB PRIMARY KEY,xsk BLOB NOT NULL,xfvk BLOB NOT NULL,"
     "  diversifier BLOB NOT NULL,pk_d BLOB NOT NULL,"
@@ -231,6 +234,60 @@ static int test_write_then_reopen_preserves_keys(void)
         free_wallet(w);
         unlink(path);
 
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int test_keypool_membership_survives_restart(void)
+{
+    int failures = 0;
+    TEST("wallet_persistence: unused keypool membership survives restart") {
+        clear_passphrase();
+        char path[80];
+        snprintf(path, sizeof(path),
+                 "./test-tmp/wallet_keypool_%d.db", (int)getpid());
+        mkdir("./test-tmp", 0755);
+        unlink(path);
+
+        sqlite3 *db = open_fixture_db(path, true);
+        ASSERT(db);
+        struct wallet_sqlite ws;
+        ASSERT(wallet_sqlite_open_r(&ws, db).ok);
+        struct wallet *before = alloc_wallet();
+        ASSERT(before);
+        ASSERT(wallet_top_up_key_pool(before, 3));
+        int64_t ceiling = wallet_key_pool_generation_ceiling(before);
+        ASSERT(wallet_sqlite_flush_r(&ws, before).ok);
+        wallet_key_pool_mark_persisted_through(before, ceiling);
+        ASSERT(wallet_key_pool_persisted_size(before) == 3);
+
+        struct pubkey consumed;
+        ASSERT(wallet_get_key_from_pool(before, &consumed));
+        ASSERT(wallet_sqlite_flush_transactions_r(&ws, before).ok);
+        ASSERT(before->key_pool_size == 2);
+        free_wallet(before);
+        wallet_sqlite_close(&ws);
+        sqlite3_close(db);
+
+        db = open_fixture_db(path, false);
+        ASSERT(db);
+        struct wallet_sqlite reopened;
+        ASSERT(wallet_sqlite_open_r(&reopened, db).ok);
+        struct wallet *after = alloc_wallet();
+        ASSERT(after);
+        ASSERT(wallet_sqlite_read_keys_r(&reopened, after).ok);
+        ASSERT(wallet_sqlite_read_keypool_r(&reopened, after).ok);
+        ASSERT(after->key_pool_size == 2);
+        ASSERT(wallet_key_pool_persisted_size(after) == 2);
+        ASSERT(wallet_get_key_from_pool(after, &consumed));
+        ASSERT(wallet_get_key_from_pool(after, &consumed));
+        ASSERT(!wallet_get_key_from_pool(after, &consumed));
+
+        free_wallet(after);
+        wallet_sqlite_close(&reopened);
+        sqlite3_close(db);
+        unlink(path);
         PASS();
     } _test_next:;
     return failures;
@@ -826,6 +883,7 @@ int test_wallet_persistence_cycle(void)
     failures += test_open_empty_schema_ok();
     failures += test_self_test_passes();
     failures += test_write_then_reopen_preserves_keys();
+    failures += test_keypool_membership_survives_restart();
     failures += test_flush_retries_under_write_lock();
     failures += test_flush_retries_under_same_connection_tx();
     failures += test_flush_waits_out_transient_lock();

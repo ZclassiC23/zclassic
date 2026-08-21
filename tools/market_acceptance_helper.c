@@ -44,6 +44,31 @@ static bool mah_parse_u64(const char *text, uint64_t *out)
     return true;
 }
 
+static bool mah_amount_zat(const char *text, int64_t *out)
+{
+    if (!text || !text[0] || text[0] == '-' || text[0] == '+') return false;
+    int64_t whole = 0, fraction = 0;
+    unsigned decimals = 0;
+    bool dot = false;
+    for (const unsigned char *p = (const unsigned char *)text; *p; p++) {
+        if (*p == '.' && !dot) { dot = true; continue; }
+        if (*p < '0' || *p > '9') return false;
+        int digit = *p - '0';
+        if (!dot) {
+            if (whole > (INT64_MAX - digit) / 10) return false;
+            whole = whole * 10 + digit;
+        } else {
+            if (++decimals > 8u) return false;
+            fraction = fraction * 10 + digit;
+        }
+    }
+    if (dot && decimals == 0u) return false;
+    while (decimals++ < 8u) fraction *= 10;
+    if (whole > (INT64_MAX - fraction) / 100000000LL) return false;
+    *out = whole * 100000000LL + fraction;
+    return true;
+}
+
 static bool mah_read_stdin(char **raw_out, size_t *bytes_out)
 {
     char *raw = zcl_malloc(MAH_INPUT_MAX + 1u, "market_helper.stdin");
@@ -125,6 +150,30 @@ static bool mah_hex64(const char *text)
         nonzero = nonzero || c != '0';
     }
     return nonzero;
+}
+
+static const char *mah_safe_build_reason(const char *message)
+{
+    static const char *const reasons[] = {
+        "Invalid transaction arguments",
+        "Invalid number of inputs or outputs",
+        "Explicit input is not spendable",
+        "Explicit input value overflow",
+        "Duplicate explicit input",
+        "Explicit output value overflow",
+        "Explicit inputs do not cover outputs and fee",
+        "Transaction allocation failed",
+        "Cannot get change address",
+        "Cannot determine input destination",
+        "Private key not available",
+        "Sighash computation failed",
+        "Signing failed",
+        "fee changed since planning",
+    };
+    for (size_t i = 0; i < sizeof(reasons) / sizeof(reasons[0]); i++)
+        if (message && strcmp(message, reasons[i]) == 0)
+            return reasons[i];
+    return "not_disclosed";
 }
 
 static const struct json_value *mah_data(const struct json_value *doc)
@@ -465,7 +514,7 @@ static bool mah_expect_retrieve(const struct json_value *doc,
         mah_int(data, "size_bytes", &size_bytes) && size_bytes == size;
 }
 
-static bool mah_expect_claim(const struct json_value *doc)
+static bool mah_expect_claim(const struct json_value *doc, int64_t want_height)
 {
     const struct json_value *data = mah_data(doc);
     const struct json_value *columns = mah_member(data, "columns");
@@ -487,7 +536,7 @@ static bool mah_expect_claim(const struct json_value *doc)
         strcmp(json_get_str(status), "CONFIRMED") == 0 &&
         confirmations && confirmations->type == JSON_INT &&
         json_get_int(confirmations) >= 1 && height && height->type == JSON_INT &&
-        json_get_int(height) == 102;
+        json_get_int(height) == want_height;
 }
 
 static bool mah_expect_replay(const struct json_value *doc,
@@ -500,6 +549,137 @@ static bool mah_expect_replay(const struct json_value *doc,
         (!require_committed ||
          (mah_streq(data, "stage", "committed") &&
           mah_bool(data, "committed", true)));
+}
+
+static bool mah_address_shape(const char *address, bool shielded)
+{
+    if (!address || strlen(address) < 20u) return false;
+    return shielded ? address[0] == 'z' : address[0] != 'z';
+}
+
+static const char *mah_expect_intent_plan(const struct json_value *doc,
+                                          const char *route,
+                                          const char *expected_amount,
+                                          bool replay)
+{
+    const struct json_value *data = mah_data(doc);
+    const char *plan = mah_string(data, "plan_id");
+    const char *recipient = mah_string(data, "recipient_value");
+    const char *fee = mah_string(data, "maximum_fee");
+    const char *reserved = mah_string(data, "reserved");
+    const struct json_value *effects = mah_member(data, "effects");
+    int64_t recipient_zat = 0, fee_zat = 0, reserved_zat = 0;
+    if (!data || !mah_bool(data, "ok", true) ||
+        !mah_streq(data, "state", "planned") ||
+        !mah_streq(data, "wallet_scope", "dev") ||
+        !mah_streq(data, "route", route) ||
+        !mah_bool(data, "idempotent_plan", replay) ||
+        !mah_hex64(plan) || !mah_hex64(mah_string(data, "digest")) ||
+        !mah_hex64(mah_string(data, "money_snapshot_root")) ||
+        !mah_streq(data, "recipient_value", expected_amount) ||
+        !recipient || !fee || !reserved ||
+        !mah_amount_zat(recipient, &recipient_zat) || recipient_zat <= 0 ||
+        !mah_amount_zat(fee, &fee_zat) || fee_zat <= 0 ||
+        !mah_amount_zat(reserved, &reserved_zat) ||
+        recipient_zat > INT64_MAX - fee_zat ||
+        reserved_zat != recipient_zat + fee_zat ||
+        !effects || effects->type != JSON_ARR ||
+        effects->num_children != 1u)
+        return NULL;
+    const struct json_value *effect = json_at(effects, 0);
+    const char *to = mah_string(effect, "to");
+    if (!mah_streq(effect, "asset", "ZCL") ||
+        !mah_streq(effect, "amount", expected_amount))
+        return NULL;
+    const char *from = mah_string(data, "from");
+    bool source_z = from && mah_address_shape(from, true);
+    bool recipient_z = mah_address_shape(to, true);
+    if ((strcmp(route, "transparent") == 0 &&
+         (from || source_z || recipient_z)) ||
+        (strcmp(route, "shield") == 0 &&
+         (!from || source_z || !recipient_z)) ||
+        (strcmp(route, "private") == 0 &&
+         (!source_z || !recipient_z)) ||
+        (strcmp(route, "unshield") == 0 &&
+         (!source_z || recipient_z)))
+        return NULL;
+    return plan;
+}
+
+static const char *mah_expect_intent_commit(const struct json_value *doc,
+                                            const char *plan,
+                                            const char *state, bool replay)
+{
+    const struct json_value *data = mah_data(doc);
+    const char *txid = mah_string(data, "txid");
+    bool inner_ok = data && mah_bool(data, "ok", true);
+    bool plan_ok = data && mah_streq(data, "plan_id", plan);
+    bool scope_ok = data && mah_streq(data, "wallet_scope", "dev");
+    bool state_ok = data && mah_streq(data, "state", state);
+    bool txid_ok = mah_hex64(txid);
+    bool replay_ok = data && mah_bool(data, "idempotent_replay", replay);
+    if (!data || !inner_ok || !plan_ok || !scope_ok || !state_ok ||
+        !txid_ok || !replay_ok) {
+        const struct json_value *error = mah_member(doc, "error");
+        const char *code = mah_string(error, "code");
+        const char *message = mah_string(error, "message");
+        const char *got_state = mah_string(data, "state");
+        fprintf(stderr,
+                "market-acceptance-helper: intent commit contract "
+                "outer_data=%d inner_ok=%d plan=%d scope=%d state=%s "
+                "state_match=%d txid_shape=%d replay=%d error_code=%s "
+                "build_reason=%s\n",
+                data != NULL, inner_ok, plan_ok, scope_ok,
+                got_state ? got_state : "absent", state_ok, txid_ok,
+                replay_ok, code ? code : "none",
+                mah_safe_build_reason(message));
+        return NULL;
+    }
+    return txid;
+}
+
+static bool mah_expect_intent_status(const struct json_value *doc,
+                                     const char *plan, const char *txid,
+                                     const char *state)
+{
+    const struct json_value *data = mah_data(doc);
+    int64_t confirmations = -1;
+    if (!data || !mah_bool(data, "ok", true) ||
+        !mah_streq(data, "plan_id", plan) ||
+        !mah_streq(data, "txid", txid) ||
+        !mah_streq(data, "state", state) ||
+        !mah_int(data, "confirmations", &confirmations))
+        return false;
+    if (strcmp(state, "confirmed") == 0)
+        return confirmations >= 1 &&
+            mah_int(data, "confirmed_height", &confirmations) &&
+            confirmations >= 0 &&
+            mah_hex64(mah_string(data, "confirmed_block_hash"));
+    return confirmations == 0;
+}
+
+static bool mah_expect_intent_error(const struct json_value *doc,
+                                    const char *code)
+{
+    const struct json_value *error = mah_member(doc, "error");
+    return doc && doc->type == JSON_OBJ && mah_bool(doc, "ok", false) &&
+        error && error->type == JSON_OBJ && mah_streq(error, "code", code) &&
+        mah_member(error, "retryable") &&
+        mah_member(error, "human_action_required") &&
+        mah_string(error, "message");
+}
+
+static bool mah_expect_chain_tx(const struct json_value *doc,
+                                const char *txid, bool confirmed)
+{
+    const struct json_value *data = mah_data(doc);
+    const struct json_value *confirmations = mah_member(data, "confirmations");
+    if (!data || !mah_streq(data, "txid", txid)) return false;
+    if (!confirmed)
+        return !confirmations ||
+            (confirmations->type == JSON_INT && json_get_int(confirmations) == 0);
+    return confirmations && confirmations->type == JSON_INT &&
+        json_get_int(confirmations) >= 1;
 }
 
 static bool mah_arg_i64(const char *text, int64_t *out)
@@ -554,14 +734,63 @@ static int mah_json_command(int argc, char **argv)
         int64_t size, chunks;
         ok = mah_arg_i64(argv[2], &size) && mah_arg_i64(argv[3], &chunks) &&
             mah_expect_retrieve(&doc, size, chunks);
-    } else if (strcmp(argv[1], "claim") == 0 && argc == 2) {
-        ok = mah_expect_claim(&doc);
+    } else if (strcmp(argv[1], "claim") == 0 && argc == 3) {
+        int64_t height;
+        ok = mah_arg_i64(argv[2], &height) &&
+            mah_expect_claim(&doc, height);
     } else if (strcmp(argv[1], "recommit") == 0 && argc == 3) {
         ok = mah_expect_replay(&doc, "txid", argv[2], false);
     } else if (strcmp(argv[1], "replan") == 0 && argc == 3) {
         ok = mah_expect_replay(&doc, "plan_id", argv[2], false);
     } else if (strcmp(argv[1], "reoffer") == 0 && argc == 3) {
         ok = mah_expect_replay(&doc, "offer_id", argv[2], true);
+    } else if (strcmp(argv[1], "intent-plan") == 0 && argc == 5) {
+        bool replay = strcmp(argv[4], "replay") == 0;
+        if (replay || strcmp(argv[4], "fresh") == 0)
+            output = mah_expect_intent_plan(
+                &doc, argv[2], argv[3], replay);
+        ok = output != NULL;
+    } else if (strcmp(argv[1], "intent-commit") == 0 && argc == 5) {
+        bool replay = strcmp(argv[4], "replay") == 0;
+        if (replay || strcmp(argv[4], "fresh") == 0)
+            output = mah_expect_intent_commit(
+                &doc, argv[2], argv[3], replay);
+        ok = output != NULL;
+    } else if (strcmp(argv[1], "intent-status") == 0 && argc == 5) {
+        ok = mah_expect_intent_status(&doc, argv[2], argv[3], argv[4]);
+    } else if (strcmp(argv[1], "intent-error") == 0 && argc == 3) {
+        ok = mah_expect_intent_error(&doc, argv[2]);
+    } else if (strcmp(argv[1], "amount") == 0 && argc == 3) {
+        const struct json_value *value = mah_path(&doc, argv[2]);
+        int64_t amount = 0;
+        if (value && value->type == JSON_STR &&
+            mah_amount_zat(json_get_str(value), &amount)) {
+            printf("%" PRId64 "\n", amount);
+            ok = true;
+        }
+    } else if (strcmp(argv[1], "address") == 0 && argc == 3) {
+        const struct json_value *data = mah_data(&doc);
+        const char *address = mah_string(data, "address");
+        bool shielded = strcmp(argv[2], "sapling") == 0;
+        if ((shielded || strcmp(argv[2], "transparent") == 0) &&
+            mah_address_shape(address, shielded)) {
+            output = address;
+            ok = true;
+        }
+    } else if (strcmp(argv[1], "mempool-at-least") == 0 && argc == 3) {
+        int64_t want = 0, size = -1;
+        const struct json_value *data = mah_data(&doc);
+        ok = mah_arg_i64(argv[2], &want) &&
+            mah_int(data, "size", &size) && size >= want;
+    } else if (strcmp(argv[1], "chain-tx") == 0 && argc == 4) {
+        bool confirmed = strcmp(argv[3], "confirmed") == 0;
+        if (confirmed || strcmp(argv[3], "mempool") == 0)
+            ok = mah_expect_chain_tx(&doc, argv[2], confirmed);
+    } else if (strcmp(argv[1], "intent-list-at-least") == 0 && argc == 3) {
+        int64_t want = 0, count = -1;
+        const struct json_value *data = mah_data(&doc);
+        ok = mah_arg_i64(argv[2], &want) && mah_bool(data, "ok", true) &&
+            mah_int(data, "count", &count) && count >= want;
     }
     if (output) printf("%s\n", output);
     json_free(&doc);

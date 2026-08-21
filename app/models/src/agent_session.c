@@ -57,6 +57,7 @@ bool agent_session_validate(const struct db_agent_session *s,
         "account", "contains non-printable characters");
     validates_money_range(errors, s, max_per_tx_zat, AGENT_SESSION_MAX_ZAT);
     validates_money_range(errors, s, max_per_window_zat, AGENT_SESSION_MAX_ZAT);
+    validates_money_range(errors, s, reserve_floor_zat, AGENT_SESSION_MAX_ZAT);
     validates_positive(errors, s, window_seconds);
     validates_custom(errors,
         s->window_seconds <= AGENT_SESSION_WINDOW_SECONDS_MAX,
@@ -117,8 +118,8 @@ bool agent_session_save(struct node_db *ndb, const struct db_agent_session *s)
         "(session_id,account,max_per_tx_zat,max_per_window_zat,"
         "window_seconds,window_start_epoch,spent_in_window_zat,"
         "recipient_allowlist,created_at,expires_at,revoked,wallet_scope,"
-        "wallet_instance_id,wallet_genesis,lifetime_spent_zat) "
-        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        "wallet_instance_id,wallet_genesis,lifetime_spent_zat,"
+        "reserve_floor_zat) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
         cbs, "agent_session", s, agent_session_validate,
         AR_BIND_TEXT(st, 1, s->session_id);
         AR_BIND_TEXT(st, 2, s->account);
@@ -134,7 +135,8 @@ bool agent_session_save(struct node_db *ndb, const struct db_agent_session *s)
         AR_BIND_TEXT(st, 12, s->wallet_scope);
         AR_BIND_TEXT(st, 13, s->wallet_instance_id);
         AR_BIND_TEXT(st, 14, s->wallet_genesis);
-        AR_BIND_INT(st, 15, s->lifetime_spent_zat));
+        AR_BIND_INT(st, 15, s->lifetime_spent_zat);
+        AR_BIND_INT(st, 16, s->reserve_floor_zat));
 }
 
 static void agent_session_read_row(struct db_agent_session *out,
@@ -157,13 +159,14 @@ static void agent_session_read_row(struct db_agent_session *out,
                 sizeof(out->wallet_instance_id));
     AR_READ_STR(st, 13, out->wallet_genesis, sizeof(out->wallet_genesis));
     out->lifetime_spent_zat = AR_COL_INT(st, 14);
+    out->reserve_floor_zat = AR_COL_INT(st, 15);
 }
 
 #define AGENT_SESSION_COLS \
     "session_id,account,max_per_tx_zat,max_per_window_zat,window_seconds," \
     "window_start_epoch,spent_in_window_zat,recipient_allowlist," \
     "created_at,expires_at,revoked,wallet_scope,wallet_instance_id," \
-    "wallet_genesis,lifetime_spent_zat"
+    "wallet_genesis,lifetime_spent_zat,reserve_floor_zat"
 
 bool agent_session_find(struct node_db *ndb, const char *session_id,
                         struct db_agent_session *out)
@@ -257,11 +260,11 @@ int64_t agent_session_scope_lifetime_spent(struct node_db *ndb,
  * agent_session_authorize in models/agent_session.h for why. */
 static pthread_mutex_t g_agent_session_window_lock = PTHREAD_MUTEX_INITIALIZER;
 
-enum agent_session_authz agent_session_authorize(
+static enum agent_session_authz agent_session_authorize_internal(
     struct node_db *ndb, const char *session_id, int64_t amount_zat,
     const char *recipient, const char *wallet_scope,
     const struct wallet_identity_row *current_wallet,
-    int64_t now_epoch, bool commit,
+    int64_t now_epoch, bool commit, bool recipient_already_bound,
     int64_t *window_remaining_zat)
 {
     if (window_remaining_zat)
@@ -315,7 +318,7 @@ enum agent_session_authz agent_session_authorize(
             verdict = AGENT_SESSION_AUTHZ_WINDOW_LIMIT;
             break;
         }
-        if (s.recipient_allowlist[0] &&
+        if (!recipient_already_bound && s.recipient_allowlist[0] &&
             (!recipient || !recipient[0] ||
              !agent_session_allowlisted(s.recipient_allowlist, recipient))) {
             verdict = AGENT_SESSION_AUTHZ_RECIPIENT;
@@ -349,6 +352,30 @@ enum agent_session_authz agent_session_authorize(
     } while (0);
     pthread_mutex_unlock(&g_agent_session_window_lock);
     return verdict; /* raw-return-ok:enum-verdict-every-branch-set-above */
+}
+
+enum agent_session_authz agent_session_authorize(
+    struct node_db *ndb, const char *session_id, int64_t amount_zat,
+    const char *recipient, const char *wallet_scope,
+    const struct wallet_identity_row *current_wallet,
+    int64_t now_epoch, bool commit,
+    int64_t *window_remaining_zat)
+{
+    return agent_session_authorize_internal(
+        ndb, session_id, amount_zat, recipient, wallet_scope, current_wallet,
+        now_epoch, commit, false, window_remaining_zat);
+}
+
+enum agent_session_authz agent_session_authorize_bound_intent(
+    struct node_db *ndb, const char *session_id, int64_t amount_zat,
+    const char *wallet_scope,
+    const struct wallet_identity_row *current_wallet,
+    int64_t now_epoch, bool commit,
+    int64_t *window_remaining_zat)
+{
+    return agent_session_authorize_internal(
+        ndb, session_id, amount_zat, NULL, wallet_scope, current_wallet,
+        now_epoch, commit, true, window_remaining_zat);
 }
 
 bool agent_session_release(struct node_db *ndb, const char *session_id,
@@ -420,6 +447,8 @@ bool agent_session_dump_state_json(struct json_value *out, const char *key)
                 json_push_kv_int(out, "max_per_tx_zat", s.max_per_tx_zat);
                 json_push_kv_int(out, "max_per_window_zat",
                                  s.max_per_window_zat);
+                json_push_kv_int(out, "reserve_floor_zat",
+                                 s.reserve_floor_zat);
                 json_push_kv_int(out, "window_seconds", s.window_seconds);
                 json_push_kv_int(out, "window_start_epoch",
                                  s.window_start_epoch);

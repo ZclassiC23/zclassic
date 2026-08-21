@@ -33,6 +33,76 @@ bool rescan_result_consensus_valid(const struct uint256 *our_root,
                   sizeof(our_root->data)) == 0;
 }
 
+bool rescan_endpoint_header_addressable(const struct block_index *index)
+{
+    return index && index->phashBlock && index->nFile >= 0 &&
+           !uint256_is_zero_local(&index->hashFinalSaplingRoot);
+}
+
+const struct block_index *rescan_find_replay_endpoint(
+    const struct active_chain *chain, int replay_start,
+    int *endpoint_height_out)
+{
+    if (endpoint_height_out)
+        *endpoint_height_out = -1;
+    if (!chain || replay_start < 0)
+        return NULL;
+
+    /* A newly received note normally sits inside the finality window. Clamping
+     * witness replay to tip-finality_depth therefore makes that note
+     * impossible to recover. Start at the newest materialized active block
+     * instead and walk back only over incomplete projection slots. A published
+     * (nFile,nDataPos) names an already-written block body; the caller snapshots
+     * this endpoint's exact hash/root and rechecks both before any save, so a
+     * concurrent tip advance or reorg still fails closed. */
+    for (int height = active_chain_height(chain);
+         height >= replay_start; height--) {
+        const struct block_index *index = active_chain_at(chain, height);
+        if (!rescan_endpoint_header_addressable(index))
+            continue;
+        if (endpoint_height_out)
+            *endpoint_height_out = height;
+        return index;
+    }
+    return NULL;
+}
+
+size_t rescan_append_block_commitments(
+    const struct block *block, struct incremental_merkle_tree *tree,
+    struct incremental_witness *witnesses, bool *witness_active,
+    const struct db_sapling_note *notes, int n_notes,
+    int *witnesses_built)
+{
+    if (!block || !tree || !witnesses || !witness_active || !notes ||
+        n_notes < 0 || !witnesses_built)
+        return 0;
+
+    size_t appended = 0;
+    for (size_t ti = 0; ti < block->num_vtx; ti++) {
+        const struct transaction *tx = &block->vtx[ti];
+        for (size_t oi = 0; oi < tx->num_shielded_output; oi++) {
+            const struct uint256 *cm = &tx->v_shielded_output[oi].cm;
+            for (int ni = 0; ni < n_notes; ni++) {
+                if (witness_active[ni])
+                    incremental_witness_append(&witnesses[ni], cm);
+            }
+            incremental_tree_append(tree, cm);
+            appended++;
+
+            for (int ni = 0; ni < n_notes; ni++) {
+                if (witness_active[ni])
+                    continue;
+                if (memcmp(cm->data, notes[ni].cm, sizeof(cm->data)) == 0) {
+                    incremental_witness_init(&witnesses[ni], tree);
+                    witness_active[ni] = true;
+                    (*witnesses_built)++;
+                }
+            }
+        }
+    }
+    return appended;
+}
+
 /* Seed a witness rebuild from the header-bound Sapling frontier immediately
  * before the oldest unspent note, when that frontier is present in the
  * canonical anchor ledger.  Snapshot/bundle nodes intentionally do not have
@@ -49,20 +119,23 @@ bool rescan_result_consensus_valid(const struct uint256 *our_root,
 bool rescan_seed_before_oldest_note_from_db(
     sqlite3 *anchor_db, const struct active_chain *chain,
     const struct db_sapling_note *notes, int n_notes,
+    int sapling_activation_height,
     struct incremental_merkle_tree *tree_out, int *start_height_out,
     int *seed_height_out)
 {
     if (!anchor_db || !chain || !notes || n_notes <= 0 || !tree_out ||
-        !start_height_out || !seed_height_out)
+        sapling_activation_height < 0 || !start_height_out ||
+        !seed_height_out)
         return false;
 
     int oldest_height = INT_MAX;
     for (int i = 0; i < n_notes; i++) {
-        if (notes[i].block_height >= 476969 &&
+        if (notes[i].block_height >= sapling_activation_height &&
             notes[i].block_height < oldest_height)
             oldest_height = notes[i].block_height;
     }
-    if (oldest_height == INT_MAX || oldest_height <= 476969)
+    if (oldest_height == INT_MAX ||
+        oldest_height <= sapling_activation_height)
         return false;
 
     const struct block_index *prior = active_chain_at(chain,
@@ -87,14 +160,16 @@ bool rescan_seed_before_oldest_note_from_db(
 
 static bool rescan_seed_before_oldest_note(
     const struct active_chain *chain, const struct db_sapling_note *notes,
-    int n_notes, struct incremental_merkle_tree *tree_out,
+    int n_notes, int sapling_activation_height,
+    struct incremental_merkle_tree *tree_out,
     int *start_height_out, int *seed_height_out)
 {
     sqlite3 *rdb = progress_store_open_reader();
     if (!rdb)
         return false;
     bool ok = rescan_seed_before_oldest_note_from_db(
-        rdb, chain, notes, n_notes, tree_out, start_height_out,
+        rdb, chain, notes, n_notes, sapling_activation_height,
+        tree_out, start_height_out,
         seed_height_out);
     sqlite3_close(rdb);
     return ok;
@@ -149,8 +224,16 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     extern _Atomic bool g_sapling_rescan_active;
     atomic_store(&g_sapling_rescan_active, true);
 
-    int chain_tip = active_chain_height(&ctx->main_state->chain_active);
-    int sapling_start = 476969; /* Sapling activation on ZClassic mainnet */
+    const struct chain_params *chain = chain_params_get();
+    int sapling_start = chain
+        ? chain->consensus.vUpgrades[UPGRADE_SAPLING].nActivationHeight
+        : NETWORK_UPGRADE_NO_ACTIVATION;
+    if (sapling_start < 0) {
+        free(notes);
+        json_set_str(result,
+                     "Sapling is not active on the selected network");
+        return false;
+    }
 
     /* Initialize empty tree and per-note witness state */
     struct incremental_merkle_tree tree;
@@ -158,7 +241,7 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     int seed_height = sapling_start - 1;
     const char *seed_source = "activation";
     if (rescan_seed_before_oldest_note(&ctx->main_state->chain_active,
-                                       notes, n_notes, &tree,
+                                       notes, n_notes, sapling_start, &tree,
                                        &sapling_start, &seed_height)) {
         seed_source = "anchor_kv_before_oldest_note";
         LOG_INFO("rescanwitnesses",
@@ -182,6 +265,16 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     }
     int witnesses_built = 0;
 
+    /* Block writers and stage readers use the network-specific directory
+     * (<base>/regtest on regtest, ==base on mainnet). The wallet context owns
+     * the base directory for backups and databases, so resolve the body root
+     * explicitly instead of accidentally decoding a same-offset base file. */
+    char block_datadir[4096];
+    GetDataDir(true, block_datadir, sizeof(block_datadir));
+    if (!block_datadir[0])
+        (void)snprintf(block_datadir, sizeof(block_datadir), "%s",
+                       ctx->datadir);
+
     /* mmap cache */
     int cached_file = -1;
     uint8_t *cached_data = NULL;
@@ -191,25 +284,15 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
     int blocks_scanned = 0;
     size_t total_commitments = 0;
 
-    /* Stop at the immutable height to avoid reading blocks the C++ node
-     * may still be writing to shared blk*.dat files. The remaining
-     * blocks will be handled by normal connect_block processing. */
-    int safe_tip = zcl_immutable_height(chain_tip);
-    if (safe_tip < sapling_start) safe_tip = chain_tip;
-    /* The published height may briefly lead the materialized active-chain
-     * vector during catch-up.  Pick the newest immutable endpoint that is
-     * actually readable and header-bound instead of scanning toward a height
-     * whose final root can only become the all-zero sentinel. */
-    const struct block_index *save_block = NULL;
-    while (safe_tip >= sapling_start) {
-        save_block = active_chain_at(&ctx->main_state->chain_active, safe_tip);
-        if (save_block && save_block->phashBlock &&
-            (save_block->nStatus & BLOCK_HAVE_DATA) &&
-            !uint256_is_zero_local(&save_block->hashFinalSaplingRoot))
-            break;
-        safe_tip--;
-    }
-    if (safe_tip < sapling_start || !save_block) {
+    /* Pick the newest addressable, header-bound endpoint. This must include
+     * the finality window: a newly confirmed note cannot acquire a witness at
+     * an endpoint older than the note itself. Do not gate on BLOCK_HAVE_DATA;
+     * it is a rebuildable projection. The durable coordinates select bytes,
+     * and the exact hash/root snapshot below is rechecked before every save. */
+    int safe_tip = -1;
+    const struct block_index *save_block = rescan_find_replay_endpoint(
+        &ctx->main_state->chain_active, sapling_start, &safe_tip);
+    if (!save_block) {
         free(witnesses);
         free(witness_active);
         free(notes);
@@ -226,14 +309,19 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
         const struct block_index *pindex =
             active_chain_at(&ctx->main_state->chain_active, h);
         if (!pindex) continue;
-        if (!(pindex->nStatus & BLOCK_HAVE_DATA)) continue;
+        /* File coordinates, not the lag-prone HAVE_DATA projection, decide
+         * whether this recovery pass can attempt the immutable body. Any
+         * absent/truncated body leaves the reconstructed root short and the
+         * consensus comparison below refuses every save. */
+        if (!pindex->phashBlock || pindex->nFile < 0)
+            continue;
 
         /* mmap block file */
         if (pindex->nFile != cached_file) {
             if (cached_data) munmap(cached_data, cached_size);
             char path[512];
             snprintf(path, sizeof(path), "%s/blocks/blk%05d.dat",
-                     ctx->datadir, pindex->nFile);
+                     block_datadir, pindex->nFile);
             int fd = open(path, O_RDONLY);
             if (fd < 0) { cached_data = NULL; cached_file = -1; continue; }
             struct stat fst;
@@ -254,39 +342,43 @@ bool rpc_rescanwitnesses(const struct json_value *params, bool help,
         }
         if (!cached_data || pindex->nDataPos >= cached_size) continue;
 
-        /* Fast-scan: extract Sapling commitments without full
-         * block deserialization. 1000x faster — skips scriptSig parsing
-         * for blocks with thousands of inputs. */
-        uint8_t block_cms[4096][32];
-        size_t block_data_len = cached_size - pindex->nDataPos;
-        int n_cms = fast_scan_sapling_commitments(
-            cached_data + pindex->nDataPos, block_data_len,
-            block_cms, 4096);
-
-        for (int ci = 0; ci < n_cms; ci++) {
-            struct uint256 cm;
-            memcpy(cm.data, block_cms[ci], 32);
-
-            /* Advance all active witnesses */
-            for (int ni = 0; ni < n_notes; ni++) {
-                if (witness_active[ni])
-                    incremental_witness_append(&witnesses[ni], &cm);
-            }
-
-            /* Append to tree */
-            incremental_tree_append(&tree, &cm);
-            total_commitments++;
-
-            /* Check if this cm matches any note's commitment */
-            for (int ni = 0; ni < n_notes; ni++) {
-                if (witness_active[ni]) continue;
-                if (memcmp(cm.data, notes[ni].cm, 32) == 0) {
-                    incremental_witness_init(&witnesses[ni], &tree);
-                    witness_active[ni] = true;
-                    witnesses_built++;
-                }
-            }
+        /* A repeated header root proves this block did not change the Sapling
+         * tree, so the body is irrelevant to witness replay. This skips the
+         * overwhelming majority of blocks without trusting a heuristic wire
+         * scanner. A zero root is an unavailable pre-commitment projection;
+         * it cannot authorize a save and likewise supplies no changed-tree
+         * evidence to replay. */
+        struct uint256 before_root;
+        incremental_tree_root(&tree, &before_root);
+        if (uint256_is_zero_local(&pindex->hashFinalSaplingRoot) ||
+            uint256_eq(&before_root, &pindex->hashFinalSaplingRoot)) {
+            blocks_scanned++;
+            continue;
         }
+
+        /* The header proves the tree changed. Decode this exact durable body
+         * with the consensus block parser and append every output; unlike the
+         * former fixed 4096-entry fast-scan buffer, this cannot silently drop
+         * commitments from a valid high-output block. The final header-root
+         * comparison below remains the authority before persistence. */
+        size_t block_data_len = cached_size - pindex->nDataPos;
+        struct byte_stream body_stream;
+        stream_init_from_data(&body_stream,
+                              cached_data + pindex->nDataPos,
+                              block_data_len);
+        struct block block;
+        block_init(&block);
+        if (!block_deserialize(&block, &body_stream)) {
+            block_free(&block);
+            LOG_WARN("rescanwitnesses",
+                     "durable block body decode failed at height=%d", h);
+            blocks_scanned++;
+            continue;
+        }
+        total_commitments += rescan_append_block_commitments(
+            &block, &tree, witnesses, witness_active, notes, n_notes,
+            &witnesses_built);
+        block_free(&block);
         blocks_scanned++;
 
         /* Checkpoint: compare our tree root vs block header.

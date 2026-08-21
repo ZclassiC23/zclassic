@@ -382,6 +382,22 @@ void zcl_native_handle_wallet_rescan_witnesses(
     if (!wnh_call_rpc_deadline(reply, "rescanwitnesses", NULL,
                                RPC_PROOF_BUILD_TIMEOUT_MS, &body))
         return;
+    /* A legacy RPC actor can refuse with a bare string. The HTTP client
+     * extracts the JSON-RPC error value, so that shape is indistinguishable
+     * from a successful string unless this object-only command validates its
+     * own result contract. Never report completed=true for a refusal. */
+    if (body.type != JSON_OBJ) {
+        const char *message = body.type == JSON_STR
+            ? json_get_str(&body) : NULL;
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "WITNESS_RESCAN_FAILED", "repair", false, false,
+            message && message[0]
+                ? message : "witness rescan returned an invalid result",
+            "fix the named prerequisite, then rerun core wallet rescan-witnesses");
+        json_free(&body);
+        return;
+    }
     (void)json_push_kv(&reply->data, "result", &body);
     (void)json_push_kv_bool(&reply->data, "completed", true);
     reply->error.mutated = true;

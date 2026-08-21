@@ -37,6 +37,10 @@ void tip_finalize_run_post_finalize(struct block_index *pindex_new);
  * acquired and released under the same rules as the full post step. */
 bool tip_finalize_run_mempool_reconcile(struct block_index *pindex_new);
 
+/* Apply only the idempotent wallet effects for an already-published active
+ * block. Used by late-visible-body reconciliation; never appends MMR/MMB. */
+bool tip_finalize_run_wallet_reconcile(struct block_index *pindex_new);
+
 /* ── SHA3 golden-window corroboration tripwire (OBSERVE-ONLY) ─────────────
  *
  * At every 1000-block window boundary the post-finalize step recomputes the

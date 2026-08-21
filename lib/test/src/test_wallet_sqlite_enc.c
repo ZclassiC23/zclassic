@@ -38,6 +38,8 @@ static const char k_schema[] =
     "CREATE TABLE wallet_keys("
     "pubkey_hash BLOB PRIMARY KEY,"
     "pubkey BLOB,privkey BLOB,compressed INT,created_at INT);"
+    "CREATE TABLE wallet_keypool("
+    "pubkey_hash BLOB PRIMARY KEY,generation INTEGER NOT NULL UNIQUE);"
     "CREATE TABLE wallet_key_encryption("
     "id INTEGER PRIMARY KEY CHECK(id=1),wrapped_dek BLOB NOT NULL);"
     "CREATE TABLE wallet_sapling_keys("

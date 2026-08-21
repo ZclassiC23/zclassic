@@ -42,6 +42,7 @@
 struct chain_inspect_context {
     struct main_state *main_state;
     const char *datadir;
+    char datadir_storage[4096];
     struct coins_view_db *coins_db;
     struct coins_view_cache *coins_tip;
     struct node_db *node_db;
@@ -61,7 +62,14 @@ void rpc_chain_inspect_set_state(struct main_state *ms, const char *datadir,
 {
     struct chain_inspect_context *ctx = chain_inspect_ctx();
     ctx->main_state = ms;
-    ctx->datadir = datadir;
+    if (datadir && datadir[0]) {
+        (void)snprintf(ctx->datadir_storage, sizeof(ctx->datadir_storage),
+                       "%s", datadir);
+        ctx->datadir = ctx->datadir_storage;
+    } else {
+        ctx->datadir_storage[0] = '\0';
+        ctx->datadir = NULL;
+    }
     ctx->coins_db = cvdb;
     ctx->coins_tip = coins_tip;
     ctx->node_db = ndb;
@@ -411,8 +419,16 @@ static bool rpc_saplingtreeinfo(const struct json_value *params, bool help,
         json_push_kv_str(result, "status", "no tree (run rescanwitnesses)");
     }
 
-    /* Sapling activation info */
-    json_push_kv_int(result, "sapling_activation", 476969);
+    /* Report the selected network's live consensus activation. This matters
+     * on regtestshielded, where the runtime override activates Sapling from
+     * genesis; a mainnet literal made recovery diagnostics contradict the
+     * scanner and the chain actually being validated. */
+    const struct chain_params *chain = chain_params_get();
+    json_push_kv_int(
+        result, "sapling_activation",
+        chain
+            ? chain->consensus.vUpgrades[UPGRADE_SAPLING].nActivationHeight
+            : NETWORK_UPGRADE_NO_ACTIVATION);
 
     /* Chain tip sapling root. Read the tip through the single tip accessor
      * (active_chain_tip), not active_chain_at(c, height): the two are

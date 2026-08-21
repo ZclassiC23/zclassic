@@ -22,9 +22,6 @@
 #include <stdio.h>
 #include <string.h>
 
-#define DEV_RESERVE_ZAT 25000000LL
-#define DEV_LAB_CAP_ZAT  5000000LL
-
 static void money_root(struct wallet_money_snapshot *s)
 {
     static const char domain[] = "zcl.wallet_money.v2";
@@ -54,31 +51,39 @@ static void money_root(struct wallet_money_snapshot *s)
     sha3_256_finalize(&c, s->snapshot_root);
 }
 
-static void money_agent_available(struct wallet_money_snapshot *s)
+int64_t wallet_money_agent_available_for_floor(
+    const struct wallet_money_snapshot *s, int64_t reserve_floor_zat)
 {
+    if (!s || reserve_floor_zat < 0)
+        return 0;
     int64_t liquid = s->confirmed_zat - s->intent_reserved_zat;
     if (liquid < 0)
         liquid = 0;
     if (strcmp(s->wallet_scope, "dev") == 0) {
-        int64_t above_reserve = liquid > DEV_RESERVE_ZAT
-            ? liquid - DEV_RESERVE_ZAT : 0;
+        int64_t above_reserve =
+            liquid > reserve_floor_zat ? liquid - reserve_floor_zat : 0;
         int64_t allocated = s->lifetime_lab_spent_zat;
         if (allocated <= INT64_MAX - s->intent_reserved_zat)
             allocated += s->intent_reserved_zat;
         else
             allocated = INT64_MAX;
-        int64_t lab_left = allocated < DEV_LAB_CAP_ZAT
-            ? DEV_LAB_CAP_ZAT - allocated : 0;
-        s->agent_available_zat =
-            above_reserve < lab_left ? above_reserve : lab_left;
+        int64_t lab_left = allocated < VAULT_INTENT_DEV_LIFETIME_CAP_ZAT
+            ? VAULT_INTENT_DEV_LIFETIME_CAP_ZAT - allocated : 0;
+        return above_reserve < lab_left ? above_reserve : lab_left;
     } else if (strcmp(s->wallet_scope, "prod") == 0) {
         /* Production is deliberately unfunded/unallocated in this rollout.
          * A later owner grant may define a non-zero production policy. */
-        s->agent_available_zat = 0;
+        return 0;
     } else {
         /* Isolated test custody is bounded by its own liquid balance. */
-        s->agent_available_zat = liquid;
+        return liquid;
     }
+}
+
+static void money_agent_available(struct wallet_money_snapshot *s)
+{
+    s->agent_available_zat = wallet_money_agent_available_for_floor(
+        s, VAULT_INTENT_DEV_RESERVE_FLOOR_ZAT);
 }
 
 bool wallet_money_snapshot_after_reservation(
@@ -308,8 +313,14 @@ struct zcl_result wallet_money_snapshot_build(
     out->intent_reserved_zat = vault_intent_reserved_total_at(
         ndb, wallet_scope, out->identity.wallet_instance_id,
         out->observed_at);
-    out->lifetime_lab_spent_zat =
+    int64_t direct_lifetime =
         agent_session_scope_lifetime_spent(ndb, wallet_scope);
+    int64_t completed_intents = vault_intent_unbound_completed_total(
+        ndb, wallet_scope, out->identity.wallet_instance_id);
+    out->lifetime_lab_spent_zat =
+        direct_lifetime >= 0 && completed_intents >= 0 &&
+        direct_lifetime <= INT64_MAX - completed_intents
+            ? direct_lifetime + completed_intents : -1;
     if (out->intent_reserved_zat < 0 ||
         out->lifetime_lab_spent_zat < 0) {
         (void)snprintf(out->reason, sizeof(out->reason),

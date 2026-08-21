@@ -367,8 +367,10 @@ ZCL_COMMAND_READY_COMMAND(
     "Mint a scoped agent spend session; returns the token once",
     "Mints one agent spend session for an existing principal: a 128-bit "
     "random session id carrying its own wallet identity binding and cap set "
-    "(per-tx limit, rolling-window "
-    "limit, optional recipient allowlist, optional expiry). Without confirm, "
+    "(per-tx limit, rolling-window limit, dev-wallet reserve floor, optional "
+    "recipient allowlist, optional expiry). The reserve floor defaults to the "
+    "historical 0.25-ZCL development floor; lowering it is explicit in the "
+    "reviewed grant and remains bound to this exact wallet identity. Without confirm, "
     "a non-mutating plan naming the normalized grant plus the commit "
     "next-action; with confirm:true, the grant is persisted and the full "
     "session id is returned EXACTLY ONCE — store it then, because every "
@@ -384,8 +386,8 @@ ZCL_COMMAND_READY_COMMAND(
     "(separate uid, or a wrapper that refuses to exec anything else).", 0,
     "vault,session,agent,policy,mint,grant,spend",
     "zcl.vault_session_create.input.v1", "zcl.vault_session_create.v1",
-    "account,wallet_scope,max_per_tx,max_per_window,window_seconds,allowlist,expires_in,confirm", "wallet_scope",
-    "z23 vault session create --input='{\"account\":\"t1..\",\"wallet_scope\":\"dev\",\"max_per_tx\":\"0.05\",\"max_per_window\":\"0.05\",\"window_seconds\":\"86400\"}'",
+    "account,wallet_scope,max_per_tx,max_per_window,reserve_floor,window_seconds,allowlist,expires_in,confirm", "wallet_scope",
+    "z23 vault session create --input='{\"account\":\"t1..\",\"wallet_scope\":\"dev\",\"max_per_tx\":\"0.02\",\"max_per_window\":\"0.02\",\"reserve_floor\":\"0.08\",\"window_seconds\":\"86400\"}'",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_EFFECT_MUTATE,
     ZCL_COMMAND_RISK_WALLET, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OWNER,
     ZCL_COMMAND_MODE_SYNC, ZCL_COMMAND_LATENCY_FOREGROUND,

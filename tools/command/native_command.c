@@ -2838,9 +2838,16 @@ static void nc_print_error(const char *command, const char *code,
     (void)json_push_kv_str(&root, "request_id", "local-cli");
     (void)json_push_kv_int(&root, "elapsed_us", 0);
     (void)json_push_kv_str(&error, "code", code);
+    (void)json_push_kv_str(&error, "error_code", code);
     (void)json_push_kv_str(&error, "message", message);
     (void)json_push_kv_str(&error, "phase", phase);
+    (void)json_push_kv_str(&error, "current_state", "REQUEST_FAILED");
     (void)json_push_kv_bool(&error, "retryable", false);
+    (void)json_push_kv_bool(&error, "human_action_required", true);
+    (void)json_push_kv_str(&error, "next_action",
+                           next_reason && next_reason[0]
+                               ? next_reason
+                               : "follow the first next command");
     (void)json_push_kv_bool(&error, "mutated", false);
     if (evidence && evidence[0])
         (void)json_push_kv_str(&error, "evidence", evidence);
@@ -2867,8 +2874,11 @@ static void nc_print_error(const char *command, const char *code,
     if (n == 0 || n >= sizeof(out))
         (void)snprintf(out, sizeof(out),
                        "{\"schema\":\"zcl.result.v1\",\"ok\":false,"
-                       "\"status\":\"failed\",\"error\":{\"code\":\"%s\"}}",
-                       code);
+                       "\"status\":\"failed\",\"error\":{\"code\":\"%s\","
+                       "\"error_code\":\"%s\",\"current_state\":\"REQUEST_FAILED\","
+                       "\"retryable\":false,\"human_action_required\":true,"
+                       "\"next_action\":\"inspect the command contract\"}}",
+                       code, code);
     nc_print_doc(out, command);
     json_free(&item);
     json_free(&next);

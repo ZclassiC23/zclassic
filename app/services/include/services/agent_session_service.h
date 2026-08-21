@@ -31,6 +31,7 @@ struct agent_session_mint_request {
     char account[AGENT_SESSION_ACCOUNT_MAX + 1];   /* principals.address */
     int64_t max_per_tx_zat;                        /* [0, MAX_ZAT] */
     int64_t max_per_window_zat;                    /* [0, MAX_ZAT] */
+    int64_t reserve_floor_zat;                     /* dev custody floor */
     int64_t window_seconds;                        /* > 0 */
     char recipient_allowlist[AGENT_SESSION_ALLOWLIST_MAX + 1]; /* "" = any */
     int64_t expires_in_seconds;                    /* 0 = never */
@@ -85,12 +86,44 @@ bool agent_session_service_revoke(const char *session_id,
  * prevent. Returns AGENT_SESSION_AUTHZ_STORE when node_db is unavailable. */
 enum agent_session_authz agent_session_service_authorize(
     const char *session_id, int64_t amount_zat, const char *recipient,
-    const char *wallet_scope, bool commit,
+    const char *wallet_scope, bool commit, bool canonical_plan,
     int64_t *window_remaining_zat, int64_t *charged_zat);
 
 /* Credit a debit back (the spend it paid for never happened). Node-side, same
  * runtime-node_db constraint as authorize. */
 bool agent_session_service_release(const char *session_id, int64_t amount_zat);
+
+/* Bind and enforce a bounded grant on the canonical durable intent path.
+ * `recipient` is the one reviewed effect accepted by the bounded CLI surface;
+ * the row supplies the exact recipient total, maximum fee, wallet identity and
+ * scope. authorize_intent persists a once-only debit before commit/submit and
+ * reports whether a pre-broadcast handler failure should call release_intent. */
+bool agent_session_service_bind_intent(
+    const char *session_id, const uint8_t plan_id[32], const char *recipient,
+    char *why, size_t why_cap);
+
+/* Node-side plan preflight for a canonical intent. Checks the exact total
+ * (recipient value plus maximum fee), every recipient, wallet binding,
+ * expiry, and grant caps without debiting. Returns the owner-reviewed dev
+ * reserve floor that the atomic reservation must enforce. */
+bool agent_session_service_plan_intent(
+    const char *session_id, const char *wallet_scope,
+    int64_t reservation_zat, const char *const *recipients,
+    size_t recipient_count, int64_t *reserve_floor_zat,
+    char *why, size_t why_cap);
+bool agent_session_service_authorize_intent(
+    const char *session_id, const uint8_t plan_id[32],
+    bool *debit_managed, int64_t *charged_zat,
+    char *why, size_t why_cap);
+bool agent_session_service_release_intent(
+    const char *session_id, const uint8_t plan_id[32]);
+
+/* Node-internal crash/async settlement. Loads the bearer binding from the
+ * durable intent row and credits it only while the row proves no signed or
+ * broadcast transaction can exist. The token never crosses an RPC or CLI
+ * boundary. A row with no bounded-session debit is an idempotent no-op. */
+bool agent_session_service_release_bound_intent(
+    struct node_db *ndb, const uint8_t plan_id[32]);
 
 /* Render a session id for display: exactly the first 8 chars + "…" — the
  * only form in which a token may appear after mint. */

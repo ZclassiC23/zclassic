@@ -36,12 +36,16 @@ enum {
 /* Spend caps are zatoshis in [0, MAX_MONEY]; MAX_MONEY (21M ZCL) doubles as
  * "unbounded" — both limits are mandatory, no NULL/0-disable sentinel. */
 #define AGENT_SESSION_MAX_ZAT 2100000000000000LL
+#define AGENT_SESSION_DEV_RESERVE_DEFAULT_ZAT 25000000LL
 
 struct db_agent_session {
     char session_id[AGENT_SESSION_ID_MAX + 1];       /* PRIMARY KEY (hex) */
     char account[AGENT_SESSION_ACCOUNT_MAX + 1];     /* FK principals(address) */
     int64_t max_per_tx_zat;
     int64_t max_per_window_zat;
+    /* Owner-reviewed dev-wallet balance that this grant may never reserve
+     * below. Defaults to the historical 0.25-ZCL lab floor. */
+    int64_t reserve_floor_zat;
     int64_t window_seconds;                          /* > 0 */
     int64_t window_start_epoch;                      /* rolling window anchor */
     int64_t spent_in_window_zat;                     /* accumulated in window */
@@ -62,7 +66,8 @@ struct ar_callbacks *db_agent_session_callbacks(void);
 
 /* Populate errors with any validation failures. Returns true iff s is valid:
  * session_id exactly 32 hex chars; account present/printable/within bounds;
- * both caps and spent_in_window_zat within [0, AGENT_SESSION_MAX_ZAT];
+ * both caps, reserve_floor_zat and spent_in_window_zat within
+ * [0, AGENT_SESSION_MAX_ZAT];
  * window_seconds > 0; expires_at non-negative; revoked in {0,1}. */
 bool agent_session_validate(const struct db_agent_session *s,
                             struct ar_errors *errors);
@@ -131,6 +136,17 @@ enum agent_session_authz {
 enum agent_session_authz agent_session_authorize(
     struct node_db *ndb, const char *session_id, int64_t amount_zat,
     const char *recipient, const char *wallet_scope,
+    const struct wallet_identity_row *current_wallet,
+    int64_t now_epoch, bool commit,
+    int64_t *window_remaining_zat);
+
+/* Same cap/window/identity check after a canonical vault intent has already
+ * persisted this exact session binding and validated its one reviewed
+ * recipient. This is node-internal commit recovery only; it deliberately does
+ * not re-read a plaintext recipient from the encrypted plan. */
+enum agent_session_authz agent_session_authorize_bound_intent(
+    struct node_db *ndb, const char *session_id, int64_t amount_zat,
+    const char *wallet_scope,
     const struct wallet_identity_row *current_wallet,
     int64_t now_epoch, bool commit,
     int64_t *window_remaining_zat);

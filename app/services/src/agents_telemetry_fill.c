@@ -167,6 +167,9 @@ static bool at_row_malformed(const struct db_agent_session *r)
     if (r->max_per_window_zat < 0 ||
         r->max_per_window_zat > AGENT_SESSION_MAX_ZAT)
         return true;
+    if (r->reserve_floor_zat < 0 ||
+        r->reserve_floor_zat > AGENT_SESSION_MAX_ZAT)
+        return true;
     if (r->spent_in_window_zat < 0 ||
         r->spent_in_window_zat > AGENT_SESSION_MAX_ZAT)
         return true;

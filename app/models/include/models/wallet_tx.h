@@ -50,7 +50,13 @@ bool db_wallet_tx_save(struct node_db *ndb, const struct db_wallet_tx *t);
 bool db_wallet_tx_find(struct node_db *ndb, const uint8_t txid[32],
                        struct db_wallet_tx *out);
 bool db_wallet_tx_delete(struct node_db *ndb, const uint8_t txid[32]);
+bool db_wallet_tx_mark_unconfirmed(struct node_db *ndb,
+                                   const uint8_t txid[32], bool *found_out);
 int db_wallet_tx_count(struct node_db *ndb);
+/* Number of wallet transactions whose durable projection names a confirmed
+ * block hash. Used to detect when the in-memory wallet publication trails
+ * confirmed history even though its coarse scan height reached the tip. */
+int db_wallet_tx_confirmed_count(struct node_db *ndb);
 void db_wallet_tx_free(struct db_wallet_tx *t);
 
 /* Sum of fees over from-me transactions with a positive fee, and the
@@ -105,6 +111,9 @@ bool db_wallet_utxo_find(struct node_db *ndb,
                          struct db_wallet_utxo *out);
 int64_t db_wallet_utxo_balance(struct node_db *ndb);
 int64_t db_wallet_utxo_balance_with_count(struct node_db *ndb, int *utxo_count);
+/* Value held by inputs reserved by wallet transactions that are currently
+ * unconfirmed. It is not spendable, but remains wallet-owned/encumbered. */
+int64_t db_wallet_utxo_encumbered_balance(struct node_db *ndb);
 
 /* SPENDABLE transparent balance: the SUM over unspent UTXOs that EXCLUDES
  * immature coinbase (a coinbase output is spendable only once it is buried
@@ -162,6 +171,10 @@ int db_wallet_utxo_select_coins_for_address(struct node_db *ndb, int64_t target,
 /* Delete a single wallet UTXO by outpoint. */
 bool db_wallet_utxo_delete(struct node_db *ndb,
                             const uint8_t txid[32], uint32_t vout);
+bool db_wallet_utxo_delete_for_tx(struct node_db *ndb,
+                                  const uint8_t txid[32]);
+bool db_wallet_utxo_release_spent_by(struct node_db *ndb,
+                                     const uint8_t spent_by[32]);
 
 /* Count wallet UTXOs for a given txid. */
 int db_wallet_utxo_count_for_tx(struct node_db *ndb,
@@ -266,6 +279,7 @@ bool db_sapling_note_mark_spent_bool_compat(struct node_db *ndb,
                                 const uint8_t nullifier[32],
                                 const uint8_t spent_by[32]);
 int64_t db_sapling_note_balance(struct node_db *ndb);
+int64_t db_sapling_note_encumbered_balance(struct node_db *ndb);
 int64_t db_sapling_note_balance_for_ivk(struct node_db *ndb,
                                         const uint8_t ivk[32]);
 
@@ -289,6 +303,20 @@ int db_sapling_note_list_unspent(struct node_db *ndb,
 
 /* Count of unspent notes (spent_txid IS NULL). 0 on error/empty. */
 int db_sapling_note_count_unspent(struct node_db *ndb);
+
+struct db_sapling_witness_summary {
+    int local_unspent_notes;
+    int ready_notes;
+    int missing_notes;
+    int stale_notes;
+    int tip_height;
+};
+
+/* Bounded scalar readiness for locally spendable notes. No note identity,
+ * address, witness bytes, memo, or key crosses this API. */
+bool db_sapling_note_witness_summary(
+    struct node_db *ndb, int tip_height,
+    struct db_sapling_witness_summary *out);
 
 /* List ALL unspent notes, heap-allocating a buffer sized to the live count
  * (no fixed cap). On success returns a non-negative count and sets *out to a
@@ -335,6 +363,10 @@ bool db_sapling_note_load_witness(struct node_db *ndb,
                                    uint8_t **witness_blob_out, size_t *blob_len_out,
                                    int *height_out);
 bool db_sapling_note_delete_all(struct node_db *ndb);
+bool db_sapling_note_delete(struct node_db *ndb, const uint8_t txid[32],
+                            uint32_t output_index);
+bool db_sapling_note_delete_for_tx(struct node_db *ndb,
+                                   const uint8_t txid[32]);
 bool db_sapling_note_replace_all(struct node_db *ndb,
                                  const struct db_sapling_note *rows,
                                  size_t count);

@@ -2041,9 +2041,20 @@ static bool push_error(struct json_value *root,
     json_set_object(&object);
     json_set_array(&blockers);
     bool ok = json_push_kv_str(&object, "code", error->code) &&
+              json_push_kv_str(&object, "error_code", error->code) &&
               json_push_kv_str(&object, "message", error->message) &&
               json_push_kv_str(&object, "phase", error->phase) &&
+              json_push_kv_str(&object, "current_state",
+                               error->current_state[0]
+                                   ? error->current_state
+                                   : "REQUEST_FAILED") &&
               json_push_kv_bool(&object, "retryable", error->retryable) &&
+              json_push_kv_bool(&object, "human_action_required",
+                                error->human_action_required) &&
+              json_push_kv_str(&object, "next_action",
+                               error->next_action[0]
+                                   ? error->next_action
+                                   : "follow the first next command") &&
               json_push_kv_bool(&object, "mutated", error->mutated);
     if (error->evidence[0])
         ok = ok && json_push_kv_str(&object, "evidence", error->evidence);
@@ -2294,7 +2305,8 @@ size_t zcl_command_registry_execute_json(
             /* The debit paid for a spend. If the handler did not report a
              * mutation, no money moved (RPC unreachable, insufficient funds,
              * a sovereignty refusal), so the window gets it back. */
-            if (policy.debited_zat > 0 && !reply.error.mutated) {
+            if ((policy.debited_zat > 0 || policy.intent_debit_managed) &&
+                !reply.error.mutated) {
                 agent_spend_policy_release(
                     context ? context->agent_session : NULL, &policy);
                 policy.debited_zat = 0;
@@ -2339,8 +2351,11 @@ size_t zcl_command_registry_execute_json(
             "\"ok\":false,\"status\":\"failed\","
             "\"request_id\":\"local-overflow\",\"elapsed_us\":0,"
             "\"error\":{\"code\":\"RESPONSE_BUDGET_EXCEEDED\","
+            "\"error_code\":\"RESPONSE_BUDGET_EXCEEDED\","
             "\"message\":\"bounded response could not be serialized\","
-            "\"phase\":\"serialize\",\"retryable\":false,"
+            "\"phase\":\"serialize\",\"current_state\":\"REQUEST_FAILED\","
+            "\"retryable\":false,\"human_action_required\":true,"
+            "\"next_action\":\"inspect the command contract and retry with bounded output\","
             "\"mutated\":false,\"blockers\":[]},\"next\":[]}";
         size_t len = sizeof(fallback) - 1;
         if (len < out_size && (budget_bytes == 0 || len <= budget_bytes)) {

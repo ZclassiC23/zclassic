@@ -103,6 +103,8 @@ struct agent_spend_policy_decision {
     char evidence[40];
     int64_t debited_zat;
     int64_t window_remaining_zat;
+    bool intent_debit_managed;
+    char intent_plan_id[65];
 };
 
 /* Evaluate one dispatch.

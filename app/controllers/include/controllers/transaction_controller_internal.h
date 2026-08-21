@@ -49,6 +49,7 @@ struct rawtx_context {
     struct tx_mempool *mempool;
     struct coins_view_cache *coins_tip;
     const char *datadir;
+    char datadir_storage[4096];
     struct basic_keystore *keystore;
     struct connman *connman;
 };
@@ -68,5 +69,26 @@ static inline struct node_db *rawtx_node_db(void)
 /* transaction_controller_sign.c — signrawtransaction + its helpers */
 bool rpc_signrawtransaction(const struct json_value *params, bool help,
                             struct json_value *result);
+
+/* transaction_controller_wallet_lookup.c — bounded wallet/active-chain
+ * fallbacks used while repairable transaction projections catch up. */
+bool rawtx_find_in_wallet_db(struct rawtx_context *ctx,
+                             const struct uint256 *hash,
+                             struct transaction *tx,
+                             struct uint256 *hash_block);
+bool rawtx_find_by_wallet_note(struct rawtx_context *ctx,
+                               const struct uint256 *hash,
+                               struct transaction *tx,
+                               struct uint256 *hash_block);
+bool rawtx_find_in_recent_chain(struct rawtx_context *ctx,
+                                const struct uint256 *hash,
+                                struct transaction *tx,
+                                struct uint256 *hash_block);
+bool rawtx_find_in_wallet(struct rawtx_context *ctx,
+                          const struct uint256 *hash,
+                          struct transaction *tx,
+                          struct uint256 *hash_block);
+int64_t rawtx_confirmations(struct rawtx_context *ctx,
+                            const struct uint256 *hash_block);
 
 #endif /* ZCL_CONTROLLERS_TRANSACTION_CONTROLLER_INTERNAL_H */

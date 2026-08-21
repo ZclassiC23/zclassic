@@ -41,6 +41,7 @@
  * include path by design); declare the entry point directly. */
 extern void tip_finalize_run_post_finalize(struct block_index *pindex_new);
 extern bool tip_finalize_run_mempool_reconcile(struct block_index *pindex_new);
+extern bool tip_finalize_run_wallet_reconcile(struct block_index *pindex_new);
 
 static uint64_t tp_mmr_leaves(void)
 {
@@ -248,7 +249,36 @@ int test_tip_finalize_post_step(void)
              w->best_block_height == 0);
     TP_CHECK("mempool-only: MMR unchanged", tp_mmr_leaves() == mmr0);
     TP_CHECK("mempool-only: MMB unchanged", tp_mmb_leaves() == mmb0);
-    w->best_block_height = 1;
+
+    /* A late-visible body must then publish the idempotent wallet subset
+     * without repeating either append-only chain commitment. Model the exact
+     * restart case: the outgoing transaction is durable in the wallet at
+     * confirms=0 even though this synthetic transaction has no discoverable
+     * wallet-owned parent or output. Existing membership must be enough to
+     * upgrade it from mempool to confirmed. */
+    struct wallet_tx pending;
+    memset(&pending, 0, sizeof(pending));
+    pending.used = true;
+    pending.confirms = 0;
+    TP_CHECK("wallet-only: seed existing unconfirmed outgoing transaction",
+             transaction_copy(&pending.tx, &blk.vtx[1]) &&
+             wallet_add_to_wallet(w, &pending));
+    transaction_free(&pending.tx);
+    TP_CHECK("wallet-only: body reconcile succeeded",
+             tip_finalize_run_wallet_reconcile(&bi));
+    struct wallet_tx confirmed;
+    memset(&confirmed, 0, sizeof(confirmed));
+    TP_CHECK("wallet-only: existing outgoing transaction confirmed",
+             wallet_get_tx_copy(w, &blk.vtx[1].hash, &confirmed) &&
+             confirmed.confirms == 1 &&
+             uint256_eq(&confirmed.hash_block, bi.phashBlock));
+    transaction_free(&confirmed.tx);
+    TP_CHECK("wallet-only: nullifier marked spent",
+             w->sapling_notes[0].spent == true);
+    TP_CHECK("wallet-only: height advanced",
+             w->best_block_height == 1);
+    TP_CHECK("wallet-only: MMR unchanged", tp_mmr_leaves() == mmr0);
+    TP_CHECK("wallet-only: MMB unchanged", tp_mmb_leaves() == mmb0);
 
     /* ── Negative: HAVE_DATA absent → diagnosed skip, zero effects ── */
     w->sapling_notes[0].spent = false;

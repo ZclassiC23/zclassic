@@ -566,6 +566,14 @@ static int t_force_now_encrypted(void)
     wallet_backup_status_snapshot(&status);
     wallet_backup_stop();
 
+    /* A real process starts with empty service RAM. start() must reconstruct
+     * authority from node.db and re-hash the exact encrypted file before its
+     * background plaintext run can execute. */
+    bool restarted = wallet_backup_start(&cfg, &f.ndb).ok;
+    struct wallet_backup_status restored_status;
+    wallet_backup_status_snapshot(&restored_status);
+    wallet_backup_stop();
+
     size_t path_len = strlen(status.last_encrypted_path);
     size_t suffix_len = strlen(WALLET_BACKUP_FILENAME_SUFFIX_ENC);
     bool has_encrypted_suffix = path_len >= suffix_len &&
@@ -585,6 +593,17 @@ static int t_force_now_encrypted(void)
     int64_t rows = decrypted
         ? wb_count_rows_in_file(restored, "wallet_keys") : -1;
 
+    int tamper_fd = open(status.last_encrypted_path,
+                         O_WRONLY | O_APPEND | O_CLOEXEC);
+    uint8_t tamper = 0xa5;
+    bool tampered = tamper_fd >= 0 && write(tamper_fd, &tamper, 1) == 1;
+    if (tamper_fd >= 0)
+        close(tamper_fd);
+    bool tamper_restart = wallet_backup_start(&cfg, &f.ndb).ok;
+    struct wallet_backup_status tamper_status;
+    wallet_backup_status_snapshot(&tamper_status);
+    wallet_backup_stop();
+
     WB_RUN("wb: later plaintext run preserves encrypted-backup authority",
            started && ran && plaintext_ran && has_encrypted_suffix &&
            latest_is_plaintext && seeded == 3 && rows == 3 &&
@@ -594,7 +613,18 @@ static int t_force_now_encrypted(void)
            status.last_encrypted_key_count == 3 &&
            status.last_encrypted_tables_verified ==
                status.wallet_table_count &&
-           status.total_failures == after_start.total_failures);
+           status.total_failures == after_start.total_failures &&
+           restarted &&
+           restored_status.last_encrypted_run_unix ==
+               encrypted_status.last_run_unix &&
+           restored_status.last_encrypted_key_count == 3 &&
+           restored_status.last_encrypted_tables_verified ==
+               restored_status.wallet_table_count &&
+           strcmp(restored_status.last_encrypted_path,
+                  status.last_encrypted_path) == 0 &&
+           tampered && tamper_restart &&
+           tamper_status.last_encrypted_run_unix == 0 &&
+           tamper_status.last_encrypted_path[0] == '\0');
 
     wb_fixture_tear_down(&f);
     supervisor_reset_for_testing();

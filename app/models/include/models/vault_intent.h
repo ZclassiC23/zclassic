@@ -10,6 +10,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
+#include "models/agent_session.h"
 #include "models/wallet_identity.h"
 
 struct node_db;
@@ -28,6 +29,13 @@ struct vault_intent_input {
 #define VAULT_INTENT_RAW_MAX 200000
 #define VAULT_INTENT_APPLICATION_MAX 32
 #define VAULT_INTENT_IDEMPOTENCY_MAX 64
+
+/* Development custody is a bounded lab, not an ambient wallet.  These limits
+ * are enforced inside the same SQLite transaction that inserts a plan, and
+ * completed canonical intents remain charged for the lifetime of the lab. */
+#define VAULT_INTENT_DEV_RESERVE_FLOOR_ZAT \
+    AGENT_SESSION_DEV_RESERVE_DEFAULT_ZAT
+#define VAULT_INTENT_DEV_LIFETIME_CAP_ZAT   5000000LL
 
 enum vault_intent_state {
     VAULT_INTENT_PLANNED = 0,
@@ -79,6 +87,11 @@ struct vault_intent_row {
     char idempotency_key[VAULT_INTENT_IDEMPOTENCY_MAX + 1];
     bool has_request_digest;
     uint8_t request_digest[32];
+    /* Optional bounded-agent binding. The full bearer id never renders; it
+     * stays inside node.db, which already owns the agent_sessions authority.
+     * agent_debited_zat is either zero or this exact plan's reservation. */
+    char agent_session_id[AGENT_SESSION_ID_MAX + 1];
+    int64_t agent_debited_zat;
 };
 
 bool vault_intent_validate(const struct vault_intent_row *row,
@@ -154,6 +167,15 @@ bool vault_intent_store_raw(struct node_db *ndb, const uint8_t plan_id[32],
 bool vault_intent_load_raw(struct node_db *ndb, const uint8_t plan_id[32],
                            uint8_t *out, size_t out_cap, size_t *out_len);
 bool vault_intent_has_raw(struct node_db *ndb, const uint8_t plan_id[32]);
+bool vault_intent_bind_agent_session(
+    struct node_db *ndb, const uint8_t plan_id[32], const char *session_id,
+    int64_t now_unix);
+bool vault_intent_mark_agent_debited(
+    struct node_db *ndb, const uint8_t plan_id[32], const char *session_id,
+    int64_t amount_zat, int64_t now_unix);
+bool vault_intent_clear_agent_debit(
+    struct node_db *ndb, const uint8_t plan_id[32], const char *session_id,
+    int64_t now_unix);
 int64_t vault_intent_reserved_total(struct node_db *ndb,
                                     const char *wallet_scope,
                                     const char *wallet_instance_id);
@@ -164,6 +186,13 @@ int64_t vault_intent_reserved_total_at(struct node_db *ndb,
                                        const char *wallet_scope,
                                        const char *wallet_instance_id,
                                        int64_t now_unix);
+/* Recipient value plus maximum fee from confirmed/finalized canonical
+ * intents that have no agent-session lifetime debit. Bound intents are
+ * already represented by agent_session_scope_lifetime_spent and must not be
+ * counted twice. Failed, expired and conflicted plans do not count. */
+int64_t vault_intent_unbound_completed_total(
+    struct node_db *ndb, const char *wallet_scope,
+    const char *wallet_instance_id);
 const char *vault_intent_state_name(enum vault_intent_state state);
 
 #endif

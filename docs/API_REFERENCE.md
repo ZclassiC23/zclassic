@@ -964,7 +964,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
-| `vault session create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `account`, **`wallet_scope`**, `max_per_tx`, `max_per_window`, `window_seconds`, `allowlist`, `expires_in`, `confirm` | `zcl.vault_session_create.v1` | `z23 vault session create --input='{"account":"t1..","wallet_scope":"dev","max_per_tx":"0.05","max_per_window":"0.05","window_seconds":"86400"}'` | Mint a scoped agent spend session; returns the token once |
+| `vault session create` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `account`, **`wallet_scope`**, `max_per_tx`, `max_per_window`, `reserve_floor`, `window_seconds`, `allowlist`, `expires_in`, `confirm` | `zcl.vault_session_create.v1` | `z23 vault session create --input='{"account":"t1..","wallet_scope":"dev","max_per_tx":"0.02","max_per_window":"0.02","reserve_floor":"0.08","window_seconds":"86400"}'` | Mint a scoped agent spend session; returns the token once |
 | `vault session list` | ready | read / read / operator · fast/low | `account` | `zcl.vault_session_list.v1` | `z23 vault session list --input='{"account":"t1.."}'` | List agent spend sessions; the token is always redacted |
 | `vault session revoke` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | `session_id`, `confirm` | `zcl.vault_session_revoke.v1` | `z23 vault session revoke --input='{"session_id":"<32hex>","confirm":true}'` | Revoke an agent spend session by its full token |
 

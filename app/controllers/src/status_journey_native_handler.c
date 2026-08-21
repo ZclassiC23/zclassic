@@ -41,6 +41,7 @@ enum journey_reason {
     JOURNEY_NO_SPENDABLE_BALANCE,
     JOURNEY_SAPLING_PROVER_NOT_READY,
     JOURNEY_SAPLING_CHECKPOINT_UNHEALTHY,
+    JOURNEY_SAPLING_WITNESS_NOT_READY,
     JOURNEY_MEMPOOL_STATUS_UNAVAILABLE,
     JOURNEY_REASON_COUNT
 };
@@ -100,6 +101,10 @@ static const struct journey_reason_row g_journey_reasons[] = {
     [JOURNEY_SAPLING_CHECKPOINT_UNHEALTHY] = {
         "SAPLING_CHECKPOINT_UNHEALTHY", "SHIELDED_SPEND_BLOCKED",
         "z23 vault intent plan", false, ZCL_STATUS_REASON_HEALTH_BLOCKER },
+    [JOURNEY_SAPLING_WITNESS_NOT_READY] = {
+        "WITNESS_RESCAN_REQUIRED", "SHIELDED_WITNESS_NOT_READY",
+        "z23 core wallet rescan-witnesses", true,
+        ZCL_STATUS_REASON_PROJECTION_LAG },
     [JOURNEY_MEMPOOL_STATUS_UNAVAILABLE] = {
         "MEMPOOL_STATUS_UNAVAILABLE", "NETWORK_ACCEPTANCE_UNKNOWN",
         "z23 core chain mempool status", true,
@@ -133,15 +138,6 @@ static bool journey_nonnegative(const struct json_value *obj, const char *key,
         return false;
     *out = json_get_int(v);
     return true;
-}
-
-static void journey_push_null(struct json_value *out, const char *key)
-{
-    struct json_value v;
-    json_init(&v);
-    json_set_null(&v);
-    (void)json_push_kv(out, key, &v);
-    json_free(&v);
 }
 
 char *zcl_native_status_journey_body(const struct json_value *args,
@@ -200,13 +196,18 @@ char *zcl_native_status_journey_body(const struct json_value *args,
         ? json_get(&wallet, "sapling") : NULL;
     bool persistence_healthy = false, encrypted = false, unlocked = false;
     bool prover_ready = false, checkpoint_healthy = false;
+    bool witness_ready = false;
+    const char *witness_state = sapling && sapling->type == JSON_OBJ
+        ? json_get_str(json_get(sapling, "witness_state")) : NULL;
     bool wallet_fields = persistence && persistence->type == JSON_OBJ &&
         lock && lock->type == JSON_OBJ && sapling && sapling->type == JSON_OBJ &&
         journey_bool(persistence, "healthy", &persistence_healthy) &&
         journey_bool(lock, "encrypted_at_rest", &encrypted) &&
         journey_bool(lock, "unlocked", &unlocked) &&
         journey_bool(sapling, "prover_ready", &prover_ready) &&
-        journey_bool(sapling, "checkpoint_healthy", &checkpoint_healthy);
+        journey_bool(sapling, "checkpoint_healthy", &checkpoint_healthy) &&
+        journey_bool(sapling, "witness_ready", &witness_ready) &&
+        witness_state;
 
     bool backup_healthy = false, encrypted_backup = false;
     bool backup_fields = backup_ok &&
@@ -247,7 +248,7 @@ char *zcl_native_status_journey_body(const struct json_value *args,
                       sendable > 0;
     bool can_send_transparent = spend_base && transparent > 0;
     bool can_send_sapling = spend_base && shielded > 0 && prover_ready &&
-                            checkpoint_healthy;
+                            checkpoint_healthy && witness_ready;
     bool can_send = can_send_transparent || can_send_sapling;
 
     enum journey_reason reason = JOURNEY_READY;
@@ -274,6 +275,8 @@ char *zcl_native_status_journey_body(const struct json_value *args,
                (!prover_ready || !checkpoint_healthy)) {
         reason = !prover_ready ? JOURNEY_SAPLING_PROVER_NOT_READY
                                : JOURNEY_SAPLING_CHECKPOINT_UNHEALTHY;
+    } else if (shielded > 0 && transparent <= 0 && !witness_ready) {
+        reason = JOURNEY_SAPLING_WITNESS_NOT_READY;
     } else if (!mempool_fields) {
         reason = JOURNEY_MEMPOOL_STATUS_UNAVAILABLE;
     }
@@ -322,8 +325,10 @@ char *zcl_native_status_journey_body(const struct json_value *args,
                             wallet_fields && prover_ready);
     (void)json_push_kv_bool(&out, "sapling_checkpoint_healthy",
                             wallet_fields && checkpoint_healthy);
-    journey_push_null(&out, "sapling_witness_ready");
-    (void)json_push_kv_str(&out, "sapling_witness_state", "plan_required");
+    (void)json_push_kv_bool(&out, "sapling_witness_ready",
+                            wallet_fields && witness_ready);
+    (void)json_push_kv_str(&out, "sapling_witness_state",
+                           witness_state ? witness_state : "unavailable");
     if (mempool_fields)
         status_push_int_if_known(&out, "mempool_transactions", true,
                                  mempool_size);

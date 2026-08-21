@@ -31,6 +31,7 @@ struct blockchain_context {
     struct main_state *main_state;
     struct tx_mempool *mempool;
     const char *datadir;
+    char datadir_storage[4096];
     struct coins_view_db *coins_db;
     struct coins_view_cache *coins_tip;
     struct node_db *node_db;

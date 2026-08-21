@@ -55,6 +55,7 @@
 #include "util/safe_alloc.h"
 #include "util/supervisor.h"
 #include "util/blocker.h"
+#include "util/util.h"
 #include "net/connman.h"
 #include "config/boot_snapshot_import.h"
 #include "storage/disk_block_io.h"
@@ -1116,19 +1117,18 @@ bool app_init_services(struct app_context *ctx,
     if (ctx->external_ip)
         msg_version_set_external_ip(ctx->external_ip,
                                     (uint16_t)ctx->p2p_port);
-
+    char body_datadir[4096];
+    GetDataDir(true, body_datadir, sizeof(body_datadir));
     /* Initialize RPC */
     rpc_table_init(svc->rpc_table);
-    rpc_blockchain_set_state(svc->state, svc->mempool, ctx->datadir);
+    rpc_blockchain_set_state(svc->state, svc->mempool, body_datadir);
     rpc_blockchain_set_coins_db(NULL, svc->coins_tip);
     rpc_blockchain_set_node_db(boot_node_db(svc));
     rpc_blockchain_mmr_init_from_state(boot_node_db(svc));
     rpc_blockchain_mmr_catchup(svc->state);
     rpc_blockchain_mmb_init_from_state(boot_node_db(svc));
     rpc_blockchain_mmb_catchup(svc->state);
-
     boot_prepare_mmb_leaf_store(svc, ctx->datadir, legacy_chain_rpc_get_mmb_leaf);
-
     rpc_blockchain_commitment_mmr_init_from_state(boot_node_db(svc));
     /* Bootstrap commitment MMR if empty but chain is at height.
      * After legacy import, we have the UTXO set at tip but no
@@ -1191,8 +1191,8 @@ bool app_init_services(struct app_context *ctx,
     register_backfill_header_solutions_rpc_commands(svc->rpc_table);
     register_chain_segment_rpc_commands(svc->rpc_table);
 
-    rpc_chain_inspect_set_state(svc->state, ctx->datadir,
-                                 NULL, svc->coins_tip, boot_node_db(svc));
+    rpc_chain_inspect_set_state(svc->state, body_datadir, NULL,
+                                svc->coins_tip, boot_node_db(svc));
     register_chain_inspect_rpc_commands(svc->rpc_table);
 
     if (boot_profile_has_explorer(ctx)) {
@@ -1203,7 +1203,7 @@ bool app_init_services(struct app_context *ctx,
     api_set_state(svc->state, svc->mempool, svc->coins_tip,
                    boot_node_db(svc), ctx->datadir);
 
-    rpc_rawtx_set_state(svc->state, svc->mempool, svc->coins_tip, ctx->datadir);
+    rpc_rawtx_set_state(svc->state, svc->mempool, svc->coins_tip, body_datadir);
     rpc_rawtx_set_keystore(&svc->wallet->keystore);
     rpc_rawtx_set_connman(svc->connman);
     register_rawtransaction_rpc_commands(svc->rpc_table);
@@ -1279,8 +1279,8 @@ bool app_init_services(struct app_context *ctx,
      * The deferred scanner was causing crashes (SIGABRT from concurrent
      * block_index access) and isn't worth the complexity. */
 
-    rpc_wallet_set_state(svc->wallet, svc->state, ctx->datadir, svc->wallet_sqlite,
-                         svc->mempool, svc->connman);
+    rpc_wallet_set_state(svc->wallet, svc->state, body_datadir,
+                         svc->wallet_sqlite, svc->mempool, svc->connman);
     rpc_wallet_set_coins_tip(svc->coins_tip);
     rpc_wallet_set_node_db(boot_node_db(svc));
     register_wallet_rpc_commands(svc->rpc_table);

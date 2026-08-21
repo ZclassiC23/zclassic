@@ -7,6 +7,7 @@
 #include "models/database.h"
 #include "models/vault_intent.h"
 #include "platform/time_compat.h"
+#include "services/agent_session_service.h"
 #include "supervisors/domains.h"
 #include "util/log_macros.h"
 #include "util/safe_alloc.h"
@@ -173,6 +174,13 @@ static void *via_commit_thread(void *opaque)
         }
         platform_sleep_ms(1000);
     }
+    /* The bounded-session debit is part of the intent's durable state, not
+     * the process-local worker. On every exit, settle it from that state:
+     * PLANNED/terminal pre-broadcast rows may be credited, while PROVING or
+     * any network-observed state is deliberately retained for recovery. */
+    if (!agent_session_service_release_bound_intent(job->ndb, job->plan_id))
+        LOG_ERROR("vault_intent_async",
+                  "bounded intent debit settlement failed");
     via_slot_release(job->plan_id);
     int64_t completed = atomic_fetch_add(&g_via_completed, 1) + 1;
     supervisor_child_id id = atomic_load(&g_via_supervisor_id);
