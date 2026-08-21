@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: INI configuration parser over caller-supplied bytes.
  *
  * The library performs no filesystem I/O: the caller owns reading the

@@ -83,4 +83,4 @@ cc -std=c23 -O1 -g -fsanitize=address,undefined \
 
 ## License
 
-MIT (see LICENSE).
+Apache-2.0 (see LICENSE).

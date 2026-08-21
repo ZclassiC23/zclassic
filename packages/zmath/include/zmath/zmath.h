@@ -7,7 +7,7 @@
  * Header-inline where trivial; the rest lives in zmath.c. No
  * dependencies beyond libc.
  *
- * MIT licensed.
+ * Apache-2.0 licensed.
  */
 #ifndef ZMATH_H
 #define ZMATH_H

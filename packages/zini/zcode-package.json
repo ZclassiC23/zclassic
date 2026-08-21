@@ -3,12 +3,12 @@
   "name": "zini/zini",
   "semver": "0.1.0",
   "language": "c23",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "include_dir": "include",
   "source_dir": "src",
   "dependencies": [
     {
-      "root": "ae1c1bb4922688ea0020c4831c833bbf5410956719c1347ebe9f74a6a65e65d6",
+      "root": "339c8bba0c9c92085bd36fd783035827d1c7ae48db50f71a18cc09c27dde4cc1",
       "name": "zmap/zmap",
       "semver": "0.1.0"
     }

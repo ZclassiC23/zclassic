@@ -30,6 +30,9 @@ set -e
 DATADIR="${ZCL_DATADIR:-$HOME/.zclassic-c23}"
 PORT="${ZCL_RPCPORT:-18232}"
 COOKIE_FILE="$DATADIR/.cookie"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
 
 rpc() {
     local method="$1"
@@ -59,6 +62,93 @@ rpc() {
         -H "Content-Type: application/json"
 }
 
+require_jsonq() {
+    if [ ! -x "$JSONQ" ]; then
+        echo "Error: jsonq not found at $JSONQ" >&2
+        exit 1
+    fi
+}
+
+jget() {
+    require_jsonq
+    printf '%s' "$1" | "$JSONQ" get "$2"
+}
+
+jget_or() {
+    require_jsonq
+    printf '%s' "$1" | "$JSONQ" get "$2" 2>/dev/null || printf '%s' "${3-}"
+}
+
+jcount() {
+    require_jsonq
+    printf '%s' "$1" | "$JSONQ" count "$2"
+}
+
+jhas() {
+    require_jsonq
+    printf '%s' "$1" | "$JSONQ" has "$2" >/dev/null 2>&1
+}
+
+rpc_err() {
+    jget_or "$1" error.message ""
+}
+
+amt_gt() {
+    awk -v a="$1" -v b="$2" 'BEGIN { exit !(a + 0 > b + 0) }'
+}
+
+addr_with_max_amount() {
+    local json="$1" n i addr amt best="" best_amt=""
+    n=$(jcount "$json" result) || return 1
+    [ "$n" -gt 0 ] || return 0
+    declare -A sums=()
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        addr=$(jget "$json" "result[$i].address")
+        amt=$(jget "$json" "result[$i].amount")
+        if [ -n "${sums[$addr]+x}" ]; then
+            sums[$addr]=$(awk -v a="${sums[$addr]}" -v b="$amt" 'BEGIN { printf "%.8f", a + b }')
+        else
+            sums[$addr]=$(awk -v b="$amt" 'BEGIN { printf "%.8f", b + 0 }')
+        fi
+        i=$((i + 1))
+    done
+    for addr in "${!sums[@]}"; do
+        if [ -z "$best" ] || amt_gt "${sums[$addr]}" "$best_amt"; then
+            best="$addr"
+            best_amt="${sums[$addr]}"
+        fi
+    done
+    printf '%s' "$best"
+}
+
+first_result_address() {
+    local json="$1" n
+    n=$(jcount "$json" result 2>/dev/null || printf '%s' 0)
+    if [ "$n" -gt 0 ]; then
+        jget "$json" 'result[0].address'
+    fi
+}
+
+commify() {
+    printf '%s' "$1" | awk '{
+        s = $0
+        sign = ""
+        if (substr(s, 1, 1) == "-") {
+            sign = "-"
+            s = substr(s, 2)
+        }
+        n = length(s)
+        out = ""
+        for (i = n; i > 0; i--) {
+            out = substr(s, i, 1) out
+            if ((n - i + 1) % 3 == 0 && i > 1)
+                out = "," out
+        }
+        print sign out
+    }'
+}
+
 fmt_zcl() {
     echo "$1 ZCL"
 }
@@ -67,9 +157,9 @@ cmd_balance() {
     local result
     result=$(rpc z_gettotalbalance)
     local t z total
-    t=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['transparent'])")
-    z=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['private'])")
-    total=$(echo "$result" | python3 -c "import json,sys; print(json.load(sys.stdin)['result']['total'])")
+    t=$(jget "$result" result.transparent)
+    z=$(jget "$result" result.private)
+    total=$(jget "$result" result.total)
 
     printf "\n  ZClassic Wallet Balance\n"
     printf "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -90,9 +180,9 @@ cmd_send() {
     local result
     result=$(rpc sendtoaddress "\"$addr\",$amount")
     local txid err
-    txid=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',''))")
-    err=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error'); print(e['message'] if e else '')")
-    if [ -n "$err" ] && [ "$err" != "" ]; then
+    txid=$(jget_or "$result" result "")
+    err=$(rpc_err "$result")
+    if [ -n "$err" ]; then
         printf "  ✗ Error: %s\n\n" "$err"
         exit 1
     fi
@@ -107,31 +197,14 @@ cmd_shield() {
         exit 1
     fi
 
-    # Get a transparent address with funds
     local from
-    from=$(rpc listunspent | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-addrs={}
-for u in d['result']:
-    a=u['address']
-    addrs[a]=addrs.get(a,0)+u['amount']
-best=max(addrs,key=addrs.get)
-print(best)
-")
+    from=$(addr_with_max_amount "$(rpc listunspent)")
 
-    # Get default z-address
-    local zaddr
-    zaddr=$(rpc z_listunspent | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-if d['result']:
-    print(d['result'][0]['address'])
-else:
-    print('')
-")
+    local zaddr unspent
+    unspent=$(rpc z_listunspent)
+    zaddr=$(first_result_address "$unspent")
     if [ -z "$zaddr" ]; then
-        zaddr=$(rpc z_getnewaddress | python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+        zaddr=$(jget "$(rpc z_getnewaddress)" result)
     fi
 
     printf "\n  Shielding %s ZCL\n" "$amount"
@@ -141,9 +214,9 @@ else:
     local result
     result=$(rpc z_sendmany "\"$from\",[{\"address\":\"$zaddr\",\"amount\":$amount}]")
     local opid err
-    opid=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',''))")
-    err=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error'); print(e['message'] if e else '')")
-    if [ -n "$err" ] && [ "$err" != "" ]; then
+    opid=$(jget_or "$result" result "")
+    err=$(rpc_err "$result")
+    if [ -n "$err" ]; then
         printf "  ✗ Error: %s\n\n" "$err"
         exit 1
     fi
@@ -158,20 +231,8 @@ cmd_zsend() {
         exit 1
     fi
 
-    # Find our z-address with largest balance
     local from
-    from=$(rpc z_listunspent | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-addrs={}
-for n in d['result']:
-    a=n['address']
-    addrs[a]=addrs.get(a,0)+float(n['amount'])
-if addrs:
-    print(max(addrs,key=addrs.get))
-else:
-    print('')
-")
+    from=$(addr_with_max_amount "$(rpc z_listunspent)")
     if [ -z "$from" ]; then
         echo "  ✗ No shielded balance available"
         exit 1
@@ -184,9 +245,9 @@ else:
     local result
     result=$(rpc z_sendmany "\"$from\",[{\"address\":\"$zaddr\",\"amount\":$amount}]")
     local opid err
-    opid=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',''))")
-    err=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error'); print(e['message'] if e else '')")
-    if [ -n "$err" ] && [ "$err" != "" ]; then
+    opid=$(jget_or "$result" result "")
+    err=$(rpc_err "$result")
+    if [ -n "$err" ]; then
         printf "  ✗ Error: %s\n\n" "$err"
         exit 1
     fi
@@ -201,22 +262,11 @@ cmd_unshield() {
         exit 1
     fi
 
-    # Find z-address with balance
     local from
-    from=$(rpc z_listunspent | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-addrs={}
-for n in d['result']:
-    a=n['address']
-    addrs[a]=addrs.get(a,0)+float(n['amount'])
-if addrs:
-    print(max(addrs,key=addrs.get))
-")
+    from=$(addr_with_max_amount "$(rpc z_listunspent)")
 
-    # Get a transparent address
     local taddr
-    taddr=$(rpc getnewaddress | python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+    taddr=$(jget "$(rpc getnewaddress)" result)
 
     printf "\n  Unshielding %s ZCL\n" "$amount"
     printf "  From: %s...\n" "${from:0:30}"
@@ -225,9 +275,9 @@ if addrs:
     local result
     result=$(rpc z_sendmany "\"$from\",[{\"address\":\"$taddr\",\"amount\":$amount}]")
     local opid err
-    opid=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d.get('result',''))")
-    err=$(echo "$result" | python3 -c "import json,sys; d=json.load(sys.stdin); e=d.get('error'); print(e['message'] if e else '')")
-    if [ -n "$err" ] && [ "$err" != "" ]; then
+    opid=$(jget_or "$result" result "")
+    err=$(rpc_err "$result")
+    if [ -n "$err" ]; then
         printf "  ✗ Error: %s\n\n" "$err"
         exit 1
     fi
@@ -238,24 +288,13 @@ cmd_receive() {
     printf "\n  Deposit Addresses\n"
     printf "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
-    # Transparent
     local taddr
-    taddr=$(rpc getnewaddress | python3 -c "import json,sys; print(json.load(sys.stdin)['result'])")
+    taddr=$(jget "$(rpc getnewaddress)" result)
     printf "\n  Transparent (t-address):\n"
     printf "    %s\n" "$taddr"
 
-    # Shielded
     local zaddr
-    zaddr=$(rpc z_listunspent | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-seen=set()
-for n in d['result']:
-    if n['address'] not in seen:
-        print(n['address'])
-        seen.add(n['address'])
-        break
-" 2>/dev/null)
+    zaddr=$(first_result_address "$(rpc z_listunspent)" || true)
     if [ -n "$zaddr" ]; then
         printf "\n  Shielded (z-address):\n"
         printf "    %s\n\n" "$zaddr"
@@ -265,137 +304,198 @@ for n in d['result']:
 }
 
 cmd_history() {
-    rpc getbalanceflow | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-flows=d['result']['flows']
-summary=d['result']['summary']
+    local json n i h cat amt fee bal txid arrow
+    json=$(rpc getbalanceflow)
+    n=$(jcount "$json" result.flows)
 
-print()
-print('  Transaction History')
-print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-print(f'  {\"Height\":>8}  {\"Type\":8}  {\"Amount\":>14}  {\"Fee\":>12}  {\"Balance\":>14}  {\"TxID\":16}')
-print('  ' + '─'*76)
+    printf '\n  Transaction History\n'
+    printf '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+    printf '  %8s  %-8s  %14s  %12s  %14s  %s\n' Height Type Amount Fee Balance TxID
+    printf '  '
+    printf '%.0s─' {1..76}
+    printf '\n'
 
-for f in flows:
-    h = f.get('height', 0)
-    cat = f.get('category', '?')
-    amt = f.get('amount', 0)
-    fee = f.get('fee', 0)
-    bal = f.get('running_balance', 0)
-    txid = f.get('txid', '?')[:12] + '...'
-    arrow = '→' if cat == 'send' else '←' if cat == 'receive' else '↔'
-    print(f'  {h:>8}  {arrow} {cat:6}  {amt:>+14.8f}  {fee:>12.8f}  {bal:>14.8f}  {txid}')
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        h=$(jget_or "$json" "result.flows[$i].height" 0)
+        cat=$(jget_or "$json" "result.flows[$i].category" '?')
+        amt=$(jget_or "$json" "result.flows[$i].amount" 0)
+        fee=$(jget_or "$json" "result.flows[$i].fee" 0)
+        bal=$(jget_or "$json" "result.flows[$i].running_balance" 0)
+        txid=$(jget_or "$json" "result.flows[$i].txid" '?')
+        txid="${txid:0:12}..."
+        case "$cat" in
+            send) arrow='→' ;;
+            receive) arrow='←' ;;
+            *) arrow='↔' ;;
+        esac
+        awk -v h="$h" -v arrow="$arrow" -v cat="$cat" -v amt="$amt" \
+            -v fee="$fee" -v bal="$bal" -v txid="$txid" 'BEGIN {
+            printf "  %8s  %s %-6s  %+14.8f  %12.8f  %14.8f  %s\n",
+                h, arrow, cat, amt + 0, fee + 0, bal + 0, txid
+        }'
+        i=$((i + 1))
+    done
 
-print()
-print(f'  Total received: {summary[\"total_received\"]:.8f} ZCL')
-print(f'  Total sent:     {summary[\"total_sent\"]:.8f} ZCL')
-print(f'  Total fees:     {summary[\"total_fees\"]:.8f} ZCL')
-print(f'  Final balance:  {summary[\"final_balance\"]:.8f} ZCL')
-print()
-"
+    printf '\n'
+    awk -v r="$(jget "$json" result.summary.total_received)" \
+        -v s="$(jget "$json" result.summary.total_sent)" \
+        -v f="$(jget "$json" result.summary.total_fees)" \
+        -v b="$(jget "$json" result.summary.final_balance)" 'BEGIN {
+        printf "  Total received: %.8f ZCL\n", r + 0
+        printf "  Total sent:     %.8f ZCL\n", s + 0
+        printf "  Total fees:     %.8f ZCL\n", f + 0
+        printf "  Final balance:  %.8f ZCL\n\n", b + 0
+    }'
 }
 
 cmd_ledger() {
-    rpc walletledger | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-entries=d['result']['entries']
-acct=d['result']['accounting']
-holdings=d['result']['current_holdings']
+    local json n i h typ td tc zd zc fee total txid icon detail memo addr
+    local tn zn
+    json=$(rpc walletledger)
+    n=$(jcount "$json" result.entries)
 
-print()
-print('  ZClassic Full Wallet Ledger')
-print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
+    printf '\n  ZClassic Full Wallet Ledger\n'
+    printf '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
 
-for e in entries:
-    h = e.get('height', 0)
-    typ = e.get('type', '?')
-    td = e.get('t_debit', '')
-    tc = e.get('t_credit', '')
-    zd = e.get('z_debit', '')
-    zc = e.get('z_credit', '')
-    fee = e.get('fee', '')
-    total = e.get('total_balance', '?')
-    txid = e.get('txid', '?')[:12] + '...'
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        h=$(jget_or "$json" "result.entries[$i].height" 0)
+        typ=$(jget_or "$json" "result.entries[$i].type" '?')
+        td=$(jget_or "$json" "result.entries[$i].t_debit" "")
+        tc=$(jget_or "$json" "result.entries[$i].t_credit" "")
+        zd=$(jget_or "$json" "result.entries[$i].z_debit" "")
+        zc=$(jget_or "$json" "result.entries[$i].z_credit" "")
+        fee=$(jget_or "$json" "result.entries[$i].fee" "")
+        total=$(jget_or "$json" "result.entries[$i].total_balance" '?')
+        txid=$(jget_or "$json" "result.entries[$i].txid" '?')
+        txid="${txid:0:12}..."
+        case "$typ" in
+            receive) icon='  ←' ;;
+            send) icon='  →' ;;
+            shield) icon='  ⬡' ;;
+            unshield) icon='  ⬢' ;;
+            z_transfer) icon='  ◈' ;;
+            z_receive) icon='  ◇' ;;
+            z_send) icon='  ◆' ;;
+            mixed) icon='  ◎' ;;
+            *) icon='  ?' ;;
+        esac
+        detail=""
+        [ -n "$td" ] && detail="${detail}${detail:+  }t-${td}"
+        [ -n "$tc" ] && detail="${detail}${detail:+  }t+${tc}"
+        [ -n "$zd" ] && detail="${detail}${detail:+  }z-${zd}"
+        [ -n "$zc" ] && detail="${detail}${detail:+  }z+${zc}"
+        [ -n "$fee" ] && detail="${detail}${detail:+  }fee=${fee}"
+        awk -v h="$h" -v icon="$icon" -v typ="$typ" -v detail="$detail" \
+            -v total="$total" -v txid="$txid" 'BEGIN {
+            printf "  %8s %s %-12s %-50s  bal=%s  %s\n",
+                h, icon, typ, detail, total, txid
+        }'
+        i=$((i + 1))
+    done
 
-    icons = {'receive':'  ←','send':'  →','shield':'  ⬡','unshield':'  ⬢','z_transfer':'  ◈','z_receive':'  ◇','z_send':'  ◆','mixed':'  ◎'}
-    icon = icons.get(typ, '  ?')
+    printf '\n  Current Holdings\n'
+    printf '  ─────────────────────────────────────────────────\n'
+    tn=$(jcount "$json" result.current_holdings.transparent 2>/dev/null || printf '%s' 0)
+    i=0
+    while [ "$i" -lt "$tn" ]; do
+        printf '    T  %14s ZCL  %s\n' \
+            "$(jget "$json" "result.current_holdings.transparent[$i].amount")" \
+            "$(jget_or "$json" "result.current_holdings.transparent[$i].address" '?')"
+        i=$((i + 1))
+    done
+    zn=$(jcount "$json" result.current_holdings.shielded 2>/dev/null || printf '%s' 0)
+    i=0
+    while [ "$i" -lt "$zn" ]; do
+        addr=$(jget_or "$json" "result.current_holdings.shielded[$i].address" '?')
+        memo=""
+        if jhas "$json" "result.current_holdings.shielded[$i].memo"; then
+            memo="  [$(jget "$json" "result.current_holdings.shielded[$i].memo")]"
+        fi
+        printf '    Z  %14s ZCL  %s...%s\n' \
+            "$(jget "$json" "result.current_holdings.shielded[$i].amount")" \
+            "${addr:0:40}" "$memo"
+        i=$((i + 1))
+    done
 
-    parts = []
-    if td: parts.append(f't-{td}')
-    if tc: parts.append(f't+{tc}')
-    if zd: parts.append(f'z-{zd}')
-    if zc: parts.append(f'z+{zc}')
-    if fee: parts.append(f'fee={fee}')
-    detail = '  '.join(parts)
-
-    print(f'  {h:>8} {icon} {typ:12} {detail:50}  bal={total}  {txid}')
-
-print()
-print('  Current Holdings')
-print('  ─────────────────────────────────────────────────')
-for h in holdings.get('transparent', []):
-    print(f'    T  {h[\"amount\"]:>14} ZCL  {h.get(\"address\",\"?\")}')
-for h in holdings.get('shielded', []):
-    addr = h.get('address', '?')
-    memo = f'  [{h[\"memo\"]}]' if 'memo' in h else ''
-    print(f'    Z  {h[\"amount\"]:>14} ZCL  {addr[:40]}...{memo}')
-
-print()
-print('  Accounting')
-print('  ─────────────────────────────────────────────────')
-print(f'    Received (t):     {acct[\"total_t_received\"]} ZCL')
-print(f'    Received (z):     {acct[\"total_z_received\"]} ZCL')
-print(f'    Shielded (t→z):   {acct[\"total_shielded_t_to_z\"]} ZCL')
-print(f'    Total fees:       {acct[\"total_fees\"]} ZCL')
-print(f'    ─────────────────────────────────')
-print(f'    Balance (t):      {acct[\"current_t_balance\"]} ZCL')
-print(f'    Balance (z):      {acct[\"current_z_balance\"]} ZCL')
-print(f'    Total:            {acct[\"current_total\"]} ZCL')
-print(f'    Unaccounted:      {acct[\"unaccounted\"]} ZCL')
-print()
-"
+    printf '\n  Accounting\n'
+    printf '  ─────────────────────────────────────────────────\n'
+    printf '    Received (t):     %s ZCL\n' "$(jget "$json" result.accounting.total_t_received)"
+    printf '    Received (z):     %s ZCL\n' "$(jget "$json" result.accounting.total_z_received)"
+    printf '    Shielded (t→z):   %s ZCL\n' "$(jget "$json" result.accounting.total_shielded_t_to_z)"
+    printf '    Total fees:       %s ZCL\n' "$(jget "$json" result.accounting.total_fees)"
+    printf '    ─────────────────────────────────\n'
+    printf '    Balance (t):      %s ZCL\n' "$(jget "$json" result.accounting.current_t_balance)"
+    printf '    Balance (z):      %s ZCL\n' "$(jget "$json" result.accounting.current_z_balance)"
+    printf '    Total:            %s ZCL\n' "$(jget "$json" result.accounting.current_total)"
+    printf '    Unaccounted:      %s ZCL\n\n' "$(jget "$json" result.accounting.unaccounted)"
 }
 
 cmd_utxos() {
     printf "\n  Unspent Outputs\n"
     printf "  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
 
-    rpc listunspent | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-print(f'\n  Transparent UTXOs:')
-for u in d['result']:
-    print(f'    {u[\"amount\"]:>14.8f} ZCL  {u[\"address\"]}  confs={u[\"confirmations\"]}')
-"
+    local json n i memo addr
+    json=$(rpc listunspent)
+    n=$(jcount "$json" result)
+    printf '\n  Transparent UTXOs:\n'
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        awk -v amt="$(jget "$json" "result[$i].amount")" \
+            -v addr="$(jget "$json" "result[$i].address")" \
+            -v confs="$(jget "$json" "result[$i].confirmations")" 'BEGIN {
+            printf "    %14.8f ZCL  %s  confs=%s\n", amt + 0, addr, confs
+        }'
+        i=$((i + 1))
+    done
 
-    rpc z_listunspent | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-print(f'\n  Shielded Notes:')
-for n in d['result']:
-    memo = f'  [{n[\"memo\"]}]' if 'memo' in n else ''
-    print(f'    {float(n[\"amount\"]):>14.8f} ZCL  {n[\"address\"][:40]}...  h={n[\"block_height\"]}{memo}')
-print()
-"
+    json=$(rpc z_listunspent)
+    n=$(jcount "$json" result)
+    printf '\n  Shielded Notes:\n'
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        addr=$(jget "$json" "result[$i].address")
+        memo=""
+        if jhas "$json" "result[$i].memo"; then
+            memo="  [$(jget "$json" "result[$i].memo")]"
+        fi
+        awk -v amt="$(jget "$json" "result[$i].amount")" \
+            -v addr="${addr:0:40}" \
+            -v h="$(jget "$json" "result[$i].block_height")" \
+            -v memo="$memo" 'BEGIN {
+            printf "    %14.8f ZCL  %s...  h=%s%s\n", amt + 0, addr, h, memo
+        }'
+        i=$((i + 1))
+    done
+    printf '\n'
 }
 
 cmd_peers() {
-    rpc getpeerinfo | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-peers=d['result']
-print()
-print('  Connected Peers')
-print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-if not peers:
-    print('  (no peers connected)')
-for p in peers:
-    direction = '←in' if p.get('inbound') else '→out'
-    print(f'  {direction}  {p[\"addr\"]:25}  {p.get(\"subver\",\"?\")}  h={p.get(\"startingheight\",0)}')
-print()
-"
+    local json n i direction
+    json=$(rpc getpeerinfo)
+    n=$(jcount "$json" result)
+    printf '\n  Connected Peers\n'
+    printf '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+    if [ "$n" -eq 0 ]; then
+        printf '  (no peers connected)\n'
+    fi
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        if [ "$(jget_or "$json" "result[$i].inbound" false)" = true ]; then
+            direction='←in'
+        else
+            direction='→out'
+        fi
+        awk -v dir="$direction" \
+            -v addr="$(jget "$json" "result[$i].addr")" \
+            -v subver="$(jget_or "$json" "result[$i].subver" '?')" \
+            -v h="$(jget_or "$json" "result[$i].startingheight" 0)" 'BEGIN {
+            printf "  %s  %-25s  %s  h=%s\n", dir, addr, subver, h
+        }'
+        i=$((i + 1))
+    done
+    printf '\n'
 }
 
 cmd_status() {
@@ -404,87 +504,107 @@ cmd_status() {
     balance=$(rpc z_gettotalbalance)
     peers=$(rpc getconnectioncount)
 
-    echo "$info" | python3 -c "
-import json,sys
-info=json.load(sys.stdin)
-r=info['result']
-" > /dev/null 2>&1
+    local chain blocks headers synced p t z total
+    chain=$(jget "$info" result.chain)
+    blocks=$(jget "$info" result.blocks)
+    headers=$(jget "$info" result.headers)
+    if [ "$blocks" -ge $((headers - 1)) ]; then
+        synced=Yes
+    else
+        synced=No
+    fi
+    p=$(jget "$peers" result)
+    t=$(jget "$balance" result.transparent)
+    z=$(jget "$balance" result.private)
+    total=$(jget "$balance" result.total)
 
-    python3 -c "
-import json,sys
-
-info=json.loads('''$info''')
-bal=json.loads('''$balance''')
-peers=json.loads('''$peers''')
-
-r=info['result']
-b=bal['result']
-p=peers['result']
-
-print()
-print('  Z23 Node Status')
-print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-print(f'  Chain:        {r[\"chain\"]}')
-print(f'  Height:       {r[\"blocks\"]}')
-print(f'  Headers:      {r[\"headers\"]}')
-synced = 'Yes' if r['blocks'] >= r['headers'] - 1 else 'No'
-print(f'  Synced:       {synced}')
-print(f'  Peers:        {p}')
-print(f'  T Balance:    {b[\"transparent\"]} ZCL')
-print(f'  Z Balance:    {b[\"private\"]} ZCL')
-print(f'  Total:        {b[\"total\"]} ZCL')
-print()
-"
+    printf '\n  Z23 Node Status\n'
+    printf '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+    printf '  Chain:        %s\n' "$chain"
+    printf '  Height:       %s\n' "$blocks"
+    printf '  Headers:      %s\n' "$headers"
+    printf '  Synced:       %s\n' "$synced"
+    printf '  Peers:        %s\n' "$p"
+    printf '  T Balance:    %s ZCL\n' "$t"
+    printf '  Z Balance:    %s ZCL\n' "$z"
+    printf '  Total:        %s ZCL\n\n' "$total"
 }
 
 cmd_hodlwave() {
-    rpc gethodlwave | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-r=d['result']
+    local json n i age zcl pct cpct utxos bar utxo_value tip total_utxos
+    json=$(rpc gethodlwave)
 
-print()
-print('  ZClassic HODL Wave — Cumulative Supply by Age')
-print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-utxo_value = r.get('transparent_utxo_value_zcl', r.get('total_supply_zcl', '0.00000000'))
-print(f'  Tip: {r[\"tip_height\"]:,}  |  UTXOs: {r[\"total_utxos\"]:,}  |  Transparent UTXO value: {utxo_value} ZCL')
-print()
-print(f'  {\"Age\":>12}  {\"Cumul Bar\":40}  {\"ZCL in bucket\":>18}  {\"Bucket\":>7}  {\"Unmoved\":>8}  {\"UTXOs\":>10}')
-print('  ' + '─' * 97)
+    utxo_value=$(jget_or "$json" result.transparent_utxo_value_zcl "")
+    if [ -z "$utxo_value" ]; then
+        utxo_value=$(jget_or "$json" result.total_supply_zcl "0.00000000")
+    fi
+    tip=$(jget "$json" result.tip_height)
+    total_utxos=$(jget "$json" result.total_utxos)
 
-for b in r['buckets']:
-    cpct = b['cumulative_pct_unmoved']
-    pct = b['pct']
-    bar_len = int(cpct / 2.5)
-    if bar_len > 40: bar_len = 40
-    bar = '█' * bar_len + '░' * (40 - bar_len)
-    print(f'  {b[\"age\"]:>12}  {bar}  {b[\"zcl\"]:>18} ZCL  {pct:6.2f}%  {cpct:7.2f}%  {b[\"utxos\"]:>10,}')
+    printf '\n  ZClassic HODL Wave — Cumulative Supply by Age\n'
+    printf '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+    printf '  Tip: %s  |  UTXOs: %s  |  Transparent UTXO value: %s ZCL\n\n' \
+        "$(commify "$tip")" "$(commify "$total_utxos")" "$utxo_value"
+    printf '  %12s  %-40s  %18s  %7s  %8s  %10s\n' \
+        Age "Cumul Bar" "ZCL in bucket" Bucket Unmoved UTXOs
+    printf '  '
+    printf '%.0s─' {1..97}
+    printf '\n'
 
-print()
-print('  Unmoved = cumulative % of supply unmoved for at least this long')
-print()
-"
+    n=$(jcount "$json" result.buckets)
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        age=$(jget "$json" "result.buckets[$i].age")
+        zcl=$(jget "$json" "result.buckets[$i].zcl")
+        pct=$(jget "$json" "result.buckets[$i].pct")
+        cpct=$(jget "$json" "result.buckets[$i].cumulative_pct_unmoved")
+        utxos=$(jget "$json" "result.buckets[$i].utxos")
+        bar=$(awk -v cpct="$cpct" 'BEGIN {
+            n = int(cpct / 2.5)
+            if (n > 40) n = 40
+            bar = ""
+            for (i = 0; i < n; i++) bar = bar "█"
+            for (i = n; i < 40; i++) bar = bar "░"
+            printf "%s", bar
+        }')
+        awk -v age="$age" -v bar="$bar" -v zcl="$zcl" -v pct="$pct" \
+            -v cpct="$cpct" -v utxos="$(commify "$utxos")" 'BEGIN {
+            printf "  %12s  %s  %18s ZCL  %6.2f%%  %7.2f%%  %10s\n",
+                age, bar, zcl, pct + 0, cpct + 0, utxos
+        }'
+        i=$((i + 1))
+    done
+
+    printf '\n  Unmoved = cumulative %% of supply unmoved for at least this long\n\n'
 }
 
 cmd_audit() {
-    rpc walletaudit | python3 -c "
-import json,sys
-d=json.load(sys.stdin)
-s=d['result']['summary']
-print()
-print('  Wallet Audit')
-print('  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━')
-print(f'  Chain height:       {d[\"result\"][\"chain_height\"]}')
-print(f'  Verified balance:   {s[\"verified_balance\"]} ZCL ({s[\"verified_utxos\"]} UTXOs)')
-print(f'  Shielded balance:   {s[\"shielded_balance\"]} ZCL ({s[\"shielded_notes\"]} notes)')
-print(f'  True total:         {s[\"true_total_balance\"]} ZCL')
-print(f'  Phantom balance:    {s[\"phantom_balance\"]} ZCL ({s[\"phantom_utxos\"]} phantom)')
-print(f'  Discrepancy:        {s[\"discrepancy\"]} ZCL')
-print()
-for a in d['result']['addresses']:
-    print(f'    {a[\"address\"]}: {a[\"verified_balance\"]} ZCL ({a[\"verified_utxos\"]} utxos)')
-print()
-"
+    local json n i
+    json=$(rpc walletaudit)
+    printf '\n  Wallet Audit\n'
+    printf '  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n'
+    printf '  Chain height:       %s\n' "$(jget "$json" result.chain_height)"
+    printf '  Verified balance:   %s ZCL (%s UTXOs)\n' \
+        "$(jget "$json" result.summary.verified_balance)" \
+        "$(jget "$json" result.summary.verified_utxos)"
+    printf '  Shielded balance:   %s ZCL (%s notes)\n' \
+        "$(jget "$json" result.summary.shielded_balance)" \
+        "$(jget "$json" result.summary.shielded_notes)"
+    printf '  True total:         %s ZCL\n' "$(jget "$json" result.summary.true_total_balance)"
+    printf '  Phantom balance:    %s ZCL (%s phantom)\n' \
+        "$(jget "$json" result.summary.phantom_balance)" \
+        "$(jget "$json" result.summary.phantom_utxos)"
+    printf '  Discrepancy:        %s ZCL\n\n' "$(jget "$json" result.summary.discrepancy)"
+    n=$(jcount "$json" result.addresses)
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        printf '    %s: %s ZCL (%s utxos)\n' \
+            "$(jget "$json" "result.addresses[$i].address")" \
+            "$(jget "$json" "result.addresses[$i].verified_balance")" \
+            "$(jget "$json" "result.addresses[$i].verified_utxos")"
+        i=$((i + 1))
+    done
+    printf '\n'
 }
 
 cmd_help() {
@@ -533,21 +653,20 @@ case "${1:-help}" in
     status)    cmd_status ;;
     hodlwave)  cmd_hodlwave ;;
     audit)     cmd_audit ;;
-    # Chain introspection
-    view)      rpc chainview "$2, ${3:-1}" | python3 -m json.tool ;;
+    view)      rpc chainview "$2, ${3:-1}" ;;
     stats)
         if [ -n "$2" ] && [ -n "$3" ]; then
-            rpc chainstats "$2, $3" | python3 -m json.tool
+            rpc chainstats "$2, $3"
         elif [ -n "$2" ]; then
-            rpc chainstats "$2" | python3 -m json.tool
+            rpc chainstats "$2"
         else
-            rpc chainstats | python3 -m json.tool
+            rpc chainstats
         fi ;;
-    txdetail)  rpc gettxdetail "\"$2\"" | python3 -m json.tool ;;
-    tree)      rpc saplingtreeinfo | python3 -m json.tool ;;
-    scan)      rpc scancommitments "$2, $3" | python3 -m json.tool ;;
-    verify)    rpc verifychainroots "$2, $3" | python3 -m json.tool ;;
-    rpc)       shift; rpc "$@" | python3 -m json.tool ;;
+    txdetail)  rpc gettxdetail "\"$2\"" ;;
+    tree)      rpc saplingtreeinfo ;;
+    scan)      rpc scancommitments "$2, $3" ;;
+    verify)    rpc verifychainroots "$2, $3" ;;
+    rpc)       shift; rpc "$@" ;;
     help|--help|-h) cmd_help ;;
     *)
         echo "Unknown command: $1"

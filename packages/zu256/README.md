@@ -37,4 +37,4 @@ cc -std=c23 -Iinclude -o zu256 app/main.c src/zu256.c
 
 ## License
 
-MIT
+Apache-2.0

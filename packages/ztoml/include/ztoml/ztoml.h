@@ -1,6 +1,6 @@
 /* ztoml — bounded TOML-subset pull parser
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Supported subset:
  *   - key/value pairs: bare keys (A-Za-z0-9_-), dotted keys kept raw

@@ -16,7 +16,7 @@
  * pattern works. Unknown variables are a render error (fail-closed),
  * never silently empty.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZTEMPLATE_H
 #define ZTEMPLATE_H

@@ -13,10 +13,37 @@ fi
 ssn_die() { dht_die "sovereign-source-network: $*"; }
 ssn_note() { dht_note "sovereign-source-network: $*"; }
 
+JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
+[ -x "$JSONQ" ] || ssn_die "build/bin/jsonq is missing"
+
 ssn_json() {
-    local document="$1" expression="$2"
-    printf '%s' "$document" | python3 -c \
-        "import json,sys; d=json.load(sys.stdin); print($expression)"
+    local document="$1" path="$2"
+    printf '%s' "$document" | "$JSONQ" get "$path"
+}
+
+# Insert a unique C comment after `#include "..."\n\n`. Fail if the include
+# line is not unique or is not followed by a blank line.
+ssn_insert_after_include_blank() {
+    local file="$1" needle="$2" insert="$3"
+    [ "$(grep -F -c -- "$needle" "$file")" -eq 1 ] || return 1
+    NEEDLE="$needle" INSERT="$insert" awk '
+        BEGIN { needle = ENVIRON["NEEDLE"]; insert = ENVIRON["INSERT"] }
+        $0 == needle {
+            if (seen++)
+                exit 1
+            print
+            if ((getline nxt) <= 0)
+                exit 1
+            if (nxt != "")
+                exit 1
+            print nxt
+            print insert
+            next
+        }
+        { print }
+        END { if (seen != 1) exit 1 }
+    ' "$file" > "$file.ssn-edit" || return 1
+    mv "$file.ssn-edit" "$file"
 }
 
 ssn_native() {
@@ -33,7 +60,7 @@ ssn_local() {
 
 ssn_require_ok() {
     local label="$1" result="$2"
-    [ "$(ssn_json "$result" 'd.get("ok",False)')" = True ] ||
+    [ "$(ssn_json "$result" ok 2>/dev/null || true)" = true ] ||
         ssn_die "$label failed: $result"
 }
 
@@ -76,9 +103,9 @@ ssn_wait_complete() {
         # surface for a daemon-owned swarm engine.
         out="$(ssn_native "$role" zcode.package.pin \
             "{\"root\":\"$root\",\"mode\":\"plan\"}" || true)"
-        [ "$(ssn_json "$out" 'd.get("data",{}).get("package",{}).get("complete",False)' 2>/dev/null || true)" = True ] &&
+        [ "$(ssn_json "$out" data.package.complete 2>/dev/null || true)" = true ] &&
             return 0
-        bytes="$(ssn_json "$out" 'd.get("data",{}).get("package",{}).get("present_bytes",-1)' 2>/dev/null || true)"
+        bytes="$(ssn_json "$out" data.package.present_bytes 2>/dev/null || echo -1)"
         if [ "$bytes" = "$last_bytes" ] && [ "$bytes" != -1 ]; then
             stagnant=$((stagnant + 1))
         else
@@ -93,8 +120,8 @@ ssn_wait_complete() {
         if [ "$stagnant" -ge 10 ]; then
             resumed="$(ssn_native "$role" zcode.package.fetch \
                 "{\"root\":\"$root\",\"namespace\":\"zclassic23.source\",\"maximum_bytes\":268435456}" || true)"
-            if [ "$(ssn_json "$resumed" 'd.get("ok",False)' 2>/dev/null || true)" = True ] &&
-               [ "$(ssn_json "$resumed" 'd.get("data",{}).get("live",False)' 2>/dev/null || true)" = True ]; then
+            if [ "$(ssn_json "$resumed" ok 2>/dev/null || true)" = true ] &&
+               [ "$(ssn_json "$resumed" data.live 2>/dev/null || true)" = true ]; then
                 ssn_note "role $role resumed stalled fetch at $bytes bytes"
             fi
             stagnant=0
@@ -109,7 +136,7 @@ ssn_live_fetch() {
     fetched="$(ssn_native "$role" zcode.package.fetch \
         "{\"root\":\"$root\",\"namespace\":\"zclassic23.source\",\"maximum_bytes\":268435456}")"
     ssn_require_ok "role $role live DHT-routed fetch" "$fetched"
-    [ "$(ssn_json "$fetched" 'd["data"].get("live",False)')" = True ] ||
+    [ "$(ssn_json "$fetched" data.live 2>/dev/null || true)" = true ] ||
         ssn_die "role $role fetch did not enter the daemon-owned swarm: $fetched"
 }
 
@@ -118,11 +145,11 @@ ssn_pin() {
     plan="$(ssn_native "$role" zcode.package.pin \
         "{\"root\":\"$root\",\"mode\":\"plan\"}")"
     ssn_require_ok "role $role pin plan" "$plan"
-    token="$(ssn_json "$plan" 'd["data"]["plan_token"]')"
+    token="$(ssn_json "$plan" data.plan_token)"
     commit="$(ssn_native "$role" zcode.package.pin \
         "{\"root\":\"$root\",\"mode\":\"commit\",\"plan_token\":\"$token\"}")"
     ssn_require_ok "role $role pin commit" "$commit"
-    [ "$(ssn_json "$commit" 'd["data"].get("pinned",False)')" = True ] ||
+    [ "$(ssn_json "$commit" data.pinned 2>/dev/null || true)" = true ] ||
         ssn_die "role $role did not report pinned: $commit"
 }
 
@@ -132,7 +159,7 @@ ssn_allow_source_policy() {
     plan="$(ssn_native "$role" zcode.network.policy.mutate \
         "{\"mode\":\"plan\",$common}")"
     ssn_require_ok "role $role source policy plan" "$plan"
-    token="$(ssn_json "$plan" 'd["data"]["plan_token"]')"
+    token="$(ssn_json "$plan" data.plan_token)"
     commit="$(ssn_native "$role" zcode.network.policy.mutate \
         "{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}")"
     ssn_require_ok "role $role source policy commit" "$commit"
@@ -152,7 +179,7 @@ ssn_publish_record() {
     fi
     plan="$(ssn_native "$role" "$leaf" "{\"mode\":\"plan\",$common}")"
     ssn_require_ok "role $role $leaf plan" "$plan"
-    token="$(ssn_json "$plan" 'd["data"]["plan_token"]')"
+    token="$(ssn_json "$plan" data.plan_token)"
     commit="$(ssn_native "$role" "$leaf" \
         "{\"mode\":\"commit\",$common,\"plan_token\":\"$token\"}")"
     ssn_require_ok "role $role $leaf commit" "$commit"
@@ -229,7 +256,7 @@ ln -sf /bin/false "$SSN_NO_GIT_BIN/git"
 PRE_VENDOR_CAPTURE="$(ssn_local zcode.workspace.source.capture \
     --input="{\"workspace\":\"$SSN_SOURCE/zclassic23\"}")"
 ssn_require_ok "publisher pre-vendor source capture" "$PRE_VENDOR_CAPTURE"
-PRE_VENDOR_ROOT="$(ssn_json "$PRE_VENDOR_CAPTURE" 'd["data"]["source_root"]')"
+PRE_VENDOR_ROOT="$(ssn_json "$PRE_VENDOR_CAPTURE" data.source_root)"
 if ! PATH="$SSN_NO_GIT_BIN:$PATH" \
     ZCL_SOVEREIGN_SOURCE_ROOT="$PRE_VENDOR_ROOT" \
     ZCL_SOVEREIGN_VERIFY_BIN="$NODE_BIN" ZCL_VENDOR_OFFLINE=1 \
@@ -268,7 +295,7 @@ printf '%s\n' '#include "source_envelope.h"' '' \
 
 START="$(ssn_local zcode.work.start --input="{\"workspace\":\"$SSN_SOURCE\",\"goal\":\"Accept the exact enclosed Zclassic23 source and root license for sovereign P2P publication\",\"profile\":\"quick\",\"details\":true}")"
 ssn_require_ok "work start" "$START"
-TASK_ROOT="$(ssn_json "$START" 'd["data"]["expert"]["task_root"]')"
+TASK_ROOT="$(ssn_json "$START" data.expert.task_root)"
 
 # Build the publisher reference after immutable task creation but before its
 # proof receipts. A whole-program source build can take longer than the quick
@@ -288,7 +315,7 @@ cp -a "$DHT_WORK/publisher-vendor-preflight/vendor" \
 BUILD_CAPTURE="$(ssn_local zcode.workspace.source.capture \
     --input="{\"workspace\":\"$PUBLISHER_BUILD_SOURCE\"}")"
 ssn_require_ok "publisher build-source capture" "$BUILD_CAPTURE"
-BUILD_SOURCE_ROOT="$(ssn_json "$BUILD_CAPTURE" 'd["data"]["source_root"]')"
+BUILD_SOURCE_ROOT="$(ssn_json "$BUILD_CAPTURE" data.source_root)"
 PUBLISHER_REFERENCE="$DHT_WORK/publisher-reference-zclassic23"
 if ! PATH="$SSN_NO_GIT_BIN:$PATH" \
     ZCL_SOVEREIGN_SOURCE_ROOT="$BUILD_SOURCE_ROOT" \
@@ -303,33 +330,29 @@ PUBLISHER_BINARY_SHA256="$(sha256sum "$PUBLISHER_REFERENCE" | awk '{print $1}')"
 
 EXPORT="$(ssn_local zcode.work.run --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"adapter\":\"manual\"}")"
 ssn_require_ok "manual candidate export" "$EXPORT"
-CANDIDATE_DIR="$(ssn_json "$EXPORT" 'd["data"]["candidate_workspace"]')"
-python3 - "$CANDIDATE_DIR/src/source_envelope.c" <<'PY' || ssn_die "candidate marker edit failed"
-import pathlib,sys
-p=pathlib.Path(sys.argv[1]); b=p.read_text()
-old='#include "source_envelope.h"\n\n'
-assert b.count(old)==1
-p.write_text(b.replace(old, old+'/* Explicit human acceptance of this inert source envelope. */\n', 1))
-PY
+CANDIDATE_DIR="$(ssn_json "$EXPORT" data.candidate_workspace)"
+ssn_insert_after_include_blank \
+    "$CANDIDATE_DIR/src/source_envelope.c" \
+    '#include "source_envelope.h"' \
+    '/* Explicit human acceptance of this inert source envelope. */' ||
+    ssn_die "candidate marker edit failed"
 RUN="$(ssn_local zcode.work.run --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"adapter\":\"manual\"}")"
 ssn_require_ok "candidate proof" "$RUN"
-[ "$(ssn_json "$RUN" 'd["data"]["state"]')" = EVIDENCE_READY ] ||
+[ "$(ssn_json "$RUN" data.state)" = EVIDENCE_READY ] ||
     ssn_die "candidate did not reach EVIDENCE_READY: $RUN"
 REVIEW="$(ssn_local zcode.work.review --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"adapter\":\"manual\",\"verdict\":\"approve\",\"findings\":\"The exact nested Zclassic23 source and root license are bound; only the inert envelope marker changed.\"}")"
 ssn_require_ok "independent review" "$REVIEW"
 ACCEPT="$(ssn_local zcode.work.accept --input="{\"workspace\":\"$SSN_SOURCE\",\"work\":\"latest\",\"details\":true}")"
 ssn_require_ok "explicit human acceptance" "$ACCEPT"
-[ "$(ssn_json "$ACCEPT" 'd["data"]["state"]')" = PROVEN ] ||
+[ "$(ssn_json "$ACCEPT" data.state)" = PROVEN ] ||
     ssn_die "human acceptance did not produce PROVEN: $ACCEPT"
-SOURCE_ROOT="$(ssn_json "$ACCEPT" 'd["data"]["expert"]["source_root"]')"
-ACCEPTED_WORK_ROOT="$(ssn_json "$ACCEPT" 'd["data"]["expert"]["lane_receipt_root"]')"
-python3 - "$SSN_SOURCE/src/source_envelope.c" <<'PY' || ssn_die "accepted marker apply failed"
-import pathlib,sys
-p=pathlib.Path(sys.argv[1]); b=p.read_text()
-old='#include "source_envelope.h"\n\n'
-assert b.count(old)==1
-p.write_text(b.replace(old, old+'/* Explicit human acceptance of this inert source envelope. */\n', 1))
-PY
+SOURCE_ROOT="$(ssn_json "$ACCEPT" data.expert.source_root)"
+ACCEPTED_WORK_ROOT="$(ssn_json "$ACCEPT" data.expert.lane_receipt_root)"
+ssn_insert_after_include_blank \
+    "$SSN_SOURCE/src/source_envelope.c" \
+    '#include "source_envelope.h"' \
+    '/* Explicit human acceptance of this inert source envelope. */' ||
+    ssn_die "accepted marker apply failed"
 
 # Offline publisher identity and detached signature. The secret is a 32-byte
 # mode-0600 file used only through inherited descriptors; it never reaches a
@@ -341,9 +364,9 @@ PUBLISHER_PUBKEY="$($SIGNER --generate "$PUBLISH_KEY")"
 WORK_DATADIR="/tmp/zclassic23-zcode-workspaces/$(id -u)/$TASK_ROOT/zbuild"
 PLAN="$(ssn_local zcode.package.dev.publish.plan --input="{\"workspace\":\"$SSN_SOURCE\",\"datadir\":\"${DDS[$SSN_PUBLISHER]}\",\"acceptance_datadir\":\"$WORK_DATADIR\",\"source_root\":\"$SOURCE_ROOT\",\"publisher_pubkey\":\"$PUBLISHER_PUBKEY\",\"name\":\"zclassic23/sovereign-source-envelope\",\"semver\":\"0.1.0-dev.1\",\"license\":\"Apache-2.0\",\"publisher_sequence\":1}")"
 ssn_require_ok "source publication plan" "$PLAN"
-PACKAGE_ROOT="$(ssn_json "$PLAN" 'd["data"]["package_root"]')"
-DIGEST="$(ssn_json "$PLAN" 'd["data"]["release_signing_digest"]')"
-RELEASE_BODY="$(ssn_json "$PLAN" 'd["data"]["release_body_hex"]')"
+PACKAGE_ROOT="$(ssn_json "$PLAN" data.package_root)"
+DIGEST="$(ssn_json "$PLAN" data.release_signing_digest)"
+RELEASE_BODY="$(ssn_json "$PLAN" data.release_body_hex)"
 DIGEST_FILE="$DHT_WORK/release.digest"
 SIGNATURE_FILE="$DHT_WORK/release.signature"
 printf '%s' "$DIGEST" | xxd -r -p >"$DIGEST_FILE"
@@ -355,12 +378,12 @@ exec 7<&- 8<&- 9>&-
 SIGNATURE="$(xxd -p -c 128 "$SIGNATURE_FILE")"
 SEAL="$(ssn_local zcode.package.dev.seal --input="{\"release_body_hex\":\"$RELEASE_BODY\",\"signature_hex\":\"$SIGNATURE\"}")"
 ssn_require_ok "source release seal" "$SEAL"
-RELEASE_HEX="$(ssn_json "$SEAL" 'd["data"]["release_hex"]')"
-RELEASE_ROOT="$(ssn_json "$SEAL" 'd["data"]["release_id"]')"
+RELEASE_HEX="$(ssn_json "$SEAL" data.release_hex)"
+RELEASE_ROOT="$(ssn_json "$SEAL" data.release_id)"
 COMMIT="$(ssn_native "$SSN_PUBLISHER" zcode.package.dev.publish.commit \
     "{\"workspace\":\"$SSN_SOURCE\",\"datadir\":\"${DDS[$SSN_PUBLISHER]}\",\"acceptance_datadir\":\"$WORK_DATADIR\",\"source_root\":\"$SOURCE_ROOT\",\"release_hex\":\"$RELEASE_HEX\"}")"
 ssn_require_ok "content.v2 publication commit" "$COMMIT"
-[ "$(ssn_json "$COMMIT" 'd["data"]["package_root"]')" = "$PACKAGE_ROOT" ] ||
+[ "$(ssn_json "$COMMIT" data.package_root)" = "$PACKAGE_ROOT" ] ||
     ssn_die "publication commit changed the package root: $COMMIT"
 ssn_note "accepted source published: source=$SOURCE_ROOT package=$PACKAGE_ROOT release=$RELEASE_ROOT"
 
@@ -392,8 +415,8 @@ ACK_B="$(ssn_publish_record "$SSN_HOST_B" zcode.network.storage_ack \
 HOST_B_PROVIDER="$(ssn_publish_record "$SSN_HOST_B" zcode.network.publish \
     provider "$PACKAGE_ROOT" "$RELEASE_ROOT")"
 
-ACK_A_AUTHOR="$(ssn_json "$ACK_A" 'd["data"]["record"]["provider_node_id"]')"
-ACK_B_AUTHOR="$(ssn_json "$ACK_B" 'd["data"]["record"]["provider_node_id"]')"
+ACK_A_AUTHOR="$(ssn_json "$ACK_A" data.record.provider_node_id)"
+ACK_B_AUTHOR="$(ssn_json "$ACK_B" data.record.provider_node_id)"
 [ "$ACK_A_AUTHOR" != "$ACK_B_AUTHOR" ] ||
     ssn_die "two storage ACKs came from one node identity"
 
@@ -422,9 +445,9 @@ CHECKOUT="$(env -i PATH=/no-external-tools HOME=/tmp LANG=C \
     --input="{\"datadir\":\"${DDS[$SSN_CONSUMER]}\",\"package_root\":\"$PACKAGE_ROOT\",\"source_root\":\"$SOURCE_ROOT\",\"accepted_work_root\":\"$ACCEPTED_WORK_ROOT\",\"workspace\":\"$CONSUMER_ZVCS\",\"destination\":\"$CONSUMER_DEST\"}" \
     2>/dev/null | tail -1)"
 ssn_require_ok "Git-free accepted source checkout" "$CHECKOUT"
-[ "$(ssn_json "$CHECKOUT" 'd["data"].get("git_required",True)')" = False ] ||
+[ "$(ssn_json "$CHECKOUT" data.git_required 2>/dev/null || true)" = false ] ||
     ssn_die "consumer checkout required Git: $CHECKOUT"
-[ "$(ssn_json "$CHECKOUT" 'd["data"].get("source_executed",True)')" = False ] ||
+[ "$(ssn_json "$CHECKOUT" data.source_executed 2>/dev/null || true)" = false ] ||
     ssn_die "consumer executed source during retrieval: $CHECKOUT"
 [ ! -e "$CONSUMER_DEST/.git" ] &&
 [ ! -e "$CONSUMER_DEST/zclassic23/.git" ] ||
@@ -450,7 +473,7 @@ CONSUMER_CAPTURE="$(env -i PATH=/no-external-tools HOME=/tmp LANG=C \
     --input="{\"workspace\":\"$CONSUMER_DEST/zclassic23\"}" \
     2>/dev/null | tail -1)"
 ssn_require_ok "consumer build-source capture" "$CONSUMER_CAPTURE"
-CONSUMER_BUILD_ROOT="$(ssn_json "$CONSUMER_CAPTURE" 'd["data"]["source_root"]')"
+CONSUMER_BUILD_ROOT="$(ssn_json "$CONSUMER_CAPTURE" data.source_root)"
 [ "$CONSUMER_BUILD_ROOT" = "$BUILD_SOURCE_ROOT" ] ||
     ssn_die "consumer nested source root differs from publisher: consumer=$CONSUMER_BUILD_ROOT publisher=$BUILD_SOURCE_ROOT"
 if ! PATH="$SSN_NO_GIT_BIN:$PATH" \

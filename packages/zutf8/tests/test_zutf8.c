@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zutf8 test suite.  Exits nonzero on the first failure.
  * Byte-level known-answer tests follow RFC 3629 and the Unicode
  * "well-formed UTF-8 byte sequences" table (boundary values, overlong

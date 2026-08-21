@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: glob matching (see the header for the syntax contract). */
 #include "zglob/zglob.h"
 

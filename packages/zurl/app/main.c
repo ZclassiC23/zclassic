@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zurl CLI — parse each URI argument and print its
  *          components. Exit 0 when all are valid, 1 otherwise. */
 #include "zurl/zurl.h"

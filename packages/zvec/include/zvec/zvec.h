@@ -6,7 +6,7 @@
  *
  * Values are never owned — destroying the vector frees only the array.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZVEC_H
 #define ZVEC_H

@@ -4,7 +4,7 @@
  * braced, urn: prefix, bare 32-hex), canonical lowercase formatting,
  * and version-4 generation from a caller-supplied random source.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZUUID_H
 #define ZUUID_H

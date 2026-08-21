@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded line-oriented diff for C23. Computes an exact
  *          longest-common-subsequence edit script between two texts
  *          and renders it as an op dump (' ', '-', '+' prefixed

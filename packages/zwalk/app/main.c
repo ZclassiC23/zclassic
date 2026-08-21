@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: tiny find - print a directory tree in deterministic
  *          (sorted, depth-first) order.
  *

@@ -32,4 +32,4 @@ echo 2NEpo7TZRRrLZSi2U | zbase58 decode   # Hello World!
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

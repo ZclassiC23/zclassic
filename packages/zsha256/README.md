@@ -41,4 +41,4 @@ zsha256 --hmac secret file  # HMAC-SHA256 with key "secret"
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

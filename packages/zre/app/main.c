@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: grep over zre - print lines matching a regular expression.
  *
  * Usage: zre PATTERN [FILE]   (reads stdin when FILE is omitted or "-")

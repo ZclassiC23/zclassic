@@ -8,7 +8,7 @@
  * No wall clock inside — the caller injects time, which makes the
  * limiter fully deterministic and unit-testable.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZRATE_H
 #define ZRATE_H

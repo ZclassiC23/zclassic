@@ -3,13 +3,13 @@
   "name": "zotp/zotp",
   "semver": "0.1.0",
   "language": "c23",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "include_dir": "include",
   "source_dir": "src",
   "dependencies": [
     {
       "name": "zsha1/zsha1",
-      "root": "a7c6b1b72b7300c15194c053c4808c163c75638a764bf6f52ce269b477281167",
+      "root": "50b75f37b3b6e0e9d5077d3290001dac75bc8754523c147e3d24510712b568e3",
       "semver": "0.1.0"
     }
   ],

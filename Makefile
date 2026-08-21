@@ -4020,17 +4020,18 @@ $(BIN_DIR)/arena_present: tools/arena_present.c \
 	    -o $@ $^ -lm
 
 # arena-selftest: build and run the born-red package test suites for the
-# zdogfight arena core and both starter pilots (cross-instance determinism,
-# match rules, wire round-trips — the M7-preserved born-red determinism
-# tests). The packages ship these tests in their zcode-package.json
-# manifests; this is the local runner. Standalone target like the other
-# arena tools; not wired into any default build path.
+# zdogfight arena core, both starter pilots, and the integer 3D view
+# (cross-instance determinism, match rules, wire round-trips, replay
+# refusal, deterministic PPM). The packages ship these tests in their
+# zcode-package.json manifests; this is the local runner. Standalone
+# target; not wired into any default build path.
 .PHONY: tools/arena-selftest
 tools/arena-selftest: $(BIN_DIR)/test_zdogfight $(BIN_DIR)/test_zdogace \
-		$(BIN_DIR)/test_zdogdrone
+		$(BIN_DIR)/test_zdogdrone $(BIN_DIR)/test_zdogview
 	$(BIN_DIR)/test_zdogfight
 	$(BIN_DIR)/test_zdogace
 	$(BIN_DIR)/test_zdogdrone
+	$(BIN_DIR)/test_zdogview
 
 $(BIN_DIR)/test_zdogfight: packages/zdogfight/tests/test_zdogfight.c \
 		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
@@ -4062,6 +4063,32 @@ $(BIN_DIR)/test_zdogdrone: packages/zdogdrone/tests/test_zdogdrone.c \
 	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
 	    -D_POSIX_C_SOURCE=200809L \
 	    -Ipackages/zdogdrone/include -Ipackages/zdogfight/include \
+	    -Ipackages/zprng/include \
+	    -o $@ $^ -lm
+
+$(BIN_DIR)/test_zdogview: packages/zdogview/tests/test_zdogview.c \
+		packages/zdogview/src/zdogview.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -Ipackages/zdogview/include -Ipackages/zdogfight/include \
+	    -Ipackages/zprng/include \
+	    -o $@ $^ -lm
+
+.PHONY: tools/zdogview
+tools/zdogview: $(BIN_DIR)/zdogview
+$(BIN_DIR)/zdogview: packages/zdogview/app/main.c \
+		packages/zdogview/src/zdogview.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -Ipackages/zdogview/include -Ipackages/zdogfight/include \
 	    -Ipackages/zprng/include \
 	    -o $@ $^ -lm
 
@@ -4122,6 +4149,35 @@ $(BIN_DIR)/arena_svg: tools/arena_svg.c \
 	    -Ilib/sha3/include -Ilib/support/include -Ivendor/include \
 	    -o $@ $^ -lm
 
+# arena_view: interactive raylib 3D replay viewer (see the file header).
+# Re-simulates a replay, refuses anything it cannot re-derive, then opens
+# a window: chase/cockpit/orbit/overview cameras over a seed-deterministic
+# city. Optional tool — requires raylib; not wired into any default path.
+.PHONY: tools/arena-view
+tools/arena-view: $(BIN_DIR)/arena_view
+RAYLIB_CFLAGS := $(shell pkg-config --cflags raylib 2>/dev/null)
+RAYLIB_LIBS := $(shell pkg-config --libs raylib 2>/dev/null)
+$(BIN_DIR)/arena_view: tools/arena_view.c \
+		packages/zdogview/src/zdogview.c \
+		packages/zdogfight/src/zdogfight.c packages/zdogfight/src/zdogfix.c \
+		packages/zprng/src/zprng.c \
+		lib/base/src/safe_alloc.c \
+		lib/sha3/src/sha3.c
+	@mkdir -p $(dir $@)
+	@if ! pkg-config --exists raylib; then \
+	    echo "arena_view: raylib not found via pkg-config."; \
+	    echo "  install it first (e.g. apt install libraylib-dev)"; \
+	    exit 1; fi
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    $(ZCL_WARN_STRINGOP_OVERFLOW) \
+	    -D_POSIX_C_SOURCE=200809L $(RAYLIB_CFLAGS) \
+	    -ffunction-sections -fdata-sections -Wl,--gc-sections \
+	    -Ipackages/zdogview/include -Ipackages/zdogfight/include \
+	    -Ipackages/zprng/include \
+	    -Ilib/base/include -Ilib/util/include \
+	    -Ilib/sha3/include -Ilib/support/include -Ivendor/include \
+	    -o $@ $^ $(RAYLIB_LIBS) -lm
+
 ARENA_DEMO_BINS = $(BIN_DIR)/arena_runner $(BIN_DIR)/arena_svg \
 	$(BIN_DIR)/pilot_zdogace $(BIN_DIR)/pilot_zdogdrone
 
@@ -4138,6 +4194,18 @@ arena-svg: $(ARENA_DEMO_BINS)
 	@ARENA_SVG_WRITE=1 tools/dev/arena_demo.sh
 arena-svg-check: $(ARENA_DEMO_BINS)
 	@ARENA_SVG_CHECK=1 tools/dev/arena_demo.sh
+
+# arena-view: play the demo match (or view REPLAY=<file>) in the 3D viewer.
+# Passes --show so the window is visible. arena-view-check is the headless
+# gate: argv refusals plus --check-only against the pinned demo roots.
+.PHONY: arena-view arena-view-check
+arena-view: $(BIN_DIR)/arena_view $(BIN_DIR)/arena_runner \
+		$(BIN_DIR)/pilot_zdogace $(BIN_DIR)/pilot_zdogdrone
+	@ZCL_BIN_DIR=$(BIN_DIR) REPLAY="$(REPLAY)" tools/dev/arena_view.sh
+arena-view-check: $(BIN_DIR)/arena_view $(BIN_DIR)/zdogview \
+		$(BIN_DIR)/arena_runner \
+		$(BIN_DIR)/pilot_zdogace $(BIN_DIR)/pilot_zdogdrone
+	@ZCL_BIN_DIR=$(BIN_DIR) CHECK=1 tools/dev/arena_view.sh
 
 # Determinism is a property of the simulation, not of the compiler flags:
 # play the pinned match with -O0 and -O2 pilots and require the same roots.
@@ -4711,6 +4779,22 @@ $(SQLQ_BIN): tools/sqlq.c vendor/include/sqlite3.h vendor/lib/libsqlite3.a
 	    -D_POSIX_C_SOURCE=200809L -Ivendor/include \
 	    -o $@ tools/sqlq.c \
 	    -Lvendor/lib -l:libsqlite3.a -lpthread -ldl -lm
+
+# Nested JSON path query for operator scripts. Python is banned; grep/sed
+# covers flat RPC fields, and this C23 walker covers nested envelopes.
+JSONQ_BIN = $(BIN_DIR)/jsonq
+.PHONY: jsonq
+jsonq: $(JSONQ_BIN)
+$(JSONQ_BIN): tools/jsonq.c \
+    packages/zjsonp/src/zjsonp.c packages/zutf8/src/zutf8.c \
+    packages/zjsonp/include/zjsonp/zjsonp.h \
+    packages/zutf8/include/zutf8/zutf8.h
+	@mkdir -p $(dir $@)
+	$(CC) -std=c23 -O2 -Wall -Wextra -Werror -pedantic \
+	    -D_POSIX_C_SOURCE=200809L \
+	    -Ipackages/zjsonp/include -Ipackages/zutf8/include \
+	    -o $@ tools/jsonq.c packages/zjsonp/src/zjsonp.c \
+	    packages/zutf8/src/zutf8.c
 
 # Physical native-agent UI acceptance driver. It links only the workstation's
 # X11 client ABI and sends one bounded event to an exact titled window; it owns
@@ -8201,6 +8285,13 @@ check-c23-only:
 	@./tools/lint/check_c23_only.sh --selftest
 	@./tools/lint/check_c23_only.sh
 
+# No Python source, shebang, or runtime invocation in the executable tree.
+# Historical vector comments may name a Python origin; they must not call it.
+check-no-python:
+	@echo "══ LINT: no Python runtime ══"
+	@./tools/lint/check_no_python.sh --selftest
+	@./tools/lint/check_no_python.sh
+
 # The GNU comma-swallowing extension `, ##__VA_ARGS__` is not standard C, and
 # it is the single idiom that made this tree unbuildable by a second compiler:
 # one use in a header included by ~1100 translation units produced over seven
@@ -9120,6 +9211,7 @@ LINT_GATES := \
     check-clang-portability \
     check-result-discard \
     check-c23-only \
+    check-no-python \
     check-no-trust-state-ordering \
     check-no-warning-suppression \
     check-fuzz-artifact-ledger \

@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zpool - fixed-block pool exerciser.
  *
  * Usage: zpool BLOCK_SIZE BLOCK_COUNT < ops

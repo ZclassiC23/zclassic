@@ -3,13 +3,13 @@
   "name": "zpem/zpem",
   "semver": "0.1.0",
   "language": "c23",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "include_dir": "include",
   "source_dir": "src",
   "dependencies": [
     {
       "name": "zbase64/zbase64",
-      "root": "e82a1c1410dcc4f22e4e53cc0eea9d4e8b794f18f7a70731d065ebb2922b4eb7",
+      "root": "f8a4f3b486580a261634b2d9ad94475a13af5885c7454fa4ad26be31b24279eb",
       "semver": "0.1.0"
     }
   ],

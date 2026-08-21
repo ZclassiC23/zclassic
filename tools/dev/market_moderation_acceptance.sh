@@ -45,6 +45,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
+JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
 
 MKT_LIVE_PORTS="8023 8033 8034 8035 8043 8044 8045 8046 8232 8443 \
 18034 18232 18234 18243 18244 18245 18246"
@@ -129,15 +130,19 @@ mkt_rpc() {
 a_rpc() { mkt_rpc "$MKT_DD_A" "$A_RPC" "$@"; }
 b_rpc() { mkt_rpc "$MKT_DD_B" "$B_RPC" "$@"; }
 mkt_result() {
-    python3 -c 'import json,sys
-d=json.load(sys.stdin)
-if d.get("error") is not None: raise SystemExit(2)
-v=d.get("result")
-print(json.dumps(v,separators=(",",":")) if isinstance(v,(dict,list)) else v)'
+    "$JSONQ" unwrap
 }
 mkt_jget() {
-    local expr="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); print($expr)"
+    "$JSONQ" get "$1"
+}
+mkt_hex64() {
+    local h="$1"
+    [ "${#h}" -eq 64 ] || return 1
+    case "$h" in
+        *[!0-9a-fA-F]*) return 1 ;;
+        *[!0]*) return 0 ;;
+        *) return 1 ;;
+    esac
 }
 mkt_native() {
     local dd="$1" rpc="$2"; shift 2
@@ -222,7 +227,7 @@ mkt_wait_at_tip() {
     deadline=$(( $(date +%s) + MKT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         state="$(mkt_rpc "$dd" "$rpc" downloadstats 2>/dev/null \
-            | mkt_jget 'd["result"]["sync_state"]' 2>/dev/null || true)"
+            | mkt_jget result.sync_state 2>/dev/null || true)"
         [ "$state" = "at_tip" ] && return 0
         sleep 0.5
     done
@@ -231,12 +236,12 @@ mkt_wait_at_tip() {
 mkt_unlock_wallet() {
     local dd="$1" rpc="$2" status unlock
     status="$(mkt_native "$dd" "$rpc" core wallet security status || true)"
-    [ "$(printf '%s' "$status" | mkt_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+    [ "$(printf '%s' "$status" | mkt_jget ok 2>/dev/null || true)" = "true" ] || {
         printf '%s\n' "$status" >&2; return 1; }
-    if [ "$(printf '%s' "$status" | mkt_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" != "True" ]; then
+    if [ "$(printf '%s' "$status" | mkt_jget data.unlocked 2>/dev/null || true)" != "true" ]; then
         unlock="$(printf '%s' "{\"passphrase\":\"$MKT_WALLET_PASS\",\"timeout_seconds\":3600}" \
             | mkt_native "$dd" "$rpc" core wallet security unlock --input=- || true)"
-        [ "$(printf '%s' "$unlock" | mkt_jget 'd["data"]["unlocked"]' 2>/dev/null || true)" = "True" ] || {
+        [ "$(printf '%s' "$unlock" | mkt_jget data.unlocked 2>/dev/null || true)" = "true" ] || {
             printf '%s\n' "$unlock" >&2; return 1; }
     fi
     return 0
@@ -245,7 +250,7 @@ mkt_backup_wallet() {
     local dd="$1" rpc="$2" out
     out="$(printf '%s' "{\"confirm\":true,\"password\":\"$MKT_BACKUP_PASS\"}" \
         | mkt_native "$dd" "$rpc" core wallet backup now --input=- || true)"
-    [ "$(printf '%s' "$out" | mkt_jget 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] || {
+    [ "$(printf '%s' "$out" | mkt_jget ok 2>/dev/null || true)" = "true" ] || {
         printf '%s\n' "$out" >&2; return 1; }
 }
 
@@ -256,14 +261,14 @@ mod_wire_rows() {
     local dd="$1" rpc="$2" out
     out="$(mkt_native "$dd" "$rpc" core storage query \
         --input="{\"sql\":\"$WIRE_SQL\"}" || true)"
-    printf '%s' "$out" | mkt_jget 'json.dumps(d["data"]["rows"],separators=(",",":"))' 2>/dev/null
+    printf '%s' "$out" | mkt_jget data.rows 2>/dev/null
 }
 # The node's local-only review_state column for the one stored offer.
 mod_review_col() {
     local dd="$1" rpc="$2" out
     out="$(mkt_native "$dd" "$rpc" core storage query \
         --input='{"sql":"SELECT review_state FROM file_offers"}' || true)"
-    printf '%s' "$out" | mkt_jget 'd["data"]["rows"][0][0]' 2>/dev/null
+    printf '%s' "$out" | mkt_jget data.rows[0][0] 2>/dev/null
 }
 # The `app market list` body, optionally with a per-request profile
 # override ({"profile":"open"} is the explicit opt-in view).
@@ -280,33 +285,58 @@ mod_list() {
 # absent from offers, an honest hidden_count, and the expected profile
 # name. $3 = expected profile.
 mod_assert_hidden() {
-    python3 - "$1" "$OFFER_ID" "$3" <<'PY' || mkt_die "default list did not hide the $3 offer: $1"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["profile"]==sys.argv[3],data
-assert data["profile_override"] is False,data
-ids=[o.get("offer_id") for o in data["offers"]]
-assert sys.argv[2] not in ids,data
-assert data["hidden_count"]>=1,data
-assert data["offer_count"]==len(data["offers"]),data
-PY
+    local body="$1" profile="$3" n i oid hidden count
+    printf '%s' "$body" | "$JSONQ" eq ok true ||
+        mkt_die "default list did not hide the $profile offer: $body"
+    [ "$(printf '%s' "$body" | "$JSONQ" get data.profile)" = "$profile" ] ||
+        mkt_die "default list did not hide the $profile offer: $body"
+    printf '%s' "$body" | "$JSONQ" eq data.profile_override false ||
+        mkt_die "default list did not hide the $profile offer: $body"
+    n="$(printf '%s' "$body" | "$JSONQ" count data.offers)" ||
+        mkt_die "default list did not hide the $profile offer: $body"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        oid="$(printf '%s' "$body" | "$JSONQ" get "data.offers[$i].offer_id")" ||
+            mkt_die "default list did not hide the $profile offer: $body"
+        [ "$oid" != "$OFFER_ID" ] ||
+            mkt_die "default list did not hide the $profile offer: $body"
+        i=$((i + 1))
+    done
+    hidden="$(printf '%s' "$body" | "$JSONQ" get data.hidden_count)" ||
+        mkt_die "default list did not hide the $profile offer: $body"
+    [ "$hidden" -ge 1 ] ||
+        mkt_die "default list did not hide the $profile offer: $body"
+    count="$(printf '%s' "$body" | "$JSONQ" get data.offer_count)" ||
+        mkt_die "default list did not hide the $profile offer: $body"
+    [ "$count" = "$n" ] ||
+        mkt_die "default list did not hide the $profile offer: $body"
 }
 # Assert one list body shows the offer with an exact review_state. $3 =
 # expected review_state, $4 = expected profile name.
 mod_assert_shown() {
-    python3 - "$1" "$OFFER_ID" "$3" "$4" <<'PY' || mkt_die "list did not show the offer as $3 ($4): $1"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["profile"]==sys.argv[4],data
-match=[o for o in data["offers"] if o.get("offer_id")==sys.argv[2]]
-assert len(match)==1,data
-assert match[0]["review_state"]==sys.argv[3],match[0]
-assert data["hidden_count"]==0,data
-PY
+    local body="$1" expect_state="$3" profile="$4" n i oid match
+    printf '%s' "$body" | "$JSONQ" eq ok true ||
+        mkt_die "list did not show the offer as $expect_state ($profile): $body"
+    [ "$(printf '%s' "$body" | "$JSONQ" get data.profile)" = "$profile" ] ||
+        mkt_die "list did not show the offer as $expect_state ($profile): $body"
+    n="$(printf '%s' "$body" | "$JSONQ" count data.offers)" ||
+        mkt_die "list did not show the offer as $expect_state ($profile): $body"
+    match=0
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        oid="$(printf '%s' "$body" | "$JSONQ" get "data.offers[$i].offer_id")" ||
+            mkt_die "list did not show the offer as $expect_state ($profile): $body"
+        if [ "$oid" = "$OFFER_ID" ]; then
+            match=$((match + 1))
+            printf '%s' "$body" | "$JSONQ" eq "data.offers[$i].review_state" "$expect_state" ||
+                mkt_die "list did not show the offer as $expect_state ($profile): $body"
+        fi
+        i=$((i + 1))
+    done
+    [ "$match" = 1 ] ||
+        mkt_die "list did not show the offer as $expect_state ($profile): $body"
+    printf '%s' "$body" | "$JSONQ" eq data.hidden_count 0 ||
+        mkt_die "list did not show the offer as $expect_state ($profile): $body"
 }
 # Switch one node's active profile through the leaf's plan/commit idiom:
 # mode=plan mints a plan_token bound to the current active profile and
@@ -315,29 +345,31 @@ mod_profile_set() {
     local dd="$1" rpc="$2" target="$3" expect_prev="$4" plan token commit
     plan="$(printf '%s' "{\"profile\":\"$target\",\"mode\":\"plan\"}" \
         | mkt_native "$dd" "$rpc" app market moderation profile set --input=- || true)"
-    token="$(python3 - "$plan" "$target" <<'PY' || mkt_die "profile set plan refused: $plan"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["mode"]=="plan" and data["committed"] is False,data
-assert data["profile"]==sys.argv[2],data
-tok=data["plan_token"]
-assert isinstance(tok,str) and tok,data
-print(tok)
-PY
-)"
+    printf '%s' "$plan" | "$JSONQ" eq ok true ||
+        mkt_die "profile set plan refused: $plan"
+    printf '%s' "$plan" | "$JSONQ" eq data.mode plan ||
+        mkt_die "profile set plan refused: $plan"
+    printf '%s' "$plan" | "$JSONQ" eq data.committed false ||
+        mkt_die "profile set plan refused: $plan"
+    printf '%s' "$plan" | "$JSONQ" eq data.profile "$target" ||
+        mkt_die "profile set plan refused: $plan"
+    token="$(printf '%s' "$plan" | "$JSONQ" get data.plan_token)" ||
+        mkt_die "profile set plan refused: $plan"
+    [ "$(printf '%s' "$plan" | "$JSONQ" type data.plan_token)" = "string" ] ||
+        mkt_die "profile set plan refused: $plan"
+    [ -n "$token" ] || mkt_die "profile set plan refused: $plan"
     commit="$(printf '%s' "{\"profile\":\"$target\",\"mode\":\"commit\",\"plan_token\":\"$token\"}" \
         | mkt_native "$dd" "$rpc" app market moderation profile set --input=- || true)"
-    python3 - "$commit" "$target" "$expect_prev" <<'PY' || mkt_die "profile set commit refused: $commit"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["mode"]=="commit" and data["committed"] is True,data
-assert data["profile"]==sys.argv[2],data
-assert data["previous_profile"]==sys.argv[3],data
-PY
+    printf '%s' "$commit" | "$JSONQ" eq ok true ||
+        mkt_die "profile set commit refused: $commit"
+    printf '%s' "$commit" | "$JSONQ" eq data.mode commit ||
+        mkt_die "profile set commit refused: $commit"
+    printf '%s' "$commit" | "$JSONQ" eq data.committed true ||
+        mkt_die "profile set commit refused: $commit"
+    printf '%s' "$commit" | "$JSONQ" eq data.profile "$target" ||
+        mkt_die "profile set commit refused: $commit"
+    printf '%s' "$commit" | "$JSONQ" eq data.previous_profile "$expect_prev" ||
+        mkt_die "profile set commit refused: $commit"
 }
 # Mark the offer's local review_state on one node and assert the reply
 # proves the mark is local-only and never gossiped.
@@ -345,53 +377,145 @@ mod_review_set() {
     local dd="$1" rpc="$2" state="$3" expect_prev="$4" out
     out="$(printf '%s' "{\"offer_id\":\"$OFFER_ID\",\"review_state\":\"$state\"}" \
         | mkt_native "$dd" "$rpc" app market moderation review set --input=- || true)"
-    python3 - "$out" "$OFFER_ID" "$state" "$expect_prev" <<'PY' || mkt_die "review set $state refused: $out"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["offer_id"]==sys.argv[2],data
-assert data["review_state"]==sys.argv[3],data
-assert data["previous_review_state"]==sys.argv[4],data
-assert data["local_only"] is True and data["gossiped"] is False,data
-PY
+    printf '%s' "$out" | "$JSONQ" eq ok true ||
+        mkt_die "review set $state refused: $out"
+    printf '%s' "$out" | "$JSONQ" eq data.offer_id "$OFFER_ID" ||
+        mkt_die "review set $state refused: $out"
+    printf '%s' "$out" | "$JSONQ" eq data.review_state "$state" ||
+        mkt_die "review set $state refused: $out"
+    printf '%s' "$out" | "$JSONQ" eq data.previous_review_state "$expect_prev" ||
+        mkt_die "review set $state refused: $out"
+    printf '%s' "$out" | "$JSONQ" eq data.local_only true ||
+        mkt_die "review set $state refused: $out"
+    printf '%s' "$out" | "$JSONQ" eq data.gossiped false ||
+        mkt_die "review set $state refused: $out"
 }
 
 for port in $A_PORT $A_RPC $A_FS $A_HTTPS $B_PORT $B_RPC $B_FS $B_HTTPS; do
     mkt_assert_port "$port"
 done
 [ -x "$NODE_BIN" ] && [ -x "$RPC_BIN" ] || mkt_die "build node and RPC binaries first"
+[ -x "$JSONQ" ] || mkt_die "build/bin/jsonq is missing — run make jsonq"
 mkdir -p "$REPO_ROOT/test-tmp"
 MKT_WORK="$(mktemp -d "$REPO_ROOT/test-tmp/zcl23-modacc-XXXXXX")"
 MKT_DD_A="$MKT_WORK/a"; MKT_DD_B="$MKT_WORK/b"
 MKT_CONTENT="$MKT_WORK/content"
 mkdir -p "$MKT_DD_A" "$MKT_DD_B" "$MKT_CONTENT"
 FIXTURE="$MKT_CONTENT/seller-fixture.bin"
+FIXTURE_GEN="$MKT_WORK/fixture_gen"
 
 # Deterministic one-chunk fixture, plus the exact manifest root the offer
 # must commit (sha3-256 over the concatenated per-chunk sha3-256 digests)
 # and the exact total price.
-read -r FIXTURE_SIZE EXPECT_ROOT EXPECT_TOTAL_ZAT <<<"$(python3 - "$FIXTURE" "$PRICE_PER_MB_ZAT" "$FIXTURE_BYTES" <<'PY'
-import hashlib,sys
-path, price, size = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-chunk = 50 * 1024 * 1024
-digests = []
-written = 0
-with open(path, "wb") as f:
-    while written < size:
-        n = min(chunk, size - written)
-        block = bytes(((written + i * 11) & 0xFF) for i in range(n))
-        f.write(block)
-        digests.append(hashlib.sha3_256(block).digest())
-        written += n
-root = hashlib.sha3_256(b"".join(digests)).hexdigest()
-mb = 1024 * 1024
-whole, rem = divmod(written, mb)
-pw, pr = divmod(price, mb)
-total = whole * price + rem * pw + (rem * pr + mb - 1) // mb
-print(written, root, total)
-PY
-)" || mkt_die "fixture build failed"
+cat >"$MKT_WORK/fixture_gen.c" <<'C'
+#include "sha3/sha3.h"
+
+#include <stdio.h>
+#include <stdint.h>
+#include <stdlib.h>
+#include <string.h>
+
+enum { CHUNK = 50 * 1024 * 1024, BLOCK = 65536 };
+
+static void die(const char *m)
+{
+    fprintf(stderr, "fixture_gen: %s\n", m);
+    exit(1);
+}
+
+static void digest_hex(const unsigned char d[32], char out[65])
+{
+    static const char hex[] = "0123456789abcdef";
+    for (int i = 0; i < 32; i++) {
+        out[i * 2] = hex[d[i] >> 4];
+        out[i * 2 + 1] = hex[d[i] & 15];
+    }
+    out[64] = '\0';
+}
+
+static uint64_t parse_u64(const char *s)
+{
+    char *end = NULL;
+    unsigned long long v = strtoull(s, &end, 10);
+    if (!s || !s[0] || !end || *end) die("invalid integer");
+    return (uint64_t)v;
+}
+
+static uint64_t price_total(uint64_t written, uint64_t price)
+{
+    uint64_t mb = 1024ull * 1024ull;
+    uint64_t whole = written / mb, rem = written % mb;
+    uint64_t pw = price / mb, pr = price % mb;
+    return whole * price + rem * pw + (rem * pr + mb - 1ull) / mb;
+}
+
+static int hash_chunk_stream(FILE *f, uint64_t size,
+                             unsigned char *digests, int *nchunks)
+{
+    unsigned char buf[BLOCK];
+    unsigned char digest[32];
+    uint64_t written = 0;
+    *nchunks = 0;
+    while (written < size) {
+        uint64_t n = size - written;
+        if (n > (uint64_t)CHUNK) n = (uint64_t)CHUNK;
+        struct sha3_256_ctx ctx;
+        sha3_256_init(&ctx);
+        uint64_t off = 0;
+        while (off < n) {
+            size_t take = (n - off) > (uint64_t)BLOCK
+                ? (size_t)BLOCK : (size_t)(n - off);
+            for (size_t i = 0; i < take; i++)
+                buf[i] = (unsigned char)((written +
+                    (off + (uint64_t)i) * 11ull) & 0xFFull);
+            if (fwrite(buf, 1, take, f) != take) return -1;
+            sha3_256_write(&ctx, buf, take);
+            off += take;
+        }
+        sha3_256_finalize(&ctx, digest);
+        memcpy(digests + (*nchunks) * 32, digest, 32);
+        (*nchunks)++;
+        written += n;
+    }
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    unsigned char digests[64 * 32];
+    int nchunks = 0;
+    uint64_t price, size;
+    FILE *f;
+    unsigned char root[32];
+    char hex[65];
+
+    if (argc != 4) die("usage: fixture_gen PATH PRICE SIZE");
+    price = parse_u64(argv[2]);
+    size = parse_u64(argv[3]);
+    if (size == 0 ||
+        (size + (uint64_t)CHUNK - 1ull) / (uint64_t)CHUNK > 64ull)
+        die("size out of range");
+    f = fopen(argv[1], "wb");
+    if (!f) die("open write failed");
+    if (hash_chunk_stream(f, size, digests, &nchunks) != 0) {
+        fclose(f);
+        die("write failed");
+    }
+    fclose(f);
+    sha3_256(digests, (size_t)nchunks * 32u, root);
+    digest_hex(root, hex);
+    printf("%llu %s %llu\n",
+           (unsigned long long)size, hex,
+           (unsigned long long)price_total(size, price));
+    return 0;
+}
+C
+cc -std=c23 -O2 -I"$REPO_ROOT/lib/sha3/include" -I"$REPO_ROOT/lib/base/include" \
+    -o "$FIXTURE_GEN" "$MKT_WORK/fixture_gen.c" \
+    "$REPO_ROOT/lib/sha3/src/sha3.c" || mkt_die "fixture_gen compile failed"
+read -r FIXTURE_SIZE EXPECT_ROOT EXPECT_TOTAL_ZAT \
+    <<<"$("$FIXTURE_GEN" "$FIXTURE" "$PRICE_PER_MB_ZAT" "$FIXTURE_BYTES")" \
+    || mkt_die "fixture build failed"
 
 # Wallet custody: boot both nodes with a passphrase credential so key writes
 # encrypt at rest (WKS1). The seller-key envelope (metadata DEK) refuses a
@@ -440,40 +564,59 @@ mkt_backup_wallet "$MKT_DD_B" "$B_RPC" || mkt_die "B custody backup failed"
 mkt_note "seller plans the offer (non-mutating preview)"
 OFFER_PLAN="$(printf '%s' "{\"filepath\":\"$FIXTURE\",\"price_per_mb_zat\":$PRICE_PER_MB_ZAT}" \
     | mkt_native "$MKT_DD_A" "$A_RPC" app market offer --input=- || true)"
-python3 - "$OFFER_PLAN" "$EXPECT_ROOT" "$FIXTURE_SIZE" "$EXPECTED_CHUNKS" "$EXPECT_TOTAL_ZAT" <<'PY' || mkt_die "offer plan preview mismatch: $OFFER_PLAN"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="plan" and data["committed"] is False and data["spends_funds"] is False,data
-assert data["root_hash"]==sys.argv[2],data
-assert data["size_bytes"]==int(sys.argv[3]) and data["num_chunks"]==int(sys.argv[4]),data
-assert data["total_zat"]==int(sys.argv[5]),data
-assert data["price_per_mb_zat"]>0 and "commit_input" in data,data
-assert "offer_id" not in data and "seller_pubkey" not in data,data
-PY
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq ok true ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.stage plan ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.committed false ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.spends_funds false ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.root_hash "$EXPECT_ROOT" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.size_bytes "$FIXTURE_SIZE" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.num_chunks "$EXPECTED_CHUNKS" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" eq data.total_zat "$EXPECT_TOTAL_ZAT" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+price="$(printf '%s' "$OFFER_PLAN" | "$JSONQ" get data.price_per_mb_zat)" ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+[ "$price" -gt 0 ] || mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+printf '%s' "$OFFER_PLAN" | "$JSONQ" has data.commit_input ||
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+if printf '%s' "$OFFER_PLAN" | "$JSONQ" has data.offer_id; then
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+fi
+if printf '%s' "$OFFER_PLAN" | "$JSONQ" has data.seller_pubkey; then
+    mkt_die "offer plan preview mismatch: $OFFER_PLAN"
+fi
 OFFER_COUNT="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
     --input='{"sql":"SELECT COUNT(*) AS n FROM file_offers"}' || true)"
-[ "$(printf '%s' "$OFFER_COUNT" | mkt_jget 'd["data"]["rows"][0][0]' 2>/dev/null || true)" = "0" ] ||
+[ "$(printf '%s' "$OFFER_COUNT" | mkt_jget data.rows[0][0] 2>/dev/null || true)" = "0" ] ||
     mkt_die "offer plan mutated seller storage: $OFFER_COUNT"
 
 mkt_note "seller commits the offer (seal, persist, bind, flood)"
 OFFER_COMMIT="$(printf '%s' "{\"filepath\":\"$FIXTURE\",\"price_per_mb_zat\":$PRICE_PER_MB_ZAT,\"confirm\":true}" \
     | mkt_native "$MKT_DD_A" "$A_RPC" app market offer --input=- || true)"
-OFFER_ID="$(python3 - "$OFFER_COMMIT" "$EXPECT_ROOT" <<'PY' || mkt_die "offer commit refused: $OFFER_COMMIT"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["stage"]=="committed" and data["committed"] is True,data
-assert data["idempotent_replay"] is False and data["announced"] is True,data
-assert data["root_hash"]==sys.argv[2],data
-oid=data["offer_id"]
-assert len(oid)==64 and int(oid,16)>0,data
-assert len(data["seller_pubkey"])==64,data
-print(oid)
-PY
-)"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq ok true ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.stage committed ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.committed true ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.idempotent_replay false ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.announced true ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+printf '%s' "$OFFER_COMMIT" | "$JSONQ" eq data.root_hash "$EXPECT_ROOT" ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+OFFER_ID="$(printf '%s' "$OFFER_COMMIT" | "$JSONQ" get data.offer_id)" ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+mkt_hex64 "$OFFER_ID" || mkt_die "offer commit refused: $OFFER_COMMIT"
+seller_pubkey="$(printf '%s' "$OFFER_COMMIT" | "$JSONQ" get data.seller_pubkey)" ||
+    mkt_die "offer commit refused: $OFFER_COMMIT"
+[ "${#seller_pubkey}" -eq 64 ] || mkt_die "offer commit refused: $OFFER_COMMIT"
 mkt_note "seller offer committed: offer_id=$OFFER_ID"
 
 # The seller's pre-gossip wire row: the reference every later comparison
@@ -512,18 +655,27 @@ mod_assert_hidden "$B_DEFAULT" x "general-audience.v1"
 
 mkt_note "buyer moderation status names the active profile and the unreviewed count"
 B_STATUS="$(mkt_native "$MKT_DD_B" "$B_RPC" app market moderation status || true)"
-python3 - "$B_STATUS" <<'PY' || mkt_die "moderation status mismatch: $B_STATUS"
-import json,sys
-d=json.loads(sys.argv[1])
-assert d["ok"] is True,d
-data=d["data"]
-assert data["active_profile"]=="general-audience.v1",data
-assert "open-view" in data["available_profiles"],data
-counts=data["review_counts"]
-assert counts.get("unreviewed",0)>=1,counts
-assert data["view_filter_only"] is True,data
-assert data["review_counts_live"] is True,data
-PY
+printf '%s' "$B_STATUS" | "$JSONQ" eq ok true ||
+    mkt_die "moderation status mismatch: $B_STATUS"
+printf '%s' "$B_STATUS" | "$JSONQ" eq data.active_profile general-audience.v1 ||
+    mkt_die "moderation status mismatch: $B_STATUS"
+prof_n="$(printf '%s' "$B_STATUS" | "$JSONQ" count data.available_profiles)" ||
+    mkt_die "moderation status mismatch: $B_STATUS"
+prof_found=0
+prof_i=0
+while [ "$prof_i" -lt "$prof_n" ]; do
+    prof="$(printf '%s' "$B_STATUS" | "$JSONQ" get "data.available_profiles[$prof_i]")" ||
+        mkt_die "moderation status mismatch: $B_STATUS"
+    [ "$prof" = "open-view" ] && prof_found=1
+    prof_i=$((prof_i + 1))
+done
+[ "$prof_found" = 1 ] || mkt_die "moderation status mismatch: $B_STATUS"
+unreviewed="$(printf '%s' "$B_STATUS" | "$JSONQ" get data.review_counts.unreviewed 2>/dev/null || true)"
+[ "${unreviewed:-0}" -ge 1 ] || mkt_die "moderation status mismatch: $B_STATUS"
+printf '%s' "$B_STATUS" | "$JSONQ" eq data.view_filter_only true ||
+    mkt_die "moderation status mismatch: $B_STATUS"
+printf '%s' "$B_STATUS" | "$JSONQ" eq data.review_counts_live true ||
+    mkt_die "moderation status mismatch: $B_STATUS"
 
 # ── Phase 4: the explicit per-request opt-in shows it, annotated ─────
 mkt_note "buyer open override must show the same offer annotated unreviewed"
@@ -575,11 +727,11 @@ mod_assert_shown "$B_SENSITIVE_OPEN" x sensitive open-view
 mkt_note "verifying gossip storage and protocol-validity separation"
 A_COUNT="$(mkt_native "$MKT_DD_A" "$A_RPC" core storage query \
     --input='{"sql":"SELECT COUNT(*) AS n FROM file_offers"}' || true)"
-[ "$(printf '%s' "$A_COUNT" | mkt_jget 'd["data"]["rows"][0][0]' 2>/dev/null || true)" = "1" ] ||
+[ "$(printf '%s' "$A_COUNT" | mkt_jget data.rows[0][0] 2>/dev/null || true)" = "1" ] ||
     mkt_die "seller file_offers row count is not 1: $A_COUNT"
 B_COUNT="$(mkt_native "$MKT_DD_B" "$B_RPC" core storage query \
     --input='{"sql":"SELECT COUNT(*) AS n FROM file_offers"}' || true)"
-[ "$(printf '%s' "$B_COUNT" | mkt_jget 'd["data"]["rows"][0][0]' 2>/dev/null || true)" = "1" ] ||
+[ "$(printf '%s' "$B_COUNT" | mkt_jget data.rows[0][0] 2>/dev/null || true)" = "1" ] ||
     mkt_die "buyer file_offers row count is not 1 (hidden != rejected): $B_COUNT"
 # review_state is the ONLY column the two nodes may disagree on.
 [ "$(mod_review_col "$MKT_DD_A" "$A_RPC")" = "unreviewed" ] ||

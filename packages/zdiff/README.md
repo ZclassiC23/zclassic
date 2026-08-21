@@ -68,4 +68,4 @@ random pairs verified by script application and keep-monotonicity.
 
 ## License
 
-MIT (see LICENSE).
+Apache-2.0 (see LICENSE).

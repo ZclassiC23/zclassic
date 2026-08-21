@@ -56,144 +56,124 @@ mkdir -p "$OUTDIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 OUT="$OUTDIR/$STAMP-$SLUG.json"
 
-SYNCDIAG="$SYNCDIAG" SVCSTATE="$SVCSTATE" ACTIVE="$ACTIVE" COINS="$COINS" \
-HAVENEXT="$HAVENEXT" NEXT="$NEXT" SLUG="$SLUG" OUT="$OUT" python3 - <<'PY'
-import json, os, re, sys
-
-def jload(s):
-    try: return json.loads(s)
-    except Exception: return {}
-
-def first_int(s):
-    if s is None: return None
-    if isinstance(s, (int,)): return s
-    m = re.search(r'-?\d+', str(s))
-    return int(m.group()) if m else None
-
-def dig(d, *keys):
-    """find the first present key anywhere in a nested dict/list."""
-    want = set(keys)
-    stack = [d]
-    while stack:
-        cur = stack.pop()
-        if isinstance(cur, dict):
-            for k, v in cur.items():
-                if k in want and isinstance(v, (int, float, str)):
-                    iv = first_int(v)
-                    if iv is not None: return iv
-                stack.append(v)
-        elif isinstance(cur, list):
-            stack.extend(cur)
-    return None
-
-syncdiag = jload(os.environ.get('SYNCDIAG', '{}'))
-svcstate = jload(os.environ.get('SVCSTATE', '{}'))
-active   = first_int(os.environ.get('ACTIVE'))
-coins    = first_int(jload(os.environ.get('COINS','')) if os.environ.get('COINS','').strip().startswith(('[','{')) else os.environ.get('COINS'))
-havenext_raw = os.environ.get('HAVENEXT','')
-status_next  = first_int(jload(havenext_raw) if havenext_raw.strip().startswith(('[','{')) else havenext_raw)
-nexth    = first_int(os.environ.get('NEXT'))
-
-header = dig(syncdiag, 'best_header_height')
-chain_h = dig(syncdiag, 'chain_height')
-if active is None or active < 0:
-    active = chain_h
-sync_state = None
-svc_mode = None
-for d in (syncdiag, svcstate):
-    if sync_state is None: sync_state = _ = None
-# pull strings explicitly
-def find_str(d, key):
-    stack=[d]
-    while stack:
-        c=stack.pop()
-        if isinstance(c,dict):
-            for k,v in c.items():
-                if k==key and isinstance(v,str): return v
-                stack.append(v)
-        elif isinstance(c,list): stack.extend(c)
-    return None
-sync_state = find_str(syncdiag,'sync_state')
-svc_mode   = find_str(svcstate,'state')
-svc_reason = find_str(svcstate,'reason')
-active_conditions   = dig(syncdiag, 'active_conditions') or 0
-unresolved_conditions = dig(syncdiag, 'unresolved_conditions') or 0
-
-have_data_next = (status_next is not None and (status_next & 8) != 0)
-
-# ── decision tree ────────────────────────────────────────────────────────
-verdict = "UNKNOWN"
-detail  = ""
-A, H, C = active, header, coins
-gap_hdr = (H - A) if (H is not None and A is not None) else None
-
-if A is None or A < 0:
-    verdict = "NODE-UNREACHABLE"
-    detail  = "getblockcount/getsyncdiag returned no tip; is RPC up on this port?"
-elif C is not None and A is not None and C < A - 1:
-    verdict = "COINS-APPLICATION-LAG"
-    detail  = (f"public tip A={A} is AHEAD of applied coins C={C} by {A-C}. The tip "
-               "is published past the coins it has actually applied -> reducer "
-               "cursor/coins desync (reconcile), NOT a body gap. This is the I2/"
-               "import-reset class: clamp/seed tip_finalize at coins_best, never "
-               "delete tip_finalize_log rows.")
-elif gap_hdr is not None and gap_hdr > 1 and have_data_next:
-    verdict = "BODIES-PRESENT-NOT-CONNECTED"
-    detail  = (f"behind header tip (A={A} < H={H}) but the next body at {nexth} IS "
-               "on disk (HAVE_DATA). This is NOT body-fetch — the reducer/activation "
-               "is not connecting present bodies. Check cursors/activation, not "
-               "downloads. (This is the exact bodies-vs-coins misdiagnosis guard.)")
-elif gap_hdr is not None and gap_hdr > 1 and not have_data_next:
-    verdict = "GENUINE-BODY-GAP"
-    detail  = (f"behind header tip (A={A} < H={H}) and the next body at {nexth} is "
-               "NOT on disk -> genuine body download needed (body-fetch / peers).")
-elif active_conditions and active_conditions > 0:
-    verdict = "REPAIRING"
-    detail  = f"{active_conditions} active condition(s); a named repair is in progress."
-elif gap_hdr is not None and gap_hdr <= 1 and (C is None or C >= A - 1):
-    verdict = "AT-TIP / HEALTHY"
-    detail  = f"A={A} within 1 of header H={H}, coins C={C} caught up."
-else:
-    verdict = "SYNCING"
-    detail  = f"closing the gap (A={A} H={H} C={C} sync_state={sync_state})."
-
-result = {
-    "slug": os.environ.get('SLUG'),
-    "views": {
-        "active_public_tip_A": A,
-        "best_header_tip_H": H,
-        "applied_coins_tip_C": C,
-        "header_gap_H_minus_A": gap_hdr,
-        "next_height": nexth,
-        "next_status_raw": status_next,
-        "have_data_at_next_D": have_data_next,
-        "sync_state": sync_state,
-        "service_state": svc_mode,
-        "service_state_reason": svc_reason,
-        "active_conditions": active_conditions,
-        "unresolved_conditions": unresolved_conditions,
-    },
-    "verdict": verdict,
-    "detail": detail,
+json_num() {
+    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*-?[0-9]+" |
+        head -1 | sed -E 's/.*:[ ]*//' || true
+}
+json_str() {
+    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" |
+        head -1 | sed -E 's/.*:[ ]*"//; s/"$//' || true
+}
+first_int() {
+    printf '%s' "$1" | grep -oE -- '-?[0-9]+' | head -1 || true
 }
 
-with open(os.environ['OUT'], 'w') as f:
-    json.dump(result, f, indent=2)
+header=$(json_num "$SYNCDIAG" best_header_height)
+chain_h=$(json_num "$SYNCDIAG" chain_height)
+A="$ACTIVE"
+if [ -z "$A" ] || [ "$A" -lt 0 ]; then
+    A="${chain_h:-}"
+fi
+C=$(first_int "$COINS")
+status_next=$(first_int "$HAVENEXT")
+nexth=$(first_int "$NEXT")
+sync_state=$(json_str "$SYNCDIAG" sync_state)
+svc_mode=$(json_str "$SVCSTATE" state)
+svc_reason=$(json_str "$SVCSTATE" reason)
+active_conditions=$(json_num "$SYNCDIAG" active_conditions)
+unresolved_conditions=$(json_num "$SYNCDIAG" unresolved_conditions)
+[ -n "$active_conditions" ] || active_conditions=0
+[ -n "$unresolved_conditions" ] || unresolved_conditions=0
 
-bar = "=" * 72
-print(bar)
-print(f"  diagnose-gap [{result['slug']}]  VERDICT: {verdict}")
-print(bar)
-v = result["views"]
-print(f"  A active public tip   : {v['active_public_tip_A']}")
-print(f"  H best header tip     : {v['best_header_tip_H']}   (gap H-A = {v['header_gap_H_minus_A']})")
-print(f"  C applied coins tip   : {v['applied_coins_tip_C']}")
-print(f"  D have_data at A+1={v['next_height']} : {v['have_data_at_next_D']} (status={v['next_status_raw']})")
-print(f"  sync_state            : {v['sync_state']}")
-print(f"  service_state         : {v['service_state']} ({v['service_state_reason']})")
-print(f"  conditions active/unres: {v['active_conditions']}/{v['unresolved_conditions']}")
-print(bar)
-print("  " + detail.replace("\n", "\n  "))
-print(bar)
-print(f"  written: {os.environ['OUT']}")
-PY
+have_data_next=false
+if [ -n "$status_next" ] && [ $((status_next & 8)) -ne 0 ]; then
+    have_data_next=true
+fi
+
+H="$header"
+gap_hdr=""
+if [ -n "$H" ] && [ -n "$A" ]; then
+    gap_hdr=$((H - A))
+fi
+
+verdict="UNKNOWN"
+detail=""
+if [ -z "$A" ] || [ "$A" -lt 0 ]; then
+    verdict="NODE-UNREACHABLE"
+    detail="getblockcount/getsyncdiag returned no tip; is RPC up on this port?"
+elif [ -n "$C" ] && [ -n "$A" ] && [ "$C" -lt $((A - 1)) ]; then
+    verdict="COINS-APPLICATION-LAG"
+    detail="public tip A=${A} is AHEAD of applied coins C=${C} by $((A - C)). The tip is published past the coins it has actually applied -> reducer cursor/coins desync (reconcile), NOT a body gap. This is the I2/import-reset class: clamp/seed tip_finalize at coins_best, never delete tip_finalize_log rows."
+elif [ -n "$gap_hdr" ] && [ "$gap_hdr" -gt 1 ] && [ "$have_data_next" = true ]; then
+    verdict="BODIES-PRESENT-NOT-CONNECTED"
+    detail="behind header tip (A=${A} < H=${H}) but the next body at ${nexth} IS on disk (HAVE_DATA). This is NOT body-fetch — the reducer/activation is not connecting present bodies. Check cursors/activation, not downloads. (This is the exact bodies-vs-coins misdiagnosis guard.)"
+elif [ -n "$gap_hdr" ] && [ "$gap_hdr" -gt 1 ]; then
+    verdict="GENUINE-BODY-GAP"
+    detail="behind header tip (A=${A} < H=${H}) and the next body at ${nexth} is NOT on disk -> genuine body download needed (body-fetch / peers)."
+elif [ "$active_conditions" -gt 0 ]; then
+    verdict="REPAIRING"
+    detail="${active_conditions} active condition(s); a named repair is in progress."
+elif [ -n "$gap_hdr" ] && [ "$gap_hdr" -le 1 ] && { [ -z "$C" ] || [ "$C" -ge $((A - 1)) ]; }; then
+    verdict="AT-TIP / HEALTHY"
+    detail="A=${A} within 1 of header H=${H}, coins C=${C} caught up."
+else
+    verdict="SYNCING"
+    detail="closing the gap (A=${A} H=${H} C=${C} sync_state=${sync_state})."
+fi
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+js_str_or_null() {
+    if [ -n "$1" ]; then
+        printf '"%s"' "$(json_escape "$1")"
+    else
+        printf 'null'
+    fi
+}
+js_num_or_null() {
+    if [ -n "$1" ]; then
+        printf '%s' "$1"
+    else
+        printf 'null'
+    fi
+}
+
+{
+    printf '{\n'
+    printf '  "slug": "%s",\n' "$(json_escape "$SLUG")"
+    printf '  "views": {\n'
+    printf '    "active_public_tip_A": %s,\n' "$(js_num_or_null "$A")"
+    printf '    "best_header_tip_H": %s,\n' "$(js_num_or_null "$H")"
+    printf '    "applied_coins_tip_C": %s,\n' "$(js_num_or_null "$C")"
+    printf '    "header_gap_H_minus_A": %s,\n' "$(js_num_or_null "$gap_hdr")"
+    printf '    "next_height": %s,\n' "$(js_num_or_null "$nexth")"
+    printf '    "next_status_raw": %s,\n' "$(js_num_or_null "$status_next")"
+    printf '    "have_data_at_next_D": %s,\n' "$have_data_next"
+    printf '    "sync_state": %s,\n' "$(js_str_or_null "$sync_state")"
+    printf '    "service_state": %s,\n' "$(js_str_or_null "$svc_mode")"
+    printf '    "service_state_reason": %s,\n' "$(js_str_or_null "$svc_reason")"
+    printf '    "active_conditions": %s,\n' "$active_conditions"
+    printf '    "unresolved_conditions": %s\n' "$unresolved_conditions"
+    printf '  },\n'
+    printf '  "verdict": "%s",\n' "$(json_escape "$verdict")"
+    printf '  "detail": "%s"\n' "$(json_escape "$detail")"
+    printf '}\n'
+} >"$OUT"
+
+bar="========================================================================"
+printf '%s\n' "$bar"
+printf '  diagnose-gap [%s]  VERDICT: %s\n' "$SLUG" "$verdict"
+printf '%s\n' "$bar"
+printf '  A active public tip   : %s\n' "$A"
+printf '  H best header tip     : %s   (gap H-A = %s)\n' "$H" "$gap_hdr"
+printf '  C applied coins tip   : %s\n' "$C"
+printf '  D have_data at A+1=%s : %s (status=%s)\n' "$nexth" "$have_data_next" "$status_next"
+printf '  sync_state            : %s\n' "$sync_state"
+printf '  service_state         : %s (%s)\n' "$svc_mode" "$svc_reason"
+printf '  conditions active/unres: %s/%s\n' "$active_conditions" "$unresolved_conditions"
+printf '%s\n' "$bar"
+printf '  %s\n' "$detail"
+printf '%s\n' "$bar"
+printf '  written: %s\n' "$OUT"

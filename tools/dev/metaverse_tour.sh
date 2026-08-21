@@ -27,6 +27,7 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
+JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
 cd "$REPO_ROOT"
 
 # ── Isolation setup (the audited chokepoint owns the cleanup trap) ────
@@ -51,11 +52,8 @@ tour_fail() {
 tour_note() { echo "metaverse-tour: $*"; }
 tour_pass() { echo "metaverse-tour: PASS step $1 — $2"; }
 
-# JSON helpers (same convention as zcode_dht_acceptance.sh).
-tour_jget() {
-    local expr="$1"
-    python3 -c "import json,sys; d=json.load(sys.stdin); print($expr)"
-}
+# JSON helpers (jsonq over nested RPC and native-command envelopes).
+tour_jget() { "$JSONQ" get "$1"; }
 tour_native() {
     # The CLI exits nonzero on a typed failure reply; under `set -o pipefail`
     # that would kill the script before the reply body is asserted. Swallow
@@ -66,22 +64,10 @@ tour_assert_ok() {
     # $1 = raw reply, $2 = human label; prints nothing on success.
     local out="$1" label="$2"
     local ok
-    ok="$(printf '%s' "$out" | python3 -c \
-        'import json,sys
-try:
-    d=json.load(sys.stdin)
-except Exception:
-    print("unparseable"); raise SystemExit(0)
-print(d.get("ok"))' 2>/dev/null || echo unparseable)"
-    [ "$ok" = "True" ] || tour_fail "$label refused: $out"
+    ok="$(printf '%s' "$out" | "$JSONQ" get ok 2>/dev/null || echo unparseable)"
+    [ "$ok" = "true" ] || tour_fail "$label refused: $out"
 }
-tour_result() {
-    python3 -c 'import json,sys
-d=json.load(sys.stdin)
-if d.get("error") is not None: raise SystemExit(2)
-v=d.get("result")
-print(json.dumps(v,separators=(",",":")) if isinstance(v,(dict,list)) else v)'
-}
+tour_result() { "$JSONQ" unwrap; }
 
 # ── Fixture helper (built at runtime, never installed) ────────────────
 tour_build_helper() {
@@ -172,10 +158,10 @@ tour_wait_fold() {
     while [ "$tries" -lt 90 ]; do
         dump="$(tour_native dumpstate reducer_frontier)"
         coins="$(printf '%s' "$dump" \
-            | tour_jget 'd["state"]["coins_best_height"]' 2>/dev/null)" \
+            | tour_jget state.coins_best_height 2>/dev/null)" \
             || coins=""
         hstar="$(printf '%s' "$dump" \
-            | tour_jget 'd["state"]["hstar"]' 2>/dev/null)" \
+            | tour_jget state.hstar 2>/dev/null)" \
             || hstar=""
         [ "$coins" = "$tip" ] && [ "$hstar" = "$tip" ] && return 0
         tries=$((tries + 1))
@@ -197,19 +183,12 @@ tour_wait_fold() {
 # resolves inside the loaded active chain. Poll until the loaded object
 # reports the expected height (or fail with a named blocker).
 tour_wait_chain_loaded() {
-    local tip="$1" tries=0 info loaded
+    local tip="$1" tries=0 info blocks ibd
     while [ "$tries" -lt 90 ]; do
         info="$(iso_rpc getblockchaininfo 2>/dev/null)" || info=""
-        loaded="$(printf '%s' "$info" | python3 -c \
-            'import json,sys
-tip = int(sys.argv[1])
-try:
-    d = json.load(sys.stdin).get("result")
-except Exception:
-    d = None
-print(isinstance(d, dict) and d.get("blocks") == tip and d.get("initialblockdownload") is not True)' \
-            "$tip" 2>/dev/null)" || loaded=""
-        [ "$loaded" = "True" ] && return 0
+        blocks="$(printf '%s' "$info" | "$JSONQ" get result.blocks 2>/dev/null || true)"
+        ibd="$(printf '%s' "$info" | "$JSONQ" get result.initialblockdownload 2>/dev/null || true)"
+        [ "$blocks" = "$tip" ] && [ "$ibd" != "true" ] && [ -n "$blocks" ] && return 0
         tries=$((tries + 1))
         sleep 1
     done
@@ -252,7 +231,7 @@ tour_wait_sync_live() {
     local tries=0 state
     while [ "$tries" -lt 90 ]; do
         state="$(iso_rpc downloadstats \
-            | tour_jget 'd["result"]["sync_state"]' 2>/dev/null)" || state=""
+            | tour_jget result.sync_state 2>/dev/null)" || state=""
         case "$state" in
             blocks_download|connecting_blocks|at_tip) return 0 ;;
         esac
@@ -272,7 +251,7 @@ tour_wait_spendable() {
     while [ "$tries" -lt 90 ]; do
         dump="$(tour_native dumpstate vault)"
         spend="$(printf '%s' "$dump" \
-            | tour_jget 'd["state"]["zcl"]["spendable"]' 2>/dev/null)" \
+            | tour_jget state.zcl.spendable 2>/dev/null)" \
             || spend=""
         [ -n "$spend" ] && [ "$spend" -gt 0 ] && return 0
         tries=$((tries + 1))
@@ -288,17 +267,17 @@ tour_policy_allow() {
     plan="$(tour_native zcode network policy mutate \
         --input="{\"mode\":\"plan\",\"operation\":\"add\",\"source\":\"local\",\"effect\":\"allow\",\"scope\":\"service_type\",\"action_mask\":63,\"value\":\"$service_type\"}")"
     tour_assert_ok "$plan" "policy plan $service_type"
-    token="$(printf '%s' "$plan" | tour_jget 'd["data"]["plan_token"]')" \
+    token="$(printf '%s' "$plan" | tour_jget data.plan_token)" \
         || tour_fail "policy plan $service_type has no plan_token"
     commit="$(tour_native zcode network policy mutate \
         --input="{\"mode\":\"commit\",\"operation\":\"add\",\"source\":\"local\",\"effect\":\"allow\",\"scope\":\"service_type\",\"action_mask\":63,\"value\":\"$service_type\",\"plan_token\":\"$token\"}")"
     tour_assert_ok "$commit" "policy commit $service_type"
-    [ "$(printf '%s' "$commit" | tour_jget 'd["data"]["committed"]')" = "True" ] \
+    [ "$(printf '%s' "$commit" | tour_jget data.committed)" = "true" ] \
         || tour_fail "policy commit $service_type did not commit: $commit"
 }
 
 command -v cc >/dev/null 2>&1 || tour_fail "cc not found"
-command -v python3 >/dev/null 2>&1 || tour_fail "python3 not found"
+[ -x "$JSONQ" ] || tour_fail "build/bin/jsonq is missing — run make jsonq"
 
 iso_init
 TOUR_WORK="$ISO_DD/tour"
@@ -382,11 +361,11 @@ tour_wait_chain_loaded 101
 tour_note "unlocking the wallet for the anchor's key-pool draw"
 LOCKSTATUS="$(tour_native core wallet security status)"
 tour_assert_ok "$LOCKSTATUS" "core wallet security status"
-if [ "$(printf '%s' "$LOCKSTATUS" | tour_jget 'd["data"]["unlocked"]')" != "True" ]; then
+if [ "$(printf '%s' "$LOCKSTATUS" | tour_jget data.unlocked)" != "true" ]; then
     UNLOCK="$(printf '%s' '{"passphrase":"metaverse-tour-wallet-pass","timeout_seconds":3600}' \
         | tour_native core wallet security unlock --input=-)"
     tour_assert_ok "$UNLOCK" "core wallet security unlock"
-    [ "$(printf '%s' "$UNLOCK" | tour_jget 'd["data"]["unlocked"]')" = "True" ] \
+    [ "$(printf '%s' "$UNLOCK" | tour_jget data.unlocked)" = "true" ] \
         || tour_fail "wallet did not unlock: $UNLOCK"
 fi
 
@@ -433,15 +412,15 @@ for _try in $(seq 1 20); do
     esac
 done
 tour_assert_ok "$ANCHOR_PLAN" "core identity anchor plan"
-[ "$(printf '%s' "$ANCHOR_PLAN" | tour_jget 'd["data"]["stage"]')" = "plan" ] \
+[ "$(printf '%s' "$ANCHOR_PLAN" | tour_jget data.stage)" = "plan" ] \
     || tour_fail "anchor did not plan: $ANCHOR_PLAN"
-ANCHOR_PLAN_ID="$(printf '%s' "$ANCHOR_PLAN" | tour_jget 'd["data"]["plan_id"]')" \
+ANCHOR_PLAN_ID="$(printf '%s' "$ANCHOR_PLAN" | tour_jget data.plan_id)" \
     || tour_fail "anchor plan has no plan_id"
 ANCHOR="$(tour_native core identity anchor \
     --input="{\"wallet_scope\":\"dev\",\"plan_id\":\"$ANCHOR_PLAN_ID\",\"confirm\":true}")"
 tour_assert_ok "$ANCHOR" "core identity anchor commit"
-[ "$(printf '%s' "$ANCHOR" | tour_jget 'd["data"]["stage"]')" = "committed" ] &&
-[ "$(printf '%s' "$ANCHOR" | tour_jget 'd["data"]["committed"]')" = "True" ] \
+[ "$(printf '%s' "$ANCHOR" | tour_jget data.stage)" = "committed" ] &&
+[ "$(printf '%s' "$ANCHOR" | tour_jget data.committed)" = "true" ] \
     || tour_fail "anchor did not commit: $ANCHOR"
 # zcode network delegate requires the anchor's finality-delayed beacon
 # (anchor_height + ZCL_FINALITY_DEPTH) to be itself ten blocks deep:
@@ -454,7 +433,7 @@ tour_note "delegating the DHT identity"
 DELEGATE="$(tour_native zcode network delegate \
     --input="{\"seed_file\":\"$TOUR_WORK/master.hex\"}")"
 tour_assert_ok "$DELEGATE" "zcode network delegate"
-NODE_ID="$(printf '%s' "$DELEGATE" | tour_jget 'd["data"]["node_id"]')" \
+NODE_ID="$(printf '%s' "$DELEGATE" | tour_jget data.node_id)" \
     || tour_fail "delegation reply has no node_id"
 
 # Local sovereignty policy: the default rule set allows DISCOVER only, so
@@ -472,26 +451,26 @@ PKG_DIR="$TOUR_WORK/pkg"
 FIXTURE="$("$TOUR_WORK/mtour-fixture" fixture "$PKG_DIR" \
     "tour/ring-buffer" "MIT" "5a" "1")" \
     || tour_fail "fixture build failed"
-RELEASE_HEX="$(printf '%s' "$FIXTURE" | tour_jget 'd["release_hex"]')" \
+RELEASE_HEX="$(printf '%s' "$FIXTURE" | tour_jget release_hex)" \
     || tour_fail "fixture reply has no release_hex"
-MANIFEST_HEX="$(printf '%s' "$FIXTURE" | tour_jget 'd["manifest_hex"]')" \
+MANIFEST_HEX="$(printf '%s' "$FIXTURE" | tour_jget manifest_hex)" \
     || tour_fail "fixture reply has no manifest_hex"
-RECIPE_HEX="$(printf '%s' "$FIXTURE" | tour_jget 'd["recipe_hex"]')" \
+RECIPE_HEX="$(printf '%s' "$FIXTURE" | tour_jget recipe_hex)" \
     || tour_fail "fixture reply has no recipe_hex"
-PACKAGE_ROOT="$(printf '%s' "$FIXTURE" | tour_jget 'd["package_root"]')" \
+PACKAGE_ROOT="$(printf '%s' "$FIXTURE" | tour_jget package_root)" \
     || tour_fail "fixture reply has no package_root"
 PUB_INPUT="{\"release_hex\":\"$RELEASE_HEX\",\"manifest_hex\":\"$MANIFEST_HEX\",\"recipe_hex\":\"$RECIPE_HEX\",\"dir\":\"$PKG_DIR\"}"
 
 PLAN1="$(tour_native zcode package publish plan --input="$PUB_INPUT")"
 tour_assert_ok "$PLAN1" "zcode package publish plan"
-[ "$(printf '%s' "$PLAN1" | tour_jget 'd["data"]["stage"]')" = "plan" ] &&
-[ "$(printf '%s' "$PLAN1" | tour_jget 'd["data"]["valid"]')" = "True" ] \
+[ "$(printf '%s' "$PLAN1" | tour_jget data.stage)" = "plan" ] &&
+[ "$(printf '%s' "$PLAN1" | tour_jget data.valid)" = "true" ] \
     || tour_fail "publish plan did not validate: $PLAN1"
 COMMIT1="$(tour_native zcode package publish commit --input="$PUB_INPUT")"
 tour_assert_ok "$COMMIT1" "zcode package publish commit"
-[ "$(printf '%s' "$COMMIT1" | tour_jget 'd["data"]["stage"]')" = "commit" ] &&
-[ "$(printf '%s' "$COMMIT1" | tour_jget 'd["data"]["result"]')" = "committed" ] &&
-[ "$(printf '%s' "$COMMIT1" | tour_jget 'd["data"]["package_root"]')" = "$PACKAGE_ROOT" ] \
+[ "$(printf '%s' "$COMMIT1" | tour_jget data.stage)" = "commit" ] &&
+[ "$(printf '%s' "$COMMIT1" | tour_jget data.result)" = "committed" ] &&
+[ "$(printf '%s' "$COMMIT1" | tour_jget data.package_root)" = "$PACKAGE_ROOT" ] \
     || tour_fail "publish commit did not commit locally: $COMMIT1"
 tour_pass 1 "package tour/ring-buffer committed locally (root ${PACKAGE_ROOT:0:16}…)"
 
@@ -508,23 +487,23 @@ NOW="$(date +%s)"
 MANIFEST_INPUT="{\"kind\":\"space_manifest\",\"sequence\":1,\"not_before\":$NOW,\"expiry\":$((NOW + 172800)),\"name\":\"tour-space\",\"description\":\"metaverse tour proof space\"}"
 PLAN2="$(tour_native metaverse space plan --input="$MANIFEST_INPUT")"
 tour_assert_ok "$PLAN2" "metaverse space plan"
-[ "$(printf '%s' "$PLAN2" | tour_jget 'd["data"]["state"]')" = "PLANNED" ] \
+[ "$(printf '%s' "$PLAN2" | tour_jget data.state)" = "PLANNED" ] \
     || tour_fail "space plan not PLANNED: $PLAN2"
-OBJECT_ROOT="$(printf '%s' "$PLAN2" | tour_jget 'd["data"]["object_root"]')" \
+OBJECT_ROOT="$(printf '%s' "$PLAN2" | tour_jget data.object_root)" \
     || tour_fail "space plan has no object_root"
-SPACE_TOKEN="$(printf '%s' "$PLAN2" | tour_jget 'd["data"]["plan_token"]')" \
+SPACE_TOKEN="$(printf '%s' "$PLAN2" | tour_jget data.plan_token)" \
     || tour_fail "space plan has no plan_token"
 COMMIT2="$(tour_native metaverse space commit \
     --input="{\"kind\":\"space_manifest\",\"sequence\":1,\"not_before\":$NOW,\"expiry\":$((NOW + 172800)),\"name\":\"tour-space\",\"description\":\"metaverse tour proof space\",\"plan_token\":\"$SPACE_TOKEN\",\"confirm\":true}")"
 tour_assert_ok "$COMMIT2" "metaverse space commit"
-[ "$(printf '%s' "$COMMIT2" | tour_jget 'd["data"]["state"]')" = "COMMITTED" ] &&
-[ "$(printf '%s' "$COMMIT2" | tour_jget 'd["data"]["object_root"]')" = "$OBJECT_ROOT" ] \
+[ "$(printf '%s' "$COMMIT2" | tour_jget data.state)" = "COMMITTED" ] &&
+[ "$(printf '%s' "$COMMIT2" | tour_jget data.object_root)" = "$OBJECT_ROOT" ] \
     || tour_fail "space commit did not COMMIT the planned root: $COMMIT2"
 SHOW2="$(tour_native metaverse space show --input="{\"root\":\"$OBJECT_ROOT\"}")"
 tour_assert_ok "$SHOW2" "metaverse space show"
-[ "$(printf '%s' "$SHOW2" | tour_jget 'd["data"]["signature_verified"]')" = "True" ] &&
-[ "$(printf '%s' "$SHOW2" | tour_jget 'd["data"]["currently_active"]')" = "True" ] &&
-[ "$(printf '%s' "$SHOW2" | tour_jget 'd["data"]["owner_zid"]')" = "$PUB" ] \
+[ "$(printf '%s' "$SHOW2" | tour_jget data.signature_verified)" = "true" ] &&
+[ "$(printf '%s' "$SHOW2" | tour_jget data.currently_active)" = "true" ] &&
+[ "$(printf '%s' "$SHOW2" | tour_jget data.owner_zid)" = "$PUB" ] \
     || tour_fail "space show did not re-derive the signed manifest: $SHOW2"
 tour_pass 2 "signed space manifest committed (root ${OBJECT_ROOT:0:16}…)"
 
@@ -533,27 +512,27 @@ TOUR_STEP="3 space scout plan|run|show"
 SCOUT_INPUT="{\"starting_roots\":[\"$OBJECT_ROOT\"],\"observation_unix\":$NOW,\"maximum_depth\":1,\"maximum_spaces\":4,\"maximum_portals\":4,\"maximum_bytes\":65536,\"deadline_ms\":30000}"
 PLAN3="$(tour_native metaverse space scout plan --input="$SCOUT_INPUT")"
 tour_assert_ok "$PLAN3" "metaverse space scout plan"
-[ "$(printf '%s' "$PLAN3" | tour_jget 'd["data"]["state"]')" = "PLANNED" ] &&
-[ "$(printf '%s' "$PLAN3" | tour_jget 'd["data"]["read_only_mission"]')" = "True" ] \
+[ "$(printf '%s' "$PLAN3" | tour_jget data.state)" = "PLANNED" ] &&
+[ "$(printf '%s' "$PLAN3" | tour_jget data.read_only_mission)" = "true" ] \
     || tour_fail "scout plan not PLANNED: $PLAN3"
-MISSION_ROOT="$(printf '%s' "$PLAN3" | tour_jget 'd["data"]["mission_root"]')" \
+MISSION_ROOT="$(printf '%s' "$PLAN3" | tour_jget data.mission_root)" \
     || tour_fail "scout plan has no mission_root"
-SCOUT_TOKEN="$(printf '%s' "$PLAN3" | tour_jget 'd["data"]["plan_token"]')" \
+SCOUT_TOKEN="$(printf '%s' "$PLAN3" | tour_jget data.plan_token)" \
     || tour_fail "scout plan has no plan_token"
 RUN3="$(tour_native metaverse space scout run \
     --input="{\"starting_roots\":[\"$OBJECT_ROOT\"],\"observation_unix\":$NOW,\"maximum_depth\":1,\"maximum_spaces\":4,\"maximum_portals\":4,\"maximum_bytes\":65536,\"deadline_ms\":30000,\"plan_token\":\"$SCOUT_TOKEN\",\"confirm\":true}")"
 tour_assert_ok "$RUN3" "metaverse space scout run"
-[ "$(printf '%s' "$RUN3" | tour_jget 'd["data"]["state"]')" = "RECORDED" ] &&
-[ "$(printf '%s' "$RUN3" | tour_jget 'd["data"]["mission_root"]')" = "$MISSION_ROOT" ] \
+[ "$(printf '%s' "$RUN3" | tour_jget data.state)" = "RECORDED" ] &&
+[ "$(printf '%s' "$RUN3" | tour_jget data.mission_root)" = "$MISSION_ROOT" ] \
     || tour_fail "scout run did not RECORD the planned mission: $RUN3"
-ATTEST_ROOT="$(printf '%s' "$RUN3" | tour_jget 'd["data"]["attestation_root"]')" \
+ATTEST_ROOT="$(printf '%s' "$RUN3" | tour_jget data.attestation_root)" \
     || tour_fail "scout run has no attestation_root"
 SHOW3="$(tour_native metaverse space scout show \
     --input="{\"root\":\"$ATTEST_ROOT\"}")"
 tour_assert_ok "$SHOW3" "metaverse space scout show"
-[ "$(printf '%s' "$SHOW3" | tour_jget 'd["data"]["signature_verified"]')" = "True" ] &&
-[ "$(printf '%s' "$SHOW3" | tour_jget 'd["data"]["visited_spaces"][0]["manifest_result"]')" = "verified" ] &&
-[ "$(printf '%s' "$SHOW3" | tour_jget 'd["data"]["visited_spaces"][0]["space_root"]')" = "$OBJECT_ROOT" ] \
+[ "$(printf '%s' "$SHOW3" | tour_jget data.signature_verified)" = "true" ] &&
+[ "$(printf '%s' "$SHOW3" | tour_jget 'data.visited_spaces[0].manifest_result')" = "verified" ] &&
+[ "$(printf '%s' "$SHOW3" | tour_jget 'data.visited_spaces[0].space_root')" = "$OBJECT_ROOT" ] \
     || tour_fail "scout attestation did not verify the manifest: $SHOW3"
 tour_pass 3 "scout mission verified the space (attestation ${ATTEST_ROOT:0:16}…)"
 
@@ -562,20 +541,21 @@ TOUR_STEP="4 zcode commons status"
 COMMONS="$(tour_native zcode commons status \
     --input="{\"workspace\":\"$ISO_DD/zcode\"}")"
 tour_assert_ok "$COMMONS" "zcode commons status"
-[ "$(printf '%s' "$COMMONS" | tour_jget 'd["data"]["structural_integrity"]')" = "True" ] &&
-[ -n "$(printf '%s' "$COMMONS" | tour_jget 'd["data"]["verification_status"]')" ] \
+[ "$(printf '%s' "$COMMONS" | tour_jget data.structural_integrity)" = "true" ] &&
+[ -n "$(printf '%s' "$COMMONS" | tour_jget data.verification_status)" ] \
     || tour_fail "commons projection did not answer: $COMMONS"
-VERIFICATION="$(printf '%s' "$COMMONS" | tour_jget 'd["data"]["verification_status"]')"
+VERIFICATION="$(printf '%s' "$COMMONS" | tour_jget data.verification_status)"
 tour_pass 4 "Living Commons projection answers (verification_status=$VERIFICATION)"
 
 # ── Step 5: the property catalog answers ──────────────────────────────
 TOUR_STEP="5 metaverse property list"
 PROPS="$(tour_native metaverse property list)"
 tour_assert_ok "$PROPS" "metaverse property list"
-[ "$(printf '%s' "$PROPS" | tour_jget 'd["data"]["kinds_scanned"] >= 1')" = "True" ] \
+KINDS="$(printf '%s' "$PROPS" | tour_jget data.kinds_scanned)" \
     || tour_fail "property catalog scanned no kinds: $PROPS"
-KINDS="$(printf '%s' "$PROPS" | tour_jget 'd["data"]["kinds_scanned"]')"
-TOTAL="$(printf '%s' "$PROPS" | tour_jget 'd["data"]["total"]')"
+[ "$KINDS" -ge 1 ] \
+    || tour_fail "property catalog scanned no kinds: $PROPS"
+TOTAL="$(printf '%s' "$PROPS" | tour_jget data.total)"
 tour_pass 5 "property catalog answers ($KINDS kinds scanned, $TOTAL properties)"
 
 tour_note "node_id=$NODE_ID datadir=$ISO_DD (removed by the isolation trap)"

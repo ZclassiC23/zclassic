@@ -1,6 +1,6 @@
 /* zring — fixed-capacity byte ring buffer
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * A single-producer/single-consumer-safe byte ring over caller
  * storage. All operations are O(1) except bulk read/write which are

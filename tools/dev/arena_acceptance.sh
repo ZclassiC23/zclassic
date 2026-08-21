@@ -149,6 +149,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 NODE_BIN="${ZCL_NODE_BIN:-$REPO_ROOT/build/bin/zclassic23}"
 RPC_BIN="${ZCL_RPC_BIN:-$REPO_ROOT/build/bin/zcl-rpc}"
 ARENA_BIN="${ZCL_ARENA_BIN:-$REPO_ROOT/build/bin/arena_runner}"
+JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
 
 # ── CONFIG ────────────────────────────────────────────────────────────
 # Exact published arena package roots (quarantine store pair member a).
@@ -277,13 +278,7 @@ aa_rpc() { # $1=datadir $2=rpcport $3.. = method/args
     local dd="$1" rp="$2"; shift 2
     ZCL_DATADIR="$dd" ZCL_RPCPORT="$rp" "$RPC_BIN" "$@" 2>/dev/null || true
 }
-aa_result() {
-    python3 -c 'import json,sys
-d=json.load(sys.stdin)
-if d.get("error") is not None: raise SystemExit(2)
-v=d.get("result")
-print(json.dumps(v,separators=(",",":")) if isinstance(v,(dict,list)) else v)'
-}
+aa_result() { "$JSONQ" unwrap; }
 # One-shot native leaf against a datadir whose node is DOWN (never open a
 # store one-shot against a live datadir). JSON input rides stdin.
 aa_leaf() { # $1=datadir $2=leaf  (stdin = input JSON)
@@ -299,19 +294,12 @@ aa_dump() { # $1=datadir $2=rpcport $3=subsystem [$4=key]
         "$NODE_BIN" -datadir="$dd" -rpcport="$rp" dumpstate "$sub" 2>/dev/null | tail -1 || true
     fi
 }
-jget() { python3 -c "import json,sys
-d = json.load(sys.stdin)
-print($1)"; }
-aa_jget() { echo "$1" | jget "$2"; }
+aa_jget() { printf '%s' "$1" | "$JSONQ" get "$2"; }
 
 aa_peer_count() { # $1=datadir $2=rpcport → integer peer count
-    aa_rpc "$1" "$2" getpeerinfo | python3 -c \
-        'import json,sys
-try:
-    d = json.load(sys.stdin)
-    print(len(d.get("result") or []))
-except Exception:
-    print(-1)'
+    local n
+    n="$(aa_rpc "$1" "$2" getpeerinfo | "$JSONQ" count result 2>/dev/null)" || n=-1
+    printf '%s\n' "${n:--1}"
 }
 aa_wait_topology() { # wait for the one permitted A<->B peer on both sides
     local deadline pc_a pc_b
@@ -353,16 +341,14 @@ aa_spawn() { # $1=datadir $2=p2p $3=rpc $4=fs $5=https $6=connect-target
 }
 
 # dumpstate zcode_store <root> on a LIVE node → "tracked complete" booleans.
-aa_store_state() { # $1=datadir $2=rpcport $3=root → "True True" etc.
-    local out
+aa_store_state() { # $1=datadir $2=rpcport $3=root → "true true" etc.
+    local out tracked complete present total
     out="$(aa_dump "$1" "$2" zcode_store "$3")"
-    echo "$out" | python3 -c 'import json,sys
-try:
-    d = json.load(sys.stdin)["state"]
-    print(d.get("tracked", False), d.get("complete", False),
-          d.get("present_chunks", -1), d.get("total_chunks", -1))
-except Exception:
-    print("?", "?", -1, -1)'
+    tracked="$(printf '%s' "$out" | "$JSONQ" get state.tracked 2>/dev/null || true)"
+    complete="$(printf '%s' "$out" | "$JSONQ" get state.complete 2>/dev/null || true)"
+    present="$(printf '%s' "$out" | "$JSONQ" get state.present_chunks 2>/dev/null || true)"
+    total="$(printf '%s' "$out" | "$JSONQ" get state.total_chunks 2>/dev/null || true)"
+    printf '%s %s %s %s\n' "${tracked:-false}" "${complete:-false}" "${present:--1}" "${total:--1}"
 }
 
 # arena_runner output <file> → KEY=VALUE lines evaluated by the caller.
@@ -380,9 +366,9 @@ aa_match_field() { # $1=out file $2=key
 # ── preflight ──────────────────────────────────────────────────────────
 command -v ss      >/dev/null 2>&1 || aa_die "ss(8) not found (need iproute2)"
 command -v mktemp  >/dev/null 2>&1 || aa_die "mktemp not found"
-command -v python3 >/dev/null 2>&1 || aa_die "python3 not found (JSON glue)"
 command -v cc      >/dev/null 2>&1 || aa_die "cc not found (pilot builds)"
 command -v cmp     >/dev/null 2>&1 || aa_die "cmp not found"
+[ -x "$JSONQ" ]     || aa_die "build/bin/jsonq is missing — run make jsonq"
 [ -x "$NODE_BIN" ]  || aa_die "$NODE_BIN not built — run make first"
 [ -x "$RPC_BIN" ]   || aa_die "$RPC_BIN not built — run make zcl-rpc"
 [ -x "$ARENA_BIN" ] || aa_die "$ARENA_BIN not built — run make tools/arena-runner"
@@ -458,11 +444,11 @@ aa_wait_rpc "$AA_DD_A" "$A_RPC" "$AA_PGID_A" "$RPC_WARMUP" \
 for name in $PKG_ORDER; do
     root="$(root_of "$name")"
     set -- $(aa_store_state "$AA_DD_A" "$A_RPC" "$root")
-    [ "${1:-?}" = "True" ] && [ "${2:-?}" = "True" ] \
+    [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ] \
         || aa_die "A does not serve $name (tracked=${1:-?} complete=${2:-?})"
 done
-a_tracked="$(aa_dump "$AA_DD_A" "$A_RPC" zcode_store | python3 -c 'import json,sys
-print(json.load(sys.stdin)["state"].get("tracked_packages", -1))' 2>/dev/null || true)"
+a_tracked="$(aa_dump "$AA_DD_A" "$A_RPC" zcode_store | "$JSONQ" get state.tracked_packages 2>/dev/null || true)"
+a_tracked="${a_tracked:--1}"
 [ "$a_tracked" = "4" ] \
     || aa_die "A announces $a_tracked packages, not exactly 4 — G-A1 prune incomplete (would overflow B's NEW_USER announce quota)"
 echo "arena-acceptance:     A live store: exactly 4 packages tracked+complete (serving; announce set fits B's bootstrap quota)"
@@ -473,9 +459,10 @@ for name in $PKG_ORDER; do
     root="$(root_of "$name")"
     out="$(printf '%s' "{\"root\":\"$root\",\"maximum_bytes\":268435456}" \
         | aa_leaf "$AA_DD_B" zcode.package.fetch)"
-    [ "$(aa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] \
+    [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
         || aa_die "B fetch-record seed for $name refused: $out"
-    [ "$(aa_jget "$out" 'd["data"].get("live",True)' 2>/dev/null || true)" = "False" ] \
+    live="$(aa_jget "$out" data.live 2>/dev/null || true)"; live="${live:-true}"
+    [ "$live" = "false" ] \
         || aa_die "B fetch-record seed for $name claimed a live engine: $out"
 done
 echo "arena-acceptance:     4 resumable download records persisted under B's zcode/downloads (live:false, node down)"
@@ -499,7 +486,7 @@ while [ -n "$remaining" ] && [ "$(date +%s)" -lt "$FETCH_DEADLINE" ]; do
     for name in $remaining; do
         root="$(root_of "$name")"
         set -- $(aa_store_state "$AA_DD_B" "$B_RPC" "$root")
-        if [ "${1:-?}" = "True" ] && [ "${2:-?}" = "True" ]; then
+        if [ "${1:-false}" = "true" ] && [ "${2:-false}" = "true" ]; then
             FETCH_SECS[$name]=$(( $(now_ms) - T_FETCH_START ))
             echo "arena-acceptance:     B fetched $name over the swarm: complete at +$(( FETCH_SECS[$name] / 1000 )).$(( FETCH_SECS[$name] % 1000 ))s"
         else
@@ -552,21 +539,30 @@ for name in $PKG_ORDER; do
     root="$(root_of "$name")"
     t0=$(now_ms)
     out="$(printf '%s' "{\"name_or_root\":\"$root\"}" | aa_leaf "$AA_DD_B" zcode.package.add.plan)"
-    [ "$(aa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] \
+    [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
         || aa_die "B add plan for $name refused: $out"
-    plan_id="$(aa_jget "$out" 'd["data"]["plan_id"]' 2>/dev/null)" \
+    plan_id="$(aa_jget "$out" data.plan_id 2>/dev/null)" \
         || aa_die "B add plan for $name returned no plan_id: $out"
     out="$(printf '%s' "{\"plan_id\":\"$plan_id\"}" | aa_leaf "$AA_DD_B" zcode.package.add.commit)"
-    [ "$(aa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] \
+    [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
         || aa_die "B add commit for $name refused: $out"
-    [ "$(aa_jget "$out" 'd["data"].get("installed",False)' 2>/dev/null || true)" = "True" ] \
+    [ "$(aa_jget "$out" data.installed 2>/dev/null || true)" = "true" ] \
         || aa_die "B add commit for $name did not install: $out"
-    [ "$(aa_jget "$out" 'd["data"]["active_root"]' 2>/dev/null || true)" = "$root" ] \
+    [ "$(aa_jget "$out" data.active_root 2>/dev/null || true)" = "$root" ] \
         || aa_die "B add commit for $name activated the wrong root: $out"
     INSTALL_SECS[$name]=$(( $(now_ms) - t0 ))
-    RECEIPT[$name]="$(echo "$out" | ROOT="$root" python3 -c 'import json,sys,os
-d = json.load(sys.stdin); r = os.environ["ROOT"]
-print(next((s.get("build_receipt_id", "") for s in d["data"].get("steps", []) if s.get("root") == r), ""))' 2>/dev/null || true)"
+    n_steps="$(printf '%s' "$out" | "$JSONQ" count data.steps 2>/dev/null || true)"
+    n_steps="${n_steps:-0}"
+    RECEIPT[$name]=""
+    i=0
+    while [ "$i" -lt "$n_steps" ]; do
+        sroot="$(printf '%s' "$out" | "$JSONQ" get "data.steps[$i].root" 2>/dev/null || true)"
+        if [ "$sroot" = "$root" ]; then
+            RECEIPT[$name]="$(printf '%s' "$out" | "$JSONQ" get "data.steps[$i].build_receipt_id" 2>/dev/null || true)"
+            break
+        fi
+        i=$((i + 1))
+    done
     [ -f "$AA_DD_B/zcode/installed/$root/build-report" ] \
         || aa_die "B installed $name but the build-report is missing"
     [ -f "$AA_DD_B/zcode/installed/$root/lib/lib$name.a" ] \
@@ -580,13 +576,13 @@ T_INSTALL_DONE=$(now_ms)
 for name in $PKG_ORDER; do
     root="$(root_of "$name")"
     out="$(printf '%s' "{\"name_or_root\":\"$root\"}" | aa_leaf "$AA_DD_A" zcode.package.add.plan)"
-    [ "$(aa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] \
+    [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
         || aa_die "A add plan for $name refused: $out"
-    plan_id="$(aa_jget "$out" 'd["data"]["plan_id"]')"
+    plan_id="$(aa_jget "$out" data.plan_id)"
     out="$(printf '%s' "{\"plan_id\":\"$plan_id\"}" | aa_leaf "$AA_DD_A" zcode.package.add.commit)"
-    [ "$(aa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] \
+    [ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
         || aa_die "A add commit for $name refused: $out"
-    [ "$(aa_jget "$out" 'd["data"]["active_root"]' 2>/dev/null || true)" = "$root" ] \
+    [ "$(aa_jget "$out" data.active_root 2>/dev/null || true)" = "$root" ] \
         || aa_die "A add commit for $name activated the wrong root: $out"
 done
 echo "arena-acceptance:     A lifecycle re-check: all four already installed, correct active roots"
@@ -603,7 +599,7 @@ build_pilot() { # $1=datadir $2=pilot pkg name $3=checkout dest $4=out binary
     local reply
     reply="$(printf '%s' "{\"root\":\"$pkg_root\",\"destination\":\"$dest\",\"datadir\":\"$dd\"}" \
         | aa_leaf "$dd" zcode.package.checkout)"
-    [ "$(aa_jget "$reply" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] \
+    [ "$(aa_jget "$reply" ok 2>/dev/null || true)" = "true" ] \
         || aa_die "$dd checkout of $pkg refused: $reply"
     [ -f "$dest/app/main.c" ] || aa_die "$dd checkout of $pkg lacks app/main.c"
     cc -std=c23 -O1 -static -fno-omit-frame-pointer -D_POSIX_C_SOURCE=200809L \
@@ -642,17 +638,17 @@ cat >"$MATCH_DEF" <<EOF
 {"arena_root":"$ZDOGFIGHT_ROOT","pilot_red_root":"$ZDOGACE_ROOT","pilot_blue_root":"$ZDOGDRONE_ROOT","seed":$MATCH_SEED,"planes_per_team":$MATCH_PLANES,"rules":"$MATCH_RULES"}
 EOF
 verify_match_def() { # $1=datadir $2=label
-    python3 - "$MATCH_DEF" "$1" "$ZDOGFIGHT_ROOT" "$ZDOGACE_ROOT" "$ZDOGDRONE_ROOT" <<'EOF'
-import json, os, sys
-defn, dd, arena, red, blue = sys.argv[1:6]
-d = json.load(open(defn))
-assert d["arena_root"] == arena and d["pilot_red_root"] == red \
-    and d["pilot_blue_root"] == blue, "match definition roots drifted"
-assert d["seed"] == 4242 and d["planes_per_team"] == 3
-assert d["rules"] == "zdogfight-0.1.0"
-for r in (arena, red, blue):
-    assert os.path.isfile(os.path.join(dd, "zcode/installed", r, "build-report")), r
-EOF
+    local dd="$1"
+    [ "$("$JSONQ" get arena_root <"$MATCH_DEF")" = "$ZDOGFIGHT_ROOT" ] || return 1
+    [ "$("$JSONQ" get pilot_red_root <"$MATCH_DEF")" = "$ZDOGACE_ROOT" ] || return 1
+    [ "$("$JSONQ" get pilot_blue_root <"$MATCH_DEF")" = "$ZDOGDRONE_ROOT" ] || return 1
+    [ "$("$JSONQ" get seed <"$MATCH_DEF")" = "$MATCH_SEED" ] || return 1
+    [ "$("$JSONQ" get planes_per_team <"$MATCH_DEF")" = "$MATCH_PLANES" ] || return 1
+    [ "$("$JSONQ" get rules <"$MATCH_DEF")" = "$MATCH_RULES" ] || return 1
+    [ -f "$dd/zcode/installed/$ZDOGFIGHT_ROOT/build-report" ] || return 1
+    [ -f "$dd/zcode/installed/$ZDOGACE_ROOT/build-report" ] || return 1
+    [ -f "$dd/zcode/installed/$ZDOGDRONE_ROOT/build-report" ] || return 1
+    return 0
 }
 verify_match_def "$AA_DD_A" A || aa_die "A cannot stand behind the match definition roots"
 verify_match_def "$AA_DD_B" B || aa_die "B cannot stand behind the match definition roots"
@@ -702,15 +698,13 @@ echo "arena-acceptance:       final_state_root=$M_FINAL state_root_chain=$M_CHAI
 # ── [7] ALTERATION: one flipped byte must be named ────────────────────
 aa_step 7 "alteration leg: flip one ctl byte in a copy of B's replay"
 cp "$AA_WORK/replay-B.bin" "$AA_WORK/replay-B-altered.bin"
-python3 - "$AA_WORK/replay-B-altered.bin" <<'EOF'
-import sys
-p = sys.argv[1]
-b = bytearray(open(p, "rb").read())
-off = 21 + 7 * 13 + 3          # inside the 14th ctl frame
-b[off] ^= 0x01
-open(p, "wb").write(bytes(b))
-print(f"arena-acceptance:     flipped byte at offset {off} (ctl stream)")
-EOF
+f="$AA_WORK/replay-B-altered.bin"
+off=$((21 + 7 * 13 + 3))          # inside the 14th ctl frame
+b=$(od -An -tu1 -N1 -j "$off" "$f" | tr -d ' \n')
+[ -n "$b" ] || aa_die "alteration: could not read byte at offset $off"
+nb=$((b ^ 1))
+printf "\\$(printf '%03o' "$nb")" | dd of="$f" bs=1 seek="$off" conv=notrunc status=none
+echo "arena-acceptance:     flipped byte at offset $off (ctl stream)"
 set +e
 verr="$("$ARENA_BIN" --verify-replay "$AA_WORK/replay-B-altered.bin" 2>&1)"
 vrc=$?
@@ -738,9 +732,9 @@ rm -rf "$AA_DD_C/zcode/installed" "$AA_DD_C/zcode/buildwork" \
        "$AA_DD_C/zcode/staging" "$AA_DD_C/zcode/receipts" \
        "$AA_DD_C/zcode/addplans"
 out="$(printf '%s' "{\"name_or_root\":\"$ZDOGDRONE_ROOT\"}" | aa_leaf "$AA_DD_C" zcode.package.add.plan)"
-[ "$(aa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] \
+[ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
     || aa_die "C add plan refused: $out"
-C_PLAN="$(aa_jget "$out" 'd["data"]["plan_id"]')"
+C_PLAN="$(aa_jget "$out" data.plan_id)"
 printf '%s' "{\"plan_id\":\"$C_PLAN\"}" > "$AA_WORK/c-commit-input.json"
 setsid "$NODE_BIN" -datadir="$AA_DD_C" zcode.package.add.commit --input=- \
     <"$AA_WORK/c-commit-input.json" >"$AA_WORK/c-commit-1.out" 2>&1 &
@@ -776,13 +770,13 @@ echo "arena-acceptance:     interrupted state confirmed: zdogdrone (target, buil
 # Retry the identical install to completion.
 t0=$(now_ms)
 out="$(printf '%s' "{\"name_or_root\":\"$ZDOGDRONE_ROOT\"}" | aa_leaf "$AA_DD_C" zcode.package.add.plan)"
-[ "$(aa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] \
+[ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
     || aa_die "C retry add plan refused: $out"
-C_PLAN2="$(aa_jget "$out" 'd["data"]["plan_id"]')"
+C_PLAN2="$(aa_jget "$out" data.plan_id)"
 out="$(printf '%s' "{\"plan_id\":\"$C_PLAN2\"}" | aa_leaf "$AA_DD_C" zcode.package.add.commit)"
-[ "$(aa_jget "$out" 'd.get("ok",False)' 2>/dev/null || true)" = "True" ] \
+[ "$(aa_jget "$out" ok 2>/dev/null || true)" = "true" ] \
     || aa_die "C retry add commit refused: $out"
-[ "$(aa_jget "$out" 'd["data"]["active_root"]' 2>/dev/null || true)" = "$ZDOGDRONE_ROOT" ] \
+[ "$(aa_jget "$out" data.active_root 2>/dev/null || true)" = "$ZDOGDRONE_ROOT" ] \
     || aa_die "C retry activated the wrong root: $out"
 C_RETRY_MS=$(( $(now_ms) - t0 ))
 echo "arena-acceptance:     retry completed in $(( C_RETRY_MS / 1000 )).$(( C_RETRY_MS % 1000 ))s; active_root == zdogdrone"
@@ -856,15 +850,28 @@ PILOT_BLUE_BYTES="$(stat -c %s "$AA_WORK/pilot-A-blue")"
 TOTAL_MS=$(( T_MATCH_B_1 - T_FETCH_START ))
 
 echo "arena-acceptance: ══ KPIs ══"
-python3 - "$KPI_MATCH_MS" "$(( k1 - k0 ))" "$(( k3 - k2 ))" <<'EOF'
-import sys
-m, dead, ref = (int(x) for x in sys.argv[1:4])
-def rate(ticks, ms):
-    return ticks * 1000.0 / ms if ms else float("inf")
-print(f"arena-acceptance:   runner ticks/sec: {rate(36000, m):,.0f} (36000-tick published-pilot match, {m} ms wall incl. 6 confined pilots)")
-print(f"arena-acceptance:                     {rate(36000, dead):,.0f} (36000-tick dead-pilot pure-sim, {dead} ms)")
-print(f"arena-acceptance:                     {rate(11941, ref):,.0f} (11941-tick dev-pilot reference match, {ref} ms)")
-EOF
+awk -v m="$KPI_MATCH_MS" -v dead="$(( k1 - k0 ))" -v ref="$(( k3 - k2 ))" '
+function rate(ticks, ms) {
+    if (ms + 0 == 0) return "inf"
+    return sprintf("%.0f", ticks * 1000.0 / ms)
+}
+function commify(n,    s, out, i, c) {
+    s = n ""
+    if (s == "inf") return s
+    out = ""
+    c = 0
+    for (i = length(s); i >= 1; i--) {
+        c++
+        out = substr(s, i, 1) out
+        if (c == 3 && i > 1) { out = "," out; c = 0 }
+    }
+    return out
+}
+BEGIN {
+    printf "arena-acceptance:   runner ticks/sec: %s (36000-tick published-pilot match, %s ms wall incl. 6 confined pilots)\n", commify(rate(36000, m)), m
+    printf "arena-acceptance:                     %s (36000-tick dead-pilot pure-sim, %s ms)\n", commify(rate(36000, dead)), dead
+    printf "arena-acceptance:                     %s (11941-tick dev-pilot reference match, %s ms)\n", commify(rate(11941, ref)), ref
+}'
 echo "arena-acceptance:   replay bytes: $REPLAY_BYTES (36000-tick 3v3 canonical stream)"
 echo "arena-acceptance:   pilot binary sizes: red(zdogace)=$PILOT_RED_BYTES blue(zdogdrone)=$PILOT_BLUE_BYTES bytes (static)"
 for name in $PKG_ORDER; do

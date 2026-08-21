@@ -38,4 +38,4 @@ seq 1 100 | zstats
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

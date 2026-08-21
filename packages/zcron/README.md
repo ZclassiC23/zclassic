@@ -46,4 +46,4 @@ minute multiples that satisfy the schedule); leap-year handling
 including Feb 29 and the impossible Feb 31. Built with
 `-std=c23 -Wall -Wextra -Werror -pedantic` under ASan/UBSan.
 
-MIT licensed.
+Apache-2.0 licensed.

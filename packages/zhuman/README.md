@@ -34,4 +34,4 @@ zhuman parse-duration 1h30m   # 5400000
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

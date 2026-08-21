@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: RFC 3986 absolute-URI parser (see the header). */
 #include "zurl/zurl.h"
 

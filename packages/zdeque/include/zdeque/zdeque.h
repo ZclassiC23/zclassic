@@ -1,6 +1,6 @@
 /* zdeque — fixed-capacity double-ended queue of void pointers
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * A bounded deque over caller-provided storage: O(1) push/pop at both
  * ends, indexed access, and forward iteration. The caller owns the

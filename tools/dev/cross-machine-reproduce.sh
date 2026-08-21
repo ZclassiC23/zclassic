@@ -57,6 +57,7 @@ ROOT="$(cd "$SCRIPT_DIR/../.." && pwd)"
 VERIFY_BIN="$ROOT/build/bin/zclassic23-package-verify"
 NODE_BIN="$ROOT/build/bin/zclassic23"
 SIGN_BIN="$ROOT/build/bin/zclassic23-package-sign"
+JSONQ="${JSONQ:-$ROOT/build/bin/jsonq}"
 SCOPES="$ROOT/corpus/scopes.def"
 OUTDIR="$ROOT/.cache/zcl-cross-machine"
 KEEP="${ZCL_XMR_KEEP:-0}"
@@ -70,6 +71,10 @@ fail() # exit 2: usage / internal
 {
     printf '[cross-machine-reproduce] FATAL: %s\n' "$*" >&2
     exit 2
+}
+
+json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
 blocked() # <exit-code> <reason-name> <detail>
@@ -106,11 +111,9 @@ SSH_HOST="${2:-}"
 
 # ── preflight ──────────────────────────────────────────────────────────
 
-for bin in "$VERIFY_BIN" "$NODE_BIN" "$SIGN_BIN"; do
+for bin in "$VERIFY_BIN" "$NODE_BIN" "$SIGN_BIN" "$JSONQ"; do
     [ -x "$bin" ] || fail "missing $bin — the build tree must provide it"
 done
-command -v python3 >/dev/null 2>&1 ||
-    fail "python3 is required (JSON + SHA3-256 tree comparison)"
 [ -f "$SCOPES" ] || fail "missing $SCOPES"
 if [ -n "$SSH_HOST" ]; then
     command -v ssh >/dev/null 2>&1 || blocked 4 ssh-tool-missing \
@@ -168,6 +171,48 @@ cleanup()
 }
 trap cleanup EXIT
 
+# SHA3-256 file hasher from the in-tree lib/sha3.
+SHA3FILE="$WORK/sha3file"
+cat > "$WORK/sha3file.c" <<'EOF'
+#include "sha3/sha3.h"
+
+#include <stdio.h>
+
+int main(int argc, char **argv)
+{
+    FILE *f;
+    unsigned char buf[4096], out[SHA3_256_OUTPUT_SIZE];
+    struct sha3_256_ctx ctx;
+    size_t n;
+    unsigned long bytes = 0;
+    int i;
+
+    if (argc != 2)
+        return 2;
+    f = fopen(argv[1], "rb");
+    if (!f)
+        return 1;
+    sha3_256_init(&ctx);
+    while ((n = fread(buf, 1, sizeof buf, f)) > 0) {
+        sha3_256_write(&ctx, buf, n);
+        bytes += (unsigned long)n;
+    }
+    if (ferror(f)) {
+        fclose(f);
+        return 1;
+    }
+    fclose(f);
+    sha3_256_finalize(&ctx, out);
+    for (i = 0; i < SHA3_256_OUTPUT_SIZE; i++)
+        printf("%02x", out[i]);
+    printf(" %lu\n", bytes);
+    return 0;
+}
+EOF
+cc -std=c23 -O1 -I "$ROOT/lib/sha3/include" -I "$ROOT/lib/base/include" \
+    -o "$SHA3FILE" "$WORK/sha3file.c" "$ROOT/lib/sha3/src/sha3.c" ||
+    fail "cannot compile in-tree SHA3-256 helper"
+
 # ── read-only re-derivation of roots + recipe (factory's own path) ─────
 
 # Throwaway publisher key: dev prepare wants a valid compressed curve
@@ -180,37 +225,20 @@ printf '{"dir":"%s","publisher_pubkey":"%s","publisher_sequence":1}' \
     blocked 3 dev-prepare-failed \
         "zcode package dev prepare failed for packages/$SHORT"
 
-RESOLVE_RC=0
-python3 - "$WORK/prepare.json" "$WORK/recipe.wire" "$PUB_ROOT" \
-    > "$WORK/resolved.txt" <<'PYEOF' || RESOLVE_RC=$?
-import json, sys
-doc = json.load(open(sys.argv[1]))
-if not doc.get("ok"):
-    print("dev prepare not ok", file=sys.stderr)
-    sys.exit(1)
-data = doc["data"]
-if data["package_root"] != sys.argv[3]:
-    print("derived package root %s != published root %s (source drift)" %
-          (data["package_root"], sys.argv[3]), file=sys.stderr)
-    sys.exit(3)
-with open(sys.argv[2], "wb") as fh:
-    fh.write(bytes.fromhex(data["recipe_hex"]))
-print(data["package_root"])
-print(data["dependency_lock_root"])
-PYEOF
-if [ "$RESOLVE_RC" -eq 3 ]; then
+"$JSONQ" eq ok true < "$WORK/prepare.json" ||
+    blocked 3 dev-prepare-failed "dev prepare not ok"
+DERIVED_ROOT="$("$JSONQ" get data.package_root < "$WORK/prepare.json")"
+LOCK_ROOT="$("$JSONQ" get data.dependency_lock_root < "$WORK/prepare.json")"
+recipe_hex="$("$JSONQ" get data.recipe_hex < "$WORK/prepare.json")"
+printf '%s' "$recipe_hex" | xxd -r -p > "$WORK/recipe.wire"
+if [ "$DERIVED_ROOT" != "$PUB_ROOT" ]; then
     blocked 3 source-drift \
         "packages/$SHORT no longer derives the published root $PUB_ROOT"
 fi
-[ "$RESOLVE_RC" -eq 0 ] ||
-    blocked 3 dev-prepare-failed "dev prepare output unusable ($RESOLVE_RC)"
-DERIVED_ROOT="$(sed -n 1p "$WORK/resolved.txt")"
-LOCK_ROOT="$(sed -n 2p "$WORK/resolved.txt")"
 
 # Cross-check the re-derived recipe wire against the published store's
 # recipe object (root from the committed factory report).
-RECIPE_ROOT="$(python3 -c \
-    "import json; print(json.load(open('$REPORT_JSON'))['package']['recipe_root'])")"
+RECIPE_ROOT="$("$JSONQ" get package.recipe_root < "$REPORT_JSON")"
 STORE_RECIPE="$STORE/zcode/recipes/$RECIPE_ROOT"
 [ -f "$STORE_RECIPE" ] || blocked 3 recipe-missing \
     "store has no recipes/$RECIPE_ROOT"
@@ -221,34 +249,47 @@ log "lock=${LOCK_ROOT:0:16}… recipe=${RECIPE_ROOT:0:16}… (store byte-identic
 # Dependency pins, transitive post-order, from the repo manifests (same
 # file order the factory's recipe generation uses). Every pinned dep must
 # be installed in the store with its build-report.
-python3 - "$ROOT/packages" "$SHORT" > "$WORK/deps.txt" <<'PYEOF'
-import json, os, sys
-root_dir, start = sys.argv[1], sys.argv[2]
-order = []
-def visit(short):
-    manifest = os.path.join(root_dir, short, "zcode-package.json")
-    if not os.path.isfile(manifest):
-        print("dep manifest missing: %s" % manifest, file=sys.stderr)
-        sys.exit(3)
-    m = json.load(open(manifest))
-    for d in m.get("dependencies", []):
-        visit(d["name"].split("/")[0])
-        if d["root"] not in order:
-            order.append(d["root"])
-visit(start)
-for r in order:
-    print(r)
-PYEOF
+xmr_dep_visit() {
+    local short="$1"
+    local manifest="$ROOT/packages/$short/zcode-package.json"
+    if [ ! -f "$manifest" ]; then
+        printf 'dep manifest missing: %s\n' "$manifest" >&2
+        return 3
+    fi
+    local n i dep_name dep_root dep_short
+    n="$("$JSONQ" count dependencies < "$manifest" 2>/dev/null || echo 0)"
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        dep_name="$("$JSONQ" get "dependencies[$i].name" < "$manifest")"
+        dep_root="$("$JSONQ" get "dependencies[$i].root" < "$manifest")"
+        dep_short="${dep_name%%/*}"
+        xmr_dep_visit "$dep_short" || return $?
+        if ! grep -Fxq -- "$dep_root" "$WORK/deps.txt" 2>/dev/null; then
+            printf '%s\n' "$dep_root" >> "$WORK/deps.txt"
+        fi
+        i=$((i + 1))
+    done
+}
+: > "$WORK/deps.txt"
+xmr_dep_visit "$SHORT" || blocked 3 dep-manifest-missing \
+    "a pinned dependency of $SHORT is missing its zcode-package.json"
 DEP_ARGS=()
-DEPS_JSON="[]"
+DEPS_JSON="["
+deps_first=1
 while IFS= read -r droot; do
     [ -n "$droot" ] || continue
     [ -f "$STORE/zcode/installed/$droot/build-report" ] || blocked 3 \
         dep-not-installed \
         "locked dependency $droot not installed under $STORE/zcode/installed"
     DEP_ARGS+=("--dep=$droot,$STORE/zcode/installed/$droot")
-    DEPS_JSON="$(python3 -c "import json,sys; a=json.loads(sys.argv[1]); a.append(sys.argv[2]); print(json.dumps(a))" "$DEPS_JSON" "$droot")"
+    if [ "$deps_first" = 1 ]; then
+        deps_first=0
+    else
+        DEPS_JSON="$DEPS_JSON,"
+    fi
+    DEPS_JSON="$DEPS_JSON\"$droot\""
 done < "$WORK/deps.txt"
+DEPS_JSON="$DEPS_JSON]"
 log "deps: $(wc -l < "$WORK/deps.txt" | tr -d ' ') pinned (transitive closure)"
 
 # ── one confined control build (always) ────────────────────────────────
@@ -395,106 +436,141 @@ fi
 mkdir -p "$OUTDIR"
 EVIDENCE="$OUTDIR/$SHORT-$EVIDENCE_LABEL.json"
 
+xmr_tree_json() {
+    local emit="$1" first=1 rel hexbytes hex bytes
+    printf '{'
+    if [ -d "$emit" ]; then
+        while IFS= read -r -d '' f; do
+            rel="${f#"$emit"/}"
+            [ "$rel" = "build-report" ] && continue
+            hexbytes="$("$SHA3FILE" "$f")" || return 1
+            hex="${hexbytes%% *}"
+            bytes="${hexbytes##* }"
+            [ "$first" = 1 ] || printf ','
+            first=0
+            printf '"%s":{"sha3_256":"%s","bytes":%s}' \
+                "$(json_escape "$rel")" "$hex" "$bytes"
+        done < <(find "$emit" -type f -print0 | LC_ALL=C sort -z)
+    fi
+    printf '}'
+}
+
+xmr_tree_list() {
+    local emit="$1" rel hexbytes
+    if [ -d "$emit" ]; then
+        while IFS= read -r -d '' f; do
+            rel="${f#"$emit"/}"
+            [ "$rel" = "build-report" ] && continue
+            hexbytes="$("$SHA3FILE" "$f")" || return 1
+            printf '%s %s\n' "$hexbytes" "$rel"
+        done < <(find "$emit" -type f -print0 | LC_ALL=C sort -z)
+    fi
+}
+
+xmr_toolchain() {
+    local plan="$1" tc
+    if [ -f "$plan" ]; then
+        tc="$("$JSONQ" get toolchain < "$plan" 2>/dev/null || true)"
+        if [ -z "$tc" ] || [ "$tc" = null ]; then
+            printf '{}'
+        else
+            printf '%s' "$tc"
+        fi
+    else
+        printf '{}'
+    fi
+}
+
+xmr_output_count() {
+    local emit="$1" n=0 rel
+    if [ -d "$emit" ]; then
+        while IFS= read -r -d '' f; do
+            rel="${f#"$emit"/}"
+            [ "$rel" = "build-report" ] && continue
+            n=$((n + 1))
+        done < <(find "$emit" -type f -print0)
+    fi
+    printf '%s' "$n"
+}
+
+phys_machines=2
+[ "$MODE" = local-double ] && phys_machines=1
+indep_note="same-operator reproduction is not independent-operator evidence; durably_hosted_loc stays 0 until external operator evidence exists"
+
+side_a_tc="$(xmr_toolchain "$WORK/control/plan.json")"
+side_a_out="$(xmr_tree_json "$WORK/control/emit")"
+side_a_json="$(printf '{"host_label":"%s","uname_smry":"%s","toolchain":%s,"outputs":%s}' \
+    "$(json_escape "$HOST_LOCAL")" "$(json_escape "$UNAME_LOCAL")" \
+    "$side_a_tc" "$side_a_out")"
+
+verdict=""
 VERDICT_RC=0
-python3 - "$EVIDENCE" "$FULL_NAME" "$PUB_ROOT" "$RECIPE_ROOT" "$LOCK_ROOT" \
-    "$MODE" "$WORK" "$SIDE_B_DIR" "$HOST_LOCAL" "$UNAME_LOCAL" \
-    "$HOST_B" "$UNAME_B" "$BLOCKED_REASON" "$DEPS_JSON" <<'PYEOF' || VERDICT_RC=$?
-import hashlib, json, os, sys
-
-(evidence_path, full_name, pub_root, recipe_root, lock_root, mode, work,
- side_b_dir, host_a, uname_a, host_b, uname_b, blocked_reason,
- deps_raw) = sys.argv[1:15]
-
-def tree_map(emit):
-    out = {}
-    for base, _dirs, files in os.walk(emit):
-        for f in sorted(files):
-            full = os.path.join(base, f)
-            rel = os.path.relpath(full, emit)
-            if rel == "build-report":
-                continue  # embeds toolchain identity; compared separately
-            data = open(full, "rb").read()
-            out[rel] = {"sha3_256": hashlib.sha3_256(data).hexdigest(),
-                        "bytes": len(data)}
-    return out
-
-def build_report_bytes(emit):
-    p = os.path.join(emit, "build-report")
-    return open(p, "rb").read() if os.path.isfile(p) else None
-
-def toolchain(plan_path):
-    doc = json.load(open(plan_path))
-    return doc.get("toolchain") or {}
-
-def side(host_label, uname_smry, emit, plan_path):
-    return {
-        "host_label": host_label,
-        "uname_smry": uname_smry,
-        "toolchain": toolchain(plan_path),
-        "outputs": tree_map(emit),
-    }
-
-side_a = side(host_a, uname_a,
-              os.path.join(work, "control", "emit"),
-              os.path.join(work, "control", "plan.json"))
-
-independence = {
-    "operator": "same",
-    "physical_machines": 1 if mode == "local-double" else 2,
-    "operator_groups": 1,
-    "note": "same-operator reproduction is not independent-operator "
-            "evidence; durably_hosted_loc stays 0 until external operator "
-            "evidence exists",
-}
-
-doc = {
-    "schema": "zcl.cross_machine_repro.v1",
-    "package": {"name": full_name, "root": pub_root},
-    "recipe_root": recipe_root,
-    "lock_root": lock_root,
-    "deps": json.loads(deps_raw),
-    "mode": mode,
-    "side_a": side_a,
-    "independence": independence,
-}
-
-if blocked_reason:
-    doc["verdict"] = "blocked"
-    doc["blocked_reason"] = blocked_reason
-    doc["side_b"] = None
-    doc["outputs_equal"] = None
-    doc["toolchain_equal"] = None
-    rc = 4
-else:
-    side_b = side(host_b, uname_b,
-                  os.path.join(side_b_dir, "emit"),
-                  os.path.join(side_b_dir, "plan.json"))
-    rep_a = build_report_bytes(os.path.join(work, "control", "emit"))
-    rep_b = build_report_bytes(os.path.join(side_b_dir, "emit"))
-    outputs_equal = side_a["outputs"] == side_b["outputs"]
-    toolchain_equal = side_a["toolchain"] == side_b["toolchain"]
-    doc["side_b"] = side_b
-    doc["outputs_equal"] = outputs_equal
-    doc["toolchain_equal"] = toolchain_equal
-    doc["build_report_equal"] = (
-        rep_a is not None and rep_b is not None and rep_a == rep_b)
-    doc["output_count"] = len(side_a["outputs"])
-    if not toolchain_equal:
-        doc["verdict"] = "toolchain_mismatch"
-        rc = 7
-    elif not outputs_equal:
-        doc["verdict"] = "mismatch"
-        rc = 6
-    else:
-        doc["verdict"] = "reproduced"
-        rc = 0
-
-with open(evidence_path, "w", encoding="utf-8") as fh:
-    json.dump(doc, fh, indent=1)
-    fh.write("\n")
-print("verdict=%s" % doc["verdict"])
-sys.exit(rc)
-PYEOF
+if [ -n "$BLOCKED_REASON" ]; then
+    verdict=blocked
+    VERDICT_RC=4
+    printf '%s\n' \
+        "{" \
+        "\"schema\":\"zcl.cross_machine_repro.v1\"," \
+        "\"package\":{\"name\":\"$(json_escape "$FULL_NAME")\",\"root\":\"$PUB_ROOT\"}," \
+        "\"recipe_root\":\"$RECIPE_ROOT\"," \
+        "\"lock_root\":\"$LOCK_ROOT\"," \
+        "\"deps\":$DEPS_JSON," \
+        "\"mode\":\"$(json_escape "$MODE")\"," \
+        "\"side_a\":$side_a_json," \
+        "\"independence\":{\"operator\":\"same\",\"physical_machines\":$phys_machines,\"operator_groups\":1,\"note\":\"$(json_escape "$indep_note")\"}," \
+        "\"verdict\":\"blocked\"," \
+        "\"blocked_reason\":\"$(json_escape "$BLOCKED_REASON")\"," \
+        "\"side_b\":null," \
+        "\"outputs_equal\":null," \
+        "\"toolchain_equal\":null" \
+        "}" > "$EVIDENCE"
+else
+    side_b_tc="$(xmr_toolchain "$SIDE_B_DIR/plan.json")"
+    side_b_out="$(xmr_tree_json "$SIDE_B_DIR/emit")"
+    side_b_json="$(printf '{"host_label":"%s","uname_smry":"%s","toolchain":%s,"outputs":%s}' \
+        "$(json_escape "$HOST_B")" "$(json_escape "$UNAME_B")" \
+        "$side_b_tc" "$side_b_out")"
+    outputs_equal=false
+    toolchain_equal=false
+    cmp -s <(xmr_tree_list "$WORK/control/emit") \
+           <(xmr_tree_list "$SIDE_B_DIR/emit") && outputs_equal=true
+    [ "$side_a_tc" = "$side_b_tc" ] && toolchain_equal=true
+    build_report_equal=false
+    if [ -f "$WORK/control/emit/build-report" ] &&
+       [ -f "$SIDE_B_DIR/emit/build-report" ] &&
+       cmp -s "$WORK/control/emit/build-report" "$SIDE_B_DIR/emit/build-report"; then
+        build_report_equal=true
+    fi
+    output_count="$(xmr_output_count "$WORK/control/emit")"
+    if [ "$toolchain_equal" != true ]; then
+        verdict=toolchain_mismatch
+        VERDICT_RC=7
+    elif [ "$outputs_equal" != true ]; then
+        verdict=mismatch
+        VERDICT_RC=6
+    else
+        verdict=reproduced
+        VERDICT_RC=0
+    fi
+    printf '%s\n' \
+        "{" \
+        "\"schema\":\"zcl.cross_machine_repro.v1\"," \
+        "\"package\":{\"name\":\"$(json_escape "$FULL_NAME")\",\"root\":\"$PUB_ROOT\"}," \
+        "\"recipe_root\":\"$RECIPE_ROOT\"," \
+        "\"lock_root\":\"$LOCK_ROOT\"," \
+        "\"deps\":$DEPS_JSON," \
+        "\"mode\":\"$(json_escape "$MODE")\"," \
+        "\"side_a\":$side_a_json," \
+        "\"independence\":{\"operator\":\"same\",\"physical_machines\":$phys_machines,\"operator_groups\":1,\"note\":\"$(json_escape "$indep_note")\"}," \
+        "\"verdict\":\"$verdict\"," \
+        "\"side_b\":$side_b_json," \
+        "\"outputs_equal\":$outputs_equal," \
+        "\"toolchain_equal\":$toolchain_equal," \
+        "\"build_report_equal\":$build_report_equal," \
+        "\"output_count\":$output_count" \
+        "}" > "$EVIDENCE"
+fi
+printf 'verdict=%s\n' "$verdict"
 
 log "evidence: $EVIDENCE"
 case "$VERDICT_RC" in

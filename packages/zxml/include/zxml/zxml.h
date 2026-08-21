@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded XML writer for C23 (RSS/Atom/sitemap generation).
  *          Well-formedness is guaranteed by construction: the writer is a
  *          state machine over a bounded element stack, every call is

@@ -46,4 +46,4 @@ C23, single translation unit: compile `src/znetstring.c` with
 
 ## License
 
-MIT.
+Apache-2.0.

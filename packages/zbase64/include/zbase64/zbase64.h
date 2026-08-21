@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: RFC 4648 Base64 encode/decode for C23 — strict, allocation-free,
  *          with caller-provided buffers and exact size arithmetic.
  *

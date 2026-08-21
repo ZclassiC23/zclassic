@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: Semantic-version RANGE matching for C23, built on zsemver.
  *          Allocation-free and bounded: the whole parsed range lives in
  *          the caller's struct.

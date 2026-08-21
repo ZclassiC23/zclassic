@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: RFC 4648 Base64 (see the header for the strictness contract). */
 #include "zbase64/zbase64.h"
 

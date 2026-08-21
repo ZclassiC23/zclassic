@@ -64,4 +64,4 @@ round-trip sweep across the whole 4-digit-year range.
 
 ## License
 
-MIT (see LICENSE).
+Apache-2.0 (see LICENSE).

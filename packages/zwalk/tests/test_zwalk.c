@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zwalk test suite.  Builds its own fixture tree under a
  *          relative directory in the cwd (sandbox-friendly: no /tmp, no
  *          TMPDIR).  Exits nonzero on any failure. */

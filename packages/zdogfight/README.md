@@ -50,4 +50,4 @@ claims, not evidence. This package's determinism rests solely on its
 own born-red selftests and the cross-node acceptance proof in
 `tools/dev/arena_acceptance.sh`.
 
-Depends only on zprng. MIT licensed.
+Depends only on zprng. Apache-2.0 licensed.

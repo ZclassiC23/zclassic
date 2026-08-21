@@ -1,6 +1,6 @@
 /* zmd5 — MD5 message digest (RFC 1321)
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * One-shot and streaming MD5. MD5 is cryptographically broken for
  * collision resistance: do NOT use it for signatures, integrity

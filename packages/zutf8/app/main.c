@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: utf8check - validate stdin as well-formed UTF-8.
  *
  * Usage: zutf8 < data

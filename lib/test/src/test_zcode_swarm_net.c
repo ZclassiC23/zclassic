@@ -34,7 +34,10 @@
  *   6. Disconnect requeue: one of two servers drops mid-download; the
  *      in-flight work moves to the survivor and the download completes.
  *   7. Sovereign source: one signed workspace-head lookup fetches a bundled
- *      content.v2 evidence closure, then accepted source rebuilds Git-free. */
+ *      content.v2 evidence closure, then accepted source rebuilds Git-free.
+ *   8. Useful C23 Arena packages (zprng, zdogfight) host redundantly:
+ *      A publishes, B fetches and pins, A disappears, C still discovers
+ *      and fetches the exact carriers from B. */
 
 #include "test/test_core.h"
 
@@ -71,6 +74,7 @@
 #include "vcs/package_accept.h"
 #include "vcs/package_release.h"
 #include "vcs/package_store.h"
+#include "vcs/package_public_shape.h"
 #include "vcs/package_swarm.h"
 #include "vcs/package_swarm_node.h"
 #include "vcs/package_transport.h"
@@ -4085,6 +4089,142 @@ static int zwn_t_deterministic_replay(const struct chain_params *params)
     return failures;
 }
 
+static bool zwn_hop_carrier(struct zwn_node *from, struct zwn_node *to,
+                            struct zwn_link *from_to, struct zwn_link *to_from,
+                            const struct vcs_package_transport *transport,
+                            const unsigned char *msgstart, uint64_t now)
+{
+    uint8_t discovered[32];
+    struct vcs_zcode_dht_record provider;
+    if (!zwn_discover_transport(from, from, to, "package.c23-commons",
+                                transport->release_id,
+                                transport->transport_root, discovered,
+                                &provider, now))
+        return false;
+    if (memcmp(discovered, transport->transport_root, 32) != 0)
+        return false;
+    if (!zwn_fetch_package_from_provider(to, discovered, from_to, to_from,
+                                         msgstart))
+        return false;
+    struct vcs_package_transport_import imported;
+    if (vcs_package_transport_import(to->store, transport->transport_root,
+                                     &imported) !=
+        VCS_PACKAGE_TRANSPORT_OK)
+        return false;
+    if (memcmp(imported.package_root, transport->package_root, 32) != 0)
+        return false;
+    return vcs_package_store_pin(to->store, transport->transport_root,
+                                 true) == VCS_PACKAGE_STORE_OK;
+}
+
+/* Useful C23 packages (entropy + match core + integer 3D view) must
+ * survive the original publisher disappearing. Fetch is inert; import
+ * reconstructs the signed carrier; pin keeps the replica; B then serves
+ * C. Publish in dependency order so zdogview's lock can see zdogfight. */
+static int zwn_t_useful_c23_redundant(const struct chain_params *params)
+{
+    int failures = 0;
+    struct zwn_fixture fixture = {0};
+    struct vcs_package_prepared prepared[3];
+    struct vcs_package_transport transport[3];
+    memset(prepared, 0, sizeof(prepared));
+    memset(transport, 0, sizeof(transport));
+    TEST("useful C23 packages host redundantly: A publishes zprng/"
+         "zdogfight/zdogview, B mirrors, A disappears, C fetches from B") {
+        static const char *dirs[3] = {
+            "packages/zprng",
+            "packages/zdogfight",
+            "packages/zdogview",
+        };
+        struct zwn_node a, b, c;
+        const struct zwn_node_spec nodes[] = {
+            {&a, "arena-a"}, {&b, "arena-b"}, {&c, "arena-c"},
+        };
+        ASSERT(zwn_fixture_nodes(&fixture, params, nodes,
+                                 sizeof(nodes) / sizeof(nodes[0])));
+        for (size_t i = 0; i < 3; i++) {
+            struct zwn_package_scenario sc = {
+                .name = dirs[i],
+                .dht_namespace = "package.c23-commons",
+                .source_dir = dirs[i],
+                .publisher_sequence = i + 1u,
+                .expected_package_root_hex = NULL,
+            };
+            vcs_package_transport_init(&transport[i]);
+            ASSERT(zwn_prepare_package_transport(
+                &sc, dirs[i], i + 1u, NULL, &prepared[i],
+                &transport[i]));
+            ASSERT(vcs_package_transport_store(
+                       a.store, &transport[i], dirs[i]) ==
+                   VCS_PACKAGE_TRANSPORT_OK);
+            ASSERT(vcs_package_store_pin(a.store,
+                                         transport[i].transport_root,
+                                         true) == VCS_PACKAGE_STORE_OK);
+            struct vcs_package_store_status seeded;
+            ASSERT(vcs_package_store_package_status(
+                a.store, transport[i].transport_root, &seeded));
+            ASSERT(seeded.complete && seeded.pinned);
+            struct vcs_package_public_verdict shape;
+            vcs_package_public_shape_classify(
+                a.store, transport[i].transport_root, &shape);
+            ASSERT(shape.shape != VCS_PACKAGE_PUBLIC_REFUSED);
+        }
+
+        struct zwn_link a_b, b_a;
+        const struct zwn_link_spec a_b_links[] = {
+            {&a, &a_b, {11, 0, 0, 1}, "arena-b"},
+            {&b, &b_a, {11, 0, 0, 2}, "arena-a"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, a_b_links,
+                                 sizeof(a_b_links) /
+                                     sizeof(a_b_links[0])));
+        ASSERT(zwn_meet_side(&a, &a_b));
+        ASSERT(zwn_meet_side(&b, &b_a));
+        for (size_t i = 0; i < 3; i++)
+            ASSERT(zwn_hop_carrier(&a, &b, &a_b, &b_a, &transport[i],
+                                   params->pchMessageStart,
+                                   1400u + (uint64_t)i * 10u));
+
+        zwn_fixture_release_link(&fixture, &a_b);
+        zwn_fixture_release_link(&fixture, &b_a);
+        zwn_fixture_release_node(&fixture, &a);
+
+        struct zwn_link b_c, c_b;
+        const struct zwn_link_spec b_c_links[] = {
+            {&b, &b_c, {11, 0, 0, 3}, "arena-c"},
+            {&c, &c_b, {11, 0, 0, 4}, "arena-b"},
+        };
+        ASSERT(zwn_fixture_links(&fixture, b_c_links,
+                                 sizeof(b_c_links) /
+                                     sizeof(b_c_links[0])));
+        ASSERT(zwn_meet_side(&b, &b_c));
+        ASSERT(zwn_meet_side(&c, &c_b));
+        for (size_t i = 0; i < 3; i++) {
+            ASSERT(zwn_hop_carrier(&b, &c, &b_c, &c_b, &transport[i],
+                                   params->pchMessageStart,
+                                   1500u + (uint64_t)i * 10u));
+            struct vcs_package_store_status st;
+            ASSERT(vcs_package_store_package_status(
+                b.store, transport[i].transport_root, &st));
+            ASSERT(st.complete && st.pinned);
+            ASSERT(vcs_package_store_package_status(
+                c.store, transport[i].transport_root, &st));
+            ASSERT(st.complete && st.pinned);
+            ASSERT(vcs_package_store_verify_possession(
+                c.store, transport[i].transport_root, false));
+            ASSERT(vcs_package_store_verify_possession(
+                c.store, transport[i].package_root, false));
+        }
+        PASS();
+    } _test_next:
+    for (size_t i = 0; i < 3; i++) {
+        vcs_package_transport_free(&transport[i]);
+        vcs_package_prepared_free(&prepared[i]);
+    }
+    zwn_fixture_cleanup(&fixture);
+    return failures;
+}
+
 int test_zcode_swarm_net(void)
 {
     int failures = 0;
@@ -4110,6 +4250,7 @@ int test_zcode_swarm_net(void)
     failures += zwn_t_unrequested(params);
     failures += zwn_t_quota_exhaustion(params);
     failures += zwn_t_deterministic_replay(params);
+    failures += zwn_t_useful_c23_redundant(params);
     if (failures == 0 && g_zwn_sovereign_receipt.ready)
         zwn_print_sovereign_receipt();
     return failures;

@@ -4,7 +4,7 @@
  * merge of partial accumulators (Chan's parallel algorithm). No
  * allocation, fully deterministic, no wall clock.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZSTATS_H
 #define ZSTATS_H

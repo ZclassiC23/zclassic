@@ -41,4 +41,4 @@ random harness exercising the rotation fallback, and bad-argument
 rejection. Built with `-std=c23 -Wall -Wextra -Werror -pedantic`
 under ASan/UBSan.
 
-MIT licensed.
+Apache-2.0 licensed.

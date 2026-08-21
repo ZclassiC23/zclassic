@@ -14,7 +14,7 @@
  *  - The zarena struct is caller-owned and must live outside the
  *    buffer it manages.
  *
- * MIT licensed.
+ * Apache-2.0 licensed.
  */
 #ifndef ZARENA_H
 #define ZARENA_H

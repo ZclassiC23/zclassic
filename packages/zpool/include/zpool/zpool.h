@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: fixed-block pool allocator for C23 over a caller-supplied
  *          arena. No malloc: the pool carves the arena into equal
  *          blocks, threads a free list through the free blocks

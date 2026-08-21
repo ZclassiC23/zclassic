@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zxml demo - emit a small RSS 2.0 feed for fixed sample data.
  *
  * Usage: zxml            pretty-printed feed on stdout

@@ -5,7 +5,7 @@
  * Exact integer arithmetic where possible; parsing is strict and
  * overflow-checked.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZHUMAN_H
 #define ZHUMAN_H

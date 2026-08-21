@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded recursive directory traversal for C23 — deterministic
  *          order, explicit depth bound, fail-closed on filesystem errors.
  *

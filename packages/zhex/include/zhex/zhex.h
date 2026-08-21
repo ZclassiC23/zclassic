@@ -4,7 +4,7 @@
  * even input length, both cases accepted, position of the first bad
  * character reported.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZHEX_H
 #define ZHEX_H

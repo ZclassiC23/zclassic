@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: UTF-8 validation, decoding, and encoding for C23.
  *          Allocation-free, bounded, and total: every byte sequence is
  *          either a valid encoding of a Unicode scalar value (RFC 3629

@@ -47,4 +47,4 @@ Tests: `tests/test_zmd5.c` (no framework needed).
 
 ## License
 
-MIT.
+Apache-2.0.

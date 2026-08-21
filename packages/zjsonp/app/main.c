@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zjsonp CLI — validate JSON on stdin and dump the event
  *          stream as indented lines. Exit 0 on a valid document,
  *          1 on a syntax/depth error (offset reported), 2 on I/O or

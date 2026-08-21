@@ -3,13 +3,13 @@
   "name": "zhkdf/zhkdf",
   "semver": "0.1.0",
   "language": "c23",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "include_dir": "include",
   "source_dir": "src",
   "dependencies": [
     {
       "name": "zsha256/zsha256",
-      "root": "a39759e55a6346f259d1da3fe36519c341aae46de6631bae7c26645d2319a047",
+      "root": "9090dbccede66e50ef3f667f6235755d5aebd0ac5b2693770a0089e26712201e",
       "semver": "0.1.0"
     }
   ],

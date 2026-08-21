@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: fixed-block pool allocator (see the header).
  *
  * Free-state is tracked exactly: the free list lives inside free

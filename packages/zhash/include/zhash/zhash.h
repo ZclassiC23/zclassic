@@ -1,6 +1,6 @@
 /* zhash — classic non-cryptographic hashes, exact and bounded
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Implementations with fixed, published known-answer values:
  *   - FNV-1a 32/64 (Fowler-Noll-Vo)

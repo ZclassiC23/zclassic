@@ -236,7 +236,9 @@ static bool zproject_plan_derive(const struct json_value *input,
                                        sizeof(plan->license))) {
         if (detail && detail_cap)
             (void)snprintf(detail, detail_cap,
-                           "permissive SPDX license could not be inferred; supply license");
+                           "permissive SPDX license could not be inferred; "
+                           "new original work defaults to Apache-2.0 — "
+                           "supply license or use Apache-2.0 LICENSE text");
         return false;
     }
     if (!zproject_config_valid(plan)) {

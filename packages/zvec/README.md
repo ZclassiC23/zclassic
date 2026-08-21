@@ -34,4 +34,4 @@ zvec push:a push:c insert:1:b        # a b c
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

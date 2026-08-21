@@ -7,7 +7,7 @@
  * All inputs are NUL-terminated strings unless a length is taken.
  * NULL is never dereferenced.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZSTR_H
 #define ZSTR_H

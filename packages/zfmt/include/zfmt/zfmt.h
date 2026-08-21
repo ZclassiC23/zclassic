@@ -7,7 +7,7 @@
  * NUL-terminated) string, and refuses further appends — one check at
  * the end suffices.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZFMT_H
 #define ZFMT_H

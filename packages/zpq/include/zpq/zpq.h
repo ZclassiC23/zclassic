@@ -7,7 +7,7 @@
  *
  * Values are never owned.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZPQ_H
 #define ZPQ_H

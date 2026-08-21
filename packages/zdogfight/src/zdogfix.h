@@ -2,7 +2,7 @@
  * a quarter-wave table and floor-semantics Q1.15 scaling. Not part of
  * the public API; shared between the library sources and the tests.
  *
- * MIT licensed.
+ * Apache-2.0 licensed.
  */
 #ifndef ZDOGFIX_H
 #define ZDOGFIX_H

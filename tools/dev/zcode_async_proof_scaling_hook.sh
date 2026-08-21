@@ -8,12 +8,48 @@ ZAP_HELPERS_ONLY=1
 . "$SCRIPT_DIR/zcode_async_proof_acceptance_hook.sh"
 unset ZAP_HELPERS_ONLY
 
+JSONQ="${JSONQ:-$REPO_ROOT/build/bin/jsonq}"
+[ -x "$JSONQ" ] || dht_die "build/bin/jsonq is missing — run make jsonq"
+
 ZAPS_ROOT="$DHT_WORK/async-proof-scale-projects"
 ZAPS_SUMMARY="$DHT_WORK/async-proof-scaling.csv"
 ZAPS_RESPONSIVENESS="$DHT_WORK/async-proof-responsiveness.csv"
 ZAPS_BLOCKCHAIN="$DHT_WORK/async-proof-blockchain.csv"
 ZAPS_RESOURCES="$DHT_WORK/async-proof-resource-snapshots.csv"
 mkdir -p "$ZAPS_ROOT"
+
+zaps_json_escape() {
+    printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
+}
+
+zaps_hex_rev() {
+    local hex="$1" out="" i
+    i=${#hex}
+    [ $((i % 2)) -eq 0 ] || return 1
+    while [ "$i" -gt 0 ]; do
+        i=$((i - 2))
+        out="${out}${hex:i:2}"
+    done
+    printf '%s' "$out"
+}
+
+zaps_percentile() {
+    local pct="$1" n idx
+    local sorted
+    mapfile -t sorted < <(sort -n)
+    n=${#sorted[@]}
+    [ "$n" -gt 0 ] || return 1
+    idx=$(awk -v n="$n" -v pct="$pct" 'BEGIN {
+        x = n * pct
+        c = int(x)
+        if (c < x) c++
+        i = c - 1
+        if (i < 0) i = 0
+        if (i >= n) i = n - 1
+        print i
+    }')
+    printf '%s' "${sorted[$idx]}"
+}
 printf '%s\n' \
     'campaign,slot,requester,executor,action,foreground_ms,background_ms,requester_cpu_ms' \
     >"$ZAPS_SUMMARY"
@@ -31,8 +67,7 @@ zaps_probe_one() {
     started_ns="$(date +%s%N)"
     response="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" "$@" || true)"
     elapsed_ms=$((($(date +%s%N)-started_ns)/1000000))
-    ok="$(printf '%s' "$response" | zap_field 'd.get("ok",False)' \
-        2>/dev/null || true)"
+    ok="$(printf '%s' "$response" | "$JSONQ" get ok 2>/dev/null || true)"
     printf '%s,%s,%s,%s,%s\n' \
         "$phase" "$surface" "$node" "$elapsed_ms" "$ok" \
         >>"$ZAPS_RESPONSIVENESS"
@@ -131,23 +166,34 @@ zaps_wait_height_at_least() {
 # transaction spends it minus a fixed fee back to the already-owned fixture
 # address, and the unlocked wallet signs that immutable input.
 zaps_create_transaction() {
-    local node="$1" unspent pair inputs outputs raw_response raw signed_response
-    local signed complete sent_response txid
+    local node="$1" unspent n i amount best_i=0 best_amt=""
+    local txid vout inputs outputs out_amount esc
+    local raw_response raw signed_response signed sent_response
     unspent="$(dht_rpc "${DDS[$node]}" "${RPCS[$node]}" listunspent || true)"
-    pair="$(printf '%s' "$unspent" | python3 -c '
-import decimal,json,sys
-d=json.load(sys.stdin)
-assert d.get("error") is None,d
-rows=d.get("result")
-assert isinstance(rows,list) and rows,rows
-row=max(rows,key=lambda x:decimal.Decimal(str(x["amount"])))
-amount=decimal.Decimal(str(row["amount"]))-decimal.Decimal("0.00100000")
-assert amount>0,row
-print(json.dumps([{"txid":row["txid"],"vout":int(row["vout"])}],separators=(",",":")))
-print("{"+json.dumps(sys.argv[1])+":"+format(amount,".8f")+"}")
-' "$ADDR")" || return 1
-    inputs="$(printf '%s\n' "$pair" | sed -n '1p')"
-    outputs="$(printf '%s\n' "$pair" | sed -n '2p')"
+    printf '%s' "$unspent" | "$JSONQ" eq error null || return 1
+    n="$(printf '%s' "$unspent" | "$JSONQ" count result)" || return 1
+    [ "$n" -gt 0 ] || return 1
+    i=0
+    while [ "$i" -lt "$n" ]; do
+        amount="$(printf '%s' "$unspent" | "$JSONQ" get "result[$i].amount")"
+        if [ -z "$best_amt" ] || awk -v a="$amount" -v b="$best_amt" \
+            'BEGIN { exit !(a + 0 > b + 0) }'
+        then
+            best_amt="$amount"
+            best_i="$i"
+        fi
+        i=$((i + 1))
+    done
+    txid="$(printf '%s' "$unspent" | "$JSONQ" get "result[$best_i].txid")"
+    vout="$(printf '%s' "$unspent" | "$JSONQ" get "result[$best_i].vout")"
+    out_amount="$(awk -v a="$best_amt" 'BEGIN {
+        v = a - 0.00100000
+        if (!(v > 0)) exit 1
+        printf "%.8f\n", v
+    }')" || return 1
+    esc="$(zaps_json_escape "$ADDR")"
+    inputs="[{\"txid\":\"${txid}\",\"vout\":${vout}}]"
+    outputs="{\"${esc}\":${out_amount}}"
     [ -n "$inputs" ] && [ -n "$outputs" ] || return 1
 
     raw_response="$(dht_rpc "${DDS[$node]}" "${RPCS[$node]}" \
@@ -156,16 +202,11 @@ print("{"+json.dumps(sys.argv[1])+":"+format(amount,".8f")+"}")
     [ -n "$raw" ] || return 1
     signed_response="$(dht_rpc "${DDS[$node]}" "${RPCS[$node]}" \
         signrawtransaction "\"$raw\"" || true)"
-    signed="$(printf '%s' "$signed_response" | python3 -c '
-import json,sys
-d=json.load(sys.stdin)
-r=d.get("result")
-assert d.get("error") is None and isinstance(r,dict),d
-assert r.get("complete") is True,r
-print(r["hex"])
-' 2>/dev/null || true)"
-    complete="${#signed}"
-    [ "$complete" -gt 0 ] || return 1
+    printf '%s' "$signed_response" | "$JSONQ" eq error null || return 1
+    printf '%s' "$signed_response" | "$JSONQ" eq result.complete true || return 1
+    signed="$(printf '%s' "$signed_response" | "$JSONQ" get result.hex \
+        2>/dev/null || true)"
+    [ "${#signed}" -gt 0 ] || return 1
     sent_response="$(dht_rpc "${DDS[$node]}" "${RPCS[$node]}" \
         sendrawtransaction "\"$signed\"" || true)"
     txid="$(printf '%s' "$sent_response" | dht_result 2>/dev/null || true)"
@@ -189,8 +230,7 @@ zaps_blockchain_activity() {
     elapsed_ms=$((($(date +%s%N)-started_ns)/1000000))
     [ "${#txid}" -eq 64 ] || dht_die "$phase raw transaction creation/sign/relay failed"
     zaps_record_blockchain "$phase" send_rpc "$sender" "$elapsed_ms" "$txid" true
-    txid_rev="$(python3 -c \
-        'import sys; print(bytes.fromhex(sys.argv[1])[::-1].hex())' "$txid")"
+    txid_rev="$(zaps_hex_rev "$txid")"
 
     for node in "$ZAP_A" "$ZAP_B" "$ZAP_C"; do
         [ "$node" = "$sender" ] && continue
@@ -250,12 +290,12 @@ zaps_prepare() {
     zaps_project_create "$slot"
     start="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work start \
         --input="{\"workspace\":\"$project\",\"goal\":\"Scale $campaign immutable action $slot\",\"profile\":\"quick\",\"max_cpu_seconds\":10}" || true)"
-    ok="$(printf '%s' "$start" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
-    [ "$ok" = True ] || dht_die "scale $slot could not start: $start"
-    work="$(printf '%s' "$start" | zap_field 'd["data"]["work_id"]')"
+    ok="$(printf '%s' "$start" | "$JSONQ" get ok 2>/dev/null || true)"
+    [ "$ok" = true ] || dht_die "scale $slot could not start: $start"
+    work="$(printf '%s' "$start" | "$JSONQ" get data.work_id)"
     handoff="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work run \
         --input="{\"workspace\":\"$project\",\"work\":\"$work\",\"adapter\":\"manual\"}" || true)"
-    candidate="$(printf '%s' "$handoff" | zap_field 'd["data"]["candidate_workspace"]' 2>/dev/null || true)"
+    candidate="$(printf '%s' "$handoff" | "$JSONQ" get data.candidate_workspace 2>/dev/null || true)"
     [ -d "$candidate/src" ] || dht_die "scale $slot candidate unavailable: $handoff"
     zap_write_source "$candidate/src/x.c" "$value"
     printf '%s\n%s\n%s\n%s\n' "$campaign" "$node" "$work" "$project" \
@@ -272,9 +312,9 @@ zaps_admit() {
     result="$(dht_native "${DDS[$node]}" "${RPCS[$node]}" zcode work run \
         --input="{\"workspace\":\"$project\",\"work\":\"$work\",\"adapter\":\"manual\",\"datadir\":\"${DDS[$node]}\",\"details\":true}" || true)"
     end_ns="$(date +%s%N)"
-    ok="$(printf '%s' "$result" | zap_field 'd.get("ok",False)' 2>/dev/null || true)"
-    [ "$ok" = True ] || dht_die "scale $slot foreground admission failed: $result"
-    action="$(printf '%s' "$result" | zap_field 'd["data"]["expert"]["action_id"]')"
+    ok="$(printf '%s' "$result" | "$JSONQ" get ok 2>/dev/null || true)"
+    [ "$ok" = true ] || dht_die "scale $slot foreground admission failed: $result"
+    action="$(printf '%s' "$result" | "$JSONQ" get data.expert.action_id)"
     [ "${#action}" -eq 64 ] || dht_die "scale $slot omitted immutable action identity"
     printf '%s\n' "$result" >"$DHT_WORK/async-submit-scale-${node}-${work}-result.json"
     printf '%s\n%s\n%s\n%s\n' "$action" "$(((end_ns-start_ns)/1000000))" \
@@ -422,130 +462,205 @@ zap_assert_exact_reuse "${one_meta[1]}" \
     >"$DHT_WORK/async-proof-scaling-performance-report.txt" ||
     dht_die "scaling performance report was incomplete"
 
-python3 - "$ZAPS_SUMMARY" <<'PY' || dht_die "scaling campaign receipt failed"
-import csv,sys
-rows=list(csv.DictReader(open(sys.argv[1], encoding="utf-8")))
-assert len(rows)==6, rows
-assert [r["campaign"] for r in rows].count("one")==1
-assert [r["campaign"] for r in rows].count("two")==2
-assert [r["campaign"] for r in rows].count("three")==3
-assert len({r["action"] for r in rows})==6
-assert all(int(r["foreground_ms"]) < 30000 for r in rows)
-assert all(r["requester"] != r["executor"] for r in rows)
-PY
+zaps_assert_campaign_receipt() {
+    local n=0 n_one=0 n_two=0 n_three=0
+    local campaign slot requester executor action fg bg cpu
+    declare -A actions=()
+    while IFS=, read -r campaign slot requester executor action fg bg cpu; do
+        [ "$campaign" = campaign ] && continue
+        n=$((n + 1))
+        case "$campaign" in
+            one) n_one=$((n_one + 1)) ;;
+            two) n_two=$((n_two + 1)) ;;
+            three) n_three=$((n_three + 1)) ;;
+        esac
+        actions[$action]=1
+        [ "$fg" -lt 30000 ] || return 1
+        [ "$requester" != "$executor" ] || return 1
+    done <"$ZAPS_SUMMARY"
+    [ "$n" -eq 6 ] || return 1
+    [ "$n_one" -eq 1 ] && [ "$n_two" -eq 2 ] && [ "$n_three" -eq 3 ] || return 1
+    [ "${#actions[@]}" -eq 6 ] || return 1
+}
 
-python3 - "$ZAPS_RESPONSIVENESS" <<'PY' \
-    >"$DHT_WORK/async-proof-responsiveness-report.json" || \
+zaps_write_responsiveness_report() {
+    local phase surface node elapsed ok n_rows=0
+    local idle_n loaded_n idle_p50 idle_p95 loaded_p50 loaded_p95
+    local surf_json="" piece
+    mkdir -p "$ZAPS_ROOT/resp"
+    for surface in chain peer sync command; do
+        : >"$ZAPS_ROOT/resp/idle-$surface"
+        : >"$ZAPS_ROOT/resp/loaded-$surface"
+    done
+    while IFS=, read -r phase surface node elapsed ok; do
+        [ "$phase" = phase ] && continue
+        n_rows=$((n_rows + 1))
+        [ "$ok" = true ] || return 1
+        case "$phase" in
+            idle|loaded) ;;
+            *) return 1 ;;
+        esac
+        printf '%s\n' "$elapsed" >>"$ZAPS_ROOT/resp/${phase}-${surface}"
+    done <"$ZAPS_RESPONSIVENESS"
+    [ "$n_rows" -gt 0 ] || return 1
+    for surface in chain peer sync command; do
+        idle_n=$(wc -l <"$ZAPS_ROOT/resp/idle-$surface" | tr -d ' ')
+        loaded_n=$(wc -l <"$ZAPS_ROOT/resp/loaded-$surface" | tr -d ' ')
+        [ "$idle_n" -eq 9 ] && [ "$loaded_n" -eq 18 ] || return 1
+        idle_p50=$(zaps_percentile 0.50 <"$ZAPS_ROOT/resp/idle-$surface")
+        idle_p95=$(zaps_percentile 0.95 <"$ZAPS_ROOT/resp/idle-$surface")
+        loaded_p50=$(zaps_percentile 0.50 <"$ZAPS_ROOT/resp/loaded-$surface")
+        loaded_p95=$(zaps_percentile 0.95 <"$ZAPS_ROOT/resp/loaded-$surface")
+        [ "$loaded_p95" -lt 1000 ] || return 1
+        [ "$loaded_p95" -le $((idle_p95 + 500)) ] || return 1
+        piece=$(printf '"%s":{"idle_samples":%s,"loaded_samples":%s,"idle_p50_ms":%s,"idle_p95_ms":%s,"loaded_p50_ms":%s,"loaded_p95_ms":%s,"p95_added_ms":%s}' \
+            "$surface" "$idle_n" "$loaded_n" "$idle_p50" "$idle_p95" \
+            "$loaded_p50" "$loaded_p95" "$((loaded_p95 - idle_p95))")
+        surf_json="${surf_json}${surf_json:+,}${piece}"
+    done
+    printf '{"schema":"zcl.async_proof_responsiveness.v1","probe_client_processes":%s,"surfaces":{%s},"simultaneous_requesters":3,"simultaneous_actions":3,"worker_slots_per_node":1,"action_cpu_slots":1,"read_surfaces_bounded":true,"verdict":"PASS"}\n' \
+        "$n_rows" "$surf_json"
+}
+
+zaps_csv_count() {
+    awk -F, -v p="$1" -v m="$2" 'NR > 1 && $1 == p && $2 == m { c++ } END { print c + 0 }' \
+        "$ZAPS_BLOCKCHAIN"
+}
+
+zaps_csv_max_elapsed() {
+    awk -F, -v p="$1" -v m="$2" '
+        NR > 1 && $1 == p && $2 == m { if ($4 + 0 > max) max = $4 + 0 }
+        END { print max + 0 }
+    ' "$ZAPS_BLOCKCHAIN"
+}
+
+zaps_write_blockchain_priority_report() {
+    local hz="$1" phase metric want idle loaded absolute added
+    local n_block=0 n_bad=0 min_peer
+    local lat_json="" res_json="" piece
+    local prefix node cpu nread nwrite rss_peak cpu_s
+    declare -A cpu_ticks=() read_bytes=() write_bytes=() rss_kb=() height_snap=()
+    declare -A nodes=() loaded_actions=() transferred=()
+    local campaign slot requester executor action fg bg cpu_ms
+    local max_bg=0 context_bytes=0 elapsed throughput
+    local path line act bytes n_transferred
+
+    while IFS=, read -r phase metric node elapsed want ok; do
+        [ "$phase" = phase ] && continue
+        n_block=$((n_block + 1))
+        [ "$ok" = true ] || n_bad=$((n_bad + 1))
+    done <"$ZAPS_BLOCKCHAIN"
+    [ "$n_block" -gt 0 ] && [ "$n_bad" -eq 0 ] || return 1
+
+    for phase in idle loaded; do
+        [ "$(zaps_csv_count "$phase" send_rpc)" -eq 1 ] || return 1
+        [ "$(zaps_csv_count "$phase" tx_relay)" -eq 2 ] || return 1
+        [ "$(zaps_csv_count "$phase" block_production)" -eq 1 ] || return 1
+        [ "$(zaps_csv_count "$phase" block_sync)" -eq 2 ] || return 1
+        [ "$(zaps_csv_count "$phase" peer_connections)" -eq 3 ] || return 1
+        min_peer=$(awk -F, -v p="$phase" '
+            NR > 1 && $1 == p && $2 == "peer_connections" {
+                v = $5 + 0
+                if (min == "" || v < min) min = v
+            }
+            END { print min + 0 }
+        ' "$ZAPS_BLOCKCHAIN")
+        [ "$min_peer" -ge 2 ] || return 1
+    done
+
+    for metric in send_rpc tx_relay block_production block_sync; do
+        case "$metric" in
+            send_rpc) absolute=2000; added=1000 ;;
+            tx_relay) absolute=10000; added=5000 ;;
+            block_production) absolute=5000; added=2000 ;;
+            block_sync) absolute=10000; added=5000 ;;
+        esac
+        idle=$(zaps_csv_max_elapsed idle "$metric")
+        loaded=$(zaps_csv_max_elapsed loaded "$metric")
+        [ "$loaded" -lt "$absolute" ] || return 1
+        [ "$loaded" -le $((idle + added)) ] || return 1
+        piece=$(printf '"%s":{"idle_max_ms":%s,"loaded_max_ms":%s,"added_ms":%s}' \
+            "$metric" "$idle" "$loaded" "$((loaded - idle))")
+        lat_json="${lat_json}${lat_json:+,}${piece}"
+    done
+
+    while IFS=, read -r phase node cpu nread nwrite rss conns height; do
+        [ "$phase" = phase ] && continue
+        nodes[$node]=1
+        cpu_ticks["$phase|$node"]=$cpu
+        read_bytes["$phase|$node"]=$nread
+        write_bytes["$phase|$node"]=$nwrite
+        rss_kb["$phase|$node"]=$rss
+        height_snap["$phase|$node"]=$height
+    done <"$ZAPS_RESOURCES"
+    [ "${#nodes[@]}" -eq 3 ] || return 1
+
+    for prefix in idle loaded; do
+        cpu=0; nread=0; nwrite=0; rss_peak=0
+        for node in "${!nodes[@]}"; do
+            cpu=$((cpu + ${cpu_ticks[${prefix}_after|$node]} - ${cpu_ticks[${prefix}_before|$node]}))
+            nread=$((nread + ${read_bytes[${prefix}_after|$node]} - ${read_bytes[${prefix}_before|$node]}))
+            nwrite=$((nwrite + ${write_bytes[${prefix}_after|$node]} - ${write_bytes[${prefix}_before|$node]}))
+            [ "${rss_kb[${prefix}_after|$node]}" -gt "$rss_peak" ] &&
+                rss_peak="${rss_kb[${prefix}_after|$node]}"
+            [ "${height_snap[${prefix}_after|$node]}" -ge $((${height_snap[${prefix}_before|$node]} + 1)) ] ||
+                return 1
+        done
+        [ "$cpu" -ge 0 ] && [ "$nread" -ge 0 ] && [ "$nwrite" -ge 0 ] || return 1
+        cpu_s=$(awk -v c="$cpu" -v hz="$hz" 'BEGIN { printf "%.3f", c / hz }')
+        piece=$(printf '"%s":{"node_cpu_seconds":%s,"node_read_bytes":%s,"node_write_bytes":%s,"rss_peak_kb":%s}' \
+            "$prefix" "$cpu_s" "$nread" "$nwrite" "$rss_peak")
+        res_json="${res_json}${res_json:+,}${piece}"
+    done
+
+    while IFS=, read -r campaign slot requester executor action fg bg cpu_ms; do
+        [ "$campaign" = campaign ] && continue
+        if [ "$campaign" = three ]; then
+            loaded_actions[$action]=1
+            [ "$bg" -gt "$max_bg" ] && max_bg=$bg
+        fi
+    done <"$ZAPS_SUMMARY"
+    [ "${#loaded_actions[@]}" -eq 3 ] || return 1
+
+    for path in "$DHT_WORK"/*/node.log; do
+        [ -f "$path" ] || continue
+        while IFS= read -r line; do
+            case "$line" in
+                *action=*stage=remote_admission*transferred_bytes=*)
+                    act=$(printf '%s' "$line" | sed -n 's/.*action=\([0-9a-f]\{64\}\).*/\1/p')
+                    bytes=$(printf '%s' "$line" | sed -n 's/.*transferred_bytes=\([0-9][0-9]*\).*/\1/p')
+                    [ "${#act}" -eq 64 ] || continue
+                    [ -n "$act" ] && [ -n "${loaded_actions[$act]+x}" ] || continue
+                    if [ -z "${transferred[$act]:-}" ] || [ "$bytes" -gt "${transferred[$act]}" ]; then
+                        transferred[$act]=$bytes
+                    fi
+                    ;;
+            esac
+        done <"$path"
+    done
+    n_transferred=0
+    context_bytes=0
+    for act in "${!loaded_actions[@]}"; do
+        [ -n "${transferred[$act]:-}" ] || return 1
+        n_transferred=$((n_transferred + 1))
+        context_bytes=$((context_bytes + transferred[$act]))
+    done
+    [ "$n_transferred" -eq 3 ] || return 1
+    elapsed=$max_bg
+    [ "$context_bytes" -gt 0 ] && [ "$elapsed" -gt 0 ] || return 1
+    throughput=$(awk -v c="$context_bytes" -v e="$elapsed" \
+        'BEGIN { printf "%.0f", (c * 1000) / e }')
+
+    printf '{"schema":"zcl.async_proof_blockchain_priority.v1","same_three_full_nodes":true,"simultaneous_actions":3,"state_changing_activity":{"transactions_relayed":2,"blocks_produced":2,"all_peers_synchronized":true},"latency":{%s},"resources":{%s},"loaded_context_bytes":%s,"loaded_context_throughput_bytes_per_second":%s,"worker_slots_per_node":1,"peer_connection_floor":2,"blockchain_priority_preserved":true,"verdict":"PASS"}\n' \
+        "$lat_json" "$res_json" "$context_bytes" "$throughput"
+}
+
+zaps_assert_campaign_receipt || dht_die "scaling campaign receipt failed"
+zaps_write_responsiveness_report \
+    >"$DHT_WORK/async-proof-responsiveness-report.json" ||
     dht_die "background proof responsiveness contract failed"
-import csv,json,math,sys
-rows=list(csv.DictReader(open(sys.argv[1], encoding="utf-8")))
-surfaces=("chain","peer","sync","command")
-def percentile(values, pct):
-    values=sorted(values)
-    return values[max(0, math.ceil(len(values)*pct)-1)]
-report={"schema":"zcl.async_proof_responsiveness.v1",
-        "probe_client_processes":len(rows),"surfaces":{}}
-assert rows and all(r["ok"]=="True" for r in rows), rows
-for surface in surfaces:
-    idle=[int(r["elapsed_ms"]) for r in rows
-          if r["phase"]=="idle" and r["surface"]==surface]
-    loaded=[int(r["elapsed_ms"]) for r in rows
-            if r["phase"]=="loaded" and r["surface"]==surface]
-    assert len(idle)==9 and len(loaded)==18, (surface,len(idle),len(loaded))
-    idle_p50,idle_p95=percentile(idle,.50),percentile(idle,.95)
-    loaded_p50,loaded_p95=percentile(loaded,.50),percentile(loaded,.95)
-    # One-CPU/one-slot proof workers may consume background time, but every
-    # public-node read surface retains a tight absolute and relative bound.
-    assert loaded_p95 < 1000, (surface,loaded_p95)
-    assert loaded_p95 <= idle_p95 + 500, (surface,idle_p95,loaded_p95)
-    report["surfaces"][surface]={
-        "idle_samples":len(idle),"loaded_samples":len(loaded),
-        "idle_p50_ms":idle_p50,"idle_p95_ms":idle_p95,
-        "loaded_p50_ms":loaded_p50,"loaded_p95_ms":loaded_p95,
-        "p95_added_ms":loaded_p95-idle_p95}
-report.update({"simultaneous_requesters":3,"simultaneous_actions":3,
-               "worker_slots_per_node":1,"action_cpu_slots":1,
-               "read_surfaces_bounded":True,"verdict":"PASS"})
-print(json.dumps(report,separators=(",",":")))
-PY
-
-if ! python3 - "$ZAPS_BLOCKCHAIN" "$ZAPS_RESOURCES" "$ZAPS_SUMMARY" \
-    "$DHT_WORK" "$(getconf CLK_TCK)" \
-    >"$DHT_WORK/async-proof-blockchain-priority-report.json" <<'PY'
-import csv,glob,json,re,sys
-block_path,resource_path,summary_path,root,hz=sys.argv[1:]
-hz=int(hz)
-block=list(csv.DictReader(open(block_path, encoding="utf-8")))
-resources=list(csv.DictReader(open(resource_path, encoding="utf-8")))
-summary=list(csv.DictReader(open(summary_path, encoding="utf-8")))
-assert block and all(r["ok"]=="true" for r in block),block
-
-def timings(phase, metric):
-    return [int(r["elapsed_ms"]) for r in block
-            if r["phase"]==phase and r["metric"]==metric]
-
-expected={"send_rpc":1,"tx_relay":2,"block_production":1,
-          "block_sync":2,"peer_connections":3}
-for phase in ("idle","loaded"):
-    for metric,count in expected.items():
-        rows=[r for r in block if r["phase"]==phase and r["metric"]==metric]
-        assert len(rows)==count,(phase,metric,rows)
-    assert min(int(r["value"]) for r in block
-               if r["phase"]==phase and r["metric"]=="peer_connections") >= 2
-
-bounds={"send_rpc":(2000,1000),"tx_relay":(10000,5000),
-        "block_production":(5000,2000),"block_sync":(10000,5000)}
-latencies={}
-for metric,(absolute,added) in bounds.items():
-    idle=max(timings("idle",metric)); loaded=max(timings("loaded",metric))
-    assert loaded < absolute,(metric,loaded,absolute)
-    assert loaded <= idle+added,(metric,idle,loaded,added)
-    latencies[metric]={"idle_max_ms":idle,"loaded_max_ms":loaded,
-                       "added_ms":loaded-idle}
-
-snap={(r["phase"],r["node"]):r for r in resources}
-nodes={r["node"] for r in resources}
-assert len(nodes)==3,nodes
-resource_delta={}
-for prefix in ("idle","loaded"):
-    before={n:snap[(prefix+"_before",n)] for n in nodes}
-    after={n:snap[(prefix+"_after",n)] for n in nodes}
-    cpu=sum(int(after[n]["cpu_ticks"])-int(before[n]["cpu_ticks"]) for n in nodes)
-    read=sum(int(after[n]["read_bytes"])-int(before[n]["read_bytes"]) for n in nodes)
-    write=sum(int(after[n]["write_bytes"])-int(before[n]["write_bytes"]) for n in nodes)
-    assert cpu>=0 and read>=0 and write>=0,(prefix,cpu,read,write)
-    assert all(int(after[n]["height"])>=int(before[n]["height"])+1 for n in nodes)
-    resource_delta[prefix]={"node_cpu_seconds":round(cpu/hz,3),
-                            "node_read_bytes":read,"node_write_bytes":write,
-                            "rss_peak_kb":max(int(after[n]["rss_kb"]) for n in nodes)}
-
-loaded_actions={r["action"] for r in summary if r["campaign"]=="three"}
-assert len(loaded_actions)==3,loaded_actions
-transferred={}
-pattern=re.compile(r"\baction=([0-9a-f]{64})\b.*\bstage=remote_admission\b.*\btransferred_bytes=(\d+)\b")
-for path in glob.glob(root+"/*/node.log"):
-    with open(path,encoding="utf-8",errors="replace") as stream:
-        for line in stream:
-            match=pattern.search(line)
-            if match and match.group(1) in loaded_actions:
-                transferred[match.group(1)]=max(transferred.get(match.group(1),0),
-                                                  int(match.group(2)))
-assert set(transferred)==loaded_actions,(loaded_actions,transferred)
-context_bytes=sum(transferred.values())
-elapsed=max(int(r["background_ms"]) for r in summary if r["campaign"]=="three")
-assert context_bytes>0 and elapsed>0,(context_bytes,elapsed)
-
-report={"schema":"zcl.async_proof_blockchain_priority.v1",
-        "same_three_full_nodes":True,"simultaneous_actions":3,
-        "state_changing_activity":{"transactions_relayed":2,"blocks_produced":2,
-                                    "all_peers_synchronized":True},
-        "latency":latencies,"resources":resource_delta,
-        "loaded_context_bytes":context_bytes,
-        "loaded_context_throughput_bytes_per_second":round(context_bytes*1000/elapsed),
-        "worker_slots_per_node":1,"peer_connection_floor":2,
-        "blockchain_priority_preserved":True,"verdict":"PASS"}
-print(json.dumps(report,separators=(",",":")))
-PY
+if ! zaps_write_blockchain_priority_report "$(getconf CLK_TCK)" \
+    >"$DHT_WORK/async-proof-blockchain-priority-report.json"
 then
     dht_die "state-changing blockchain priority contract failed"
 fi

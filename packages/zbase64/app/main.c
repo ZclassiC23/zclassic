@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: b64 - strict RFC 4648 Base64 transcoder over stdin/stdout.
  *
  * Usage: b64 [-d|--decode] [-u|--url]

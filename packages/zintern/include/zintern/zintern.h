@@ -12,7 +12,7 @@
  * malloc/free. Interning fails cleanly (returns false) on
  * allocation failure with the pool unchanged.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZINTERN_H
 #define ZINTERN_H

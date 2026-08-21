@@ -69,9 +69,11 @@ z23 zcode network policy mutate --datadir=/tmp/z23-commons \
 ## Author
 
 Put `zcode-package.json`, `LICENSE`, public headers, C sources, and tests in a
-directory outside Z23. Declare every dependency by its exact
-`package_root`. Discover any input spelling with `z23 discover schema
-<leaf>`.
+directory outside Z23. New original packages default to Apache-2.0 with
+`Copyright 2026 Rhett Creighton` on the LICENSE and in each source header.
+Other allowlisted permissive licenses stay valid when that is the existing
+text. Declare every dependency by its exact `package_root`. Discover any
+input spelling with `z23 discover schema <leaf>`.
 
 1. Create a package-only key. It is not a wallet or node identity:
 

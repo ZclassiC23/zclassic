@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zgrep-lite - print stdin lines matching a glob pattern.
  *
  * Usage: zglob PATTERN < lines

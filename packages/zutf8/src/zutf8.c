@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: UTF-8 validate/decode/encode (see the header for the rules). */
 #include "zutf8/zutf8.h"
 

@@ -1,6 +1,6 @@
 /* zbuf — bounded growable byte buffer
  *
- * MIT licensed. C23, hosted (uses realloc), sticky errors.
+ * Apache-2.0 licensed. C23, hosted (uses realloc), sticky errors.
  *
  * A heap byte buffer that grows geometrically up to a hard caller-set
  * maximum. Once any operation fails (allocation or bound), the buffer

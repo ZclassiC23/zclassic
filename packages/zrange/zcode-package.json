@@ -3,13 +3,13 @@
   "name": "zrange/zrange",
   "semver": "0.1.0",
   "language": "c23",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "include_dir": "include",
   "source_dir": "src",
   "dependencies": [
     {
       "name": "zsemver/zsemver",
-      "root": "b919d97ad8a9f9754d2357a3cda8f1cace35e677fe38cdc1452f321c38562ab5",
+      "root": "faf6572a5cc7e530a035d1747a873dcc17d498a1aacc8b046ceaaf0f047f28d4",
       "semver": "0.1.0"
     }
   ],

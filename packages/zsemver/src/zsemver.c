@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: strict SemVer 2.0.0 parse + precedence (see the header). */
 #include "zsemver/zsemver.h"
 

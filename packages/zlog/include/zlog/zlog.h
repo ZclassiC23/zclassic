@@ -5,7 +5,7 @@
  * "LEVEL tag message\n" through bounded cursor operations; long
  * messages are truncated, never overrun.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZLOG_H
 #define ZLOG_H

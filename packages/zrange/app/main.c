@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: rangecheck - print stdin version lines satisfying a semver range.
  *
  * Usage: zrange RANGE < versions

@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zjson CLI — turn key<TAB>value lines on stdin into a JSON
  *          object on stdout. Deterministic, bounded, allocation-free. */
 #include "zjson/zjson.h"

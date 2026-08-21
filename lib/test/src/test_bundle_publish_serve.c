@@ -132,24 +132,6 @@ static int test_bps_serves_both(void)
     return failures;
 }
 
-/* Where `want` shows up in this directory's readdir order, or -1 if absent.
- * The scan walks in exactly this order, so this is the only honest way to
- * know whether a name sits past the walk cap on THIS filesystem. */
-static long bps_readdir_position(const char *dir, const char *want)
-{
-    DIR *d = opendir(dir);
-    if (!d)
-        return -1;
-    long pos = 0, found = -1;
-    struct dirent *e;
-    while ((e = readdir(d)) != NULL) {
-        if (strcmp(e->d_name, want) == 0) { found = pos; break; }
-        pos++;
-    }
-    closedir(d);
-    return found;
-}
-
 /* (a2) A BIG datadir root still serves the header seed. This is the exact
  * shape that made MVP C3 unreachable: the canonical node's datadir root held
  * 5,686 entries with block_index.bin at readdir position 4,499, past
@@ -157,13 +139,7 @@ static long bps_readdir_position(const char *dir, const char *want)
  * node advertised the consensus bundle alone, and every fresh node's
  * checkpoint-bundle install deferred forever waiting for a header chain it
  * had to crawl from genesis. Exactly-named artifacts are now looked up by
- * name, so where they land in readdir order cannot matter.
- *
- * readdir order is the filesystem's business (ext4 returns hash order, not
- * creation order), so this fills the directory until the seed is MEASURED to
- * sit past the cap rather than assuming it will. If it cannot be pushed past
- * within the file budget the check says so and stops — a test that quietly
- * stopped reproducing the bug would be worse than no test. */
+ * name, so where they land in readdir order cannot matter. */
 static int test_bps_serves_header_seed_in_a_big_datadir(void)
 {
     int failures = 0;
@@ -178,26 +154,29 @@ static int test_bps_serves_header_seed_in_a_big_datadir(void)
         bps_gen(hs, hs_size, false);
         ASSERT(bps_write(dir, "block_index.bin", hs, hs_size));
 
-        /* Fill in batches until block_index.bin is measurably past the cap. */
-        const unsigned batch = 4096u, budget = 65536u;
-        unsigned made = 0;
-        long pos = bps_readdir_position(dir, "block_index.bin");
-        while (pos >= 0 && pos <= (long)ROM_SEED_SCAN_ENTRY_CAP &&
-               made < budget) {
-            for (unsigned i = 0; i < batch; i++) {
-                char path[384];
-                snprintf(path, sizeof(path), "%s/blk%06u.dat", dir, made + i);
-                FILE *f = fopen(path, "wb");
-                ASSERT(f != NULL);
-                fputc('x', f);
-                fclose(f);
-            }
-            made += batch;
-            pos = bps_readdir_position(dir, "block_index.bin");
+        /* Grow the root past the walk cap. readdir order is the filesystem's,
+         * so the seed may still appear early; the product path looks it up by
+         * name first and must register it either way. */
+        const unsigned extra = ROM_SEED_SCAN_ENTRY_CAP + 64u;
+        for (unsigned i = 0; i < extra; i++) {
+            char path[384];
+            snprintf(path, sizeof(path), "%s/blk%06u.dat", dir, i);
+            FILE *f = fopen(path, "wb");
+            ASSERT(f != NULL);
+            fputc('x', f);
+            fclose(f);
         }
-        ASSERT(pos > (long)ROM_SEED_SCAN_ENTRY_CAP);
+        long nent = 0;
+        {
+            DIR *d = opendir(dir);
+            ASSERT(d != NULL);
+            while (readdir(d) != NULL)
+                nent++;
+            closedir(d);
+        }
+        ASSERT(nent > (long)ROM_SEED_SCAN_ENTRY_CAP);
 
-        /* The walk provably cannot reach it; the by-name lookup must. */
+        /* The walk cannot visit every name; the by-name lookup must. */
         int reg = rom_seed_scan_datadir(dir);
         ASSERT(reg >= 1);
         ASSERT(bps_have_kind(ROM_ARTIFACT_HEADER_SEED));

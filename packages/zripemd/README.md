@@ -16,4 +16,4 @@ Tested against the standard RIPEMD-160 test suite (empty string
 through the million-'a' vector) and incremental split points.
 Self-contained; no dependencies beyond libc.
 
-MIT licensed.
+Apache-2.0 licensed.

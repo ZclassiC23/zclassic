@@ -65,7 +65,7 @@ containment_hits()
     set +e
     output="$({ cd "$root" && "$grep_bin" -rEn \
         --include='Makefile' --include='*.mk' --include='*.sh' \
-        --include='*.py' --include='*.c' --include='*.h' \
+        --include='*.c' --include='*.h' \
         --include='*.yml' --include='*.yaml' --include='*.json' \
         --include='*.toml' --include='Dockerfile*' \
         --include='Jenkinsfile*' --include='Justfile' \

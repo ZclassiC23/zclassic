@@ -1,6 +1,6 @@
 /* zbits — fixed-size bitset over caller storage
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Operations over a caller-provided word array: set/clear/test,
  * bulk set-all/clear-all/flip, popcount, find-first-set/clear,

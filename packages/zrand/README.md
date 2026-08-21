@@ -37,4 +37,4 @@ zrand shuffle 1 alpha beta gamma delta
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

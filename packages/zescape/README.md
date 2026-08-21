@@ -34,4 +34,4 @@ printf 'a\\x41' | zescape unescape   # aA
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: KAT, grammar, bounds, decode, and property tests for
  *          zjsonp. Round-trip property: anything the zjson writer
  *          (companion package) emits must parse here, event for

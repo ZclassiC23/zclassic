@@ -46,15 +46,50 @@ State-root chain:          657cbc598e8cfff4e3a67e0b11de17a6b576be686ae924149614e
 Those three roots are the acceptance. If your machine prints them, your machine
 ran the same match — not a similar one.
 
+## Watch it in 3D
+
+```bash
+make arena-view                    # play the demo match, then fly it
+make arena-view REPLAY=/tmp/my.replay
+make arena-view-check              # argv refusals + --check-only vs pinned roots
+```
+
+`tools/arena_view.c` is an interactive raylib viewer over verified replays.
+It re-simulates the whole replay first and refuses — before any window opens —
+anything whose final state does not re-derive exactly; the HUD's VERIFIED line
+shows roots it recomputed itself, never copies from the file. Pixels never
+feed back into match state: rendering reads the integer core's output and
+nothing else.
+
+Four cameras — CHASE (smoothed pursuit), COCKPIT (banked horizon with a
+reticle), ORBIT (drag/wheel), OVERVIEW (whole arena). TAB cycles planes, C
+cycles cameras, SPACE pauses, arrows seek, +/- sets speed. A live tactical
+minimap carries the contact sheet's overhead view into the corner; kill
+bursts are placed from the alive->dead transitions observed during
+verification; and the city skyline is generated from the replay's own seed
+through the arena PRNG, so the same replay shows the same city on every
+machine.
+
+`make arena-view` passes `--show` so the window is visible. The binary itself
+stays hidden unless you ask: automated runs use `--check-only` or
+`--frames N --screenshot f.png` and never grab the desktop. Requires raylib
+(`pkg-config raylib`); without it, every other arena target is unaffected.
+The lower-left inset is the hosted C23 `zdogview` framebuffer — city, tracers,
+bursts and score HUD from integer isometric math over the same verified
+replay — so a node that only fetched the package still has a picture.
+
 Related targets:
 
 | Command | What it does |
 |---|---|
 | `make arena-demo` | play, verify, check the pinned roots, refuse a tampered replay |
+| `make arena-view` | play the demo match and open it in the 3D viewer (`REPLAY=` to view a file) |
+| `make arena-view-check` | refuse incomplete argv; re-derive the pinned demo roots with no window |
+| `make tools/zdogview` | C23 integer 3D CLI: `zdogview verify` / `zdogview render --out f.ppm` |
 | `make arena-svg` | regenerate `docs/assets/zcode-arena.svg` from a freshly verified match |
 | `make arena-svg-check` | fail if the committed artwork is stale |
 | `make arena-demo-opt-parity` | rebuild the pilots at `-O0` and `-O2` and require identical roots |
-| `make tools/arena-selftest` | run the arena core's and both pilots' own test suites |
+| `make tools/arena-selftest` | run the arena core's, both pilots', and zdogview's own test suites |
 
 ## The pieces
 
@@ -64,8 +99,30 @@ Related targets:
 | [`packages/zdogace`](../packages/zdogace) | a pursuit pilot — flies red |
 | [`packages/zdogdrone`](../packages/zdogdrone) | a simple patrol pilot — flies blue |
 | [`packages/zprng`](../packages/zprng) | the only entropy source, drawn solely by respawns |
+| [`packages/zdogview`](../packages/zdogview) | integer 3D view of a verified replay (C23, Apache-2.0; no raylib) |
 | [`tools/arena_runner.c`](../tools/arena_runner.c) | plays a match between two confined pilot processes; also verifies a replay |
 | [`tools/arena_svg.c`](../tools/arena_svg.c) | renders a verified replay to a deterministic SVG |
+| [`tools/arena_view.c`](../tools/arena_view.c) | local raylib window over `zdogview` (`make arena-view` passes `--show`) |
+
+Every Arena package is ordinary C23 under Apache-2.0 (Copyright 2026 Rhett
+Creighton). Any node can publish, discover, fetch, confined-build,
+independently reproduce, and serve them over the package swarm with no GitHub
+and no central registry. Exact identity is the `package_root` in each
+`zcode-package.json`. Publish validation refuses any other language and any
+license outside the frozen permissive allowlist — see
+[`P2P_SOURCE_HOSTING.md`](P2P_SOURCE_HOSTING.md). A fetch is inert. Import
+reconstructs the signed carrier; pin keeps the replica. After that this node
+announces the same root, so the original publisher can disappear and later
+peers still fetch the exact bytes from whoever still holds them. The swarm
+net test `useful C23 packages host redundantly` is that proof for `zprng`,
+`zdogfight`, and `zdogview` (A publishes, B mirrors, A is removed, C fetches
+from B). The two-node arena script below is the match-play journey for the
+four match packages. The raylib window is a local display of those verified
+bytes, not a swarm dependency. The announce quota still limits a *fresh* peer
+to four *new* roots in one window, which is why the acceptance script prunes
+to the four match packages; that quota is a named product gap, not a second
+license class. Re-announcing a root a peer already holds is how redundancy
+works inside the quota.
 
 A pilot is an ordinary program. Per tick, for each of its living planes, it
 reads one 82-byte observation frame on stdin and writes one 7-byte control
@@ -218,8 +275,13 @@ These are named because they are real, not because they are about to be fixed.
   authenticated DHT provider route, so the acceptance script hands those
   envelopes over the same out-of-band channel.
 - **The artwork is a contact sheet, not an animation.** Six deterministic
-  overhead snapshots, chosen by fixed rules over the re-simulation. There is no
-  renderer, no browser and no 3D view in this repository, by design.
+  overhead snapshots, chosen by fixed rules over the re-simulation. The
+  interactive 3D view is [`tools/arena_view.c`](../tools/arena_view.c) —
+  local, optional, and not part of `make test` or the two-node swarm proof:
+  `make arena-view-check` re-derives the pinned roots without a window and
+  needs raylib installed; the committed artwork stays a byte-deterministic
+  SVG so `arena-svg-check` remains a real staleness gate, and no browser or
+  renderer is required by any default acceptance.
 
 ## Where this sits in the project
 

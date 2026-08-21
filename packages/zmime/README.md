@@ -45,4 +45,4 @@ format round-trips with fixed-point checking, the >8-parameter edge,
 and a 3000-trial token fuzz with poisoned-separator negatives. Built
 with `-std=c23 -Wall -Wextra -Werror -pedantic` under ASan/UBSan.
 
-MIT licensed.
+Apache-2.0 licensed.

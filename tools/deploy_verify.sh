@@ -346,97 +346,34 @@ json_key_is_string() {
         grep -q "\"$2\"[[:space:]]*:[[:space:]]*\"$3\""
 }
 
-json_python_enabled() {
-    [ "${ZCL_NO_PYTHON:-0}" != "1" ] && command -v python3 >/dev/null 2>&1
-}
-
 json_top_key_is_true() {
-    if ! json_python_enabled; then
-        json_key_is_true "$1" "$2"
-        return $?
-    fi
-    printf '%s\n' "$1" |
-        python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if d.get(sys.argv[1]) is True else 1)' "$2" 2>/dev/null
+    json_key_is_true "$1" "$2"
 }
 
 json_top_has_key() {
-    if ! json_python_enabled; then
-        json_has_key "$1" "$2"
-        return $?
-    fi
-    printf '%s\n' "$1" |
-        python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if sys.argv[1] in d else 1)' "$2" 2>/dev/null
+    json_has_key "$1" "$2"
 }
 
 json_top_key_is_string() {
-    if ! json_python_enabled; then
-        json_key_is_string "$1" "$2" "$3"
-        return $?
-    fi
-    printf '%s\n' "$1" |
-        python3 -c 'import json, sys; d=json.load(sys.stdin); sys.exit(0 if d.get(sys.argv[1]) == sys.argv[2] else 1)' "$2" "$3" 2>/dev/null
+    json_key_is_string "$1" "$2" "$3"
 }
 
 json_health_gap_at_most_one() {
-    if ! json_python_enabled; then
-        printf '%s\n' "$1" |
-            grep -q '"gap"[[:space:]]*:[[:space:]]*[01]\([^0-9]\|$\)'
-        return $?
-    fi
-    printf '%s\n' "$1" | python3 -c '
-import json
-import sys
-d = json.load(sys.stdin)
-gap = (d.get("checks") or {}).get("gap")
-sys.exit(0 if isinstance(gap, int) and not isinstance(gap, bool) and 0 <= gap <= 1 else 1)
-' 2>/dev/null
+    printf '%s\n' "$1" |
+        grep -q '"gap"[[:space:]]*:[[:space:]]*[01]\([^0-9]\|$\)'
 }
 
 json_rpc_result() {
-    json_python_enabled || { printf '%s\n' "$1"; return 0; }
-    printf '%s\n' "$1" | python3 -c '
-import json
-import sys
-raw = sys.stdin.read()
-try:
-    d = json.loads(raw)
-except Exception:
-    sys.stdout.write(raw)
-    sys.exit(0)
-if isinstance(d, dict) and "result" in d and d.get("error") in (None, {}) and d.get("result") is not None:
-    result = d.get("result")
-    if isinstance(result, str):
-        sys.stdout.write(result)
-    else:
-        sys.stdout.write(json.dumps(result, separators=(",", ":")))
-else:
-    sys.stdout.write(raw)
-' 2>/dev/null
+    printf '%s\n' "$1"
 }
 
 extract_health_height() {
-    if ! json_python_enabled; then
-        printf '%s\n' "$1" |
-            tr ',' '\n' |
-            grep -E '"(log_head|projection_height|local_height)"[[:space:]]*:' |
-            grep -oE ':[[:space:]]*[0-9]+' |
-            grep -oE '[0-9]+' |
-            awk '$1 > 0 { print; exit }'
-        return 0
-    fi
-    printf '%s\n' "$1" | python3 -c '
-import json
-import sys
-d = json.load(sys.stdin)
-checks = d.get("checks") or {}
-checks_ca = checks.get("chain_advance") or {}
-top_ca = d.get("chain_advance") or {}
-for value in (checks.get("log_head"), checks_ca.get("projection_height"), checks_ca.get("local_height"), top_ca.get("projection_height"), top_ca.get("local_height")):
-    if isinstance(value, int) and value > 0:
-        print(value)
-        sys.exit(0)
-sys.exit(1)
-' 2>/dev/null
+    printf '%s\n' "$1" |
+        tr ',' '\n' |
+        grep -E '"(log_head|projection_height|local_height)"[[:space:]]*:' |
+        grep -oE ':[[:space:]]*[0-9]+' |
+        grep -oE '[0-9]+' |
+        awk '$1 > 0 { print; exit }'
 }
 
 json_key_is_int() {

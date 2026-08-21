@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zdiff CLI — print the line edit script between two files
  *          as ' ', '-', '+' prefixed lines. Exit 0 when identical,
  *          1 when different, 2 on error. Bounded: files up to 4 MiB,

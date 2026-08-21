@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zini test suite.  Exits nonzero on the first failure. */
 #include "zini/zini.h"
 

@@ -51,4 +51,4 @@ C23. Compile `src/zpem.c` together with the `zbase64` package's
 
 ## License
 
-MIT.
+Apache-2.0.

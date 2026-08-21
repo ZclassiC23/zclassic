@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded recursive directory traversal (see the header for the
  *          ordering, symlink, and error contract). */
 #define _DEFAULT_SOURCE /* lstat */

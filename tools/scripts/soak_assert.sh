@@ -40,43 +40,37 @@ echo "soak: unit=$UNIT min_peers=$MIN_PEERS lag_breach=$LAG_BREACH_BLOCKS"
 echo "soak: starting at $(date -u --iso-8601=seconds), duration ${DURATION_S}s, poll ${POLL_S}s"
 echo "soak: restart_count baseline=$restart_baseline"
 
+json_num() {
+    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*-?[0-9]+" |
+        head -1 | sed -E 's/.*:[ ]*//' || true
+}
+json_str() {
+    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*\"[^\"]*\"" |
+        head -1 | sed -E 's/.*:[ ]*"//; s/"$//' || true
+}
+json_bool() {
+    printf '%s' "$1" | grep -oE "\"$2\"[[:space:]]*:[[:space:]]*(true|false)" |
+        head -1 | sed -E 's/.*:[ ]*//' || true
+}
+
 while [ "$(date +%s)" -lt "$end_ts" ]; do
     elapsed=$(( $(date +%s) - start_ts ))
     health=$(curl -sk "$HEALTH_URL" 2>/dev/null || echo '{}')
 
-    peer_count=$(echo "$health" | python3 -c "
-import sys, json
-try: print(json.load(sys.stdin).get('network',{}).get('peer_count', -1))
-except: print(-1)
-")
-    mb_count=$(echo "$health" | python3 -c "
-import sys, json
-try: print(json.load(sys.stdin).get('network',{}).get('magicbean_peer_count', -1))
-except: print(-1)
-")
+    peer_count=$(json_num "$health" peer_count)
+    [ -n "$peer_count" ] || peer_count=-1
+    mb_count=$(json_num "$health" magicbean_peer_count)
+    [ -n "$mb_count" ] || mb_count=-1
     sync_detail=$($ZCL_CLI getsyncdetail 2>/dev/null || echo '{}')
-    lag=$(echo "$sync_detail" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin).get('result', {})
-    print(d.get('mirror_lag', -1))
-except: print(-1)
-")
-    lag_known=$(echo "$sync_detail" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin).get('result', {})
-    v = d.get('mirror_lag_known', d.get('lag_known', False))
-    print('true' if v is True else 'false')
-except: print('false')
-")
-    severity=$(echo "$sync_detail" | python3 -c "
-import sys, json
-try:
-    d = json.load(sys.stdin).get('result', {})
-    print(d.get('mirror_lag_breach_severity', 'unknown'))
-except: print('unknown')
-")
+    lag=$(json_num "$sync_detail" mirror_lag)
+    [ -n "$lag" ] || lag=-1
+    lag_known=$(json_bool "$sync_detail" mirror_lag_known)
+    if [ -z "$lag_known" ]; then
+        lag_known=$(json_bool "$sync_detail" lag_known)
+    fi
+    [ "$lag_known" = "true" ] || lag_known=false
+    severity=$(json_str "$sync_detail" mirror_lag_breach_severity)
+    [ -n "$severity" ] || severity=unknown
     nrestarts=$(systemctl --user show "$UNIT" -p NRestarts --value 2>/dev/null || echo "$restart_baseline")
 
     fail=""

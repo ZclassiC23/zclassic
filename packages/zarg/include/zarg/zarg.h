@@ -1,6 +1,6 @@
 /* zarg — bounded argv parser
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Parses an argv vector against a caller-supplied option spec table.
  * Zero-copy: values point into the original argv strings.

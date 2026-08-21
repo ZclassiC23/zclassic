@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: INI configuration parser; see zini.h for the grammar and
  *          ownership rules.  Built on zmap: one map of section name ->
  *          zmap* of key -> malloc'd value copy.

@@ -54,8 +54,8 @@ int t_canonical_operator_diagnostics_contract(void)
         ASSERT(strstr(buf, "pre-RPC recovery: reindex-chainstate") != NULL);
         ASSERT(strstr(buf, "zclassic-cli|zcl-rpc") != NULL);
         ASSERT(strstr(buf, "json_rpc_result") != NULL);
-        ASSERT(strstr(buf, "checks.get(\"log_head\")") != NULL);
-        ASSERT(strstr(buf, "checks_ca.get(\"local_height\")") != NULL);
+        ASSERT(strstr(buf, "extract_health_height") != NULL);
+        ASSERT(strstr(buf, "log_head|projection_height|local_height") != NULL);
         ASSERT(strstr(buf, "handshaked_connections") != NULL);
         ASSERT(strstr(buf, "legacy_compatible_peers") != NULL);
         ASSERT(strstr(buf, "legacy_magicbean_peers") != NULL);
@@ -451,7 +451,7 @@ int t_soak_assert_requires_known_mirror_lag(void)
         ASSERT(repo_path(path, sizeof(path), "tools/scripts/soak_assert.sh") == 0);
         ASSERT(read_entire_file(path, &buf) == 0);
         ASSERT(strstr(buf, "mirror_lag_known") != NULL);
-        ASSERT(strstr(buf, "lag_known=$(echo \"$sync_detail\"") != NULL);
+        ASSERT(strstr(buf, "lag_known=$(json_bool \"$sync_detail\" mirror_lag_known") != NULL);
         ASSERT(strstr(buf, "fail=\"mirror_lag_unknown\"") != NULL);
         ASSERT(strstr(buf, "lag_known=$lag_known") != NULL);
         ASSERT(strstr(buf, "elif [ \"$lag_known\" != \"true\" ]; then")

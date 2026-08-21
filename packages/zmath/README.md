@@ -35,4 +35,4 @@ zmath pow 2 63         # 9223372036854775808
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

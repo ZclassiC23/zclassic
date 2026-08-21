@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded JSON (RFC 8259) serialization for C23.
  *          Allocation-free, depth-bounded, and total: the writer emits
  *          into caller storage, every call returns a status, and the
