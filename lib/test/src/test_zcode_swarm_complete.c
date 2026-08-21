@@ -135,6 +135,18 @@ static int sc_t_announce_on_complete(void)
             free(r.reply);
         }
 
+        struct vcs_swarm_advertised offered[8];
+        size_t offered_n = vcs_swarm_engine_advertised(leech.engine, offered,
+                                                       8);
+        bool saw_ad = false;
+        for (size_t i = 0; i < offered_n; i++) {
+            if (memcmp(offered[i].root, root, 32) == 0 &&
+                offered[i].advertisers >= 1u)
+                saw_ad = true;
+        }
+        ASSERT(offered_n >= 1u);
+        ASSERT(saw_ad);
+
         ASSERT(vcs_blob_fetch_via(leech.engine, root, SC_DAY, 2) ==
                VCS_BLOB_OK);
 

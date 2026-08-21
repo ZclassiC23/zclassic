@@ -46,10 +46,12 @@ its frames on the real P2P wire under the `zpkgswm` message tag via
 neither serves nor pulls package bytes. Operators inspect the live engine
 with `z23 dumpstate zcode_swarm`. When hosting is off the dump still
 succeeds and reports `enabled`/`present` false; when the engine is wired
-it reports peer count, active downloads, and bounded per-peer served and
-fetched bytes, never keys or datadir paths.
+it reports peer count, active downloads, bounded per-peer served and
+fetched bytes, and the union of roots those peers have ANNOUNCEd, never
+keys or datadir paths.
 <!-- claim: symbol-present vcs_package_swarm_status_dump_state_json lib/vcs/src/package_swarm_status.c # dumpstate zcode_swarm leaf -->
 <!-- claim: symbol-present zcode_swarm app/controllers/include/controllers/diagnostics_dumpers_zcode.def # dumpstate leaf registered -->
+<!-- claim: symbol-present vcs_swarm_engine_advertised lib/vcs/src/package_swarm_ads.c # live advertised-root union -->
 
 Read "pure codec" as a statement about the two lower layers only
 (`package_swarm.c` and the engine, both of which stay free of sockets, threads,

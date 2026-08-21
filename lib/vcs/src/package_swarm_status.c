@@ -5,8 +5,35 @@
 
 #include "vcs/package_swarm_node.h"
 
+#include "base/hex.h"
 #include "json/json.h"
 #include "util/log_macros.h"
+
+static void push_advertised(struct json_value *out,
+                            struct vcs_swarm_engine *engine)
+{
+    struct vcs_swarm_advertised rows[VCS_SWARM_MAX_LOCAL_ANNOUNCES];
+    size_t n = 0;
+    if (engine)
+        n = vcs_swarm_engine_advertised(engine, rows,
+                                        VCS_SWARM_MAX_LOCAL_ANNOUNCES);
+    json_push_kv_int(out, "advertised_count", (int64_t)n);
+    struct json_value advertised = {0};
+    json_set_array(&advertised);
+    for (size_t i = 0; i < n; i++) {
+        char hex[65];
+        zcl_hex_encode(rows[i].root, 32, hex);
+        struct json_value row = {0};
+        json_set_object(&row);
+        json_push_kv_str(&row, "root", hex);
+        json_push_kv_int(&row, "advertisers",
+                         (int64_t)rows[i].advertisers);
+        json_push_back(&advertised, &row);
+        json_free(&row);
+    }
+    json_push_kv(out, "advertised", &advertised);
+    json_free(&advertised);
+}
 
 bool vcs_package_swarm_status_dump_state_json(struct json_value *out,
                                               const char *key)
@@ -26,6 +53,7 @@ bool vcs_package_swarm_status_dump_state_json(struct json_value *out,
         json_set_array(&peers);
         json_push_kv(out, "peers", &peers);
         json_free(&peers);
+        push_advertised(out, NULL);
         return true;
     }
 
@@ -59,5 +87,6 @@ bool vcs_package_swarm_status_dump_state_json(struct json_value *out,
     }
     json_push_kv(out, "peers", &peers);
     json_free(&peers);
+    push_advertised(out, engine);
     return true;
 }

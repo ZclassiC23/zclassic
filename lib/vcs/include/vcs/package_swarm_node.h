@@ -424,4 +424,16 @@ size_t vcs_swarm_engine_peers_for(struct vcs_swarm_engine *engine,
                                   struct vcs_swarm_peer_info *out,
                                   size_t out_max);
 
+/* Union of roots peers have ANNOUNCEd this session, sorted by root.
+ * `advertisers` is how many known peers listed that root. Does not
+ * invent replica counts beyond this engine's live advertisements. */
+struct vcs_swarm_advertised {
+    uint8_t root[32];
+    uint32_t advertisers;
+};
+
+size_t vcs_swarm_engine_advertised(struct vcs_swarm_engine *engine,
+                                   struct vcs_swarm_advertised *out,
+                                   size_t max);
+
 #endif /* ZCL_VCS_PACKAGE_SWARM_NODE_H */

@@ -1,9 +1,9 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
  *
  * Read-only dumpstate snapshot of the node-global ZCODE package swarm
- * engine. Reports presence, peer count, active downloads, and bounded
- * per-peer served/fetched bytes. Never exposes keys, wallet material, or
- * datadir paths. */
+ * engine. Reports presence, peer count, active downloads, bounded
+ * per-peer served/fetched bytes, and advertised roots. Never exposes
+ * keys, wallet material, or datadir paths. */
 
 #ifndef ZCL_VCS_PACKAGE_SWARM_STATUS_H
 #define ZCL_VCS_PACKAGE_SWARM_STATUS_H

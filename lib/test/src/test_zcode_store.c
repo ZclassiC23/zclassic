@@ -1830,9 +1830,13 @@ static int t_swarm_engine_dump_state(void)
              !json_get_bool(json_get(&v, "present")) &&
              json_get_int(json_get(&v, "peer_count")) == 0 &&
              json_get_int(json_get(&v, "active_downloads")) == 0 &&
+             json_get_int(json_get(&v, "advertised_count")) == 0 &&
              json_get(&v, "peers") &&
              json_get(&v, "peers")->type == JSON_ARR &&
-             json_size(json_get(&v, "peers")) == 0);
+             json_size(json_get(&v, "peers")) == 0 &&
+             json_get(&v, "advertised") &&
+             json_get(&v, "advertised")->type == JSON_ARR &&
+             json_size(json_get(&v, "advertised")) == 0);
     char rendered[2048];
     size_t rendered_len = json_write(&v, rendered, sizeof(rendered));
     ZS_CHECK("swarm dump: hosting-off snapshot leaks no paths or keys",
@@ -1897,7 +1901,10 @@ static int t_swarm_engine_dump_state(void)
              json_get_bool(json_get(&v, "present")) &&
              json_get_int(json_get(&v, "peer_count")) == 2 &&
              json_get_int(json_get(&v, "active_downloads")) == 0 &&
+             json_get_int(json_get(&v, "advertised_count")) == 0 &&
              peers && json_size(peers) == 2 &&
+             json_get(&v, "advertised") &&
+             json_size(json_get(&v, "advertised")) == 0 &&
              row0 && json_get_int(json_get(row0, "peer_id")) == 7 &&
              json_get_int(json_get(row0, "served_bytes")) == 0 &&
              json_get_int(json_get(row0, "fetched_bytes")) == 0 &&
