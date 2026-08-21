@@ -748,7 +748,8 @@ static bool space16_swarm_fetch(
         printf("space16 swarm outbound parse failed len=%zu\n", outbound_len);
         return false;
       }
-      if (request.type == VCS_PACKAGE_SWARM_CANCEL)
+      if (request.type == VCS_PACKAGE_SWARM_CANCEL ||
+          request.type == VCS_PACKAGE_SWARM_ANNOUNCE)
         continue;
       if (request.type != VCS_PACKAGE_SWARM_WANT) {
         printf("space16 swarm unexpected type=%u\n", request.type);

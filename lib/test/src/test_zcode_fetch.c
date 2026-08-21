@@ -10,7 +10,9 @@
  *                          package reports already_complete; BAD_ROOT
  *                          names the bad input
  *   zcode package peers    one-shot: live:false, empty list, never a
- *                          replayed-from-disk fake
+ *                          replayed-from-disk fake; store-side possession
+ *                          (complete, operator-pinned, public-serveable /
+ *                          would_serve) is still reported, fail closed
  *   zcode package pin      UNKNOWN_PACKAGE names the untracked root; a
  *                          tracked package pins (operator path, never
  *                          tier-gated) and reports its pool
@@ -29,6 +31,7 @@
 
 #include "chain/chainparams.h"
 #include "json/json.h"
+#include "vcs/blob_store.h"
 #include "vcs/package_manifest.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_store.h"
@@ -470,6 +473,11 @@ static int zf_t_source_reproduction_loop(void)
     return failures;
 }
 
+static const struct json_value *zf_possession(const struct zf_cmd *c)
+{
+    return json_get(&c->reply.data, "possession");
+}
+
 static int zf_t_peers_one_shot(void)
 {
     int failures = 0;
@@ -486,7 +494,113 @@ static int zf_t_peers_one_shot(void)
         ASSERT(json_get(&c.reply.data, "live") &&
                !json_get_bool(json_get(&c.reply.data, "live")));
         ASSERT(json_get_int(json_get(&c.reply.data, "peer_count")) == 0);
+        ASSERT(json_get(&c.reply.data, "peers") != NULL);
         ASSERT(json_get_str(json_get(&c.reply.data, "note")) != NULL);
+        {
+            const struct json_value *pos = zf_possession(&c);
+            ASSERT(pos != NULL);
+            ASSERT(json_get(pos, "observed") &&
+                   !json_get_bool(json_get(pos, "observed")));
+            ASSERT(json_get(pos, "tracked") &&
+                   !json_get_bool(json_get(pos, "tracked")));
+            ASSERT(json_get(pos, "complete") &&
+                   !json_get_bool(json_get(pos, "complete")));
+            ASSERT(json_get(pos, "pinned") &&
+                   !json_get_bool(json_get(pos, "pinned")));
+            ASSERT(json_get(pos, "public_serveable") &&
+                   !json_get_bool(json_get(pos, "public_serveable")));
+            ASSERT(json_get(pos, "would_serve") &&
+                   !json_get_bool(json_get(pos, "would_serve")));
+            ASSERT_STR_EQ(json_get_str(json_get(pos, "public_shape")),
+                          "refused");
+            ASSERT_STR_EQ(json_get_str(json_get(pos, "serve_rule")),
+                          "store-unobserved");
+            ASSERT_EQ(json_get_int(json_get(pos, "present_bytes")), 0);
+            ASSERT_EQ(json_get_int(json_get(pos, "total_bytes")), 0);
+        }
+        zf_cmd_free(&c);
+        zf_free_package(&pkg);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int zf_t_peers_possession(void)
+{
+    int failures = 0;
+    TEST("zcode package peers: store-side possession, pin, would_serve") {
+        char dd[1024];
+        test_make_tmpdir(dd, sizeof(dd), "zcode_fetch", "peers-possess");
+        struct zf_pkg pkg;
+        ASSERT(zf_make_package(&pkg, 0x67));
+        uint8_t blob_root[32];
+        char blob_hex[65];
+        {
+            struct vcs_package_store *store = vcs_package_store_open(
+                dd, VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+            ASSERT(store != NULL);
+            ASSERT(zf_store_package(store, &pkg));
+            uint8_t blob[16];
+            for (size_t i = 0; i < sizeof(blob); i++)
+                blob[i] = (uint8_t)(0xa0u + i);
+            ASSERT(vcs_blob_put_to(store, blob, sizeof(blob), blob_root) ==
+                   VCS_BLOB_OK);
+            zcl_hex_encode(blob_root, 32, blob_hex);
+            ASSERT(vcs_package_store_pin(store, pkg.root, true) ==
+                   VCS_PACKAGE_STORE_OK);
+            vcs_package_store_close(store);
+        }
+
+        struct zf_cmd c;
+        zf_cmd_init(&c, dd);
+        (void)json_push_kv_str(&c.input, "root", pkg.root_hex);
+        zcl_native_handle_zcode_package_peers(&c.request, &c.reply);
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get(&c.reply.data, "live") &&
+               !json_get_bool(json_get(&c.reply.data, "live")));
+        ASSERT(json_get_int(json_get(&c.reply.data, "peer_count")) == 0);
+        {
+            const struct json_value *pos = zf_possession(&c);
+            ASSERT(pos != NULL);
+            ASSERT(json_get_bool(json_get(pos, "observed")));
+            ASSERT(json_get_bool(json_get(pos, "tracked")));
+            ASSERT(json_get_bool(json_get(pos, "complete")));
+            ASSERT(json_get_bool(json_get(pos, "pinned")));
+            ASSERT(json_get(pos, "public_serveable") &&
+                   !json_get_bool(json_get(pos, "public_serveable")));
+            ASSERT(json_get(pos, "would_serve") &&
+                   !json_get_bool(json_get(pos, "would_serve")));
+            ASSERT_STR_EQ(json_get_str(json_get(pos, "public_shape")),
+                          "refused");
+            ASSERT(json_get_str(json_get(pos, "serve_rule")) != NULL);
+            ASSERT(json_get_int(json_get(pos, "present_bytes")) > 0);
+            ASSERT(json_get_int(json_get(pos, "total_bytes")) > 0);
+            ASSERT(json_get(&c.reply.data, "replicas") == NULL);
+            ASSERT(json_get(pos, "replicas") == NULL);
+        }
+        zf_cmd_free(&c);
+
+        zf_cmd_init(&c, dd);
+        (void)json_push_kv_str(&c.input, "root", blob_hex);
+        zcl_native_handle_zcode_package_peers(&c.request, &c.reply);
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get(&c.reply.data, "live") &&
+               !json_get_bool(json_get(&c.reply.data, "live")));
+        {
+            const struct json_value *pos = zf_possession(&c);
+            ASSERT(pos != NULL);
+            ASSERT(json_get_bool(json_get(pos, "observed")));
+            ASSERT(json_get_bool(json_get(pos, "tracked")));
+            ASSERT(json_get_bool(json_get(pos, "complete")));
+            ASSERT(json_get(pos, "pinned") &&
+                   !json_get_bool(json_get(pos, "pinned")));
+            ASSERT(json_get_bool(json_get(pos, "public_serveable")));
+            ASSERT(json_get_bool(json_get(pos, "would_serve")));
+            ASSERT_STR_EQ(json_get_str(json_get(pos, "public_shape")),
+                          "blob");
+            ASSERT_STR_EQ(json_get_str(json_get(pos, "serve_rule")),
+                          "blob");
+        }
         zf_cmd_free(&c);
         zf_free_package(&pkg);
         PASS();
@@ -590,6 +704,7 @@ int test_zcode_fetch(void)
     failures += zf_t_fetch_complete();
     failures += zf_t_source_reproduction_loop();
     failures += zf_t_peers_one_shot();
+    failures += zf_t_peers_possession();
     failures += zf_t_pin_roundtrip();
     return failures;
 }

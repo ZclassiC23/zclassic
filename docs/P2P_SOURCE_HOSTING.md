@@ -43,7 +43,13 @@ accounting decisions — and `config/src/boot_zcode_swarm.c` puts its frames on
 the real P2P wire under the `zpkgswm` message tag via
 `p2p_node_begin_message()`. Hosting is **off by default** and enabled with
 `-packagehost=1`; the boot glue returns early otherwise, so a default node
-neither serves nor pulls package bytes.
+neither serves nor pulls package bytes. Operators inspect the live engine
+with `z23 dumpstate zcode_swarm`. When hosting is off the dump still
+succeeds and reports `enabled`/`present` false; when the engine is wired
+it reports peer count, active downloads, and bounded per-peer served and
+fetched bytes, never keys or datadir paths.
+<!-- claim: symbol-present vcs_package_swarm_status_dump_state_json lib/vcs/src/package_swarm_status.c # dumpstate zcode_swarm leaf -->
+<!-- claim: symbol-present zcode_swarm app/controllers/include/controllers/diagnostics_dumpers_zcode.def # dumpstate leaf registered -->
 
 Read "pure codec" as a statement about the two lower layers only
 (`package_swarm.c` and the engine, both of which stay free of sockets, threads,
@@ -288,11 +294,16 @@ every WANT - proving it means reconstructing the tree.
    verification. Resume state is a durable bitmap keyed by package root; it is
    derived and can be rebuilt by rehashing the CAS.
 5. Completion re-verifies every file and the package root. Nothing is executed.
+   The engine then immediately queues ANNOUNCE frames for that exact root to
+   every currently known peer that has not already been announced it, still
+   gated by public-hosting admission. Completing a fetch does not pin the
+   package; operator pin stays explicit.
 6. An explicit operator action may inspect, build in containment, test, sign a
    local verdict, and publish/install atomically.
 7. Re-serving what you fetched is not automatic. The fetched root must itself
    pass the public-hosting admission above before this node announces it or
    answers a WANT for it.
+<!-- claim: symbol-present vcs_swarm_complete_download lib/vcs/src/package_swarm_complete.c # COMPLETE immediately announces -->
 
 ![how the bytes travel between two nodes](assets/z23-term-commons-topology.svg)
 
