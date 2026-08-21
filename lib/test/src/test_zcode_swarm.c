@@ -1042,11 +1042,12 @@ static bool sw_announce_names_root(const uint8_t *frame, size_t len,
 }
 
 /* Independent in-tree titles, not the Arena set (zprng/zdogfight/
- * zdogace/zdogview). zjson is omitted: its zcode-package.json pins a
- * foreign zutf8 root. */
+ * zdogace/zdogview). zutf8 before zjson so the seeder holds the
+ * declared dependency when public-shape classifies the dependent. */
 static const char *const k_c23_shelf[] = {
     "packages/zhex",   "packages/zstr", "packages/zbuf",  "packages/zsha256",
     "packages/zring",  "packages/zmap", "packages/zvec",  "packages/zutf8",
+    "packages/zjson",
 };
 enum { SW_SHELF_N = (int)(sizeof(k_c23_shelf) / sizeof(k_c23_shelf[0])) };
 
