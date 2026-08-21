@@ -12,7 +12,6 @@
 #include "platform/time_compat.h"
 #include "jobs/body_fetch_stage.h"
 #include "jobs/stage_helpers.h"
-#include "jobs/stage_body_index.h"
 #include "body_fetch_log_store.h"
 
 #include "chain/chain.h"
@@ -43,6 +42,109 @@ static _Atomic uint64_t g_skipped_total  = 0;
 static _Atomic int64_t  g_last_advance_height = -1;
 static _Atomic int64_t  g_last_step_unix = 0;
 static _Atomic int64_t  g_last_blocked_unix = 0;
+
+enum body_fetch_idle_reason {
+    BF_IDLE_NONE = 0,
+    BF_IDLE_BEST_HEADER_ABSENT,
+    BF_IDLE_BEST_HASH_MISMATCH,
+    BF_IDLE_ACTIVE_HASH_MISMATCH,
+    BF_IDLE_VISIBLE_PARENT_ABSENT,
+    BF_IDLE_VISIBLE_PARENT_MISMATCH,
+    BF_IDLE_AUTHORITY_FAILED,
+    BF_IDLE_BODY_MISSING,
+    BF_IDLE_REASON_COUNT,
+};
+
+static _Atomic int g_last_idle_reason = BF_IDLE_NONE;
+static _Atomic uint64_t g_idle_reason_total[BF_IDLE_REASON_COUNT];
+
+static const char *body_fetch_idle_reason_name(enum body_fetch_idle_reason r)
+{
+    static const char *const names[BF_IDLE_REASON_COUNT] = {
+        "none",
+        "authority.best_header_absent",
+        "authority.best_hash_mismatch",
+        "authority.active_hash_mismatch",
+        "authority.visible_parent_absent",
+        "authority.visible_parent_mismatch",
+        "authority.failed",
+        "body.missing",
+    };
+    return r >= 0 && r < BF_IDLE_REASON_COUNT ? names[r] : "unknown";
+}
+
+static job_result_t body_fetch_idle(enum body_fetch_idle_reason reason)
+{
+    atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
+    atomic_store(&g_last_idle_reason, reason);
+    if (reason > BF_IDLE_NONE && reason < BF_IDLE_REASON_COUNT)
+        atomic_fetch_add(&g_idle_reason_total[reason], 1u);
+    return JOB_IDLE;
+}
+
+/* Join the durable validate_headers verdict to the live chain by exact hash.
+ * A height is not an identity: a stale active sibling must neither borrow the
+ * canonical verdict nor become the hash written to body_fetch_log. */
+static struct block_index *body_fetch_exact_authority_locked(
+    struct main_state *ms, int height, const struct uint256 *expected_hash,
+    enum body_fetch_idle_reason *out_reason)
+{
+    *out_reason = BF_IDLE_BEST_HEADER_ABSENT;
+    if (!ms || height < 0 || !expected_hash || !ms->pindex_best_header ||
+        height > ms->pindex_best_header->nHeight)
+        return NULL;
+
+    struct block_index *best = block_index_get_ancestor(
+        ms->pindex_best_header, height);
+    if (!best || !best->phashBlock)
+        return NULL;
+    if (!uint256_eq(best->phashBlock, expected_hash)) {
+        *out_reason = BF_IDLE_BEST_HASH_MISMATCH;
+        return NULL;
+    }
+    if (block_has_any_failure(best)) {
+        *out_reason = BF_IDLE_AUTHORITY_FAILED;
+        return NULL;
+    }
+
+    if (height > 0) {
+        struct block_index *parent = active_chain_at(
+            &ms->chain_active, height - 1);
+        if (!parent || !parent->phashBlock) {
+            *out_reason = BF_IDLE_VISIBLE_PARENT_ABSENT;
+            return NULL;
+        }
+        if (!best->pprev || !best->pprev->phashBlock ||
+            !uint256_eq(best->pprev->phashBlock, parent->phashBlock)) {
+            *out_reason = BF_IDLE_VISIBLE_PARENT_MISMATCH;
+            return NULL;
+        }
+    }
+
+    struct block_index *active = active_chain_at(&ms->chain_active, height);
+    if (active && (!active->phashBlock ||
+                   !uint256_eq(active->phashBlock, expected_hash))) {
+        *out_reason = BF_IDLE_ACTIVE_HASH_MISMATCH;
+        return NULL;
+    }
+    if (active && block_has_any_failure(active)) {
+        *out_reason = BF_IDLE_AUTHORITY_FAILED;
+        return NULL;
+    }
+    if (height > 0 && active &&
+        (!active->pprev || !active->pprev->phashBlock ||
+         !uint256_eq(active->pprev->phashBlock, best->pprev->phashBlock))) {
+        *out_reason = BF_IDLE_VISIBLE_PARENT_MISMATCH;
+        return NULL;
+    }
+
+    *out_reason = BF_IDLE_NONE;
+    if (active && (block_index_status_load(active) & BLOCK_HAVE_DATA))
+        return active;
+    if (block_index_status_load(best) & BLOCK_HAVE_DATA)
+        return best;
+    return active ? active : best;
+}
 
 /* ── Schema + log I/O ─────────────────────────────────────────────────
  * The body_fetch_log schema, its insert, and the upstream
@@ -85,9 +187,10 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
     /* Read the validate_headers_log row to learn pass/fail. Floor
      * guarantees the row exists; defend against torn writes anyway. */
     int vh_ok = -1;
+    struct uint256 vh_hash;
     char vh_reason[96];
-    int found = body_fetch_vh_log_ok_at(db, next_h, &vh_ok,
-                                        vh_reason, sizeof(vh_reason));
+    int found = body_fetch_vh_log_at(db, next_h, &vh_ok, &vh_hash,
+                                     vh_reason, sizeof(vh_reason));
     if (found < 0) return JOB_FATAL;
     if (found == 0) {
         /* Row missing despite floor — a durable upstream-log hole, not
@@ -99,17 +202,9 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
     }
     stage_upstream_log_hole_clear(STAGE_NAME);
 
-    /* Look up the in-memory block_index entry — we need the hash and
-     * the BLOCK_HAVE_DATA flag. */
-    struct block_index *bi = stage_body_index_at(ms, next_h);
-    if (!bi || !bi->phashBlock) {
-        /* Concurrent reorg through this height between validate and
-         * fetch. Surface as IDLE so the supervisor retries; the chain
-         * will stabilise. */
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
-        return JOB_IDLE;
-    }
-
+    /* A durable validate FAIL is already bound to vh_hash. It does not need a
+     * live nonfailed chain candidate: recording any independently selected
+     * block_index here would let a same-height sibling borrow that verdict. */
     if (vh_ok == 0) {
         if (strcmp(vh_reason,
                    "no-header-solution-backfill-required") == 0) {
@@ -122,23 +217,30 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
             atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             return JOB_BLOCKED;
         }
-        /* Header failed PoW/Equihash earlier — record skip + advance. */
-        if (!body_fetch_log_insert(db, next_h, bi->phashBlock,
+        if (!body_fetch_log_insert(db, next_h, &vh_hash,
                                    "skipped_invalid", 0, false,
                                    "header_validation_failed"))
             return JOB_FATAL;
         atomic_fetch_add(&g_skipped_total, 1);
         atomic_store(&g_last_advance_height, (int64_t)next_h);
+        atomic_store(&g_last_idle_reason, BF_IDLE_NONE);
         c->cursor_out = c->cursor_in + 1;
         return JOB_ADVANCED;
     }
 
+    enum body_fetch_idle_reason idle_reason = BF_IDLE_NONE;
+    zcl_mutex_lock(&ms->cs_main);
+    struct block_index *bi = body_fetch_exact_authority_locked(
+        ms, next_h, &vh_hash, &idle_reason);
+    zcl_mutex_unlock(&ms->cs_main);
+    if (!bi)
+        return body_fetch_idle(idle_reason);
+
     /* Header passed validation; check body availability. */
-    if (!(bi->nStatus & BLOCK_HAVE_DATA)) {
+    if (!(block_index_status_load(bi) & BLOCK_HAVE_DATA)) {
         /* Body not yet on disk — JOB_IDLE, don't advance. The natural
          * backpressure: cursor stays put until msg_blocks brings it in. */
-        atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
-        return JOB_IDLE;
+        return body_fetch_idle(BF_IDLE_BODY_MISSING);
     }
 
     /* Body observed on disk. Record presence; bytes=0 because size probing
@@ -148,6 +250,7 @@ static job_result_t step_body_fetch(struct stage_step_ctx *c)
 
     atomic_fetch_add(&g_observed_total, 1);
     atomic_store(&g_last_advance_height, (int64_t)next_h);
+    atomic_store(&g_last_idle_reason, BF_IDLE_NONE);
     c->cursor_out = c->cursor_in + 1;
     return JOB_ADVANCED;
 }
@@ -216,6 +319,9 @@ void body_fetch_stage_shutdown(void)
     atomic_store(&g_last_advance_height, (int64_t)-1);
     atomic_store(&g_last_step_unix, (int64_t)0);
     atomic_store(&g_last_blocked_unix, (int64_t)0);
+    atomic_store(&g_last_idle_reason, BF_IDLE_NONE);
+    for (int i = 0; i < BF_IDLE_REASON_COUNT; i++)
+        atomic_store(&g_idle_reason_total[i], 0u);
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -257,6 +363,31 @@ bool body_fetch_stage_dump_state_json(struct json_value *out,
                       atomic_load(&g_last_step_unix));
     json_push_kv_int (out, "last_blocked_unix",
                       atomic_load(&g_last_blocked_unix));
+    enum body_fetch_idle_reason idle_reason =
+        (enum body_fetch_idle_reason)atomic_load(&g_last_idle_reason);
+    json_push_kv_str(out, "last_idle_reason",
+                     body_fetch_idle_reason_name(idle_reason));
+    json_push_kv_int(out, "authority_best_header_absent_total",
+                     (int64_t)atomic_load(
+                         &g_idle_reason_total[BF_IDLE_BEST_HEADER_ABSENT]));
+    json_push_kv_int(out, "authority_best_hash_mismatch_total",
+                     (int64_t)atomic_load(
+                         &g_idle_reason_total[BF_IDLE_BEST_HASH_MISMATCH]));
+    json_push_kv_int(out, "authority_active_hash_mismatch_total",
+                     (int64_t)atomic_load(
+                         &g_idle_reason_total[BF_IDLE_ACTIVE_HASH_MISMATCH]));
+    json_push_kv_int(out, "authority_visible_parent_absent_total",
+                     (int64_t)atomic_load(
+                         &g_idle_reason_total[BF_IDLE_VISIBLE_PARENT_ABSENT]));
+    json_push_kv_int(out, "authority_visible_parent_mismatch_total",
+                     (int64_t)atomic_load(
+                         &g_idle_reason_total[BF_IDLE_VISIBLE_PARENT_MISMATCH]));
+    json_push_kv_int(out, "authority_failed_total",
+                     (int64_t)atomic_load(
+                         &g_idle_reason_total[BF_IDLE_AUTHORITY_FAILED]));
+    json_push_kv_int(out, "body_missing_total",
+                     (int64_t)atomic_load(
+                         &g_idle_reason_total[BF_IDLE_BODY_MISSING]));
     stage_dump_counters(out, g_stage);
     stage_dump_health(out, STAGE_NAME, g_stage);
     return true;

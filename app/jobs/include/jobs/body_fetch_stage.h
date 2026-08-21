@@ -10,12 +10,13 @@
  *
  * Per-height behaviour
  * --------------------
- *   1. Read `(height, ok)` from `validate_headers_log`.
+ *   1. Read `(height, hash, ok)` from `validate_headers_log`.
  *   2. If validate ok=0 (header failed PoW/Equihash earlier): log a
  *      `source='skipped_invalid'` row, ok=0, advance cursor — there is
  *      no point fetching a body for a known-bad header.
- *   3. Else: look up `active_chain_at(ms, h)` and check the body
- *      availability flag (`BLOCK_HAVE_DATA` in `bi->nStatus`).
+ *   3. Else: join that exact hash to nonfailed best-header ancestry and the
+ *      visible active parent. A conflicting active sibling fails closed.
+ *      Then check the body availability flag (`BLOCK_HAVE_DATA`).
  *        - Available: log `source='disk'`, ok=1, advance cursor.
  *        - Not yet available: JOB_IDLE (cursor unchanged). The next
  *          tick will retry; this is the natural backpressure that keeps

@@ -10,6 +10,7 @@
 #include <sqlite3.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 bool body_fetch_log_ensure_schema(sqlite3 *db)
 {
@@ -32,16 +33,21 @@ bool body_fetch_log_ensure_schema(sqlite3 *db)
     return true;
 }
 
-/* Returns 1 if found and ok-flag retrieved, 0 if no row, -1 on error. */
-int body_fetch_vh_log_ok_at(sqlite3 *db, int height, int *out_ok,
-                            char *out_reason, size_t reason_size)
+/* Returns 1 if the complete authority row was retrieved, 0 if absent, -1 on
+ * query error or malformed hash. */
+int body_fetch_vh_log_at(sqlite3 *db, int height, int *out_ok,
+                         struct uint256 *out_hash,
+                         char *out_reason, size_t reason_size)
 {
+    if (!db || !out_ok || !out_hash)
+        LOG_ERR("body_fetch", "[body_fetch] validate row read null argument");
     *out_ok = -1;
+    memset(out_hash, 0, sizeof(*out_hash));
     if (out_reason && reason_size)
         out_reason[0] = 0;
     sqlite3_stmt *st = NULL;
     int rc = sqlite3_prepare_v2(db,
-        "SELECT ok, COALESCE(fail_reason,'') "
+        "SELECT ok, hash, COALESCE(fail_reason,'') "
         "FROM validate_headers_log WHERE height = ?",
         -1, &st, NULL);
     if (rc != SQLITE_OK)
@@ -51,8 +57,17 @@ int body_fetch_vh_log_ok_at(sqlite3 *db, int height, int *out_ok,
     int found = 0;
     rc = sqlite3_step(st);  // raw-sql-ok:progress-kv-kernel-store
     if (rc == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(st, 1);
+        int blob_n = sqlite3_column_bytes(st, 1);
+        if (!blob || blob_n != 32) {
+            sqlite3_finalize(st);
+            LOG_ERR("body_fetch",
+                    "[body_fetch] malformed validate hash height=%d bytes=%d",
+                    height, blob_n);
+        }
         *out_ok = sqlite3_column_int(st, 0);
-        const unsigned char *txt = sqlite3_column_text(st, 1);
+        memcpy(out_hash->data, blob, 32);
+        const unsigned char *txt = sqlite3_column_text(st, 2);
         if (txt && out_reason && reason_size)
             snprintf(out_reason, reason_size, "%s", (const char *)txt);
         found = 1;

@@ -102,8 +102,13 @@ static const char *const k_validate_headers[] = {
 
 static const char *const k_body_fetch[] = {
     "initialised", "stage_name", "cursor", "observed_total", "skipped_total",
-    "last_advance_height", "last_step_unix", "last_blocked_unix", "_health",
-    NULL
+    "last_advance_height", "last_step_unix", "last_blocked_unix",
+    "last_idle_reason", "authority_best_header_absent_total",
+    "authority_best_hash_mismatch_total",
+    "authority_active_hash_mismatch_total",
+    "authority_visible_parent_absent_total",
+    "authority_visible_parent_mismatch_total", "authority_failed_total",
+    "body_missing_total", "_health", NULL
 };
 
 static const char *const k_body_persist[] = {

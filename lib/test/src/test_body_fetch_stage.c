@@ -163,6 +163,40 @@ static bool log_row_at(sqlite3 *db, int height,
     return found;
 }
 
+static bool log_hash_at(sqlite3 *db, int height, struct uint256 *out_hash)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "SELECT hash FROM body_fetch_log WHERE height = ?",
+        -1, &st, NULL) != SQLITE_OK) return false;
+    sqlite3_bind_int(st, 1, height);
+    bool found = false;
+    if (sqlite3_step(st) == SQLITE_ROW) {
+        const void *blob = sqlite3_column_blob(st, 0);
+        int n = sqlite3_column_bytes(st, 0);
+        if (blob && n == 32) {
+            memcpy(out_hash->data, blob, 32);
+            found = true;
+        }
+    }
+    sqlite3_finalize(st);
+    return found;
+}
+
+static bool dump_has_idle_reason(const char *reason)
+{
+    struct json_value v;
+    json_init(&v);
+    if (!body_fetch_stage_dump_state_json(&v, NULL)) {
+        json_free(&v);
+        return false;
+    }
+    const char *got = json_get_str(json_get(&v, "last_idle_reason"));
+    bool matches = got && strcmp(got, reason) == 0;
+    json_free(&v);
+    return matches;
+}
+
 /* Flip the ok flag on a validate_headers_log row (for testing the
  * skipped_invalid path without rewiring the vh stub validator). */
 static bool vh_log_force_ok(sqlite3 *db, int height, int ok)
@@ -192,6 +226,18 @@ static bool vh_log_force_failure(sqlite3 *db, int height, const char *reason)
     return rc == SQLITE_DONE;
 }
 
+static bool vh_log_force_short_hash(sqlite3 *db, int height)
+{
+    sqlite3_stmt *st = NULL;
+    if (sqlite3_prepare_v2(db,
+        "UPDATE validate_headers_log SET hash = X'01' WHERE height = ?",
+        -1, &st, NULL) != SQLITE_OK) return false;
+    sqlite3_bind_int(st, 1, height);
+    int rc = sqlite3_step(st);
+    sqlite3_finalize(st);
+    return rc == SQLITE_DONE;
+}
+
 /* Set up the full saga prefix (progress + admit + validate + body_fetch).
  * Returns 0 on success. The caller is responsible for tearing down. */
 static int bf_setup(const char *tag, int n,
@@ -204,9 +250,10 @@ static int bf_setup(const char *tag, int n,
     if (!progress_store_open(dir_out)) return 1;
 
     memset(ms, 0, sizeof(*ms));
-    active_chain_init(&ms->chain_active);
+    main_state_init(ms);
     if (!synth_chain_bf_build(sc, n)) return 2;
     active_chain_move_window_tip(&ms->chain_active, &sc->blocks[n - 1]);
+    ms->pindex_best_header = &sc->blocks[n - 1];
 
     if (!header_admit_stage_init(ms))      return 3;
     if (!validate_headers_stage_init(ms))  return 4;
@@ -222,7 +269,7 @@ static void bf_teardown(const char *dir, struct main_state *ms,
     body_fetch_stage_shutdown();
     validate_headers_stage_shutdown();
     header_admit_stage_shutdown();
-    active_chain_free(&ms->chain_active);
+    main_state_free(ms);
     synth_chain_bf_free(sc);
     progress_store_close();
     test_cleanup_tmpdir(dir);
@@ -354,6 +401,10 @@ int test_body_fetch_stage(void)
         BF_CHECK("skip: h=2 row ok=0", ok == 0);
         BF_CHECK("skip: h=2 source='skipped_invalid'",
                  strcmp(src, "skipped_invalid") == 0);
+        struct uint256 skipped_hash;
+        BF_CHECK("skip: row keeps exact validate hash",
+                 log_hash_at(db, 2, &skipped_hash) &&
+                 uint256_eq(&skipped_hash, &sc.hashes[2]));
 
         log_row_at(db, 1, &ok, src, sizeof(src));
         BF_CHECK("skip: h=1 row source='disk'", strcmp(src, "disk") == 0);
@@ -420,6 +471,118 @@ int test_body_fetch_stage(void)
         bf_teardown(dir, &ms, &sc);
     }
 
+    /* A durable validate verdict is hash authority. A data-bearing active
+     * sibling at the same height must not borrow it or receive a body row. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_bf sc;
+        BF_CHECK("stale_sibling: setup",
+                 bf_setup("stale_sibling", 3, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        header_admit_stage_drain(100);
+        validate_headers_stage_drain(100);
+        BF_CHECK("stale_sibling: prefix reaches target",
+                 body_fetch_stage_drain(2) == 2 &&
+                 body_fetch_stage_cursor() == 2);
+
+        struct uint256 sibling_hash;
+        memset(&sibling_hash, 0, sizeof(sibling_hash));
+        sibling_hash.data[0] = 2;
+        sibling_hash.data[1] = 0x51;
+        struct block_index sibling;
+        block_index_init(&sibling);
+        sibling.phashBlock = &sibling_hash;
+        sibling.nHeight = 2;
+        sibling.pprev = &sc.blocks[1];
+        sibling.nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        BF_CHECK("stale_sibling: install data-bearing active sibling",
+                 active_chain_move_window_tip(&ms.chain_active, &sibling));
+        BF_CHECK("stale_sibling: exact authority fails closed",
+                 body_fetch_stage_step_once() == JOB_IDLE &&
+                 body_fetch_stage_cursor() == 2 &&
+                 !log_row_at(progress_store_db(), 2, &(int){0}, NULL, 0));
+        BF_CHECK("stale_sibling: stable reason names active mismatch",
+                 dump_has_idle_reason("authority.active_hash_mismatch"));
+
+        BF_CHECK("stale_sibling: restore exact active child",
+                 active_chain_move_window_tip(&ms.chain_active,
+                                              &sc.blocks[2]));
+        BF_CHECK("stale_sibling: exact canonical HAVE_DATA advances",
+                 body_fetch_stage_step_once() == JOB_ADVANCED &&
+                 body_fetch_stage_cursor() == 3);
+        struct uint256 recorded;
+        BF_CHECK("stale_sibling: row carries validate hash",
+                 log_hash_at(progress_store_db(), 2, &recorded) &&
+                 uint256_eq(&recorded, &sc.hashes[2]) &&
+                 !uint256_eq(&recorded, &sibling_hash));
+
+        bf_teardown(dir, &ms, &sc);
+    }
+
+    /* Best-header and visible-parent identity are both required. Neither an
+     * absent authority nor a disagreement may create a row or move cursor. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_bf sc;
+        BF_CHECK("authority_refusal: setup",
+                 bf_setup("authority_refusal", 3, dir, sizeof(dir),
+                          &ms, &sc) == 0);
+        header_admit_stage_drain(100);
+        validate_headers_stage_drain(100);
+        BF_CHECK("authority_refusal: prefix reaches target",
+                 body_fetch_stage_drain(2) == 2 &&
+                 body_fetch_stage_cursor() == 2);
+
+        ms.pindex_best_header = NULL;
+        BF_CHECK("authority_refusal: absent best is IDLE zero-row",
+                 body_fetch_stage_step_once() == JOB_IDLE &&
+                 !log_row_at(progress_store_db(), 2, &(int){0}, NULL, 0) &&
+                 dump_has_idle_reason("authority.best_header_absent"));
+
+        struct uint256 other_hash;
+        memset(&other_hash, 0, sizeof(other_hash));
+        other_hash.data[0] = 2;
+        other_hash.data[1] = 0x72;
+        struct block_index other_best;
+        block_index_init(&other_best);
+        other_best.phashBlock = &other_hash;
+        other_best.nHeight = 2;
+        other_best.pprev = &sc.blocks[1];
+        other_best.nStatus = BLOCK_VALID_TREE | BLOCK_HAVE_DATA;
+        ms.pindex_best_header = &other_best;
+        BF_CHECK("authority_refusal: best hash mismatch is IDLE zero-row",
+                 body_fetch_stage_step_once() == JOB_IDLE &&
+                 body_fetch_stage_cursor() == 2 &&
+                 !log_row_at(progress_store_db(), 2, &(int){0}, NULL, 0) &&
+                 dump_has_idle_reason("authority.best_hash_mismatch"));
+
+        ms.pindex_best_header = &sc.blocks[2];
+        struct block_index *saved_parent = sc.blocks[2].pprev;
+        sc.blocks[2].pprev = &sc.blocks[0];
+        BF_CHECK("authority_refusal: parent disagreement is IDLE zero-row",
+                 body_fetch_stage_step_once() == JOB_IDLE &&
+                 body_fetch_stage_cursor() == 2 &&
+                 !log_row_at(progress_store_db(), 2, &(int){0}, NULL, 0) &&
+                 dump_has_idle_reason("authority.visible_parent_mismatch"));
+        sc.blocks[2].pprev = saved_parent;
+
+        const struct uint256 *saved_parent_hash = sc.blocks[1].phashBlock;
+        sc.blocks[1].phashBlock = NULL;
+        BF_CHECK("authority_refusal: absent parent is IDLE zero-row",
+                 body_fetch_stage_step_once() == JOB_IDLE &&
+                 body_fetch_stage_cursor() == 2 &&
+                 !log_row_at(progress_store_db(), 2, &(int){0}, NULL, 0) &&
+                 dump_has_idle_reason("authority.visible_parent_absent"));
+        sc.blocks[1].phashBlock = saved_parent_hash;
+
+        BF_CHECK("authority_refusal: corrupt validate hash fixture",
+                 vh_log_force_short_hash(progress_store_db(), 2));
+        BF_CHECK("authority_refusal: non-32-byte hash is FATAL zero-row",
+                 body_fetch_stage_step_once() == JOB_FATAL &&
+                 body_fetch_stage_cursor() == 2 &&
+                 !log_row_at(progress_store_db(), 2, &(int){0}, NULL, 0));
+
+        bf_teardown(dir, &ms, &sc);
+    }
+
     /* ── replay across reopen: cursor + log persist ──────────────────── */
     {
         char dir[256]; struct main_state ms; struct synth_chain_bf sc;
@@ -478,7 +641,7 @@ int test_body_fetch_stage(void)
         json_init(&v);
         BF_CHECK("dump: returns true",
                  body_fetch_stage_dump_state_json(&v, NULL));
-        char buf[1024];
+        char buf[2048];
         size_t n = json_write(&v, buf, sizeof(buf));
         BF_CHECK("dump: serializes", n > 0 && n < sizeof(buf));
         BF_CHECK("dump: initialised=true",
@@ -542,9 +705,10 @@ int test_body_fetch_stage(void)
             struct main_state ms;
             struct synth_chain_bf sc;
             memset(&ms, 0, sizeof(ms));
-            active_chain_init(&ms.chain_active);
+            main_state_init(&ms);
             if (!synth_chain_bf_build(&sc, CRASH_N)) _exit(3);
             active_chain_move_window_tip(&ms.chain_active, &sc.blocks[CRASH_N - 1]);
+            ms.pindex_best_header = &sc.blocks[CRASH_N - 1];
 
             sqlite3 *db = progress_store_db();
             if (sqlite3_exec(db,

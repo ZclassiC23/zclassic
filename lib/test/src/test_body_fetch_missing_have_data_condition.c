@@ -355,6 +355,23 @@ int test_body_fetch_missing_have_data_condition(void)
 
     {
         struct bfmhd_fixture fx;
+        bool ok = setup_fixture(&fx, "exact_have_data_reason");
+        fx.child->nStatus |= BLOCK_HAVE_DATA;
+        condition_engine_tick();
+        uint64_t queued = 0;
+        dl_get_stats(&fx.dm, NULL, NULL, NULL, NULL, &queued);
+        ok = ok && body_fetch_missing_have_data_test_remedy_calls() == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && queued == 0;
+        ok = ok && strcmp(
+            body_fetch_missing_have_data_test_last_skip_reason(),
+            "exact_have_data") == 0;
+        BFMHD_CHECK("exact HAVE_DATA skip has a disjoint stable reason", ok);
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct bfmhd_fixture fx;
         bool ok = setup_fixture(&fx, "cursor_only_not_witness");
         condition_engine_tick();
         ok = ok && body_fetch_missing_have_data_test_remedy_calls() == 1;
@@ -429,8 +446,37 @@ int test_body_fetch_missing_have_data_condition(void)
         ok = ok && body_fetch_missing_have_data_test_remedy_calls() == 0;
         ok = ok && condition_engine_get_active_count() == 0;
         ok = ok && queued == 0;
+        ok = ok && strcmp(
+            body_fetch_missing_have_data_test_last_skip_reason(),
+            "visible_parent_mismatch") == 0;
+        ok = ok && strcmp(
+            body_fetch_missing_have_data_test_last_skip_reason(),
+            "exact_have_data") != 0;
         BFMHD_CHECK("canonical target whose parent is not the visible H "
                     "fails closed instead of queueing a sibling", ok);
+        teardown_fixture(&fx);
+    }
+
+    {
+        struct bfmhd_fixture fx;
+        bool ok = setup_fixture(&fx, "canonical_best_hash_mismatch");
+        struct block_index *other = insert_sibling(
+            &fx.ms, &fx.hashes[3], fx.target, fx.tip, BLOCK_VALID_TREE);
+        ok = ok && other;
+        fx.ms.pindex_best_header = other;
+
+        condition_engine_tick();
+
+        uint64_t queued = 0;
+        dl_get_stats(&fx.dm, NULL, NULL, NULL, NULL, &queued);
+        ok = ok && body_fetch_missing_have_data_test_remedy_calls() == 0;
+        ok = ok && condition_engine_get_active_count() == 0;
+        ok = ok && queued == 0;
+        ok = ok && strcmp(
+            body_fetch_missing_have_data_test_last_skip_reason(),
+            "best_hash_mismatch") == 0;
+        BFMHD_CHECK("best-header hash disagreement has a disjoint stable "
+                    "reason", ok);
         teardown_fixture(&fx);
     }
 
