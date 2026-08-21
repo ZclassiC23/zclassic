@@ -282,11 +282,16 @@ every WANT - proving it means reconstructing the tree.
    verification. Resume state is a durable bitmap keyed by package root; it is
    derived and can be rebuilt by rehashing the CAS.
 5. Completion re-verifies every file and the package root. Nothing is executed.
+   The engine then immediately queues ANNOUNCE frames for that exact root to
+   every currently known peer that has not already been announced it, still
+   gated by public-hosting admission. Completing a fetch does not pin the
+   package; operator pin stays explicit.
 6. An explicit operator action may inspect, build in containment, test, sign a
    local verdict, and publish/install atomically.
 7. Re-serving what you fetched is not automatic. The fetched root must itself
    pass the public-hosting admission above before this node announces it or
    answers a WANT for it.
+<!-- claim: symbol-present vcs_swarm_complete_download lib/vcs/src/package_swarm_complete.c # COMPLETE immediately announces -->
 
 ![how the bytes travel between two nodes](assets/z23-term-commons-topology.svg)
 

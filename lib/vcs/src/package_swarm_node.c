@@ -14,6 +14,7 @@
 #include "vcs/package_store.h"
 
 #include "package_store_priv.h" /* store_atomic_write/mkdir/rm_rf */
+#include "package_swarm_priv.h"
 #include "package_swarm_record.h"
 #include "vcs_priv.h"
 
@@ -29,137 +30,7 @@
 #include <unistd.h>
 
 #define SWARM_LOG "vcs.swarm"
-#define SWARM_DL_INFLIGHT_MAX 32u
 #define SWARM_MANIFEST_CHUNK UINT32_MAX
-
-/* ── internal records ───────────────────────────────────────────────── */
-
-struct swarm_req {
-    bool used;
-    uint32_t global_chunk; /* SWARM_MANIFEST_CHUNK for the manifest */
-    uint64_t peer;
-    uint64_t deadline;
-    struct vcs_package_swarm_object want; /* the exact outstanding WANT */
-};
-
-struct swarm_tombstone {
-    uint64_t id;
-    bool fulfilled; /* fulfilled: replay offence; cancelled: quiet drop */
-};
-
-struct swarm_download {
-    bool used;
-    uint8_t root[32];
-    char root_hex[65];
-    enum vcs_swarm_download_state state;
-    const char *rule; /* static; the named failure when FAILED */
-    struct vcs_package_manifest manifest; /* valid when loaded */
-    bool manifest_loaded;
-    uint32_t total_chunks;   /* flattened coordinate count */
-    uint32_t *file_of;       /* global chunk -> manifest file index */
-    uint32_t *chunk_of;      /* global chunk -> in-file chunk index */
-    uint8_t *have;           /* verified-present bitmap */
-    uint64_t *peer_failed;   /* per-chunk bitmask of failed peer slots */
-    uint32_t *chunk_attempts;
-    uint32_t have_count;
-    uint64_t manifest_failed_mask; /* peer slots that served a bad manifest */
-    uint32_t manifest_attempts;
-    struct swarm_req reqs[SWARM_DL_INFLIGHT_MAX];
-    struct swarm_tombstone tombs[VCS_SWARM_TOMBSTONES_PER_DL];
-    size_t tomb_pos;
-    size_t tomb_count;
-    uint64_t fetched_bytes;
-    uint64_t requested_bytes;
-    uint64_t transferred_bytes;
-    uint64_t reused_bytes;
-    uint32_t requested_objects;
-    uint32_t transferred_objects;
-    uint32_t reused_objects;
-    uint64_t maximum_package_bytes; /* zero means unbounded */
-    int64_t created_day;
-    bool provider_restricted;
-    uint64_t provider_peers[VCS_SWARM_PROVIDER_MAX];
-    size_t provider_count;
-};
-
-struct swarm_peer {
-    bool used;
-    uint64_t id;
-    uint8_t key[33];
-    enum vcs_policy_tier tier;
-    uint8_t ads[VCS_SWARM_MAX_PEER_ADS][32];
-    size_t ad_count;
-    /* Roots WE already announced TO this peer (dedupe: repeat announce_to
-     * calls queue only newly complete roots, so the transport glue can
-     * call it on every membership sync without flooding the peer). */
-    uint8_t announced[VCS_SWARM_MAX_LOCAL_ANNOUNCES][32];
-    size_t announced_count;
-    uint32_t inflight;
-    uint64_t burst_start;
-    uint32_t burst_count;
-    uint64_t announce_start;
-    uint32_t announce_count;
-    uint64_t seen[VCS_SWARM_SEEN_IDS_PER_PEER];
-    size_t seen_pos;
-    size_t seen_count;
-    uint64_t verified_served;
-    uint64_t verified_from;
-    bool allowance_exhausted;
-    int64_t allowance_week;
-    /* Dominant verified transfer with this peer, for dual-signed
-     * receipts. One root: the first credited package this session. */
-    uint8_t xfer_root[32];
-    uint64_t xfer_served;
-    uint64_t xfer_fetched;
-};
-
-struct swarm_outbound {
-    uint64_t peer;
-    uint8_t len;
-    uint8_t bytes[VCS_SWARM_OUTBOUND_FRAME_MAX];
-};
-
-/* Direct-mapped public-hosting verdict cache. One announce sweep touches
- * at most VCS_SWARM_MAX_LOCAL_ANNOUNCES roots, so a table that size keeps a
- * full sweep off the verifier while a hot serve root stays resident.
- * Collisions simply reclassify. */
-#define VCS_SWARM_PUBLIC_CACHE_SLOTS VCS_SWARM_MAX_LOCAL_ANNOUNCES
-struct swarm_public_entry {
-    uint8_t root[32];
-    uint64_t generation; /* this package's own mutation generation */
-    uint64_t epoch;      /* store-wide, only meaningful when dep_scoped */
-    enum vcs_package_public_shape shape;
-    const char *rule;
-    bool dep_scoped;
-    bool used;
-};
-
-struct vcs_swarm_engine {
-    pthread_mutex_t lock;
-    struct vcs_package_store *store; /* borrowed */
-    struct vcs_service_book *book;   /* borrowed */
-    char zcode_dir[STORE_PATH_MAX];
-    bool persist;
-    vcs_swarm_score_fn score_fn;
-    void *score_ctx;
-    struct swarm_peer peers[VCS_SWARM_MAX_PEERS];
-    struct swarm_download dls[VCS_SWARM_MAX_DOWNLOADS];
-    uint64_t next_request_id;
-    struct swarm_outbound outq[VCS_SWARM_OUTBOUND_MAX];
-    size_t outq_pos;
-    size_t outq_count;
-    uint64_t last_tick;
-    bool ticked;
-    /* Single-entry serve cache: the last manifest parsed for serving
-     * inbound chunk WANTs, and the public-hosting verdict for that same
-     * root. Both are keyed by the store's mutation generation, so a
-     * package that completes, gains bytes, or is evicted is reclassified
-     * rather than served off a stale decision. */
-    uint8_t serve_root[32];
-    struct vcs_package_manifest serve_manifest;
-    bool serve_loaded;
-    struct swarm_public_entry public_cache[VCS_SWARM_PUBLIC_CACHE_SLOTS];
-};
 
 static uint64_t nonce_bump(struct vcs_swarm_engine *engine);
 bool vcs_swarm_bitmap_get(const uint8_t *map, uint32_t bit);
@@ -197,14 +68,7 @@ static bool peer_advertises(const struct swarm_peer *peer,
     return false;
 }
 
-static bool peer_was_announced(const struct swarm_peer *peer,
-                               const uint8_t root[32])
-{
-    for (size_t i = 0; i < peer->announced_count; i++)
-        if (memcmp(peer->announced[i], root, 32) == 0)
-            return true;
-    return false;
-}
+
 
 /* A provider-directed fetch is already bound to explicit authenticated
  * transport handles by its caller.  Requiring those same handles to win the
@@ -356,8 +220,8 @@ static enum vcs_policy_tier peer_tier_locked(
 
 /* ── outbound queue ─────────────────────────────────────────────────── */
 
-static bool queue_frame(struct vcs_swarm_engine *engine, uint64_t peer,
-                        const struct vcs_package_swarm_message *message)
+bool vcs_swarm_queue_frame(struct vcs_swarm_engine *engine, uint64_t peer,
+                           const struct vcs_package_swarm_message *message)
 {
     uint8_t buf[VCS_SWARM_OUTBOUND_FRAME_MAX];
     size_t len = 0;
@@ -467,8 +331,8 @@ static bool record_persist(struct vcs_swarm_engine *engine,
     return vcs_swarm_record_persist(engine->zcode_dir, dl->root_hex, &record);
 }
 
-static void record_delete(struct vcs_swarm_engine *engine,
-                          const struct swarm_download *dl)
+void vcs_swarm_record_delete_dl(struct vcs_swarm_engine *engine,
+                                const struct swarm_download *dl)
 {
     if (!engine->persist)
         return;
@@ -491,7 +355,7 @@ static void dl_fail(struct vcs_swarm_engine *engine,
     for (size_t i = 0; i < SWARM_DL_INFLIGHT_MAX; i++)
         if (dl->reqs[i].used)
             req_finish(engine, dl, &dl->reqs[i], true, false);
-    record_delete(engine, dl);
+    vcs_swarm_record_delete_dl(engine, dl);
 }
 
 /* Rebuild the have-bitmap from pure CAS presence probes (resume). */
@@ -597,7 +461,7 @@ static bool issue_want(struct vcs_swarm_engine *engine,
         memcpy(want->expected_hash,
                file->chunk_hashes + (size_t)want->chunk_index * 32u, 32);
     }
-    if (!queue_frame(engine, peer->id, &msg))
+    if (!vcs_swarm_queue_frame(engine, peer->id, &msg))
         return false;
     dl->requested_objects++;
     if (global_chunk != SWARM_MANIFEST_CHUNK)
@@ -915,8 +779,8 @@ static void handle_announce(struct vcs_swarm_engine *engine,
  *
  * Called with engine->lock held; takes the store lock beneath it, which is
  * the order the serve path already uses. */
-static bool public_serveable(struct vcs_swarm_engine *engine,
-                             const uint8_t root[32], const char **rule_out)
+bool vcs_swarm_public_serveable(struct vcs_swarm_engine *engine,
+                                const uint8_t root[32], const char **rule_out)
 {
     struct vcs_package_possession_receipt receipt;
     memset(&receipt, 0, sizeof(receipt));
@@ -1120,7 +984,7 @@ static void handle_want(struct vcs_swarm_engine *engine,
      * has no way to know what this node will host, so it costs them
      * nothing but gets a named rule instead of silence. */
     const char *rule = NULL;
-    if (!public_serveable(engine, want->package_root, &rule)) {
+    if (!vcs_swarm_public_serveable(engine, want->package_root, &rule)) {
         res->rule = rule;
         return;
     }
@@ -1142,8 +1006,8 @@ static struct swarm_req *find_outstanding(struct swarm_download *dl,
 
 /* Cancel every outstanding request of a download (completion/cancel
  * path): queue CANCEL frames and tombstone the ids as cancelled. */
-static void cancel_outstanding(struct vcs_swarm_engine *engine,
-                               struct swarm_download *dl)
+void vcs_swarm_cancel_outstanding(struct vcs_swarm_engine *engine,
+                                  struct swarm_download *dl)
 {
     for (size_t i = 0; i < SWARM_DL_INFLIGHT_MAX; i++) {
         struct swarm_req *req = &dl->reqs[i];
@@ -1156,16 +1020,8 @@ static void cancel_outstanding(struct vcs_swarm_engine *engine,
         memcpy(msg.body.cancel.package_root, dl->root, 32);
         uint64_t peer = req->peer;
         req_finish(engine, dl, req, true, false);
-        queue_frame(engine, peer, &msg);
+        vcs_swarm_queue_frame(engine, peer, &msg);
     }
-}
-
-static void complete_download(struct vcs_swarm_engine *engine,
-                              struct swarm_download *dl)
-{
-    cancel_outstanding(engine, dl);
-    dl->state = VCS_SWARM_DL_COMPLETE;
-    record_delete(engine, dl);
 }
 
 static void handle_data_manifest(struct vcs_swarm_engine *engine,
@@ -1234,7 +1090,7 @@ static void handle_data_manifest(struct vcs_swarm_engine *engine,
     dl->fetched_bytes += data->bytes_len;
     req_finish(engine, dl, req, true, true);
     if (dl->total_chunks == 0 || dl->have_count == dl->total_chunks) {
-        complete_download(engine, dl);
+        vcs_swarm_complete_download(engine, dl);
         return;
     }
     dl->state = VCS_SWARM_DL_CHUNKS;
@@ -1286,7 +1142,7 @@ static void handle_data_chunk(struct vcs_swarm_engine *engine,
     dl->fetched_bytes += data->bytes_len;
     req_finish(engine, dl, req, true, true);
     if (dl->have_count == dl->total_chunks)
-        complete_download(engine, dl);
+        vcs_swarm_complete_download(engine, dl);
 }
 
 static void handle_data(struct vcs_swarm_engine *engine,
@@ -1604,12 +1460,12 @@ size_t vcs_swarm_engine_announce_to(struct vcs_swarm_engine *engine,
     struct swarm_peer *p = &engine->peers[slot];
     size_t queued = 0;
     for (size_t i = 0; i < n; i++) {
-        if (peer_was_announced(p, summaries[i].root))
+        if (vcs_swarm_peer_was_announced(p, summaries[i].root))
             continue;
         /* Advertise only what this node would actually serve. Announcing a
          * root we would then refuse is worse than not announcing it: it
          * spends the peer's request budget on an answer that cannot come. */
-        if (!public_serveable(engine, summaries[i].root, NULL))
+        if (!vcs_swarm_public_serveable(engine, summaries[i].root, NULL))
             continue;
         struct vcs_package_swarm_message msg;
         memset(&msg, 0, sizeof(msg));
@@ -1619,7 +1475,7 @@ size_t vcs_swarm_engine_announce_to(struct vcs_swarm_engine *engine,
         msg.body.announce.file_count = summaries[i].file_count;
         msg.body.announce.total_bytes = summaries[i].total_bytes;
         msg.body.announce.total_chunks = summaries[i].total_chunks;
-        if (!queue_frame(engine, peer, &msg))
+        if (!vcs_swarm_queue_frame(engine, peer, &msg))
             break;
         if (p->announced_count < VCS_SWARM_MAX_LOCAL_ANNOUNCES)
             memcpy(p->announced[p->announced_count++], summaries[i].root,
@@ -1833,7 +1689,7 @@ static enum vcs_swarm_fetch_result swarm_fetch(
                         ? VCS_SWARM_DL_COMPLETE
                         : VCS_SWARM_DL_CHUNKS;
         if (dl->state == VCS_SWARM_DL_COMPLETE)
-            record_delete(engine, dl);
+            vcs_swarm_record_delete_dl(engine, dl);
     }
     /* No scheduling here: the tick owns assignment order (deterministic
      * rarest-first across downloads). */
@@ -1885,8 +1741,8 @@ bool vcs_swarm_engine_cancel(struct vcs_swarm_engine *engine,
         return false;
     }
     (void)now;
-    cancel_outstanding(engine, dl);
-    record_delete(engine, dl);
+    vcs_swarm_cancel_outstanding(engine, dl);
+    vcs_swarm_record_delete_dl(engine, dl);
     dl->state = VCS_SWARM_DL_FAILED;
     dl->rule = "operator-cancelled";
     pthread_mutex_unlock(&engine->lock);

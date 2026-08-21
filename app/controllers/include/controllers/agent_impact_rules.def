@@ -922,6 +922,7 @@ AGENT_IMPACT_RULE("lib/vcs/include/vcs/zcode_benchmark_receipt.h|lib/vcs/src/zco
  * by the swarm network suite. */
 AGENT_IMPACT_RULE("config/src/boot_zcode_swarm.c|config/src/boot_zcode_swarm_receipt.c|config/include/config/boot_zcode_swarm_receipt.h|config/src/boot_zcode_swarm_membership.c|config/include/config/boot_zcode_swarm_membership.h|config/src/boot_zcode_work_authority.c|config/include/config/boot_zcode_work_authority.h", "zcode_swarm_net zcode_dev_objects make_lint_gates")
 AGENT_IMPACT_RULE("lib/vcs/src/package_swarm_receipt.c|lib/vcs/src/package_swarm_receipt_session.c|lib/vcs/include/vcs/service_receipt.h|lib/vcs/src/service_receipt.c|lib/vcs/include/vcs/package_swarm_node.h|lib/test/src/test_zcode_swarm.c", "zcode_swarm make_lint_gates")
+AGENT_IMPACT_RULE("lib/vcs/src/package_swarm_node.c|lib/vcs/src/package_swarm_complete.c|lib/vcs/src/package_swarm_priv.h|lib/test/src/test_zcode_swarm_complete.c", "zcode_swarm_complete make_lint_gates")
 /* Confinement visibility + the confinement/hot-swap filesystem collision:
  * the `confinement` witness (os_sandbox_witness.c + its dumpers.def row), the
  * grant-recording / path-grant predicate / typed-refusal primitives in
