@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: semver range matching (see the header for the grammar). */
 #include "zrange/zrange.h"
 

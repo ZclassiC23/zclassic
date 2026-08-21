@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded JSON (RFC 8259) pull parser for C23, companion to
  *          the zjson writer. Allocation-free, depth-bounded, and
  *          total: the parser reads caller memory, produces one event

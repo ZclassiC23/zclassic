@@ -33,4 +33,4 @@ reference implementation for both polynomials, 3000-trial split-update
 streaming invariance, empty/NULL edges. Built with
 `-std=c23 -Wall -Wextra -Werror -pedantic` under ASan/UBSan.
 
-MIT licensed.
+Apache-2.0 licensed.

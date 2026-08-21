@@ -9,7 +9,7 @@
  * Deliberately simple: it is the baseline opponent every other pilot
  * must beat, and the born-red reference for determinism tests.
  *
- * MIT licensed.
+ * Apache-2.0 licensed.
  */
 #ifndef ZDOGDRONE_H
 #define ZDOGDRONE_H

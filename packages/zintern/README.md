@@ -33,4 +33,4 @@ printf 'b\na\nb\n' | ./zintern   # 0 b / 1 a / 0 b
 
 ## License
 
-MIT
+Apache-2.0

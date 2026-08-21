@@ -7,7 +7,7 @@
  *
  * Buffer API with exact size queries; no allocation.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZESCAPE_H
 #define ZESCAPE_H

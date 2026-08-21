@@ -58,4 +58,4 @@ full encode→decode round-trip sweep over every Unicode scalar value.
 
 ## License
 
-MIT (see LICENSE).
+Apache-2.0 (see LICENSE).

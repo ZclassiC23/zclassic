@@ -38,4 +38,4 @@ asserting every emitted line stays within the width (via
 `-std=c23 -Wall -Wextra -Werror -pedantic` under ASan/UBSan.
 
 Depends on `zutf8/zutf8` 0.1.0 (exact root pinned in the manifest).
-MIT licensed.
+Apache-2.0 licensed.

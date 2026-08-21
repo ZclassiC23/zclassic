@@ -47,4 +47,4 @@ C23. Compile `src/zotp.c` together with the `zsha1` package's
 
 ## License
 
-MIT.
+Apache-2.0.

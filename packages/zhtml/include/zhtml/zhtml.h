@@ -1,6 +1,6 @@
 /* zhtml — bounded HTML escaping and unescaping
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Escape: &, <, >, ", ' become &amp; &lt; &gt; &quot; &#39;
  * (the XML/HTML5-safe five). Unescape: the five named entities plus

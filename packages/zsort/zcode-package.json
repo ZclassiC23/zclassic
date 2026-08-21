@@ -1,1 +1,19 @@
-{"schema":1,"name":"zsort/zsort","semver":"0.1.0","language":"c23","license":"MIT","include_dir":"include","source_dir":"src","dependencies":[],"files":["LICENSE","README.md","app/main.c","include/zsort/zsort.h","src/zsort.c","tests/test_zsort.c","zcode-package.json"]}
+{
+  "schema": 1,
+  "name": "zsort/zsort",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "Apache-2.0",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zsort/zsort.h",
+    "src/zsort.c",
+    "tests/test_zsort.c",
+    "zcode-package.json"
+  ]
+}

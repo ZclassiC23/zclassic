@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: RFC 3339 parse/format (see the header for the grammar).
  * Civil-date math is the standard era-based algorithm: days are counted
  * from 1970-01-01 with March as the first month so February's leap day

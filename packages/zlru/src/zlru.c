@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded LRU cache on zmap (see the header for the design). */
 #include "zlru/zlru.h"
 

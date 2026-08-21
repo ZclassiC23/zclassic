@@ -34,4 +34,4 @@ zrate window 3 1000 0 100 500 999 1000
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

@@ -14,7 +14,7 @@
  *
  * Depends on the Commons package zsha256 for HMAC-SHA256.
  *
- * MIT licensed.
+ * Apache-2.0 licensed.
  */
 #ifndef ZSCRYPT_H
 #define ZSCRYPT_H

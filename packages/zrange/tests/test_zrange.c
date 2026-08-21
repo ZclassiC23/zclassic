@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: zrange test suite.  Exits nonzero on the first failure.
  * The caret/tilde expansion tables and prerelease gating are the npm
  * CLI's documented behaviour, transcribed as known-answer tests. */

@@ -44,4 +44,4 @@ zuuid nil
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

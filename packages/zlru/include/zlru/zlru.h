@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded LRU cache for C23, built on zmap.
  *          String keys, opaque values, caller-injected allocation, and a
  *          hard entry bound: inserting past capacity evicts the

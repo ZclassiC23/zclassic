@@ -4,7 +4,7 @@
  * mapping, both cases rejected where invalid, exact buffer sizing and
  * strict error positions on decode.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZBASE58_H
 #define ZBASE58_H

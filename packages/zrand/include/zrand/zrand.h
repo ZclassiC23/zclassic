@@ -7,7 +7,7 @@
  * This is a fast, well-distributed general-purpose generator. It is
  * NOT cryptographically secure — never use it for keys or tokens.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZRAND_H
 #define ZRAND_H

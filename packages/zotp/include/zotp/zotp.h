@@ -1,6 +1,6 @@
 /* zotp — HOTP one-time passwords (RFC 4226)
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * HMAC-SHA1-based one-time passwords: the counter-based HOTP
  * algorithm used by TOTP authenticators, hardware tokens, and

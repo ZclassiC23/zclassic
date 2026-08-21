@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: RFC 3339 timestamp parsing and formatting for C23, UTC and
  *          numeric offsets only. Allocation-free, bounded, and total:
  *          every calendar field is range-checked (including leap-year

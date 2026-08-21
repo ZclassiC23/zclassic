@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: inidump - parse INI from stdin and print a flattened,
  *          deterministic "section.key = value" dump.
  *

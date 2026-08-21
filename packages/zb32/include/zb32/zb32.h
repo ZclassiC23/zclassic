@@ -1,6 +1,6 @@
 /* zb32 — RFC 4648 base32 encoding/decoding, bounded
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Standard base32 alphabet (A-Z2-7) with '=' padding. Encoding is
  * canonical. Decoding is strict: invalid characters, bad padding

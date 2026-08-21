@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: wordfreq - count word frequencies over stdin and print the top
  *          entries, most frequent first (ties broken lexicographically).
  *

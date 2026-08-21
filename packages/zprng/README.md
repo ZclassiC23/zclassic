@@ -17,4 +17,4 @@ determinism, bucket-coverage, range, and permutation checks.
 
 Not cryptographically secure — use a CSPRNG for secrets.
 
-MIT licensed.
+Apache-2.0 licensed.

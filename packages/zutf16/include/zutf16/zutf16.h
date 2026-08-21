@@ -1,6 +1,6 @@
 /* zutf16 — strict UTF-8 <-> UTF-16LE transcoding, bounded
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Decoding UTF-8: rejects overlong encodings, surrogates, codepoints
  * above U+10FFFF, and truncated sequences. Decoding UTF-16: rejects

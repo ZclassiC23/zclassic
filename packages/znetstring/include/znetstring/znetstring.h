@@ -1,6 +1,6 @@
 /* znetstring — netstring framing codec (DJB netstrings)
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * A netstring frames a byte payload as ASCII:
  *

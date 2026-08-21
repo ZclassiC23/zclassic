@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded RFC 8259 pull parser (see the header). */
 #include "zjsonp/zjsonp.h"
 

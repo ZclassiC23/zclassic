@@ -36,4 +36,4 @@ cc -std=c23 -Iinclude -o zpuny app/main.c src/zpuny.c
 
 ## License
 
-MIT
+Apache-2.0

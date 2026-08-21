@@ -1,6 +1,6 @@
 /* zpem — PEM armor (RFC 7468) over DER bytes
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * PEM frames binary data as:
  *

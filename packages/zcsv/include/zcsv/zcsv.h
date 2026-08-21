@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded, allocation-free RFC 4180 CSV parser and writer.
  *
  * The parser never allocates: the caller supplies one scratch buffer that

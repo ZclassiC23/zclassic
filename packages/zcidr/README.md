@@ -47,4 +47,4 @@ against a bit-by-bit reference, a 20k-trial v6 format/parse round-trip
 fuzz, and NULL/zero-capacity handling. Built with
 `-std=c23 -Wall -Wextra -Werror -pedantic` under ASan/UBSan.
 
-MIT licensed.
+Apache-2.0 licensed.

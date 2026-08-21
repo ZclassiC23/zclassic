@@ -39,4 +39,4 @@ zvarint dec e58e26               # 624485
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

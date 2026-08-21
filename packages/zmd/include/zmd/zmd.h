@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: Markdown-subset to HTML renderer for C23 — streaming (output
  *          through a caller-supplied write callback), allocation-free,
  *          bounded, and fail-closed.

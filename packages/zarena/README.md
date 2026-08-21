@@ -12,4 +12,4 @@ no malloc, no global state.
 Tested for alignment, overlap, exhaustion, mark/rewind reuse, and
 argument validation.
 
-MIT licensed.
+Apache-2.0 licensed.

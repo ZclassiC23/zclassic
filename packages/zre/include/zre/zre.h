@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: regular expressions for C23 with GUARANTEED linear-time matching.
  *          Patterns compile to a Thompson NFA and run on a pike VM (parallel
  *          lockstep simulation); there is no backtracking anywhere, so no

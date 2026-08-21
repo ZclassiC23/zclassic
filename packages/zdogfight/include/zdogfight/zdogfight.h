@@ -30,7 +30,7 @@
  *
  * Self-contained except for zprng.
  *
- * MIT licensed.
+ * Apache-2.0 licensed.
  */
 #ifndef ZDOGFIGHT_H
 #define ZDOGFIGHT_H

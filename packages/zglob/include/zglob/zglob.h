@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: shell-style wildcard (glob) matching for C23 — allocation-free,
  *          NUL-free (explicit lengths), iterative with star backtracking.
  *

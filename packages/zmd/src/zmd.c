@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: Markdown-subset to HTML rendering (see the header for the
  *          exact subset contract). */
 #include "zmd/zmd.h"

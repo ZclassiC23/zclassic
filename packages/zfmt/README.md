@@ -39,4 +39,4 @@ zfmt template world 3  # hello world, count=3
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

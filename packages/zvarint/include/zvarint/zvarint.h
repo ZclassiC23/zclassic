@@ -3,7 +3,7 @@
  * Unsigned LEB128 and zigzag-mapped signed LEB128, buffer-based with
  * explicit lengths, canonical-form checking, and a bounded reader.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZVARINT_H
 #define ZVARINT_H

@@ -33,4 +33,4 @@ zpq push 5 push 1 push 9 peek pop pop   # 1 / 1 / 5
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

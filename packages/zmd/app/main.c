@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: md2html - render Markdown-subset stdin to HTML on stdout.
  *
  * Usage: zmd < doc.md > doc.html

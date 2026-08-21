@@ -10,7 +10,7 @@
  * required length through an out parameter so a two-pass
  * size-then-fill pattern works without guessing.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZPUNY_H
 #define ZPUNY_H

@@ -9,7 +9,7 @@
  * All arithmetic is modular (wraps mod 2^256); *_overflow variants
  * report whether the true mathematical result exceeded the modulus.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZU256_H
 #define ZU256_H

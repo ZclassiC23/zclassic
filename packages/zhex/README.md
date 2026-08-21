@@ -35,4 +35,4 @@ echo 68656c6c6f | zhex decode        # hello
 
 ## License
 
-MIT. See LICENSE.
+Apache-2.0. See LICENSE.

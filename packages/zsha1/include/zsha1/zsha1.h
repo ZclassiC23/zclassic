@@ -1,6 +1,6 @@
 /* zsha1 — SHA-1 message digest (FIPS 180-1 / RFC 3174)
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * One-shot and streaming SHA-1. SHA-1 is cryptographically broken
  * for collision resistance (SHAttered, 2017): do NOT use it for

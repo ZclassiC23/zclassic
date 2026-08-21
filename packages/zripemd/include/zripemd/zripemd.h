@@ -8,7 +8,7 @@
  * Incremental context API plus one-shot helpers.  Self-contained;
  * no dependencies beyond libc.
  *
- * MIT licensed.
+ * Apache-2.0 licensed.
  */
 #ifndef ZRIPEMD_H
 #define ZRIPEMD_H

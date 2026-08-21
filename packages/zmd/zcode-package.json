@@ -3,17 +3,17 @@
   "name": "zmd/zmd",
   "semver": "0.1.0",
   "language": "c23",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "include_dir": "include",
   "source_dir": "src",
   "dependencies": [
     {
-      "root": "6495fd455de7b7dca7c9fd5e5e6a4e1f8b0637252cc558635fe6c99e9cb90b3c",
+      "root": "32095f0a1cd96d634f1dcac964256cafdfe12be8628f5789f013feb811f9ccc8",
       "name": "zutf8/zutf8",
       "semver": "0.1.0"
     },
     {
-      "root": "49b8c06f6b3d3fe1d9c3e156c608d38e6faa6f061d899381826d3f69c147e0de",
+      "root": "48419b892cb2b912cfb005a6151b1b7924d2d659f02f6dcadd8f4ba27bdfe22b",
       "name": "zhtml/zhtml",
       "semver": "0.1.0"
     }

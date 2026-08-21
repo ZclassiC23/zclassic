@@ -43,4 +43,4 @@ canonical-form checker, and randomised idempotence/boundedness oracles
 (slug is a projection: `slug(slug(x)) == slug(x)`). Built with
 `-std=c23 -Wall -Wextra -Werror -pedantic` under ASan/UBSan.
 
-MIT licensed.
+Apache-2.0 licensed.

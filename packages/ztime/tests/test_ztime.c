@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: ztime test suite.  Exits nonzero on the first failure.
  * Known-answer timestamps are the standard published epoch anchors
  * (0, -1, 10^9, 2^31-1, 2^31, 253402300799 = 9999-12-31T23:59:59Z). */

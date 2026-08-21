@@ -1,6 +1,6 @@
 /* zpath — bounded lexical path manipulation (POSIX-style)
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Purely lexical operations on slash-separated paths: join, normalize
  * (resolving "." and ".." without touching the filesystem), dirname,

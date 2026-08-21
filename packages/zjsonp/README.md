@@ -72,4 +72,4 @@ parse, and single-byte mutations must terminate cleanly.
 
 ## License
 
-MIT (see LICENSE).
+Apache-2.0 (see LICENSE).

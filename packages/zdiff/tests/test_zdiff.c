@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: KAT, bounds, NULL-safety, and property tests for zdiff. */
 #include "zdiff/zdiff.h"
 

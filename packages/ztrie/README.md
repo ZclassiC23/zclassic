@@ -32,4 +32,4 @@ printf 'app=demo\n' | ./demo apple
 
 ## License
 
-MIT
+Apache-2.0

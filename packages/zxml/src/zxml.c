@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded XML writer (see the header for the well-formedness
  *          contract). No allocation; the zxml struct is caller-owned. */
 #include "zxml/zxml.h"

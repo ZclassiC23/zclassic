@@ -41,4 +41,4 @@ cc -std=c23 -Iinclude -o ztemplate app/main.c src/ztemplate.c
 
 ## License
 
-MIT
+Apache-2.0

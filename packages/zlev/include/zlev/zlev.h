@@ -1,6 +1,6 @@
 /* zlev — bounded Levenshtein distance and similarity
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Classic Levenshtein (insert/delete/substitute, unit cost) over raw
  * bytes, computed with two rows of a caller- or internal-sized DP

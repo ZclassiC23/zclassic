@@ -48,4 +48,4 @@ Tests: `tests/test_zdeque.c` (no framework needed).
 
 ## License
 
-MIT.
+Apache-2.0.

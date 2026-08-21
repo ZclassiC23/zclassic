@@ -4,7 +4,7 @@
  * HMAC, plus one-shot helpers. Self-contained; no dependencies beyond
  * libc.
  *
- * MIT licensed.
+ * Apache-2.0 licensed.
  */
 #ifndef ZSHA256_H
 #define ZSHA256_H

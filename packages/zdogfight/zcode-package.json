@@ -3,13 +3,13 @@
   "name": "zdogfight/zdogfight",
   "semver": "0.1.0",
   "language": "c23",
-  "license": "MIT",
+  "license": "Apache-2.0",
   "include_dir": "include",
   "source_dir": "src",
   "dependencies": [
     {
       "name": "zprng/zprng",
-      "root": "91e9406a1016bcc224bb5e229377b1841e21c8ede1e0a00bc0d45d1989c41563",
+      "root": "577ffde9ca912872b4a382da2e0b96392abfb2fe3a2066629b01b5e72164b62b",
       "semver": "0.1.0"
     }
   ],

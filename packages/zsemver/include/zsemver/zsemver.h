@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: strict Semantic Versioning 2.0.0 (semver.org) parsing and
  *          precedence comparison for C23, with zero allocation.
  *

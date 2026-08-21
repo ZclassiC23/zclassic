@@ -1,6 +1,6 @@
 /* zpct — RFC 3986 percent-encoding, bounded and zero-allocation
  *
- * MIT licensed. C23, freestanding-friendly, no allocation.
+ * Apache-2.0 licensed. C23, freestanding-friendly, no allocation.
  *
  * Encoding: emit every byte outside a caller-selected unreserved set
  * as %XX (uppercase hex). Decoding: strict — '%' must be followed by

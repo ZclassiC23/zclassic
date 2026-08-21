@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: open-addressing string -> void* hash map; see zmap.h for the
  *          design notes and ownership rules. */
 #include "zmap/zmap.h"

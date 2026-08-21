@@ -9,7 +9,7 @@
  *
  * Values are never owned. The key bytes are copied.
  *
- * MIT licensed. No dependencies beyond libc.
+ * Apache-2.0 licensed. No dependencies beyond libc.
  */
 #ifndef ZTRIE_H
 #define ZTRIE_H

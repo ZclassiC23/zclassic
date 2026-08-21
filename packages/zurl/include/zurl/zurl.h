@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: bounded URI parser (RFC 3986 absolute URIs) for C23.
  *          Allocation-free and total: components are byte slices of
  *          the input, every malformed input is a clean false, and no

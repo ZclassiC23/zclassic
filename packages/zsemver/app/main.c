@@ -1,4 +1,4 @@
-/* Copyright 2026 Rhett Creighton - MIT License
+/* Copyright 2026 Rhett Creighton - Apache License 2.0
  * Purpose: semversort - read one version per line from stdin, reject
  *          anything that is not strict SemVer 2.0.0, and print the valid
  *          versions in precedence order (stable for equal precedence).

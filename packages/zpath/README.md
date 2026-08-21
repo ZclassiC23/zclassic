@@ -35,4 +35,4 @@ idempotence and output invariants. Built and run under
 
 ## License
 
-MIT. See `LICENSE`.
+Apache-2.0. See `LICENSE`.
