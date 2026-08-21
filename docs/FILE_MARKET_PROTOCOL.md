@@ -2,10 +2,11 @@
 
 This page is the developer and agent map for paid file offers and purchases.
 The seller-authenticated offer ingress, durable buyer payment plan/commit, and
-exact confirmed-payment authority are implemented. The encrypted `zfileget.v1`
-request and authorize-before-read gate are implemented. Owner-private paid-
-content registration and verified chunk loading are implemented. Local paid-
-offer signing/announcement remains deliberately unavailable. The buyer client
+exact confirmed-payment authority are implemented. The encrypted `zfileget.v2`
+request, encrypted paid-chunk channel, and authorize-before-read gate are
+implemented. Owner-private paid-content registration and verified chunk
+loading are implemented. Local paid-offer signing/announcement remains
+deliberately unavailable. The buyer client
 targets the endpoint authenticated by the signed offer, retrieves encrypted
 chunks, resumes verified assembly after restart, verifies the full manifest,
 and atomically publishes into an owner-selected destination.
@@ -233,13 +234,13 @@ State meanings are strict:
 
 ## Buyer-authenticated delivery request
 
-`zfileget.v1` rides an encrypted `FS_REQUEST` frame and is exactly 206 bytes.
+`zfileget.v2` rides an encrypted `FS_REQUEST` frame and is exactly 206 bytes.
 Integers are little-endian.
 
 | Offset | Bytes | Field |
 |---:|---:|---|
-| 0 | 8 | `ZFGETV1\n` magic |
-| 8 | 2 | version (`1`) |
+| 0 | 8 | `ZFGETV2\n` magic |
+| 8 | 2 | version (`2`) |
 | 10 | 32 | ZClassic network genesis hash |
 | 42 | 32 | exact signed `offer_id` |
 | 74 | 4 | requested chunk index |
@@ -253,12 +254,17 @@ covers a domain-separated root of bytes `0..141`. A captured request therefore
 cannot be moved onto another file-service session, and changing the offer,
 chunk, buyer, network, or session invalidates the signature.
 
-Every request receives one encrypted 84-byte `zfileget.reply.v1` before any
-raw chunk bytes. Its fixed fields are reply magic, version, typed status,
-offer ID, chunk index, byte size, and SHA3-256. Only `READY` is followed by the
-raw authenticated chunk. Other statuses are `MALFORMED`, `UNAUTHENTICATED`,
-`PENDING`, `UNKNOWN`, `CONFLICTED`, `REJECTED`, `CONTENT_UNAVAILABLE`, and
-`RESOURCE_LIMIT`.
+Every request receives one encrypted 84-byte `zfileget.reply.v2` before any
+chunk bytes. Its fixed fields are reply magic, version, typed status, offer
+ID, chunk index, byte size, and SHA3-256. Only `READY` is followed by a
+ChaCha20-Poly1305 encrypted chunk. Its directional key is derived from the
+file-service session key plus the ordered sender and receiver handshake
+nonces; its nonce uses the monotonic session counter; and its authenticated
+data binds the exact reply size, counter, and chunk SHA3. The public chain and
+package fast path remains authenticated but unencrypted because those bytes
+are public; paid content never uses that path. Other statuses are `MALFORMED`,
+`UNAUTHENTICATED`, `PENDING`, `UNKNOWN`, `CONFLICTED`, `REJECTED`,
+`CONTENT_UNAVAILABLE`, and `RESOURCE_LIMIT`.
 
 The server call order is load-bearing:
 
@@ -420,7 +426,7 @@ Do not build a payment by copying structs or invoking an RPC from memory:
 8. Keep the buyer private key and wallet keys behind their signing boundaries.
 9. Treat a txid or `PENDING` claim as locked. Only the seller's synchronous
    `CONFIRMED` authorization permits bytes to leave the paid file service.
-10. Sign each `zfileget.v1` request for the current encrypted session. Do not
+10. Sign each `zfileget.v2` request for the current encrypted session. Do not
    reuse a request body across reconnects or expose the ephemeral buyer seed.
 11. Accept bytes only after the typed `READY` reply and verify the announced
    chunk SHA3. `CONTENT_UNAVAILABLE` means the seller has not registered the

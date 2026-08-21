@@ -135,6 +135,17 @@ bool fs_recv_chunk_fast(struct fs_session *s, uint8_t **out,
                         uint32_t *out_size,
                         const uint8_t expected_sha3[32]);
 
+/* Send and receive one private paid-file chunk with authenticated encryption.
+ * This is deliberately separate from the raw authenticated fast path above:
+ * public chain/package bytes do not require confidentiality, but purchased
+ * content does. The receive side binds the authenticated wire size to the
+ * already-encrypted market reply before allocating or reading the payload. */
+bool fs_send_chunk_private(struct fs_session *s, const uint8_t *data,
+                           uint32_t size, const uint8_t sha3[32]);
+bool fs_recv_chunk_private(struct fs_session *s, uint8_t **out,
+                           uint32_t *out_size, uint32_t expected_size,
+                           const uint8_t expected_sha3[32]);
+
 /* High-level: serve files on configured port. Runs in its own thread. */
 void fs_server_start(const char *datadir, uint16_t port);
 void fs_server_stop(void);

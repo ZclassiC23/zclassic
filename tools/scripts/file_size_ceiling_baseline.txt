@@ -32,7 +32,7 @@ app/jobs/src/reducer_frontier_replay.c 809
 app/jobs/src/stage_repair_reducer_frontier.c 852
 app/jobs/src/tip_finalize_stage.c 809
 app/jobs/src/utxo_apply_stage.c 941
-app/jobs/src/validate_headers_stage.c 1071
+app/jobs/src/validate_headers_stage.c 1051
 app/models/src/block.c 823
 app/models/src/database_migrate_features_v49_up.c 812 # append-only migration accumulator — splitting breaks the append order it exists to preserve
 app/services/src/block_index_loader.c 965 # block_index_flat_header_at (replay-canary FAIL#7 tip-bind point read)

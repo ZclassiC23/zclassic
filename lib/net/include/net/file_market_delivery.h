@@ -8,7 +8,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-#define FILE_MARKET_DELIVERY_VERSION 1u
+#define FILE_MARKET_DELIVERY_VERSION 2u
 #define FILE_MARKET_DELIVERY_BODY_BYTES 142u
 #define FILE_MARKET_DELIVERY_WIRE_BYTES 206u
 #define FILE_MARKET_DELIVERY_REPLY_BYTES 84u
@@ -16,7 +16,7 @@
 
 struct fs_session;
 
-/* zfileget.v1 names one chunk from one signed offer. session_id is derived
+/* zfileget.v2 names one encrypted chunk from one signed offer. session_id is derived
  * from network genesis plus the initiator/responder handshake nonces. The
  * buyer signature therefore cannot be copied onto another file-service
  * connection. The buyer seed is accepted only by the seal helper and never
@@ -160,8 +160,9 @@ enum file_market_delivery_status file_market_delivery_prepare_onion(
     struct file_market_delivery_reply *out_reply,
     struct file_market_delivery_chunk *out_chunk);
 
-/* Server integration: prepare, send one encrypted typed reply, then send raw
- * authenticated bytes only for READY. Returns false only on transport error. */
+/* Server integration: prepare, send one encrypted typed reply, then send
+ * authenticated-encrypted bytes only for READY. Returns false only on a
+ * transport error. */
 bool file_market_delivery_serve(
     struct fs_session *session, const uint8_t client_ip[16],
     const uint8_t *payload, uint32_t plen);

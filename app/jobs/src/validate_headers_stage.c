@@ -160,17 +160,6 @@ static inline bool vh_failure_is_recheck_candidate(const char *reason)
             strcmp(reason, "header-source-hash-mismatch") == 0);
 }
 
-static bool vh_hash_mismatch_recheck_ready(sqlite3 *db, int height,
-                                           const struct block_index *bi)
-{
-    if (!db || height < 0 || !bi || !bi->phashBlock)
-        return false;
-
-    struct block_header repaired;
-    return stage_repair_header_solution_load(db, height, bi->phashBlock,
-                                             &repaired);
-}
-
 /* ── Worker pool ──────────────────────────────────────────────────── */
 
 static void vh_run_job(void *jobp, void *user)
@@ -440,19 +429,10 @@ static job_result_t recheck_failed_rows(struct main_state *ms,
         blocker_clear(VH_WINDOW_MISS_BLOCKER_ID);
         if (!vh_failure_is_recheck_candidate(reason))
             continue;
-        if (strcmp(reason, "header-source-hash-mismatch") == 0 &&
-            !vh_hash_mismatch_recheck_ready(db, (int)h64, bi)) {
-            /* Hash-source disagreement is only actionable once the repair
-             * table holds a hash-bound header for the canonical candidate.
-             * Until then the condition engine owns backfill/refetch; re-running
-             * the full validator just recreates the same warn storm.
-             *
-             * PIN THE FLOOR at this still-unresolved height (mirror the !bi
-             * branch above). A bare `continue` here left first_unresolved unset,
-             * so if this row was the ONLY selected recheck candidate (n==0 at
-             * the bottom) idle_floor jumped to validated_cursor — skipping the
-             * recheck PAST a height whose failed-row mask is still unrepaired
-             * (Task A #12). Hold the floor at/below it so the next pass retries. */
+        if (!validate_headers_recheck_ready(db, (int)h64, bi, reason)) {
+            /* No exact solution bytes yet: the condition engine owns their
+             * backfill/refetch. Pin the lowest unresolved height and back off
+             * rather than claiming progress from an unchanged verdict. */
             atomic_store(&g_last_blocked_unix, platform_time_wall_unix());
             if (first_unresolved < 0)
                 first_unresolved = h64;

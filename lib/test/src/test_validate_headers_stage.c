@@ -1352,6 +1352,9 @@ int test_validate_headers_stage(void)
         VH_CHECK("recheck: re-init admit", header_admit_stage_init(&ms));
         VH_CHECK("recheck: re-init validate",
                  validate_headers_stage_init(&ms));
+        VH_CHECK("recheck: repaired solution is now hash-bound",
+                 seed_repair_header_for_block(progress_store_db(),
+                                              &sc.blocks[1], &sc.hashes[1]));
         validate_headers_stage_set_validator(stub_pass, NULL);
 
         VH_CHECK("recheck: failed row is retried",
@@ -1367,6 +1370,54 @@ int test_validate_headers_stage(void)
         VH_CHECK("recheck: next step idle",
                  validate_headers_stage_step_once() == JOB_IDLE);
 
+        vh_teardown(dir, &ms, &sc);
+    }
+
+    /* ── unresolved solutionless rows back off without fake advances ─────
+     * C3 measured the validate cursor already at peer tip while the failed-row
+     * recheck repeatedly selected the same 64 solutionless rows.  With no
+     * solution bytes available, each pass was guaranteed to reproduce the
+     * same failure, yet the stage reported JOB_ADVANCED and consumed 128.9s.
+     * Readiness is the hash-bound repair row (or canonical in-index solution):
+     * before it exists, repeated polls are IDLE and do not call the validator;
+     * after it lands, exactly one unchanged validation advances the row. */
+    {
+        char dir[256]; struct main_state ms; struct synth_chain_vh sc;
+        struct fail_at_ctx ctx;
+        memset(&ctx, 0, sizeof(ctx));
+        ctx.fail_height = 1;
+        ctx.reason = "no-header-solution-backfill-required";
+        VH_CHECK("recheck-readiness: setup with solutionless failure",
+                 vh_setup("recheck_readiness", 3, stub_fail_at, &ctx,
+                          dir, sizeof(dir), &ms, &sc) == 0);
+        header_admit_stage_drain(100);
+        VH_CHECK("recheck-readiness: forward validation records failure",
+                 validate_headers_stage_drain(10) >= 1);
+
+        int calls_before = atomic_load(&ctx.call_count);
+        ctx.fail_height = -1; /* unchanged stub now passes when invoked */
+        VH_CHECK("recheck-readiness: unresolved poll is IDLE",
+                 validate_headers_stage_step_once() == JOB_IDLE);
+        VH_CHECK("recheck-readiness: repeated unresolved poll is IDLE",
+                 validate_headers_stage_step_once() == JOB_IDLE);
+        VH_CHECK("recheck-readiness: unresolved polls never invoke validator",
+                 atomic_load(&ctx.call_count) == calls_before);
+
+        VH_CHECK("recheck-readiness: repair solution becomes hash-bound",
+                 seed_repair_header_for_block(progress_store_db(),
+                                              &sc.blocks[1], &sc.hashes[1]));
+        VH_CHECK("recheck-readiness: ready row advances exactly once",
+                 validate_headers_stage_step_once() == JOB_ADVANCED);
+        VH_CHECK("recheck-readiness: ready row invoked validator once",
+                 atomic_load(&ctx.call_count) == calls_before + 1);
+        VH_CHECK("recheck-readiness: resolved row stays idle",
+                 validate_headers_stage_step_once() == JOB_IDLE);
+        VH_CHECK("recheck-readiness: resolved row is not revalidated",
+                 atomic_load(&ctx.call_count) == calls_before + 1);
+
+        int ok = -1;
+        VH_CHECK("recheck-readiness: repaired row is now passing",
+                 log_row_at(progress_store_db(), 1, &ok, NULL, 0) && ok == 1);
         vh_teardown(dir, &ms, &sc);
     }
 
@@ -1539,6 +1590,9 @@ int test_validate_headers_stage(void)
         sc.blocks[1].nStatus |= BLOCK_FAILED_VALID;
         VH_CHECK("mark-repair: precondition — block is FAILED-masked",
                  (sc.blocks[1].nStatus & BLOCK_FAILED_MASK) != 0);
+        VH_CHECK("mark-repair: seed repaired solution",
+                 seed_repair_header_for_block(db, &sc.blocks[1],
+                                              &sc.hashes[1]));
         validate_headers_stage_set_validator(stub_pass, NULL);
 
         VH_CHECK("mark-repair: recheck re-validates + advances",
@@ -1648,6 +1702,9 @@ int test_validate_headers_stage(void)
                  set_stage_cursor(db, "tip_finalize", 4));
         VH_CHECK("clamp: set body_fetch frontier",
                  set_stage_cursor(db, "body_fetch", 4));
+        VH_CHECK("clamp: seed frontier repair header",
+                 seed_repair_header_for_block(db, &sc.blocks[4],
+                                              &sc.hashes[4]));
 
         /* Reopen so the never-persisted in-process recheck floor starts at 0 —
          * the exact fresh-boot condition under which the ancient row used to
@@ -1733,6 +1790,9 @@ int test_validate_headers_stage(void)
         VH_CHECK("stale-high-floor: seed stranded frontier row",
                  seed_failed_vh_row(db, 4, sc.blocks[4].phashBlock,
                                     "no-header-solution-backfill-required"));
+        VH_CHECK("stale-high-floor: seed stranded repair header",
+                 seed_repair_header_for_block(db, &sc.blocks[4],
+                                              &sc.hashes[4]));
 
         VH_CHECK("stale-high-floor: lowered floor reaches stranded row",
                  validate_headers_stage_step_once() == JOB_ADVANCED);

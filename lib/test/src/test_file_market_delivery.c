@@ -1,10 +1,11 @@
 /* Copyright 2026 Rhett Creighton - Apache License 2.0
- * zfileget.v1 session binding and authorize-before-read delivery proofs. */
+ * zfileget.v2 encrypted delivery and authorize-before-read proofs. */
 
 #include "test/test_core.h"
 
 #include "base/hex.h"
 #include "chain/chainparams.h"
+#include "crypto/chacha20poly1305.h"
 #include "crypto/ed25519.h"
 #include "crypto/sha3.h"
 #include "net/file_market_delivery.h"
@@ -347,7 +348,7 @@ int file_market_delivery_tests(void)
              file_market_delivery_reply_decode(
                  reply_payload, reply_len, &reply_roundtrip) &&
              reply_roundtrip.status == FILE_MARKET_DELIVERY_READY;
-    uint8_t size_wire[4], body[32], mac[32];
+    uint8_t size_wire[4], body[32], tag[POLY1305_TAG_SIZE];
     uint32_t served_size = 0;
     if (served) {
         served = delivery_recv_exact(sockets[1], size_wire, 4);
@@ -357,10 +358,11 @@ int file_market_delivery_tests(void)
             ((uint32_t)size_wire[3] << 24);
         served = served && served_size <= sizeof(body) &&
             delivery_recv_exact(sockets[1], body, served_size) &&
-            delivery_recv_exact(sockets[1], mac, sizeof(mac));
+            delivery_recv_exact(sockets[1], tag, sizeof(tag));
     }
-    DELIVERY_CHECK("encrypted server dispatch sends reply before paid bytes",
-        served && served_size == reply_roundtrip.size);
+    DELIVERY_CHECK("paid chunk wire is encrypted after authenticated reply",
+        served && served_size == reply_roundtrip.size &&
+        memcmp(body, "paid-chunk-proof", served_size) != 0);
     if (sockets[0] >= 0) close(sockets[0]);
     if (sockets[1] >= 0) close(sockets[1]);
 

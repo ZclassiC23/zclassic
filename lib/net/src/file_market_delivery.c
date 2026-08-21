@@ -25,10 +25,10 @@
 #include <string.h>
 
 static const uint8_t k_request_magic[8] =
-    {'Z','F','G','E','T','V','1','\n'};
+    {'Z','F','G','E','T','V','2','\n'};
 static const uint8_t k_reply_magic[8] =
-    {'Z','F','R','E','P','V','1','\n'};
-static const char k_request_domain[] = "zcl.file.market.delivery.request.v1";
+    {'Z','F','R','E','P','V','2','\n'};
+static const char k_request_domain[] = "zcl.file.market.delivery.request.v2";
 static const char k_session_domain[] = "zcl.file.market.delivery.session.v1";
 
 struct file_market_delivery_handlers {
@@ -565,7 +565,7 @@ bool file_market_delivery_serve(
         return false;
     }
     if (status == FILE_MARKET_DELIVERY_READY &&
-        !fs_send_chunk_fast(session, chunk.data, chunk.size, chunk.sha3)) {
+        !fs_send_chunk_private(session, chunk.data, chunk.size, chunk.sha3)) {
         free(chunk.data);
         return false;
     }
@@ -623,7 +623,8 @@ enum file_market_delivery_status file_market_delivery_fetch_session(
 
     uint8_t *data = NULL;
     uint32_t size = 0;
-    if (!fs_recv_chunk_fast(session, &data, &size, reply.sha3) ||
+    if (!fs_recv_chunk_private(session, &data, &size, reply.size,
+                               reply.sha3) ||
         !data || size != reply.size) {
         free(data);
         return FILE_MARKET_DELIVERY_PAYMENT_UNKNOWN;

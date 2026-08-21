@@ -27,6 +27,7 @@
 
 #include "test/test_core.h"
 #include "crypto/sha256.h"
+#include "platform/time_compat.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -930,6 +931,51 @@ static int test_blocked_on_identity_capture_failure(void)
     return failures;
 }
 
+/* A missing co-located zclassicd is an unmet external prerequisite, not a
+ * consensus finding.  Exercise the real live-mode preflight with a guaranteed
+ * invalid RPC port: it must fail fast, leave a durable BLOCKED sentinel, and
+ * never spawn the mainnet candidate or wait for the eight-hour replay budget. */
+static int test_blocked_on_oracle_rpc_unreachable(void)
+{
+    int failures = 0;
+    TEST("replay-canary: absent zclassicd RPC => fast BLOCKED, not replay FAIL") {
+        const char *root = repo_root();
+        if (!root) { printf("SKIP (repo root not found)\n"); break; }
+
+        char vd[PATH_MAX];
+        snprintf(vd, sizeof(vd), "/tmp/test_canary_oracle_vd_%d", (int)getpid());
+        mkdir(vd, 0755);
+
+        char cmd[PATH_MAX * 3];
+        snprintf(cmd, sizeof(cmd),
+            "ZCL_CANARY_VERDICT_DIR='%s' "
+            "bash '%s/%s' --from=genesis --zclassicd-rpc=1 "
+            "--zclassicd-p2p=1 >/dev/null 2>&1",
+            vd, root, CANARY_REL);
+        int64_t started_ms = platform_time_monotonic_ms();
+        int rc = system(cmd);
+        int64_t elapsed_ms = platform_time_monotonic_ms() - started_ms;
+        int exit_code = (rc == -1) ? -1 : WEXITSTATUS(rc);
+
+        char sentinel[PATH_MAX];
+        snprintf(sentinel, sizeof(sentinel), "%s/replay_canary_genesis.json", vd);
+        char buf[2048] = {0};
+        bool have_sentinel = read_file(sentinel, buf, sizeof(buf));
+
+        char rm[PATH_MAX + 32];
+        snprintf(rm, sizeof(rm), "rm -rf '%s'", vd);
+        if (system(rm) != 0) { /* best-effort cleanup */ }
+
+        ASSERT_EQ(exit_code, 2);
+        ASSERT(elapsed_ms < 30000);
+        ASSERT(have_sentinel);
+        ASSERT(strstr(buf, "\"verdict\":\"BLOCKED\"") != NULL);
+        ASSERT(strstr(buf, "\"reason\":\"oracle_rpc_unreachable\"") != NULL);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 /* ── Static source guards ──────────────────────────────────────────
  *
  * These four checks pin shell-level invariants that the fixture harness
@@ -1016,6 +1062,8 @@ static int test_source_guard_missing_prereqs_route_through_blocked(void)
             "blocked \"insufficient_disk\"",
             "blocked \"src_datadir_missing\"",
             "blocked \"blockindex_import_failed\"",
+            "blocked \"oracle_rpc_unreachable\"",
+            "blocked \"oracle_p2p_unreachable\"",
         };
         for (size_t i = 0; i < sizeof(want) / sizeof(want[0]); i++) {
             if (!strstr(body, want[i])) {
@@ -1045,7 +1093,7 @@ static int test_source_guard_genesis_uses_connect_not_addnode(void)
          * absence of the string "-addnode=127.0.0.1:8034" anywhere in the
          * file: the fix's own explanatory comment quotes the old, wrong
          * flag on purpose — this checks the live call site, not prose.) */
-        ASSERT(strstr(body, "iso_spawn_mainnet_node \"-nolegacyimport -connect=127.0.0.1:8034\"") != NULL);
+        ASSERT(strstr(body, "iso_spawn_mainnet_node \"-nolegacyimport -connect=127.0.0.1:$ZD_P2P\"") != NULL);
         PASS();
     } _test_next:;
     return failures;
@@ -1097,6 +1145,7 @@ int test_replay_canary_verdict(void)
     failures += test_identity_is_captured_once_before_replay();
     failures += test_from_genesis_sentinel_name();
     failures += test_blocked_on_identity_capture_failure();
+    failures += test_blocked_on_oracle_rpc_unreachable();
     failures += test_source_guard_no_unbound_result_vars();
     failures += test_source_guard_missing_prereqs_route_through_blocked();
     failures += test_source_guard_genesis_uses_connect_not_addnode();

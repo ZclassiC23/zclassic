@@ -410,8 +410,8 @@ mkt_assert_totals() {
 }
 
 mkt_restart_b() {
-    local tip="$1"
-    mkt_kill_group "$MKT_PGID_B"; MKT_PGID_B=""
+    local tip="$1" signal="${2:-TERM}"
+    mkt_kill_group "$MKT_PGID_B" "$signal"; MKT_PGID_B=""
     MKT_PGID_B="$(mkt_spawn "$MKT_DD_B" "$B_PORT" "$B_RPC" "$B_FS" \
         "$B_HTTPS" "127.0.0.1:$DEAD_SINK")"
     mkt_wait_rpc "$MKT_DD_B" "$B_RPC" "$MKT_PGID_B" ||
@@ -689,7 +689,7 @@ A_TOTAL=$((A_TOTAL + MKT_COINBASE_REWARD_ZAT + 100000 + TT_FEE))
 B_TOTAL=$((B_TOTAL - 100000 - TT_FEE))
 mkt_assert_totals "$A_TOTAL" "$B_TOTAL" "confirmed t-to-t"
 
-mkt_note "vault t-to-Sapling: exact plan, broadcast restart, same-byte recovery"
+mkt_note "vault t-to-Sapling: exact plan, broadcast kill-9, same-byte recovery"
 TZ_PLAN_RAW="$(mkt_intent_plan "$MKT_DD_B" "$B_RPC" shield "$BUYER_ADDR" \
     "$B_Z1" "$T_TO_Z_AMOUNT" "v1-t-to-z")"
 TZ_PLAN="$(printf '%s' "$TZ_PLAN_RAW" | "$MKT_HELPER" intent-plan \
@@ -700,7 +700,10 @@ TZ_COMMIT_RAW="$(mkt_intent_commit "$MKT_DD_B" "$B_RPC" "$TZ_PLAN")"
 TZ_TXID="$(printf '%s' "$TZ_COMMIT_RAW" | "$MKT_HELPER" intent-commit \
     "$TZ_PLAN" mempool_accepted fresh)" || mkt_die "t-to-Sapling commit failed"
 mkt_assert_tx_network "$TZ_TXID" mempool
-mkt_restart_b 102
+# The commit reply, durable intent bytes and peer-visible mempool transaction
+# are established above. Kill the isolated buyer without shutdown callbacks,
+# then require the public intent path to recover the same transaction bytes.
+mkt_restart_b 102 KILL
 TZ_RECOVER="$(mkt_intent_commit "$MKT_DD_B" "$B_RPC" "$TZ_PLAN")"
 [ "$(printf '%s' "$TZ_RECOVER" | "$MKT_HELPER" intent-commit \
         "$TZ_PLAN" mempool_accepted replay)" = "$TZ_TXID" ] ||
@@ -941,12 +944,13 @@ mkt_wait_fold "$MKT_DD_A" "$A_RPC" "$MARKET_CONFIRM_HEIGHT" || mkt_die "A reduce
 mkt_wait_fold "$MKT_DD_B" "$B_RPC" "$MARKET_CONFIRM_HEIGHT" || mkt_die "B reducer fold did not reach the confirmation tip"
 
 # The market purchase status leaf is a dumb durable read by design; the
-# vault controller's reconcile (triggered here by vault_intent_status) is
+# vault controller's reconcile (triggered here by the native intent-status
+# leaf) is
 # what advances mempool_accepted -> confirmed against the canonical chain.
 mkt_note "polling the buyer purchase status until confirmed"
 STATUS_DEADLINE=$(( $(date +%s) + MKT_WAIT ))
 while :; do
-    VI_REFRESH="$(b_rpc vault_intent_status "{\"plan_id\":\"$PLAN_ID\"}" 2>&1 || true)"
+    VI_REFRESH="$(mkt_intent_status "$MKT_DD_B" "$B_RPC" "$PLAN_ID")"
     STATUS="$(printf '%s' "{\"plan_id\":\"$PLAN_ID\"}" \
         | mkt_native "$MKT_DD_B" "$B_RPC" app market purchase status --input=- || true)"
     state="$(printf '%s' "$STATUS" | mkt_jget 'data.state' 2>/dev/null || true)"

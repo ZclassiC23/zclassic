@@ -58,6 +58,7 @@
 # Usage:
 #   replay_canary.sh --from=anchor|genesis [--src-datadir=DIR]
 #                    [--budget-sec=N] [--zclassicd-rpc=PORT]
+#                    [--zclassicd-p2p=PORT]
 #
 # Hidden self-test mode (drives the hermetic verdict-logic gate; injects
 # synthetic RPC outputs from a fixture dir, never spawns a node):
@@ -73,6 +74,7 @@ FROM="anchor"
 SRC_DATADIR="${HOME:-/root}/.zclassic"
 BUDGET_SEC=""
 ZD_RPC="8232"
+ZD_P2P="8034"
 SELFTEST=""
 
 for arg in "$@"; do
@@ -81,6 +83,7 @@ for arg in "$@"; do
         --src-datadir=*)   SRC_DATADIR="${arg#--src-datadir=}" ;;
         --budget-sec=*)    BUDGET_SEC="${arg#--budget-sec=}" ;;
         --zclassicd-rpc=*) ZD_RPC="${arg#--zclassicd-rpc=}" ;;
+        --zclassicd-p2p=*) ZD_P2P="${arg#--zclassicd-p2p=}" ;;
         --self-test=*)     SELFTEST="${arg#--self-test=}" ;;
         *) echo "replay-canary: unknown arg '$arg'" >&2; exit 2 ;;
     esac
@@ -603,6 +606,38 @@ run_live() {
         blocked "source_identity_capture_failed"
     fi
 
+    # The genesis replay cannot make any progress without the co-located
+    # zclassicd oracle: RPC supplies the comparison tip and -connect supplies
+    # every block body.  Check both BEFORE spawning the candidate.  Otherwise
+    # an absent oracle leaves the fresh node at height zero for the full
+    # eight-hour budget and is misreported as a consensus-grade replay FAIL.
+    # This is an external prerequisite, so it must produce typed BLOCKED.
+    case "$ZD_RPC" in
+        ''|*[!0-9]*) ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_rpc_port_invalid" ;;
+    esac
+    case "$ZD_P2P" in
+        ''|*[!0-9]*) ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_port_invalid" ;;
+    esac
+    if [ "$ZD_RPC" -lt 1 ] || [ "$ZD_RPC" -gt 65535 ]; then
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_rpc_port_invalid"
+    fi
+    if [ "$ZD_P2P" -lt 1 ] || [ "$ZD_P2P" -gt 65535 ]; then
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_port_invalid"
+    fi
+    local oracle_height
+    oracle_height="$(json_num "$(ZCL_DATADIR="$SRC_DATADIR" \
+        ZCL_RPCPORT="$ZD_RPC" "$ISO_RPC_BIN" getblockcount 2>/dev/null || true)" result)"
+    if [ -z "$oracle_height" ]; then
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_rpc_unreachable"
+    fi
+    if ! command -v timeout >/dev/null 2>&1; then
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_probe_unavailable"
+    fi
+    if ! timeout 3 bash -c 'exec 3<>"/dev/tcp/127.0.0.1/$1"' -- "$ZD_P2P" \
+            >/dev/null 2>&1; then
+        ELAPSED=$(( $(date +%s) - START_TS )); blocked "oracle_p2p_unreachable"
+    fi
+
     # Disk preflight follows the tiny immutable executable capture so every
     # verdict, including this refusal, remains bound to exact executed bytes.
     local avail_kb; avail_kb="$(df -Pk /tmp | awk 'NR==2{print $4}')"
@@ -645,7 +680,7 @@ run_live() {
         # and -connect= still enforces the no-public-peer contract. The
         # node now tracks tip to verdict, making both the crossnode
         # equality gate and the exact byte-tier achievable.
-        iso_spawn_mainnet_node "-connect=127.0.0.1:8034"
+        iso_spawn_mainnet_node "-connect=127.0.0.1:$ZD_P2P"
     else
         # from=genesis: -nolegacyimport so boot does NOT seed to the anchor;
         # dial the co-located zclassicd for bodies. This is the ONE place a
@@ -664,7 +699,7 @@ run_live() {
         # applies app_add_node() to BOTH flags identically), so switching
         # to -connect= keeps fetching bodies from zclassicd while actually
         # enforcing the "no public peer" contract.
-        iso_spawn_mainnet_node "-nolegacyimport -connect=127.0.0.1:8034"
+        iso_spawn_mainnet_node "-nolegacyimport -connect=127.0.0.1:$ZD_P2P"
     fi
 
     # 600 s: a fresh-import boot walks 3.1M-header restore phases before the
@@ -785,7 +820,7 @@ run_live() {
 
         # (5) Respawn with the same flags; boot2 folds post-seed bodies
         # with activation cursors now 0, so spend blocks pass preflight.
-        iso_spawn_mainnet_node "-connect=127.0.0.1:8034"
+        iso_spawn_mainnet_node "-connect=127.0.0.1:$ZD_P2P"
         if ! iso_wait_rpc_ready 600; then
             ELAPSED=$(( $(date +%s) - START_TS )); fail "rpc_never_ready_after_import"
         fi

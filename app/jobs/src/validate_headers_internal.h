@@ -16,6 +16,15 @@
 
 struct block_index;
 struct node_db;
+struct sqlite3;
+
+/* ── Failed-row readiness (validate_headers_recheck_readiness.c) ───
+ * A repairable row is runnable only after an exact header solution source is
+ * available.  This is a byte-readiness predicate; it never validates or
+ * weakens PoW/Equihash. */
+bool validate_headers_recheck_ready(struct sqlite3 *db, int height,
+                                    const struct block_index *bi,
+                                    const char *reason);
 
 /* ── Default validator (validate_headers_validator.c) ───────────────
  * Full PoW target + Equihash-from-nSolution verification, sourced from
