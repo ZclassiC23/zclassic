@@ -48,6 +48,9 @@
 #include "vcs/package_recipe.h"
 #include "vcs/package_release.h"
 #include "vcs/package_reward.h"
+#include "vcs/service_receipt.h"
+
+#include <secp256k1.h>
 #include "vcs/package_service.h"
 #include "vcs/package_store.h"
 
@@ -1522,6 +1525,151 @@ static int t_publish_gate(void)
     return failures;
 }
 
+/* ── service_receipt: dual-signed verified-byte codec ──────────────── */
+
+static int t_service_receipt(void)
+{
+    int failures = 0;
+    bool ok;
+    secp256k1_context *ctx = secp256k1_context_create(
+        SECP256K1_CONTEXT_SIGN | SECP256K1_CONTEXT_VERIFY);
+    uint8_t up_secret[32] = {0};
+    uint8_t down_secret[32] = {0};
+    up_secret[31] = 0x21;
+    down_secret[31] = 0x22;
+
+    struct vcs_service_receipt r;
+    memset(&r, 0, sizeof(r));
+    size_t pub_len = 33;
+    secp256k1_pubkey parsed;
+    ok = secp256k1_ec_pubkey_create(ctx, &parsed, up_secret) == 1 &&
+         secp256k1_ec_pubkey_serialize(ctx, r.uploader_pubkey, &pub_len,
+                                       &parsed,
+                                       SECP256K1_EC_COMPRESSED) == 1 &&
+         pub_len == 33 &&
+         secp256k1_ec_pubkey_create(ctx, &parsed, down_secret) == 1 &&
+         secp256k1_ec_pubkey_serialize(ctx, r.downloader_pubkey,
+                                       &pub_len, &parsed,
+                                       SECP256K1_EC_COMPRESSED) == 1;
+    for (size_t i = 0; i < VCS_SERVICE_RECEIPT_ROOT_BYTES; i++)
+        r.package_root[i] = (uint8_t)(i * 5 + 1);
+    r.verified_bytes = 1048576;
+    r.day_start = 20600;
+    r.day_end = 20606;
+    for (size_t i = 0; i < VCS_SERVICE_RECEIPT_NONCE_BYTES; i++)
+        r.session_nonce[i] = (uint8_t)(0xA0 ^ i);
+
+    /* Deterministic id: same fields, same id; any field drift moves it. */
+    {
+        uint8_t id_a[32], id_b[32];
+        vcs_service_receipt_id(&r, id_a);
+        vcs_service_receipt_id(&r, id_b);
+        ok = memcmp(id_a, id_b, 32) == 0;
+        uint64_t saved = r.verified_bytes;
+        r.verified_bytes = saved + 1;
+        vcs_service_receipt_id(&r, id_b);
+        ok = ok && memcmp(id_a, id_b, 32) != 0;
+        r.verified_bytes = saved;
+        vcs_service_receipt_id(&r, id_b);
+        ok = ok && memcmp(id_a, id_b, 32) == 0;
+    }
+    ZPY_CHECK("receipt id is field-bound", ok);
+
+    uint8_t wire[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+    ok = VCS_SERVICE_RECEIPT_WIRE_BYTES == 286 &&
+         vcs_service_receipt_sign(&r, VCS_SERVICE_RECEIPT_UPLOADER, ctx,
+                                  up_secret) ==
+             VCS_SERVICE_RECEIPT_OK &&
+         vcs_service_receipt_sign(&r, VCS_SERVICE_RECEIPT_DOWNLOADER,
+                                  ctx, down_secret) ==
+             VCS_SERVICE_RECEIPT_OK &&
+         vcs_service_receipt_serialize(&r, wire, sizeof(wire)) ==
+             VCS_SERVICE_RECEIPT_OK;
+
+    struct vcs_service_receipt back;
+    struct vcs_service_receipt swapped = r;
+    struct vcs_service_receipt tampered = r;
+    if (ok) {
+        ok = vcs_service_receipt_verify(wire, sizeof(wire), &back) ==
+                 VCS_SERVICE_RECEIPT_OK &&
+             back.verified_bytes == 1048576 &&
+             back.day_start == 20600 &&
+             back.day_end == 20606 &&
+             memcmp(back.uploader_pubkey, r.uploader_pubkey, 33) == 0;
+
+        /* Swapped signatures must not verify: each key attests the id
+         * for its own role only. */
+        memcpy(swapped.uploader_signature, r.downloader_signature, 64);
+        memcpy(swapped.downloader_signature, r.uploader_signature, 64);
+        uint8_t sw[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+        ok = ok && vcs_service_receipt_serialize(&swapped, sw,
+                                                 sizeof(sw)) ==
+                        VCS_SERVICE_RECEIPT_OK &&
+             vcs_service_receipt_verify(sw, sizeof(sw), NULL) ==
+                 VCS_SERVICE_RECEIPT_ERR_SIG_VERIFY;
+
+        /* Any tampered body byte breaks both signatures. */
+        tampered.package_root[7] ^= 0x01;
+        uint8_t tm[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+        ok = ok && vcs_service_receipt_serialize(&tampered, tm,
+                                                 sizeof(tm)) ==
+                        VCS_SERVICE_RECEIPT_OK &&
+             vcs_service_receipt_verify(tm, sizeof(tm), NULL) ==
+                 VCS_SERVICE_RECEIPT_ERR_SIG_VERIFY;
+    }
+    ZPY_CHECK("round-trip verify + swap/tamper refusals", ok);
+
+    /* Grammar refusals name their rule. */
+    struct vcs_service_receipt bad = r;
+    uint8_t bw[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+    memcpy(bad.downloader_pubkey, bad.uploader_pubkey, 33);
+    ok = vcs_service_receipt_serialize(&bad, bw, sizeof(bw)) ==
+             VCS_SERVICE_RECEIPT_OK &&
+         vcs_service_receipt_parse(bw, sizeof(bw), &back) ==
+             VCS_SERVICE_RECEIPT_ERR_PUBKEY;
+    ZPY_CHECK("grammar: equal keys refused", ok);
+
+    bad = r;
+    bad.verified_bytes = 0;
+    ok = vcs_service_receipt_serialize(&bad, bw, sizeof(bw)) ==
+             VCS_SERVICE_RECEIPT_OK &&
+         vcs_service_receipt_parse(bw, sizeof(bw), &back) ==
+             VCS_SERVICE_RECEIPT_ERR_ARGS;
+    ZPY_CHECK("grammar: zero verified_bytes refused", ok);
+
+    bad = r;
+    bad.day_start = 20607;
+    bad.day_end = 20606;
+    ok = vcs_service_receipt_serialize(&bad, bw, sizeof(bw)) ==
+             VCS_SERVICE_RECEIPT_OK &&
+         vcs_service_receipt_parse(bw, sizeof(bw), &back) ==
+             VCS_SERVICE_RECEIPT_ERR_ARGS;
+    ZPY_CHECK("grammar: inverted day window refused", ok);
+
+    bad = r;
+    ok = vcs_service_receipt_serialize(&bad, bw, sizeof(bw)) ==
+         VCS_SERVICE_RECEIPT_OK;
+    memset(bw + 4 + 33 + 33 + 32 + 8 + 8 + 8, 0, 32);
+    ok = ok && vcs_service_receipt_parse(bw, sizeof(bw), &back) ==
+                 VCS_SERVICE_RECEIPT_ERR_ARGS;
+    ZPY_CHECK("grammar: all-zero nonce refused", ok);
+
+    ok = vcs_service_receipt_parse(wire, sizeof(wire) - 1, &back) ==
+         VCS_SERVICE_RECEIPT_ERR_WIRE;
+    {
+        uint8_t magic[VCS_SERVICE_RECEIPT_WIRE_BYTES];
+        memcpy(magic, wire, sizeof(magic));
+        magic[0] = 'X';
+        ok = ok && vcs_service_receipt_parse(magic, sizeof(magic),
+                                             &back) ==
+                    VCS_SERVICE_RECEIPT_ERR_WIRE;
+    }
+    ZPY_CHECK("grammar: wrong length / wrong magic refused", ok);
+
+    secp256k1_context_destroy(ctx);
+    return failures;
+}
+
 int test_zcode_policy(void)
 {
     printf("\n=== zcode_policy: local P2P ratio + anti-spam policy ===\n");
@@ -1531,6 +1679,7 @@ int test_zcode_policy(void)
     failures += t_decisions();
     failures += t_book();
     failures += t_seed_commands();
+    failures += t_service_receipt();
     failures += t_storage_commands();
     failures += t_publish_gate();
     printf("=== zcode_policy complete: %d failure(s) ===\n", failures);
