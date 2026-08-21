@@ -403,9 +403,9 @@ review and tests.
   independent engines behind real msg_processors (only socket syscalls elided)
   and covers the golden path, malicious wrong-hash chunks, unrequested DATA,
   restart-mid-download resume, disconnect requeue, and the A→B→C hop:
-  A publishes the C23 Arena library shelf (`zprng`, `zdogfight`, `zdogace`,
-  `zdogview`), B mirrors and pins, A disappears, C fetches the exact carriers
-  from B. The in-process engine gate (`lib/test/src/test_zcode_swarm.c`) seeds
+  A publishes the C23 Arena library shelf (`zprng`, `zdogfight`, `zdogdrone`,
+  `zdogace`, `zdogview`), B mirrors and pins, A disappears, C fetches the exact
+  carriers from B. The in-process engine gate (`lib/test/src/test_zcode_swarm.c`) seeds
   an ordinary independent C23 shelf from `packages/` and proves keep-alive of
   those roots is inventory, not unique-root flood. Still uncovered: reorg.
 <!-- claim: file-present lib/test/src/test_zcode_swarm_net.c # the real-wire swarm harness exists -->
