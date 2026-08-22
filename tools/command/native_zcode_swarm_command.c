@@ -21,6 +21,12 @@
  *                          (would_serve). Engine-down replies are
  *                          live:false with an empty peer list and still
  *                          report store facts, fail closed.
+ *   zcode package offered  the live union of roots peers have ANNOUNCEd
+ *                          this session (advertisers from the engine,
+ *                          have_local from the observed store). Engine-
+ *                          down replies are live:false with an empty
+ *                          list — a successful read, never a faked
+ *                          catalog. Replica counts are never invented.
  *   zcode package pin      operator-pin a tracked package (PINS pool,
  *                          never evicted, never tier-gated)
  *   zcode package unpin    release an operator pin
@@ -650,6 +656,95 @@ void zcl_native_handle_zcode_package_peers(
         "session_key is the LOCAL transport pseudo-key (0x02 || "
         "SHA3-256(domain || host identity)) — it scopes the service book "
         "to a transport session and is NOT a contributor identity");
+}
+
+/* ── zcode package offered ──────────────────────────────────────────── */
+
+void zcl_native_handle_zcode_package_offered(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!request || !reply)
+        return;
+
+    struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
+    bool live = engine != NULL;
+    (void)json_push_kv_bool(&reply->data, "live", live);
+
+    struct json_value items;
+    json_init(&items);
+    json_set_array(&items);
+
+    size_t offered = 0;
+    bool truncated = false;
+    char first_root[65];
+    first_root[0] = '\0';
+
+    if (live) {
+        struct vcs_swarm_advertised rows[VCS_SWARM_MAX_LOCAL_ANNOUNCES + 1u];
+        size_t n = vcs_swarm_engine_advertised(
+            engine, rows, VCS_SWARM_MAX_LOCAL_ANNOUNCES + 1u);
+        if (n > VCS_SWARM_MAX_LOCAL_ANNOUNCES) {
+            truncated = true;
+            n = VCS_SWARM_MAX_LOCAL_ANNOUNCES;
+        }
+
+        bool own_store = false;
+        struct vcs_package_store *store =
+            zw_observe_store(request, &own_store);
+        for (size_t i = 0; i < n; i++) {
+            char hex[65];
+            zcl_hex_encode(rows[i].root, 32, hex);
+            if (i == 0)
+                memcpy(first_root, hex, sizeof(first_root));
+
+            bool have_local = false;
+            if (store) {
+                struct vcs_package_store_status st;
+                memset(&st, 0, sizeof(st));
+                if (vcs_package_store_package_status(store, rows[i].root,
+                                                     &st) &&
+                    st.tracked && st.complete)
+                    have_local = true;
+            }
+
+            struct json_value row;
+            json_init(&row);
+            json_set_object(&row);
+            (void)json_push_kv_str(&row, "root", hex);
+            (void)json_push_kv_int(&row, "advertisers",
+                                   (int64_t)rows[i].advertisers);
+            (void)json_push_kv_bool(&row, "have_local", have_local);
+            (void)json_push_back(&items, &row);
+            json_free(&row);
+        }
+        if (own_store)
+            vcs_package_store_close(store);
+        offered = n;
+    }
+
+    (void)json_push_kv_int(&reply->data, "offered_count", (int64_t)offered);
+    (void)json_push_kv(&reply->data, "items", &items);
+    json_free(&items);
+    (void)json_push_kv_bool(&reply->data, "truncated", truncated);
+
+    char next[384];
+    if (!live) {
+        (void)snprintf(
+            next, sizeof(next),
+            "z23 zcode package offered  # needs a running -packagehost=1 node");
+    } else if (offered == 0) {
+        (void)snprintf(
+            next, sizeof(next),
+            "wait for ANNOUNCE / z23 zcode package peers "
+            "--input='{\"root\":\"<64hex>\"}'");
+    } else {
+        (void)snprintf(
+            next, sizeof(next),
+            "z23 zcode package fetch --input='{\"root\":\"%s\"}'",
+            first_root);
+    }
+    (void)json_push_kv_str(&reply->data, "next_command", next);
 }
 
 /* ── zcode package pin / unpin ──────────────────────────────────────── */

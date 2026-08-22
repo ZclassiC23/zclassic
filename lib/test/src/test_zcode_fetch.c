@@ -16,6 +16,10 @@
  *                          replayed-from-disk fake; store-side possession
  *                          (complete, operator-pinned, public-serveable /
  *                          would_serve) is still reported, fail closed
+ *   zcode package offered  one-shot: live:false, empty items, still
+ *                          PASSED; live engine: one ANNOUNCE row with
+ *                          engine advertisers and store-side have_local.
+ *                          Replica counts are never invented.
  *   zcode package pin      UNKNOWN_PACKAGE names the untracked root; a
  *                          tracked package pins (operator path, never
  *                          tier-gated) and reports its pool
@@ -38,6 +42,7 @@
 #include "vcs/package_manifest.h"
 #include "vcs/package_reward.h"
 #include "vcs/package_store.h"
+#include "vcs/package_swarm.h"
 #include "vcs/package_swarm_node.h"
 #include "util/safe_alloc.h"
 
@@ -735,6 +740,147 @@ static int zf_t_pin_roundtrip(void)
     return failures;
 }
 
+static bool zf_announce_package(struct vcs_swarm_engine *engine, uint64_t peer,
+                                const struct zf_pkg *p)
+{
+    struct vcs_package_swarm_message msg;
+    uint64_t total = 0;
+    memset(&msg, 0, sizeof(msg));
+    msg.type = VCS_PACKAGE_SWARM_ANNOUNCE;
+    memcpy(msg.body.announce.package_root, p->root, 32);
+    msg.body.announce.manifest_bytes = (uint32_t)p->wire_len;
+    msg.body.announce.file_count = 2;
+    for (size_t i = 0; i < 2; i++)
+        total += p->lens[i];
+    msg.body.announce.total_bytes = total;
+    msg.body.announce.total_chunks = 2;
+    uint8_t frame[128];
+    size_t len = 0;
+    if (!vcs_package_swarm_serialize(&msg, frame, sizeof(frame), &len))
+        return false;
+    struct vcs_swarm_frame_result r =
+        vcs_swarm_engine_handle_frame(engine, peer, frame, len, 20500, 1);
+    free(r.reply);
+    return r.penalty == VCS_SWARM_PENALTY_NONE;
+}
+
+static int zf_t_offered_one_shot(void)
+{
+    int failures = 0;
+    TEST("zcode package offered (one-shot): live:false, empty, PASSED") {
+        char dd[1024];
+        test_make_tmpdir(dd, sizeof(dd), "zcode_fetch", "offered");
+        struct zf_cmd c;
+        zf_cmd_init(&c, dd);
+        zcl_native_handle_zcode_package_offered(&c.request, &c.reply);
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get(&c.reply.data, "live") &&
+               !json_get_bool(json_get(&c.reply.data, "live")));
+        ASSERT_EQ(json_get_int(json_get(&c.reply.data, "offered_count")), 0);
+        {
+            const struct json_value *items =
+                json_get(&c.reply.data, "items");
+            ASSERT(items != NULL && items->type == JSON_ARR);
+            ASSERT_EQ(json_size(items), 0);
+        }
+        ASSERT(json_get(&c.reply.data, "truncated") &&
+               !json_get_bool(json_get(&c.reply.data, "truncated")));
+        {
+            const char *next =
+                json_get_str(json_get(&c.reply.data, "next_command"));
+            ASSERT(next != NULL && strstr(next, "-packagehost=1") != NULL);
+        }
+        ASSERT(json_get(&c.reply.data, "replicas") == NULL);
+        zf_cmd_free(&c);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
+static int zf_t_offered_live(void)
+{
+    int failures = 0;
+    struct vcs_swarm_engine *prev = vcs_swarm_engine_global();
+    struct vcs_swarm_engine *engine = NULL;
+    TEST("zcode package offered (live): ANNOUNCE row, have_local, fetch next") {
+        char dd[1024];
+        test_make_tmpdir(dd, sizeof(dd), "zcode_fetch", "offered-live");
+        struct zf_pkg pkg;
+        ASSERT(zf_make_package(&pkg, 0x68));
+        {
+            struct vcs_package_store *store = vcs_package_store_open(
+                dd, VCS_PACKAGE_STORE_DEFAULT_QUOTA_BYTES);
+            ASSERT(store != NULL);
+            ASSERT(zf_store_package(store, &pkg));
+            vcs_package_store_close(store);
+        }
+
+        engine = vcs_swarm_engine_create(NULL, NULL, NULL, NULL, NULL);
+        ASSERT(engine != NULL);
+        uint8_t key[33];
+        memset(key, 0, sizeof(key));
+        key[0] = 0x02;
+        key[1] = 0x11;
+        ASSERT(vcs_swarm_engine_peer_add(engine, 7, key));
+        vcs_swarm_engine_set_global(engine);
+
+        struct zf_cmd c;
+        zf_cmd_init(&c, dd);
+        zcl_native_handle_zcode_package_offered(&c.request, &c.reply);
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get_bool(json_get(&c.reply.data, "live")));
+        ASSERT_EQ(json_get_int(json_get(&c.reply.data, "offered_count")), 0);
+        {
+            const char *next =
+                json_get_str(json_get(&c.reply.data, "next_command"));
+            ASSERT(next != NULL && strstr(next, "ANNOUNCE") != NULL);
+            ASSERT(strstr(next, "peers") != NULL);
+        }
+        zf_cmd_free(&c);
+
+        ASSERT(zf_announce_package(engine, 7, &pkg));
+
+        zf_cmd_init(&c, dd);
+        zcl_native_handle_zcode_package_offered(&c.request, &c.reply);
+        ASSERT(c.reply.status == ZCL_COMMAND_STATUS_PASSED);
+        ASSERT(json_get_bool(json_get(&c.reply.data, "live")));
+        ASSERT_EQ(json_get_int(json_get(&c.reply.data, "offered_count")), 1);
+        ASSERT(json_get(&c.reply.data, "truncated") &&
+               !json_get_bool(json_get(&c.reply.data, "truncated")));
+        {
+            const struct json_value *items =
+                json_get(&c.reply.data, "items");
+            ASSERT(items != NULL && items->type == JSON_ARR);
+            ASSERT_EQ(json_size(items), 1);
+            const struct json_value *row = json_at(items, 0);
+            ASSERT(row != NULL);
+            {
+                const char *root_hex = json_get_str(json_get(row, "root"));
+                ASSERT(root_hex != NULL);
+                ASSERT_STR_EQ(root_hex, pkg.root_hex);
+            }
+            ASSERT_EQ(json_get_int(json_get(row, "advertisers")), 1);
+            ASSERT(json_get_bool(json_get(row, "have_local")));
+            ASSERT(json_get(row, "replicas") == NULL);
+        }
+        {
+            const char *next =
+                json_get_str(json_get(&c.reply.data, "next_command"));
+            ASSERT(next != NULL);
+            ASSERT(strstr(next, "zcode package fetch") != NULL);
+            ASSERT(strstr(next, pkg.root_hex) != NULL);
+        }
+        ASSERT(json_get(&c.reply.data, "replicas") == NULL);
+        zf_cmd_free(&c);
+        zf_free_package(&pkg);
+        PASS();
+    } _test_next:;
+    vcs_swarm_engine_set_global(NULL);
+    vcs_swarm_engine_free(engine);
+    vcs_swarm_engine_set_global(prev);
+    return failures;
+}
+
 int test_zcode_fetch(void)
 {
     int failures = 0;
@@ -749,5 +895,7 @@ int test_zcode_fetch(void)
     failures += zf_t_peers_one_shot();
     failures += zf_t_peers_possession();
     failures += zf_t_pin_roundtrip();
+    failures += zf_t_offered_one_shot();
+    failures += zf_t_offered_live();
     return failures;
 }

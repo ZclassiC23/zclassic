@@ -2877,7 +2877,8 @@ ZCL_COMMAND_READY_READ(
  * glue lives in config/src/boot_zcode_swarm.c. fetch is live when a
  * -packagehost=1 node runs (node-global engine) and otherwise persists
  * the resumable download record — never a faked download. peers is
- * session state: it reports live:false honestly on a one-shot CLI. */
+ * session state: it reports live:false honestly on a one-shot CLI.
+ * offered is the same session catalog of roots peers have ANNOUNCEd. */
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.fetch", "zcode.package", "",
@@ -2967,6 +2968,32 @@ ZCL_COMMAND_READY_READ(
     ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
     ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
     ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_peers)
+
+ZCL_COMMAND_READY_READ(
+    "zcode.package.offered", "zcode.package", "",
+    "Roots peers have ANNOUNCEd this session that this node can fetch",
+    "The live swarm engine's union of package roots peers have ANNOUNCEd "
+    "this session, sorted by root. Each row is one 64-hex `root` with "
+    "`advertisers` (how many known peers listed it — never an invented "
+    "replica count) and `have_local` (the observed package store tracks "
+    "that root complete; unobserved store facts fail closed to false). "
+    "Capped at 64 (VCS_SWARM_MAX_LOCAL_ANNOUNCES); truncated flags the "
+    "rest. Peer advertisements are session-scoped and never persisted: "
+    "without a live hosting engine the reply is live:false with an empty "
+    "list — a successful read, honestly, never replayed from disk. "
+    "`next_command` names a fetch of the first offered root, "
+    "-packagehost=1 when the engine is down, or wait-for-ANNOUNCE when "
+    "the live catalog is empty. Does not fetch or pin.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "zcode,package,offered,swarm,announce,advertisers,fetch,catalog",
+    "zcl.zcode_package_offered.input.v1", "zcl.zcode_package_offered.v1",
+    "datadir", "",
+    "z23 zcode package offered",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_NODE, ZCL_COMMAND_AUTH_OPERATOR,
+    ZCL_COMMAND_LATENCY_FAST, ZCL_COMMAND_COST_LOW,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_zcode_package_offered)
 
 ZCL_COMMAND_READY_COMMAND(
     "zcode.package.pin", "zcode.package", "",
