@@ -1,0 +1,19 @@
+{
+  "schema": 1,
+  "name": "zslot/zslot",
+  "semver": "0.1.0",
+  "language": "c23",
+  "license": "Apache-2.0",
+  "include_dir": "include",
+  "source_dir": "src",
+  "dependencies": [],
+  "files": [
+    "LICENSE",
+    "README.md",
+    "app/main.c",
+    "include/zslot/zslot.h",
+    "src/zslot.c",
+    "tests/test_zslot.c",
+    "zcode-package.json"
+  ]
+}
