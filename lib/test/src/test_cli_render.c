@@ -445,20 +445,48 @@ static int test_guide_tree_render(void)
         ASSERT(cr_max_line_width(out) <= 80);
         PASS();
     }
-    TEST("code.guide renders the inner loop as a human tree") {
+    TEST("code.guide renders a four-step recipe, not JSON keys") {
         const char *doc =
             "{\"schema\":\"zcl.result.v1\",\"command\":\"code.guide\","
             "\"ok\":true,\"status\":\"passed\",\"data\":{"
+            "\"start_command\":\"z23 code impact <file.c>\","
+            "\"proof_command\":\"make lint-fast\","
             "\"lint_command\":\"make lint-fast\","
-            "\"push_command\":\"make pre-push-ci\"}}";
+            "\"push_command\":\"make pre-push-ci\","
+            "\"never\":\"test_zcl\"}}";
         struct zcl_cli_render_env e = cr_env(80, false);
         char out[8192];
         size_t n = zcl_cli_render_doc(doc, strlen(doc), "code.guide", &e,
                                       out, sizeof(out));
         ASSERT(n > 0);
         ASSERT(strstr(out, "code.guide") != NULL);
-        ASSERT(strstr(out, "lint_command") != NULL);
-        ASSERT(strstr(out, "make lint-fast") != NULL);
+        ASSERT(strstr(out, "z23 code impact <file.c>") != NULL);
+        ASSERT(strstr(out, "make pre-push-ci") != NULL);
+        ASSERT(strstr(out, "start_command") == NULL);
+        ASSERT(strstr(out, "\"schema\"") == NULL);
+        ASSERT(cr_max_line_width(out) <= 80);
+        PASS();
+    }
+    TEST("peers.list renders a kind table and a copyable continue") {
+        const char *doc =
+            "{\"schema\":\"zcl.result.v1\","
+            "\"command\":\"core.network.peers.list\",\"ok\":true,"
+            "\"data\":{\"items\":["
+            "{\"addr\":\"205.209.104.118:8033\",\"inbound\":false,"
+            "\"startingheight\":100,\"zclassic23\":true,\"magicbean\":false}"
+            "],\"_page\":{\"total_items\":28,\"included\":1,\"truncated\":true,"
+            "\"continue\":\"z23 core network peers list --cursor=2\"}}}";
+        struct zcl_cli_render_env e = cr_env(80, false);
+        char out[8192];
+        size_t n = zcl_cli_render_doc(doc, strlen(doc),
+                                      "core.network.peers.list", &e, out,
+                                      sizeof(out));
+        ASSERT(n > 0);
+        ASSERT(strstr(out, "peers") != NULL);
+        ASSERT(strstr(out, "205.209.104.118:8033") != NULL);
+        ASSERT(strstr(out, "z23") != NULL);
+        ASSERT(strstr(out, "z23 core network peers list --cursor=2") != NULL);
+        ASSERT(strstr(out, "lifecycle") == NULL);
         ASSERT(strstr(out, "\"schema\"") == NULL);
         ASSERT(cr_max_line_width(out) <= 80);
         PASS();

@@ -615,6 +615,18 @@ static void nc_project_array(const struct zcl_command_request *request,
     (void)json_push_kv_bool(&page, "truncated", truncated);
     if (truncated)
         (void)json_push_kv_int(&page, "next_cursor", (int64_t)next_cursor);
+    if (truncated && request->spec && request->spec->path) {
+        char words[128];
+        char cont[192];
+        size_t wl = 0;
+        for (const char *p = request->spec->path;
+             *p && wl + 1 < sizeof(words); p++)
+            words[wl++] = *p == '.' ? ' ' : *p;
+        words[wl] = '\0';
+        if (snprintf(cont, sizeof(cont), "z23 %s --cursor=%zu", words,
+                     next_cursor) > 0)
+            (void)json_push_kv_str(&page, "continue", cont);
+    }
     if (skipped_oversize)
         (void)json_push_kv_int(&page, "skipped_oversize_index",
                                (int64_t)skipped_index);

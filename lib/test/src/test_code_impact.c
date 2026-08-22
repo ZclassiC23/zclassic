@@ -270,8 +270,7 @@ static int test_code_guide(void)
         zcl_native_handle_code_guide(&request, &reply);
         ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "start_command")),
-                      "z23 code impact --input='{\"path\":\"<file.c>\"}'") ==
-               0);
+                      "z23 code impact <file.c>") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "lint_command")),
                       "make lint-fast") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "push_command")),
