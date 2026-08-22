@@ -62,7 +62,7 @@
 
 /* Confirmation ceiling the merchant measures against is tip - 3. */
 #define TSTP_TIP 100
-#define TSTP_FEE_ZAT 10000LL
+#define TSTP_FEE_ZAT WALLET_DEFAULT_FEE_ZAT
 
 #define TSTP_CHECK(label, expression) do {                         \
     bool tstp_check_ok = (expression);                             \
