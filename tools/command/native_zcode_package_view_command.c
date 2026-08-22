@@ -3,6 +3,7 @@
  * Candidate execution is bound by the closed HOT_FORK story registry. */
 
 #include "command/native_command.h"
+#include "command/native_zcode_join.h"
 
 #include "hotswap/hotswap_service.h"
 #include "json/json.h"
@@ -260,8 +261,19 @@ void zcl_native_handle_zcode_package_guide(
     (void)json_push_kv_str(&reply->data, "next_command", guide.next_command);
     (void)json_push_kv_str(&reply->data, "preflight",
                            "zcode network status");
-    (void)json_push_kv_str(&reply->data, "hosting_requirement",
-                           "run the full node with -packagehost=1");
+    {
+        struct zcl_zcode_join_posture join;
+        if (!zcl_zcode_join_posture_fill(&join) ||
+            !zcl_zcode_join_posture_push_json(&reply->data, &join)) {
+            zcl_hotswap_service_release(&lease);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+                "JOIN_POSTURE_FAILED", "render", false, false,
+                "the Commons join posture could not be rendered",
+                "zcode.package.guide");
+            return;
+        }
+    }
     (void)json_push_kv_str(
         &reply->data, "disabled_network_next",
         "zcode network delegate with an active finalized ZID master");

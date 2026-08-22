@@ -43,6 +43,7 @@
 #include "base/log_macros.h"
 #include "command/native_command.h"
 #include "command/native_zcode_discovery.h"
+#include "command/native_zcode_join.h"
 #include "controllers/rpc_client.h"
 #include "controllers/rpc_params.h"
 
@@ -688,6 +689,16 @@ void zcl_native_handle_zcode_package_offered(
     struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
     bool live = engine != NULL;
     (void)json_push_kv_bool(&reply->data, "live", live);
+    struct zcl_zcode_join_posture join;
+    if (!zcl_zcode_join_posture_fill(&join) ||
+        !zcl_zcode_join_posture_push_json(&reply->data, &join)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "JOIN_POSTURE_FAILED", "status", false, false,
+            "the Commons join posture could not be rendered",
+            "zcode.package.offered");
+        return;
+    }
 
     struct json_value items;
     json_init(&items);
@@ -748,9 +759,7 @@ void zcl_native_handle_zcode_package_offered(
 
     char next[384];
     if (!live) {
-        (void)snprintf(
-            next, sizeof(next),
-            "z23 zcode package offered  # needs a running -packagehost=1 node");
+        (void)snprintf(next, sizeof(next), "%s", join.offline_next_command);
     } else if (offered == 0) {
         (void)snprintf(
             next, sizeof(next),

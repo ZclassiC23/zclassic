@@ -6,6 +6,7 @@
 #include "base/hex.h"
 #include "hotswap/hotswap_service.h"
 #include "command/native_command.h"
+#include "command/native_zcode_join.h"
 #include "json/json.h"
 #include "services/market_purchase_view_service.h"
 #include "services/market_moderation_view_service.h"
@@ -514,7 +515,10 @@ static int t_zcode_package_view(void)
                       "zcode network status");
         ASSERT_STR_EQ(json_get_str(json_get(&reply.data,
                                             "hosting_requirement")),
-                      "run the full node with -packagehost=1");
+                      ZCL_ZCODE_HOSTING_REQUIREMENT);
+        ASSERT_STR_EQ(json_get_str(json_get(&reply.data, "join_flags")),
+                      ZCL_ZCODE_JOIN_FLAGS);
+        ASSERT(!json_get_bool(json_get(&reply.data, "joined")));
         ASSERT(json_get_bool(json_get(&reply.data,
                                       "source_identity_portable")));
         ASSERT(!json_get_bool(json_get(&reply.data,

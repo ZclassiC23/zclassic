@@ -2,14 +2,13 @@
  * purpose: Agent-readable local GCC toolchain capsule identity. */
 
 #include "command/native_command.h"
+#include "command/native_zcode_join.h"
 
 #include "base/hex.h"
 #include "json/json.h"
 #include "platform/os_proc.h"
 #include "util/spawn.h"
-#include "util/util.h"
 #include "vcs/build_action.h"
-#include "vcs/zcode_work_node.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -107,30 +106,34 @@ void zcl_native_handle_zcode_toolchain_show(
         (void)json_push_kv_str(&reply->data, "assembler_version", as_version);
     const char *verifier_name = "";
     bool verifier_present = ztc_verifier_name(&verifier_name);
-    struct json_value work;
-    json_init(&work);
-    bool dumped = vcs_zcode_work_node_dump_state_json(&work, NULL);
-    bool worker_enabled = dumped && json_get_bool(json_get(&work, "enabled"));
-    json_free(&work);
-    bool package_hosting = GetBoolArg("-packagehost", false);
-    bool build_worker = worker_enabled || GetBoolArg("-buildworker", false);
-    bool joined = package_hosting && build_worker;
+    struct zcl_zcode_join_posture join;
+    if (!zcl_zcode_join_posture_fill(&join)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "JOIN_POSTURE_FAILED", "status", false, false,
+            "the Commons join posture could not be read",
+            "zcode.work.toolchain");
+        return;
+    }
     const char *blocker = !verifier_present ? "VERIFIER_MISSING" :
-        !joined ? "NOT_JOINED" : "NONE";
-    const char *join_flags = "-packagehost=1 -buildworker=1";
+        !join.joined ? "NOT_JOINED" : "NONE";
     (void)json_push_kv_bool(&reply->data, "verifier_present", verifier_present);
     (void)json_push_kv_bool(&reply->data, "can_prove", verifier_present);
-    (void)json_push_kv_bool(&reply->data, "package_hosting", package_hosting);
-    (void)json_push_kv_bool(&reply->data, "build_worker", build_worker);
-    (void)json_push_kv_bool(&reply->data, "joined", joined);
-    (void)json_push_kv_str(&reply->data, "join_flags", join_flags);
+    if (!zcl_zcode_join_posture_push_json(&reply->data, &join)) {
+        zcl_command_reply_fail(
+            reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
+            "JOIN_POSTURE_FAILED", "status", false, false,
+            "the Commons join posture could not be rendered",
+            "zcode.work.toolchain");
+        return;
+    }
     (void)json_push_kv_str(&reply->data, "blocker", blocker);
     if (verifier_present && verifier_name[0])
         (void)json_push_kv_str(&reply->data, "verifier_name", verifier_name);
     (void)json_push_kv_str(
         &reply->data, "next_action",
-        !joined
-            ? "Restart this node with -packagehost=1 -buildworker=1 to join "
+        !join.joined
+            ? "Restart this node with " ZCL_ZCODE_JOIN_FLAGS " to join "
               "independent C23 compile work. Then compare capsule_root with "
               "zcode work toolchain on the proving node."
             : !verifier_present

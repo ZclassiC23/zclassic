@@ -46,12 +46,19 @@ disappears.
 
 ## One-time node preflight
 
-The network path requires a running full node started with `-packagehost=1`.
-Inspect its live state first:
+The network path requires a running full node started with
+`-packagehost=1 -buildworker=1`. Inspect join status, then the live DHT:
 
 ```bash
+z23 zcode work toolchain
+z23 zcode package guide
 z23 zcode network status --datadir=/tmp/z23-commons
 ```
+
+`zcode work toolchain` and `zcode package guide` share the same `join_flags`,
+`package_hosting`, `build_worker`, and `joined` fields. An ordinary full node
+joins by restarting with those flags. `zcode package offered` names the same
+restart recipe when this process has no live hosting engine.
 
 If the DHT is disabled, `zcode network delegate` names the required active,
 finalized ZID master input; do not pretend a local key is network admission.
