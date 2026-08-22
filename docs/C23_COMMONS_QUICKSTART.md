@@ -158,8 +158,8 @@ hour. Keep-alive of a root already heard is inventory, not flood. A node that
 imported and pinned a carrier re-announces that same root — that is how a
 later peer still fetches the exact C23 Apache-2.0 bytes after the original
 publisher disappears. The swarm net hop proves that for both the Arena
-shelf and an ordinary independent catalog (`zhex`, `zstr`, `zbuf`,
-`zsha256`, `zring`, `zmap`, `zvec`, `zutf8`). Verify the `package_root`;
+shelf and an ordinary catalog (`zhex`, `zstr`, `zbuf`, `zsha256`, `zring`,
+`zmap`, `zvec`, `zutf8`, `zjson`). Verify the `package_root`;
 do not trust the announcer.
 
 1. Discover the signed POINTER for the exact root, then fetch its returned

@@ -38,9 +38,10 @@
  *   8. Useful C23 Arena packages (zprng, zdogfight, zdogdrone, zdogace,
  *      zdogview) host redundantly: A publishes, B fetches and pins, A
  *      disappears, C still discovers and fetches the exact carriers from B.
- *   9. Ordinary independent C23 library titles (zhex, zstr, zbuf, zsha256,
- *      zring, zmap, zvec, zutf8) take the same A→B→C hop: a catalog, not
- *      only the Arena demo, survives the original publisher disappearing. */
+ *   9. Ordinary C23 library titles (zhex, zstr, zbuf, zsha256, zring,
+ *      zmap, zvec, zutf8, then zjson which locks zutf8) take the same
+ *      A→B→C hop: a catalog, not only the Arena demo, survives the
+ *      original publisher disappearing. */
 
 #include "test/test_core.h"
 
@@ -4328,19 +4329,19 @@ static int zwn_t_useful_c23_redundant(const struct chain_params *params)
         "arena", k_dirs, sizeof(k_dirs) / sizeof(k_dirs[0]), 1400u);
 }
 
-/* Independent in-tree titles, not the Arena set. zjson is omitted: its
- * zcode-package.json pins a foreign zutf8 root. */
+/* Independent in-tree titles, not the Arena set. zutf8 before zjson so
+ * public-shape can close the declared dependency. */
 static int zwn_t_ordinary_c23_redundant(const struct chain_params *params)
 {
     static const char *const k_dirs[] = {
         "packages/zhex",    "packages/zstr", "packages/zbuf",
         "packages/zsha256", "packages/zring", "packages/zmap",
-        "packages/zvec",    "packages/zutf8",
+        "packages/zvec",    "packages/zutf8", "packages/zjson",
     };
     return zwn_t_redundant_publish_disappear(
         params,
         "ordinary C23 library hosts redundantly: A publishes zhex/zstr/"
-        "zbuf/zsha256/zring/zmap/zvec/zutf8, B mirrors, A disappears, "
+        "zbuf/zsha256/zring/zmap/zvec/zutf8/zjson, B mirrors, A disappears, "
         "C fetches from B",
         "lib", k_dirs, sizeof(k_dirs) / sizeof(k_dirs[0]), 1600u);
 }
