@@ -74,7 +74,7 @@ static const struct bot_action g_bot_script[] = {
       "YES", NULL },
     { "Send: fee shown",
       NULL, "document.body.innerText",
-      "0.0001", NULL },
+      "0.000001", NULL },
     { "Send: JS BAL includes shielded balance",
       NULL, "typeof BAL !== 'undefined' ? (BAL > 0.001 ? 'BAL_OK_'+BAL.toFixed(4) : 'BAL_TOO_LOW_'+BAL) : 'NO_BAL'",
       "BAL_OK", NULL },

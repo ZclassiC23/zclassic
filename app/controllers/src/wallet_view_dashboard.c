@@ -160,7 +160,7 @@ size_t serve_dashboard(uint8_t *r, size_t max) {
             }
         } else if (transparent > (int64_t)(FEE_ZCL * ZATOSHI_PER_ZCL + 1)) {
             /* Only show nudge if transparent balance exceeds fee.
-             * Dust amounts (< 0.0001 ZCL) can't be shielded. */
+             * Amounts at or below the min-relay fee cannot pay a shield. */
             char t_fmt[32];
             zcl_format_zcl(t_fmt, sizeof(t_fmt), transparent);
             struct template_var pv[] = { { "amount", t_fmt } };

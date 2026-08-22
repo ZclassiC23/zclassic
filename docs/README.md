@@ -43,6 +43,8 @@ exact packages without a central registry.
   author, consumer, and reproducer journey for exact third-party C23 packages.
 - [`MVP.md`](MVP.md) — public-node V1 acceptance contract; `make mvp` reports
   the live criterion state and `make mvp-verify` runs the local aggregate.
+- [`SELL.md`](SELL.md) — pay ZCL and sell a 1/1 collectible: yardsale,
+  package-swarm, and onion shop; start with `z23 yardsale guide`.
 - [`NATIVE_COMMAND_INTERFACE.md`](NATIVE_COMMAND_INTERFACE.md) — discoverable,
   typed operator interface.
 - [`BOOTSTRAPPING.md`](BOOTSTRAPPING.md) and [`SYNC.md`](SYNC.md) — how a node

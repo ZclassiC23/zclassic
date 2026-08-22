@@ -325,7 +325,7 @@ static int act1_transparent(void)
 
     const int64_t FAUCET_AMOUNT = COIN_VALUE + 10000;
     const int64_t FUND_VALUE    = COIN_VALUE;
-    const int64_t SEND_FEE      = 10000;   /* wallet_init()'s default_fee */
+    const int64_t SEND_FEE      = WALLET_DEFAULT_FEE_ZAT;
     const char   *PASSPHRASE    = "destruction-drill-act1";
 
     char livedir[256], backupdir[256], newdir[256];

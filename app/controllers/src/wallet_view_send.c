@@ -73,9 +73,9 @@ size_t serve_send(uint8_t *r, size_t max) {
             "</select></div>");
     }
 
-    /* Fee string */
+    /* Fee string — short form of the min-relay floor, never rounded to zero. */
     char fee_str[16];
-    snprintf(fee_str, sizeof(fee_str), "%.4f", FEE_ZCL);
+    zcl_format_zcl_short(fee_str, sizeof(fee_str), WALLET_VIEW_FEE_ZAT);
 
     /* Contacts datalist (raw HTML) */
     char contacts_html[4096];
@@ -113,7 +113,7 @@ size_t serve_send(uint8_t *r, size_t max) {
         "function updateRemaining(){"
         "var a=parseFloat(document.getElementById('amt').value)||0;"
         "var r=document.getElementById('remaining');"
-        "if(a>0&&a<=BAL){r.textContent='Remaining: '+(BAL-a-%.4f).toFixed(8)+' ZCL';"
+        "if(a>0&&a<=BAL){r.textContent='Remaining: '+(BAL-a-%.8f).toFixed(8)+' ZCL';"
         "r.style.color='#666';}"
         "else if(a>BAL){r.textContent='Insufficient funds';"
         "r.style.color='#f87171';}"
@@ -137,9 +137,9 @@ size_t serve_send(uint8_t *r, size_t max) {
         "if(isNaN(amt)||amt<=0){"
         "document.getElementById('amt-err').textContent="
         "'Enter an amount';return false;}"
-        "if(amt+%.4f>BAL){"
+        "if(amt+%.8f>BAL){"
         "document.getElementById('amt-err').textContent="
-        "'Insufficient funds: need '+(amt+%.4f-BAL).toFixed(8)+' more ZCL';"
+        "'Insufficient funds: need '+(amt+%.8f-BAL).toFixed(8)+' more ZCL';"
         "return false;}"
         "return true;}"
         /* Real-time address validation + privacy hint on input */

@@ -44,6 +44,10 @@ struct wallet_tx_admission {
 #define DEFAULT_TX_CONFIRM_TARGET 2
 #define WALLET_FEATURE_BASE 10500
 #define WALLET_FEATURE_LATEST 60000
+/* Flat default fee in zatoshis. Matches DEFAULT_MIN_RELAY_TX_FEE: the
+ * lowest amount this node's mempool and miners will relay. */
+#define WALLET_DEFAULT_FEE_ZAT 100
+#define WALLET_MIN_FEE_ZAT WALLET_DEFAULT_FEE_ZAT
 
 struct wallet_key_pool_entry {
     struct key_id keyid;

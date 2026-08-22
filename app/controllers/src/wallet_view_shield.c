@@ -73,8 +73,8 @@ size_t serve_shield(uint8_t *r, size_t max, const char *query) {
     /* Render shield confirmation using template */
     char amt_s[32], fee_s[32], tot_s[32];
     snprintf(amt_s, sizeof(amt_s), "%.8f", amount);
-    snprintf(fee_s, sizeof(fee_s), "%.4f", fee);
-    snprintf(tot_s, sizeof(tot_s), "%.4f", total_cost);
+    zcl_format_zcl_short(fee_s, sizeof(fee_s), WALLET_VIEW_FEE_ZAT);
+    snprintf(tot_s, sizeof(tot_s), "%.8f", total_cost);
 
     struct template_var shield_vars[] = {
         { "amount", amt_s },
@@ -226,7 +226,7 @@ size_t serve_shield_confirm(uint8_t *r, size_t max,
         else
             snprintf(shield_err, sizeof(shield_err),
                 "All %d funded addresses (total %.8f ZCL) have "
-                "insufficient balance after 0.0001 ZCL fee per address.",
+                "insufficient balance after the min-relay fee per address.",
                 n_funded, total_funded);
     }
 

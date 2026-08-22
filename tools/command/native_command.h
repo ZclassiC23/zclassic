@@ -823,6 +823,9 @@ bool zcl_native_zcode_science_test_candidate_allowed(
     const char *datadir, const uint8_t semantic_root[32],
     const uint8_t transport_root[32], const uint8_t publisher_zid[32]);
 #endif
+void zcl_native_handle_yardsale_guide(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_yardsale_seller_arm(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);

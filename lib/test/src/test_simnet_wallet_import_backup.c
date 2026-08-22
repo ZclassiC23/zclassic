@@ -238,7 +238,7 @@ static int part1_import_rescan_spend(void)
 
     const int64_t FAUCET_AMOUNT = COIN_VALUE + 10000;
     const int64_t FUND_VALUE    = COIN_VALUE;
-    const int64_t SEND_FEE      = 10000; /* wallet_init()'s default_fee */
+    const int64_t SEND_FEE      = WALLET_DEFAULT_FEE_ZAT;
 
     /* ── wallet1: generate address A via the real getnewaddress RPC ── */
     char datadir1[256];

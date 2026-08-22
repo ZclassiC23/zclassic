@@ -560,7 +560,7 @@ int test_wallet_view(void)
     {
         wv_post("/wallet/send/review",
             "address=t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn&amount=0.01");
-        bool ok = wv_has("0.0001");  /* fee */
+        bool ok = wv_has("0.000001");  /* min-relay fee */
         ok = ok && wv_has("Fee");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -829,7 +829,7 @@ int test_wallet_view(void)
     printf("wallet_view: shield shows fee and total cost... ");
     {
         wv_get("/wallet/shield?amount=0.5");
-        bool ok = wv_has("0.0001");  /* fee */
+        bool ok = wv_has("0.000001");  /* min-relay fee */
         ok = ok && wv_has("Total:");
         if (ok) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
@@ -1787,11 +1787,11 @@ int test_wallet_view(void)
         else { printf("FAIL (inconsistent sync state)\n"); failures++; }
     }
 
-    printf("INTEG: send form fee shows 0.0001 (not 0.00010000)... ");
+    printf("INTEG: send form fee shows 0.000001 (not 0.00000100)... ");
     {
         wv_get("/wallet/send");
-        bool short_fee = wv_has("0.0001 ZCL");
-        bool no_long_fee = !wv_has("0.00010000 ZCL");
+        bool short_fee = wv_has("0.000001 ZCL");
+        bool no_long_fee = !wv_has("0.00000100 ZCL");
         if (short_fee && no_long_fee) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }
@@ -1902,8 +1902,8 @@ int test_wallet_view(void)
     printf("INTEG: shield fee shows 4 decimals not 8... ");
     {
         wv_get("/wallet/shield?amount=0.5");
-        bool has_short = wv_has("0.0001 ZCL");
-        bool no_long = !wv_has("0.00010000 ZCL");
+        bool has_short = wv_has("0.000001 ZCL");
+        bool no_long = !wv_has("0.00000100 ZCL");
         if (has_short && no_long) printf("OK\n");
         else { printf("FAIL\n"); failures++; }
     }

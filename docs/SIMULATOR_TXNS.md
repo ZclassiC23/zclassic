@@ -28,8 +28,8 @@ make t ONLY=simnet_txkit
 - `simnet_wallet_address(w)` returns the wallet's deterministic display address.
 - `simnet_wallet_script(w)` returns the wallet's P2PKH script.
 - `simnet_wallet_balance(w)` returns mature, still-unspent wallet-tracked value.
-- `simnet_wallet_default_fee_per_k()` returns the node wallet default fee rate in zats per kB.
-- `simnet_wallet_default_fee_rate()` returns that default as a `struct fee_rate`.
+- `simnet_wallet_default_fee_per_k()` returns the simnet catalog fee rate (`SIMNET_WALLET_DEFAULT_FEE_PER_K`, 10,000 zats per kB).
+- `simnet_wallet_default_fee_rate()` returns that catalog rate as a `struct fee_rate`.
 - `simnet_wallet_fund(w, amount, out)` mints a coinbase to the wallet and mines it through `COINBASE_MATURITY`.
 - `simnet_wallet_send(from, to_script, amount, out)` builds, fees, and enqueues a one-recipient spend to an arbitrary script.
 - `simnet_wallet_send_to_wallet(from, to, amount, out)` builds, fees, and enqueues a P2PKH wallet-to-wallet spend.
@@ -37,9 +37,10 @@ make t ONLY=simnet_txkit
 - `simnet_wallet_op_return(from, payload, payload_len, value_out, out)` builds, fees, and enqueues an OP_RETURN carrier, optionally with one value output.
 
 `struct simnet_tx_result` reports the `txid`, serialized `tx_size`, `fee`,
-input total, output total, change value, and change vout. Fees use the same
-default as the node wallet: `wallet_init()->default_fee`, currently 10,000 zats
-per kB (`0.00010000 ZCL/kB`).
+input total, output total, change value, and change vout. Simnet fees are
+size-proportional at `SIMNET_WALLET_DEFAULT_FEE_PER_K` (10,000 zats/kB,
+`0.00010000 ZCL/kB`). That catalog rate is independent of the live wallet's
+flat `WALLET_DEFAULT_FEE_ZAT` min-relay floor (100 zat per transaction).
 
 ## Time And Locktime
 

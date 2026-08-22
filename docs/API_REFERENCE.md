@@ -74,11 +74,11 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 701 |
+| Registry entries (branches + leaves) | 702 |
 | Top-level roots | 11 |
 | Branches | 162 |
-| Leaves (dispatchable command paths) | 539 |
-| … `ready` (live handler in this build) | 485 |
+| Leaves (dispatchable command paths) | 540 |
+| … `ready` (live handler in this build) | 486 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `z23-dev`) | 24 |
@@ -103,7 +103,7 @@ Per source file:
 | `config/commands/zcode.def` | 217 | 51 | 166 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
-| `config/commands/yardsale.def` | 6 | 2 | 4 |
+| `config/commands/yardsale.def` | 7 | 2 | 5 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
 | `config/commands/telemetry/runtime.def` | 4 | 1 | 3 |
@@ -1503,6 +1503,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `yardsale guide` | ready | read / read / public · instant/tiny | none | `zcl.yardsale_guide.v1` | `z23 yardsale guide` | Pay ZCL and sell a 1/1 collectible |
 | `yardsale buy` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`ad_root`**, `confirm`, `now_unix` | `zcl.yardsale_buy.v1` | `z23 yardsale.buy --input='{"ad_root":"<64hex>","confirm":true}'` | Buy a live sign with wallet funds |
 
 #### `yardsale.seller` — Seller profile: arm, disarm, status

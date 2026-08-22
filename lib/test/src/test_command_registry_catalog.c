@@ -139,6 +139,47 @@ static int test_six_roots(void)
     return failures;
 }
 
+static int test_yardsale_guide(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("yardsale.guide is a public local read that names the min-relay fee") {
+        const struct zcl_command_spec *s = find_spec(reg, "yardsale.guide");
+        ASSERT(s != NULL);
+        ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+        ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_READ);
+        ASSERT_EQ(s->authority, ZCL_COMMAND_AUTH_PUBLIC);
+        ASSERT_EQ(s->scope, ZCL_COMMAND_SCOPE_LOCAL);
+        ASSERT(s->handler == zcl_native_handle_yardsale_guide);
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request;
+        memset(&request, 0, sizeof(request));
+        request.spec = s;
+        request.input = &input;
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.yardsale_guide.v1");
+        zcl_native_handle_yardsale_guide(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "start_command")),
+                      "z23 vault list") == 0);
+        ASSERT(json_get_int(json_get(&reply.data, "fee_zat")) == 100);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "fee_zcl")),
+                      "0.00000100") == 0);
+        ASSERT(strstr(json_get_str(json_get(&reply.data, "nft_create")),
+                      "supply\":\"1\"") != NULL);
+        ASSERT(strstr(json_get_str(json_get(&reply.data, "confirm_rule")),
+                      "confirm:true") != NULL);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "docs")),
+                      "docs/SELL.md") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_root_menu_budget(void)
 {
     int failures = 0;
@@ -3319,6 +3360,7 @@ int test_command_registry_catalog(void)
     failures += test_next_actions_fail_closed();
     failures += test_domain_leaf_counts();
     failures += test_six_roots();
+    failures += test_yardsale_guide();
     failures += test_root_menu_budget();
     failures += test_branch_menus_shallow();
     failures += test_search_bounded();
