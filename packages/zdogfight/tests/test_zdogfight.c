@@ -555,6 +555,50 @@ static void test_winner_states_differ(void)
     check(red_win != blue_win, "red-win and blue-win roots differ");
 }
 
+/* Same built-in demo pilots as app/main.c — the playable package CLI. */
+static void demo_straight(zdog_ctl *c)
+{
+    c->roll = 0;
+    c->pitch = 0;
+    c->throttle = 32767;
+    c->fire = 1;
+}
+
+static void demo_weave(uint64_t tick, zdog_ctl *c)
+{
+    c->roll = (int16_t)((tick / 90u) % 2u ? 12000 : -12000);
+    c->pitch = 0;
+    c->throttle = 32767;
+    c->fire = (uint8_t)(tick % 6u == 0u);
+}
+
+static uint64_t demo_play(uint64_t seed, uint8_t planes)
+{
+    zdog_match m;
+    zdog_match_init(&m, seed, planes);
+    while (m.phase == ZDOG_PHASE_RUNNING) {
+        zdog_ctl ctls[ZDOG_MAX_PLANES] = {{0}};
+        for (unsigned i = 0; i < m.num_planes; i++) {
+            if (m.planes[i].team == 0)
+                demo_straight(&ctls[i]);
+            else
+                demo_weave(m.tick, &ctls[i]);
+        }
+        zdog_tick(&m, ctls);
+    }
+    return zdog_state_checksum(&m);
+}
+
+static void test_play_demo_is_deterministic(void)
+{
+    uint64_t a = demo_play(7, 2);
+    uint64_t b = demo_play(7, 2);
+    uint64_t c = demo_play(8, 2);
+    check(a != 0, "demo play produces a state checksum");
+    check(a == b, "same seed and demo pilots replay identically");
+    check(a != c, "a different seed is a different match");
+}
+
 int main(void)
 {
     test_determinism();
@@ -567,6 +611,7 @@ int main(void)
     test_match_end_draw();
     test_wire_roundtrip();
     test_winner_states_differ();
+    test_play_demo_is_deterministic();
     if (failures) {
         fprintf(stderr, "%d failure(s)\n", failures);
         return 1;
