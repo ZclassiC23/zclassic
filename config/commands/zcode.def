@@ -24,9 +24,6 @@ ZCL_COMMAND_BRANCH("zcode.project", "zcode",
 ZCL_COMMAND_BRANCH("zcode.work", "zcode",
                    "Proven C23 work",
                    ZCL_COMMAND_LAYER_APP)
-ZCL_COMMAND_BRANCH("zcode.toolchain", "zcode",
-                   "Local C23 compile toolchain identity",
-                   ZCL_COMMAND_LAYER_APP)
 ZCL_COMMAND_BRANCH("zcode.passport", "zcode",
                    "Signed C23 module Passports",
                    ZCL_COMMAND_LAYER_APP)
@@ -505,7 +502,7 @@ ZCL_COMMAND_READY_COMMAND(
     zcl_native_handle_zcode_work_start)
 
 ZCL_COMMAND_READY_READ(
-    "zcode.toolchain.show", "zcode.toolchain", "",
+    "zcode.work.toolchain", "zcode.work", "",
     "Show this node's C23 compile toolchain capsule",
     "Captures the fixed Linux V1 GCC capsule on this host and reports its "
     "64-hex capsule_root plus the compiler, dumpmachine, dumpfullversion, "
@@ -514,10 +511,10 @@ ZCL_COMMAND_READY_READ(
     "requester and the proving worker. Accepts no input. Does not write "
     "the datadir, start a worker, or grant proof authority.",
     ZCL_COMMAND_RESULT_BUDGET,
-    "zcode,toolchain,show,capsule,gcc,assembler,reproduce,agent",
+    "zcode,work,toolchain,capsule,gcc,assembler,reproduce,agent",
     "zcl.zcode_toolchain_show.input.v1", "zcl.zcode_toolchain_show.v1",
     "", "",
-    "z23 zcode toolchain show",
+    "z23 zcode work toolchain",
     ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
     ZCL_COMMAND_AUTH_OPERATOR, ZCL_COMMAND_LATENCY_FOREGROUND,
     ZCL_COMMAND_COST_MODERATE,

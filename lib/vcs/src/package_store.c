@@ -370,12 +370,19 @@ bool vcs_package_store_pin_plan(
     if (!vcs_package_store_package_status(store, root, status_out))
         return false;
     struct sha3_256_ctx sha;
-    uint8_t mutation = pinned ? 1u : 0u;
+    uint8_t want = pinned ? 1u : 0u;
+    uint8_t have = status_out->pinned ? 1u : 0u;
+    uint8_t tracked = status_out->tracked ? 1u : 0u;
+    uint8_t complete = status_out->complete ? 1u : 0u;
+    uint8_t pool = (uint8_t)status_out->pool;
     sha3_256_init(&sha);
-    sha3_256_write(&sha, (const uint8_t *)"zcl.package.pin.plan.v1", 24);
+    sha3_256_write(&sha, (const uint8_t *)"zcl.package.pin.plan.v2", 24);
     sha3_256_write(&sha, root, 32);
-    sha3_256_write(&sha, &mutation, 1);
-    sha3_256_write(&sha, (const uint8_t *)status_out, sizeof(*status_out));
+    sha3_256_write(&sha, &want, 1);
+    sha3_256_write(&sha, &have, 1);
+    sha3_256_write(&sha, &tracked, 1);
+    sha3_256_write(&sha, &complete, 1);
+    sha3_256_write(&sha, &pool, 1);
     sha3_256_finalize(&sha, token_out);
     return true;
 }

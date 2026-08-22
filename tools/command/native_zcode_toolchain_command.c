@@ -29,8 +29,8 @@ void zcl_native_handle_zcode_toolchain_show(
         zcl_command_reply_fail(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
             "BAD_TOOLCHAIN_SHOW_INPUT", "status", false, false,
-            "zcode toolchain show accepts no input keys",
-            "zcode.toolchain.show");
+            "zcode work toolchain accepts no input keys",
+            "zcode.work.toolchain");
         return;
     }
     struct vcs_toolchain_capsule_v1 capsule;
@@ -41,7 +41,7 @@ void zcl_native_handle_zcode_toolchain_show(
             reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_FAILED,
             "TOOLCHAIN_CAPTURE_FAILED", "status", false, false,
             "the fixed GCC toolchain capsule could not be captured",
-            "zcode.toolchain.show");
+            "zcode.work.toolchain");
         return;
     }
     char capsule_hex[65], machine[256], full_version[256], as_version[512];
@@ -73,8 +73,8 @@ void zcl_native_handle_zcode_toolchain_show(
         (void)json_push_kv_str(&reply->data, "assembler_version", as_version);
     (void)json_push_kv_str(
         &reply->data, "next_action",
-        "Compare capsule_root with zcode toolchain show on the proving node. "
+        "Compare capsule_root with zcode work toolchain on the proving node. "
         "Independent compile evidence needs the same capsule.");
     (void)json_push_kv_str(&reply->data, "next_safe_command",
-                           "zcode toolchain show");
+                           "zcode work toolchain");
 }

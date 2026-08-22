@@ -76,9 +76,9 @@ z23 discover schema <path> --side=input|output
 |---|---|
 | Registry entries (branches + leaves) | 703 |
 | Top-level roots | 11 |
-| Branches | 163 |
-| Leaves (dispatchable command paths) | 540 |
-| … `ready` (live handler in this build) | 486 |
+| Branches | 162 |
+| Leaves (dispatchable command paths) | 541 |
+| … `ready` (live handler in this build) | 487 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `z23-dev`) | 24 |
@@ -100,10 +100,10 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 219 | 52 | 167 |
+| `config/commands/zcode.def` | 218 | 51 | 167 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
-| `config/commands/yardsale.def` | 6 | 2 | 4 |
+| `config/commands/yardsale.def` | 7 | 2 | 5 |
 | `config/commands/telemetry/root.def` | 6 | 2 | 4 |
 | `config/commands/telemetry/watch.def` | 1 | 0 | 1 |
 | `config/commands/telemetry/runtime.def` | 4 | 1 | 3 |
@@ -997,17 +997,12 @@ represented by its children's sections.
 | `zcode work context` | ready | read / read / public · instant/tiny | none | `zcl.zcode_work_context.v1` | `z23 zcode work context` | Show goal-context selection readiness |
 | `zcode work preflight` | ready | read / read / operator · fast/low | `workspace`, `work`, `datadir` | `zcl.zcode_work_preflight.v1` | `z23 zcode work preflight --input='{"workspace":".","work":"latest"}'` | Check Codex adapter readiness before a model request |
 | `zcode work start` | ready | mutate / app-write / operator · foreground/moderate | **`workspace`**, **`goal`**, `profile`, `context_symbol`, `max_cpu_seconds`, `datadir`, `details` | `zcl.zcode_work_start.v1` | `z23-dev zcode work start --input='{"workspace":".","goal":"Make the parser reject overflowing lengths","profile":"standard"}'` | Start reuse-first C23 work |
+| `zcode work toolchain` | ready | read / read / operator · foreground/moderate | none | `zcl.zcode_toolchain_show.v1` | `z23 zcode work toolchain` | Show this node's C23 compile toolchain capsule |
 | `zcode work status` | ready | read / read / operator · fast/low | `workspace`, `work`, `datadir`, `details` | `zcl.zcode_work_status.v1` | `z23-dev zcode work status --input='{"work":"latest"}'` | Show one human-first work status |
 | `zcode work show` | ready | read / read / operator · fast/low | `workspace`, `work`, `datadir`, `details` | `zcl.zcode_work_status.v1` | `z23-dev zcode work show --input='{"work":"latest"}'` | Show one human-first work result |
 | `zcode work run` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter`, `datadir`, `details` | `zcl.zcode_work_run.v1` | `z23-dev zcode work run --input='{"work":"latest","adapter":"manual"}'` | Run one contained adapter handoff |
 | `zcode work accept` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `datadir`, `confirmation_identity`, `details` | `zcl.zcode_work_accept.v1` | `z23-dev zcode work accept --input='{"work":"latest"}'` | Accept one exact proven candidate |
 | `zcode work review` | ready | mutate / app-write / operator · foreground/moderate | `workspace`, `work`, `adapter`, **`verdict`**, **`findings`** | `zcl.zcode_work_review.v1` | `z23-dev zcode work review --input='{"work":"latest","adapter":"manual","verdict":"approve","findings":"No blocking findings."}'` | Review one exact candidate |
-
-#### `zcode.toolchain` — Local C23 compile toolchain identity
-
-| Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
-|---|---|---|---|---|---|---|
-| `zcode toolchain show` | ready | read / read / operator · foreground/moderate | none | `zcl.zcode_toolchain_show.v1` | `z23 zcode toolchain show` | Show this node's C23 compile toolchain capsule |
 
 #### `zcode.passport` — Signed C23 module Passports
 
@@ -1509,6 +1504,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `yardsale guide` | ready | read / read / public · instant/tiny | none | `zcl.yardsale_guide.v1` | `z23 yardsale guide` | Pay ZCL and sell a 1/1 collectible |
 | `yardsale buy` | ready | mutate / wallet / **owner**, plan-commit · foreground/moderate | **`ad_root`**, `confirm`, `now_unix` | `zcl.yardsale_buy.v1` | `z23 yardsale.buy --input='{"ad_root":"<64hex>","confirm":true}'` | Buy a live sign with wallet funds |
 
 #### `yardsale.seller` — Seller profile: arm, disarm, status

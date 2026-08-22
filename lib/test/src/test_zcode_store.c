@@ -1124,6 +1124,28 @@ static int t_store_pins(void)
                  1000);
     ZS_CHECK("pins: full-byte possession proof accepts complete pinned L",
              vcs_package_store_verify_possession(s, l.root, true));
+    {
+        uint8_t token_a[32], token_b[32];
+        struct vcs_package_store_status plan_st;
+        uint8_t *chunk = NULL;
+        size_t chunk_len = 0;
+        ZS_CHECK("pins: plan token is issued",
+                 vcs_package_store_pin_plan(s, l.root, true, &plan_st,
+                                            token_a));
+        ZS_CHECK("pins: a read after plan is allowed",
+                 vcs_package_store_get_chunk(s, l.root, "a.bin", 0, &chunk,
+                                             &chunk_len) ==
+                     VCS_PACKAGE_STORE_OK);
+        free(chunk);
+        ZS_CHECK("pins: plan token survives an access_count bump",
+                 vcs_package_store_pin_plan(s, l.root, true, &plan_st,
+                                            token_b) &&
+                 memcmp(token_a, token_b, 32) == 0);
+        ZS_CHECK("pins: unpin intent changes the plan token",
+                 vcs_package_store_pin_plan(s, l.root, false, &plan_st,
+                                            token_b) &&
+                 memcmp(token_a, token_b, 32) != 0);
+    }
     ZS_CHECK("pins: M completes and pins (pins pool exactly full)",
              vcs_package_store_put_manifest(s, m.wire, m.wire_len, NULL) ==
                  VCS_PACKAGE_STORE_OK &&

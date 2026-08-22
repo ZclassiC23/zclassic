@@ -913,10 +913,19 @@ static void zw_handle_pin(const struct zcl_command_request *request,
             difference |= supplied[i] ^ token[i];
         if (difference) {
             if (own_store) vcs_package_store_close(store);
-            zcl_command_reply_fail(reply, ZCL_COMMAND_STATUS_FAILED,
-                                   ZCL_COMMAND_EXIT_INVALID, "STALE_PLAN",
-                                   "commit", false, true,
-                                   "package state changed after plan", command);
+            char root_hex[65], next_input[160];
+            zcl_hex_encode(root, 32, root_hex);
+            (void)snprintf(next_input, sizeof(next_input),
+                           "{\"root\":\"%s\",\"mode\":\"plan\"}", root_hex);
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "STALE_PLAN", "commit", true, false,
+                "pin-relevant package state changed after plan; run zcode "
+                "package pin mode=plan again",
+                command);
+            (void)zcl_command_reply_add_next(
+                reply, "zcode.package.pin", next_input,
+                "re-observe the exact pin plan");
             return;
         }
         r = vcs_package_store_pin(store, root, pinned);

@@ -207,11 +207,11 @@ target/profile, build receipt, and every artifact root. Then inspect locally
 filed observations:
 
 ```bash
-z23 zcode toolchain show
+z23 zcode work toolchain
 z23 zcode package verify --input='{"root":"<package_root>","datadir":"/tmp/z23-commons"}'
 ```
 
-`zcode toolchain show` reports this node's `capsule_root`. Independent compile
+`zcode work toolchain` reports this node's `capsule_root`. Independent compile
 evidence needs the same capsule on the requester and the proving worker. A
 mismatch is evidence and must remain visible; never pick one result because
 it arrived first or came from a preferred signer. Signed asynchronous worker

@@ -205,9 +205,12 @@ void vcs_package_store_close(struct vcs_package_store *store);
  * datadir it was handed compares against this rather than guessing. */
 const char *vcs_package_store_root_dir(const struct vcs_package_store *store);
 
-/* Bind a pin/unpin plan token to the exact package status observed under the
- * store's in-process lock. False means the root is not tracked. Shared by the
- * resident RPC and the offline native fallback so plan/commit cannot drift. */
+/* Bind a pin/unpin plan token to the pin-relevant package facts observed
+ * under the store's in-process lock: root, desired pin, current pin,
+ * tracked, complete, and pool. Access counts and replica counters are not
+ * in the token, so a concurrent read cannot stale a pin commit. False means
+ * the root is not tracked. Shared by the resident RPC and the offline
+ * native fallback so plan/commit cannot drift. */
 bool vcs_package_store_pin_plan(
     struct vcs_package_store *store, const uint8_t root[32], bool pinned,
     struct vcs_package_store_status *status_out, uint8_t token_out[32]);

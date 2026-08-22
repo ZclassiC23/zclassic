@@ -2333,7 +2333,7 @@ static int zpd_test_admitted_single_interpretation(void)
                                             "async_proof_state")),
                       "REQUESTED") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "next_action")),
-                      "Keep thinking while the missing proof arrives.") == 0);
+                      "Run zcode work toolchain here and on the proving node; independent compile evidence needs the same capsule_root.") == 0);
         zcl_command_reply_free(&reply); json_free(&input);
 
         /* Without the admitting datadir both surfaces stay blind, not

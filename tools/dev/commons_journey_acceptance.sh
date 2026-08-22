@@ -706,13 +706,21 @@ cj_announce_source() {
 }
 
 cj_pin_root() {
-    local node="$1" root="$2" plan token commit
-    plan="$("cj_$node" zcode package pin --input="{\"root\":\"$root\",\"mode\":\"plan\"}")"
-    cj_require_ok "node $node pin plan $root" "$plan"
-    token="$(cj_field data.plan_token "$plan")"
-    commit="$("cj_$node" zcode package pin \
-        --input="{\"root\":\"$root\",\"mode\":\"commit\",\"plan_token\":\"$token\"}")"
-    cj_require_ok "node $node pin commit $root" "$commit"
+    local node="$1" root="$2" plan token commit attempt=0
+    while [ "$attempt" -lt 3 ]; do
+        plan="$("cj_$node" zcode package pin --input="{\"root\":\"$root\",\"mode\":\"plan\"}")"
+        cj_require_ok "node $node pin plan $root" "$plan"
+        token="$(cj_field data.plan_token "$plan")"
+        commit="$("cj_$node" zcode package pin \
+            --input="{\"root\":\"$root\",\"mode\":\"commit\",\"plan_token\":\"$token\"}")"
+        if [ "$(cj_field ok "$commit" False)" = True ]; then
+            return 0
+        fi
+        [ "$(cj_field error.code "$commit" '')" = STALE_PLAN ] ||
+            cj_die "node $node pin commit $root failed: $commit"
+        attempt=$((attempt + 1))
+    done
+    cj_die "node $node pin commit $root failed: $commit"
 }
 
 # Fetch one package over the overlay and reconstruct it locally. Returns only
