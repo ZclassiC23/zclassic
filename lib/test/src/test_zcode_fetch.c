@@ -34,7 +34,6 @@
 
 #include "command/native_command.h"
 #include "command/native_zcode_discovery.h"
-#include "command/native_zcode_join.h"
 #include "controllers/rpc_client.h"
 
 #include "chain/chainparams.h"
@@ -789,10 +788,13 @@ static int zf_t_offered_one_shot(void)
         {
             const char *next =
                 json_get_str(json_get(&c.reply.data, "next_command"));
-            ASSERT(next != NULL && strstr(next, ZCL_ZCODE_JOIN_FLAGS) != NULL);
+            ASSERT(next != NULL &&
+                   strstr(next, "-packagehost=1 -buildworker=1") != NULL);
             ASSERT(strcmp(json_get_str(json_get(&c.reply.data, "join_flags")),
-                          ZCL_ZCODE_JOIN_FLAGS) == 0);
+                          "-packagehost=1 -buildworker=1") == 0);
             ASSERT(!json_get_bool(json_get(&c.reply.data, "joined")));
+            ASSERT(!json_get_bool(json_get(&c.reply.data, "package_hosting")));
+            ASSERT(!json_get_bool(json_get(&c.reply.data, "build_worker")));
         }
         ASSERT(json_get(&c.reply.data, "replicas") == NULL);
         zf_cmd_free(&c);

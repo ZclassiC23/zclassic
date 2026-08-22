@@ -2410,9 +2410,9 @@ static int zpd_test_work_toolchain(void)
                            strcmp(blocker, "NOT_JOINED") == 0));
         ASSERT(present == can_prove);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "join_flags")),
-                      ZCL_ZCODE_JOIN_FLAGS) == 0);
+                      "-packagehost=1 -buildworker=1") == 0);
         ASSERT(!json_get_bool(json_get(&reply.data, "joined")));
-        ASSERT(next && strstr(next, ZCL_ZCODE_JOIN_FLAGS) != NULL);
+        ASSERT(next && strstr(next, "-packagehost=1 -buildworker=1") != NULL);
         if (!present)
             ASSERT(strcmp(blocker, "VERIFIER_MISSING") == 0);
         zcl_command_reply_free(&reply);
@@ -2427,12 +2427,16 @@ static int zpd_test_commons_join_front_doors(void)
     TEST("commons join posture is the same on toolchain, offered, and guide") {
         struct zcl_zcode_join_posture join;
         ASSERT(zcl_zcode_join_posture_fill(&join));
-        ASSERT(strcmp(join.join_flags, ZCL_ZCODE_JOIN_FLAGS) == 0);
+        ASSERT(strcmp(join.join_flags, "-packagehost=1 -buildworker=1") == 0);
         ASSERT(strcmp(join.hosting_requirement,
-                      ZCL_ZCODE_HOSTING_REQUIREMENT) == 0);
+                      "run the full node with -packagehost=1 -buildworker=1")
+               == 0);
         ASSERT(!join.joined);
+        ASSERT(!join.package_hosting);
+        ASSERT(!join.build_worker);
         ASSERT(join.offline_next_command &&
-               strstr(join.offline_next_command, ZCL_ZCODE_JOIN_FLAGS));
+               strstr(join.offline_next_command,
+                      "-packagehost=1 -buildworker=1"));
 
         struct zcl_command_request request = { .input = NULL };
         struct zcl_command_reply toolchain;
@@ -2440,9 +2444,15 @@ static int zpd_test_commons_join_front_doors(void)
         zcl_native_handle_zcode_toolchain_show(&request, &toolchain);
         ASSERT(toolchain.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&toolchain.data, "join_flags")),
-                      ZCL_ZCODE_JOIN_FLAGS) == 0);
+                      "-packagehost=1 -buildworker=1") == 0);
         ASSERT(!json_get_bool(json_get(&toolchain.data, "joined")));
-        zcl_command_reply_free(&toolchain);
+        ASSERT(!json_get_bool(json_get(&toolchain.data, "package_hosting")));
+        ASSERT(!json_get_bool(json_get(&toolchain.data, "build_worker")));
+        {
+            const char *next =
+                json_get_str(json_get(&toolchain.data, "next_action"));
+            ASSERT(next && strstr(next, "-packagehost=1 -buildworker=1"));
+        }
 
         char dd[1024];
         test_make_tmpdir(dd, sizeof(dd), "zcode_package_dev", "join-offered");
@@ -2458,17 +2468,17 @@ static int zpd_test_commons_join_front_doors(void)
         zcl_native_handle_zcode_package_offered(&offered_request, &offered);
         ASSERT(offered.status == ZCL_COMMAND_STATUS_PASSED);
         ASSERT(strcmp(json_get_str(json_get(&offered.data, "join_flags")),
-                      ZCL_ZCODE_JOIN_FLAGS) == 0);
+                      "-packagehost=1 -buildworker=1") == 0);
         ASSERT(!json_get_bool(json_get(&offered.data, "joined")));
+        ASSERT(!json_get_bool(json_get(&offered.data, "package_hosting")));
+        ASSERT(!json_get_bool(json_get(&offered.data, "build_worker")));
         ASSERT(!json_get_bool(json_get(&offered.data, "live")));
         {
             const char *next =
                 json_get_str(json_get(&offered.data, "next_command"));
-            ASSERT(next && strstr(next, ZCL_ZCODE_JOIN_FLAGS));
+            ASSERT(next && strstr(next, "-packagehost=1 -buildworker=1"));
             ASSERT(strstr(next, "z23 zcode package offered"));
         }
-        zcl_command_reply_free(&offered);
-        json_free(&offered_input);
 
         struct json_value guide_input;
         json_init(&guide_input);
@@ -2479,11 +2489,23 @@ static int zpd_test_commons_join_front_doors(void)
         zcl_native_handle_zcode_package_guide(&guide_request, &guide);
         ASSERT(guide.exit_code == ZCL_COMMAND_EXIT_OK);
         ASSERT(strcmp(json_get_str(json_get(&guide.data, "join_flags")),
-                      ZCL_ZCODE_JOIN_FLAGS) == 0);
+                      "-packagehost=1 -buildworker=1") == 0);
         ASSERT(strcmp(json_get_str(json_get(&guide.data,
                                             "hosting_requirement")),
-                      ZCL_ZCODE_HOSTING_REQUIREMENT) == 0);
+                      "run the full node with -packagehost=1 -buildworker=1")
+               == 0);
         ASSERT(!json_get_bool(json_get(&guide.data, "joined")));
+        ASSERT(!json_get_bool(json_get(&guide.data, "package_hosting")));
+        ASSERT(!json_get_bool(json_get(&guide.data, "build_worker")));
+        ASSERT(strcmp(json_get_str(json_get(&toolchain.data, "join_flags")),
+                      json_get_str(json_get(&offered.data, "join_flags")))
+               == 0);
+        ASSERT(strcmp(json_get_str(json_get(&toolchain.data, "join_flags")),
+                      json_get_str(json_get(&guide.data, "join_flags")))
+               == 0);
+        zcl_command_reply_free(&toolchain);
+        zcl_command_reply_free(&offered);
+        json_free(&offered_input);
         zcl_command_reply_free(&guide);
         json_free(&guide_input);
         PASS();
