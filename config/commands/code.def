@@ -7,6 +7,24 @@ ZCL_COMMAND_BRANCH("code", "", "Hierarchical source-code navigator",
                    ZCL_COMMAND_LAYER_CODE)
 
 ZCL_COMMAND_READY_READ(
+    "code.guide", "code", "",
+    "How to edit and prove a change in this checkout",
+    "The inner coding-agent loop: inspect with code impact/tests, prove with "
+    "t-fast ONLY, lint-fast, and pre-push-ci at push. It reads no checkout "
+    "state and never runs a compiler, test, or live-node command.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "code,guide,develop,proof,lint,t-fast,impact,agent",
+    "zcl.code_guide.input.v1", "zcl.code_guide.v1", "", "",
+    "z23 code guide",
+    ZCL_COMMAND_LAYER_CODE, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE,
+    ZCL_COMMAND_TRAIT_DETERMINISTIC | ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_code_guide)
+
+ZCL_COMMAND_READY_READ(
     "code.group", "code", "",
     "Top source groups, or one group's subgroups and files",
     "Subgroups and files of one navigator group (top groups when none given), "

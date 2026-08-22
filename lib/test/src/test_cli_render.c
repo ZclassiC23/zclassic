@@ -444,6 +444,24 @@ static int test_guide_tree_render(void)
         ASSERT(strstr(out, "\"schema\"") == NULL); /* not the raw envelope */
         ASSERT(cr_max_line_width(out) <= 80);
         PASS();
+    }
+    TEST("code.guide renders the inner loop as a human tree") {
+        const char *doc =
+            "{\"schema\":\"zcl.result.v1\",\"command\":\"code.guide\","
+            "\"ok\":true,\"status\":\"passed\",\"data\":{"
+            "\"lint_command\":\"make lint-fast\","
+            "\"push_command\":\"make pre-push-ci\"}}";
+        struct zcl_cli_render_env e = cr_env(80, false);
+        char out[8192];
+        size_t n = zcl_cli_render_doc(doc, strlen(doc), "code.guide", &e,
+                                      out, sizeof(out));
+        ASSERT(n > 0);
+        ASSERT(strstr(out, "code.guide") != NULL);
+        ASSERT(strstr(out, "lint_command") != NULL);
+        ASSERT(strstr(out, "make lint-fast") != NULL);
+        ASSERT(strstr(out, "\"schema\"") == NULL);
+        ASSERT(cr_max_line_width(out) <= 80);
+        PASS();
     } _test_next:;
     return failures;
 }

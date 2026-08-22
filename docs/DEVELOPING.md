@@ -194,17 +194,24 @@ records bind exact bytes, toolchain, flags, and mutation state. Never fabricate
 or pass `BUILD_SOURCE_RECORD` or `ZCL_FAST_BUILD_SOURCE_RECORD`; the owning
 build process captures and verifies them.
 
+Ask the node for this loop; do not remember it:
+
+```bash
+z23 code guide
+z23 code impact --input='{"path":"<file.c>"}'
+z23 code tests --input='{"path":"<file.c>"}'
+```
+
 Use the narrowest honest loop:
 
 ```bash
-make -j"$(nproc)" build-only
-make t-list
-make -j"$(nproc)" t-fast ONLY=<substring>
+make -j"$(nproc)" t-fast ONLY=<substring from code tests>
+make lint-fast
 ```
 
-`build-only` compiles translation units but does not prove final linkage.
 `t-fast` resolves the substring against registered groups and refuses a missing
-or unknown selector. Never run `test_zcl` directly.
+or unknown selector. `lint-fast` is the inner lint (~7s). Never run `test_zcl`
+directly. Do not run full `make lint` on an ordinary slice.
 
 Every compile here goes through the in-tree compile cache (`tools/zcc.c`),
 which the Makefile builds and wires in front of `$(CC)` by itself — there is
@@ -214,11 +221,17 @@ for each compile when a rebuild is slower than it should be. See
 [`BUILD.md`](./BUILD.md#the-compile-cache-is-in-the-repository) for how a hit
 is kept honest and how to clear or audit the cache.
 
-For integration:
+For a push checkpoint:
 
 ```bash
-make lint
-make -j"$(nproc)"
+make pre-push-ci
+```
+
+Full `make lint` is the umbrella (every gate, including whole-node tool links).
+Run it only when an impact rule names a gate that `lint-fast` excludes, or at
+a sub-wave / release boundary. An uncached full suite is:
+
+```bash
 make -j"$(nproc)" test-parallel TEST_PARALLEL_ARGS=--no-cache
 ```
 

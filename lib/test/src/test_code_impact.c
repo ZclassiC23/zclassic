@@ -255,6 +255,48 @@ static int test_code_impact_unknown_path(void)
     return failures;
 }
 
+static int test_code_guide(void)
+{
+    int failures = 0;
+    TEST("code.guide names the inner loop and refuses extra input") {
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request;
+        memset(&request, 0, sizeof(request));
+        request.input = &input;
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.code_guide.v1");
+        zcl_native_handle_code_guide(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "start_command")),
+                      "z23 code impact --input='{\"path\":\"<file.c>\"}'") ==
+               0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "lint_command")),
+                      "make lint-fast") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "push_command")),
+                      "make pre-push-ci") == 0);
+        ASSERT(strstr(json_get_str(json_get(&reply.data, "never")),
+                      "test_zcl") != NULL);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+
+        json_init(&input);
+        json_set_object(&input);
+        ASSERT(json_push_kv_str(&input, "path", "x.c"));
+        memset(&request, 0, sizeof(request));
+        request.input = &input;
+        zcl_command_reply_init(&reply, "zcl.test.code_guide.v1");
+        zcl_native_handle_code_guide(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_INVALID);
+        ASSERT_STR_EQ(reply.error.code, "BAD_CODE_GUIDE_INPUT");
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_code_impact(void)
 {
     int failures = 0;
@@ -262,5 +304,6 @@ int test_code_impact(void)
     failures += test_code_impact_leaf();
     failures += test_code_impact_missing_path();
     failures += test_code_impact_unknown_path();
+    failures += test_code_guide();
     return failures;
 }
