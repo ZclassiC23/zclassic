@@ -466,6 +466,7 @@ static const struct rlw_uncovered g_rlw_uncovered[] = {
     { "zcode.package.recipe",         RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.package.verify",         RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.package.peers",          RLW_UNCOVERED_REASON_PREEXISTING },
+    { "zcode.package.offered",        RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.contributor.packages",   RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.contributor.badges",     RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.reward.score",           RLW_UNCOVERED_REASON_PREEXISTING },

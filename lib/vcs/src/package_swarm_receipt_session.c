@@ -223,6 +223,18 @@ bool vcs_swarm_receipt_session_settled(
     return false;
 }
 
+size_t vcs_swarm_receipt_session_peer_ids(
+    const struct vcs_swarm_receipt_session *s, uint64_t *out, size_t max)
+{
+    if (!s || (!out && max > 0))
+        return 0;
+    size_t n = 0;
+    for (size_t i = 0; i < VCS_SWARM_MAX_PEERS && n < max; i++)
+        if (s->peers[i].used)
+            out[n++] = s->peers[i].peer;
+    return n;
+}
+
 bool vcs_swarm_receipt_identity_encode(
     const struct vcs_swarm_receipt_session *s, uint8_t *out, size_t cap,
     size_t *len)

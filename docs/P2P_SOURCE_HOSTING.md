@@ -64,6 +64,14 @@ The same `zpkgswm` command also carries dual-signed verified-byte receipts.
 ANNOUNCE/WANT/DATA/CANCEL values stay malformed. Both endpoints independently
 draft the same body from verified served/fetched bytes, sign their role, and
 accept only a matching transfer. Receipts are advisory reputation.
+Operators inspect receipt identity and settlement with
+`z23 dumpstate zcode_swarm_receipts`. When hosting is off or identity is
+unavailable the dump still succeeds and reports `enabled`/`present` false
+with `settled_peers` 0; when the session is open it reports a short local
+pubkey prefix, settled peer count, and bounded per-peer settled and
+have_remote flags, never secret keys.
+<!-- claim: symbol-present boot_zcode_swarm_receipt_dump_state_json config/src/boot_zcode_swarm_receipt.c # dumpstate zcode_swarm_receipts leaf -->
+<!-- claim: symbol-present zcode_swarm_receipts app/controllers/include/controllers/diagnostics_dumpers_zcode.def # dumpstate leaf registered -->
 <!-- claim: symbol-present p2p_node_begin_message config/src/boot_zcode_swarm_membership.c # the swarm IS socket-wired -->
 <!-- claim: file-present lib/vcs/src/package_swarm_node.c # the transport half exists -->
 <!-- claim: symbol-absent socket lib/vcs/src/package_swarm.c # the codec half stays pure -->

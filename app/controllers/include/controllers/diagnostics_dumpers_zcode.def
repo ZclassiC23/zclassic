@@ -44,3 +44,16 @@
                "runtime", "runtime", "lib/vcs/src/package_swarm_status.c",
                "in_process_snapshot", "cheap", NULL, NULL, NULL,
                "lib/test/src/test_zcode_store.c", false),
+
+    DIAG_ENTRY("zcode_swarm_receipts",
+               boot_zcode_swarm_receipt_dump_state_json,
+               "ZCODE package swarm dual-signed receipts: whether the "
+               "receipt session is armed, a short local pubkey prefix, "
+               "settled peer count, and bounded per-peer settled/"
+               "have_remote flags; enabled=false and present=false when "
+               "hosting is off or identity is unavailable; never exposes "
+               "secrets, wallet material, or datadir paths",
+               "runtime", "runtime",
+               "config/src/boot_zcode_swarm_receipt.c",
+               "in_process_snapshot", "cheap", NULL, NULL, NULL,
+               "lib/test/src/test_zcode_store.c", false),
