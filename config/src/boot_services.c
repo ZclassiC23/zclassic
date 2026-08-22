@@ -561,10 +561,6 @@ bool app_init_services(struct app_context *ctx,
     svc->params = params;
     /* Bind resident diagnostics to this node before callbacks can run. */
     node_rpc_client_init(ctx->datadir, ctx->rpc_port);
-    /* Same absolute floor the wallet pays (WALLET_DEFAULT_FEE_ZAT /
-     * DEFAULT_MIN_RELAY_TX_FEE). A 1000-zat floor rejected identity
-     * anchors and other owner-paid overlay txs that pay the documented
-     * 100-zat min-relay. */
     tx_mempool_init(svc->mempool, WALLET_DEFAULT_FEE_ZAT);
     zcl_service_kernel_init(&svc->service_kernel);
     zcl_service_kernel_init(&svc->network_kernel);
