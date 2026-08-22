@@ -137,12 +137,14 @@ search` searches releases already verified in the local store. This avoids
 turning a name index into central technical truth.
 
 Browse the local shelf first. `zcode package library` lists complete packages
-this node can seed and names one next command. When a persisted release in the
-rebuildable index names a root, that `name` is enough to fetch without copying
-64 hex by hand:
+this node can seed and names one next command. `zcode package offered` lists
+what connected peers are seeding this session that you can fetch. When a
+persisted release in the rebuildable index names a root, that `name` is
+enough to fetch without copying 64 hex by hand:
 
 ```bash
 z23 zcode package library --datadir=/tmp/z23-commons
+z23 zcode package offered --datadir=/tmp/z23-commons
 z23 zcode package fetch --datadir=/tmp/z23-commons \
   --input='{"name":"<library name>"}'
 ```

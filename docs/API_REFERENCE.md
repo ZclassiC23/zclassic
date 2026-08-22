@@ -74,11 +74,11 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 700 |
+| Registry entries (branches + leaves) | 701 |
 | Top-level roots | 11 |
 | Branches | 162 |
-| Leaves (dispatchable command paths) | 538 |
-| … `ready` (live handler in this build) | 484 |
+| Leaves (dispatchable command paths) | 539 |
+| … `ready` (live handler in this build) | 485 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `z23-dev`) | 24 |
@@ -100,7 +100,7 @@ Per source file:
 | `config/commands/code.def` | 16 | 2 | 14 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
-| `config/commands/zcode.def` | 216 | 51 | 165 |
+| `config/commands/zcode.def` | 217 | 51 | 166 |
 | `config/commands/zcode_science.def` | 25 | 7 | 18 |
 | `config/commands/metaverse.def` | 30 | 7 | 23 |
 | `config/commands/yardsale.def` | 6 | 2 | 4 |
@@ -1260,6 +1260,7 @@ represented by its children's sections.
 | `zcode package fetch` | ready | mutate / app-write / operator · foreground/moderate | `root`, `name`, `day`, `datadir`, `namespace`, `maximum_bytes` | `zcl.zcode_package_fetch.v1` | `z23 zcode package fetch --input='{"name":"<local-library-name>"}'` | Fetch a package from the authenticated swarm |
 | `zcode package source reproduce` | ready | mutate / app-write / operator, plan-commit · foreground/high | **`mode`**, **`root`**, `namespace`, `sequence`, `not_before`, `expiry`, `plan_token`, `datadir` | `zcl.zcode_source_reproduce.v1` | `z23 zcode package source reproduce --input='{"mode":"plan","root":"<64hex>"}'` | Fetch, reconstruct, and attest one exact source package |
 | `zcode package peers` | ready | read / read / operator · fast/low | **`root`**, `datadir` | `zcl.zcode_package_peers.v1` | `z23 zcode package peers --input='{"root":"<64hex>"}'` | Live swarm peers, local possession, pin, and transfer snapshot |
+| `zcode package offered` | ready | read / read / operator · fast/low | `datadir` | `zcl.zcode_package_offered.v1` | `z23 zcode package offered` | Roots peers have ANNOUNCEd this session that this node can fetch |
 | `zcode package pin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_pin.v1` | `z23 zcode package pin --input='{"root":"<64hex>","mode":"plan"}'` | Pin a tracked package (PINS pool, never evicted) |
 | `zcode package unpin` | ready | mutate / app-write / operator, plan-commit · foreground/moderate | **`root`**, **`mode`**, `plan_token`, `datadir` | `zcl.zcode_package_unpin.v1` | `z23 zcode package unpin --input='{"root":"<64hex>","mode":"plan"}'` | Release an operator pin |
 | `zcode package checkout` | ready | mutate / app-write / operator · foreground/moderate | **`root`**, **`destination`**, `datadir` | `zcl.zcode_package_checkout.v1` | `z23 zcode package checkout --input='{"root":"<64hex>","destination":"/tmp/package-source"}'` | Reconstruct one verified package tree without executing it |

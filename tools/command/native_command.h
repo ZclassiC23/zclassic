@@ -1115,13 +1115,18 @@ void zcl_native_handle_zcode_storage_status(
  * fetch starts/resumes a swarm download (live node-global engine when a
  * hosting node runs, otherwise the persisted resumable record for the
  * next hosting boot), peers reports the live engine's per-peer view of
- * one root (session pseudo-keys, never contributor identities), and
- * pin/unpin are the operator's never-tier-gated PINS-pool path. Every
- * rejection names the exact rule. Bound by config/commands/zcode.def. */
+ * one root (session pseudo-keys, never contributor identities), offered
+ * lists roots peers have ANNOUNCEd this session (no invented replica
+ * counts), and pin/unpin are the operator's never-tier-gated PINS-pool
+ * path. Every rejection names the exact rule. Bound by
+ * config/commands/zcode.def. */
 void zcl_native_handle_zcode_package_fetch(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_peers(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_package_offered(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 void zcl_native_handle_zcode_package_pin(
