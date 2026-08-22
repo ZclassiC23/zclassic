@@ -2405,12 +2405,15 @@ static int zpd_test_work_toolchain(void)
         bool can_prove = json_get_bool(json_get(&reply.data, "can_prove"));
         ASSERT(capsule && strlen(capsule) == 64);
         ASSERT(blocker && (strcmp(blocker, "NONE") == 0 ||
-                           strcmp(blocker, "VERIFIER_MISSING") == 0));
+                           strcmp(blocker, "VERIFIER_MISSING") == 0 ||
+                           strcmp(blocker, "NOT_JOINED") == 0));
         ASSERT(present == can_prove);
-        ASSERT(present == (strcmp(blocker, "NONE") == 0));
-        ASSERT(next && next[0]);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "join_flags")),
+                      "-packagehost=1 -buildworker=1") == 0);
+        ASSERT(!json_get_bool(json_get(&reply.data, "joined")));
+        ASSERT(next && strstr(next, "-packagehost=1") != NULL);
         if (!present)
-            ASSERT(strstr(next, "zclassic23-package-verify") != NULL);
+            ASSERT(strcmp(blocker, "VERIFIER_MISSING") == 0);
         zcl_command_reply_free(&reply);
         PASS();
     } _test_next:;

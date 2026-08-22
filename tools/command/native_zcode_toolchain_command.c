@@ -7,7 +7,9 @@
 #include "json/json.h"
 #include "platform/os_proc.h"
 #include "util/spawn.h"
+#include "util/util.h"
 #include "vcs/build_action.h"
+#include "vcs/zcode_work_node.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -105,20 +107,38 @@ void zcl_native_handle_zcode_toolchain_show(
         (void)json_push_kv_str(&reply->data, "assembler_version", as_version);
     const char *verifier_name = "";
     bool verifier_present = ztc_verifier_name(&verifier_name);
-    const char *blocker = verifier_present ? "NONE" : "VERIFIER_MISSING";
+    struct json_value work;
+    json_init(&work);
+    bool dumped = vcs_zcode_work_node_dump_state_json(&work, NULL);
+    bool worker_enabled = dumped && json_get_bool(json_get(&work, "enabled"));
+    json_free(&work);
+    bool package_hosting = GetBoolArg("-packagehost", false);
+    bool build_worker = worker_enabled || GetBoolArg("-buildworker", false);
+    bool joined = package_hosting && build_worker;
+    const char *blocker = !verifier_present ? "VERIFIER_MISSING" :
+        !joined ? "NOT_JOINED" : "NONE";
+    const char *join_flags = "-packagehost=1 -buildworker=1";
     (void)json_push_kv_bool(&reply->data, "verifier_present", verifier_present);
     (void)json_push_kv_bool(&reply->data, "can_prove", verifier_present);
+    (void)json_push_kv_bool(&reply->data, "package_hosting", package_hosting);
+    (void)json_push_kv_bool(&reply->data, "build_worker", build_worker);
+    (void)json_push_kv_bool(&reply->data, "joined", joined);
+    (void)json_push_kv_str(&reply->data, "join_flags", join_flags);
     (void)json_push_kv_str(&reply->data, "blocker", blocker);
     if (verifier_present && verifier_name[0])
         (void)json_push_kv_str(&reply->data, "verifier_name", verifier_name);
     (void)json_push_kv_str(
         &reply->data, "next_action",
-        verifier_present
-            ? "Compare capsule_root with zcode work toolchain on the proving "
-              "node. Independent compile evidence needs the same capsule."
-            : "Place zclassic23-package-verify next to this binary, then rerun "
+        !joined
+            ? "Restart this node with -packagehost=1 -buildworker=1 to join "
+              "independent C23 compile work. Then compare capsule_root with "
+              "zcode work toolchain on the proving node."
+            : !verifier_present
+            ? "Place zclassic23-package-verify next to this binary, then rerun "
               "zcode work toolchain. A worker cannot prove without the "
-              "confined verifier.");
+              "confined verifier."
+            : "Compare capsule_root with zcode work toolchain on the proving "
+              "node. Independent compile evidence needs the same capsule.");
     (void)json_push_kv_str(&reply->data, "next_safe_command",
                            "zcode work toolchain");
 }
