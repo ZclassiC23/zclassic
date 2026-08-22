@@ -4,6 +4,8 @@
 #include "config/boot_zcode_swarm_receipt.h"
 #include "config/boot_zcode_swarm_membership.h"
 
+#include "base/hex.h"
+#include "json/json.h"
 #include "net/net.h"
 #include "util/log_macros.h"
 #include "vcs/package_service.h"
@@ -113,4 +115,67 @@ size_t boot_zcode_swarm_receipt_drain(
         sent++;
     }
     return sent;
+}
+
+bool boot_zcode_swarm_receipt_dump_session_json(
+    struct json_value *out,
+    const struct vcs_swarm_receipt_session *session)
+{
+    if (!out)
+        LOG_FAIL("zcode_swarm_receipts", "dump_session_json: out is NULL");
+    json_set_object(out);
+
+    if (!session) {
+        json_push_kv_bool(out, "enabled", false);
+        json_push_kv_bool(out, "present", false);
+        json_push_kv_int(out, "settled_peers", 0);
+        struct json_value peers = {0};
+        json_set_array(&peers);
+        json_push_kv(out, "peers", &peers);
+        json_free(&peers);
+        return true;
+    }
+
+    json_push_kv_bool(out, "enabled", true);
+    json_push_kv_bool(out, "present", true);
+
+    uint8_t pub[33];
+    if (vcs_swarm_receipt_session_local_pub(session, pub)) {
+        char prefix[9];
+        zcl_hex_encode(pub, 4, prefix);
+        json_push_kv_str(out, "local_pub_prefix", prefix);
+    }
+
+    uint64_t ids[VCS_SWARM_MAX_PEERS];
+    size_t n = vcs_swarm_receipt_session_peer_ids(session, ids,
+                                                  VCS_SWARM_MAX_PEERS);
+    int64_t settled_peers = 0;
+    struct json_value peers = {0};
+    json_set_array(&peers);
+    for (size_t i = 0; i < n; i++) {
+        bool settled = vcs_swarm_receipt_session_settled(session, ids[i]);
+        uint8_t remote[33];
+        bool have_remote = vcs_swarm_receipt_session_remote_pub(
+            session, ids[i], remote);
+        if (settled)
+            settled_peers++;
+        struct json_value row = {0};
+        json_set_object(&row);
+        json_push_kv_int(&row, "peer_id", (int64_t)ids[i]);
+        json_push_kv_bool(&row, "settled", settled);
+        json_push_kv_bool(&row, "have_remote", have_remote);
+        json_push_back(&peers, &row);
+        json_free(&row);
+    }
+    json_push_kv_int(out, "settled_peers", settled_peers);
+    json_push_kv(out, "peers", &peers);
+    json_free(&peers);
+    return true;
+}
+
+bool boot_zcode_swarm_receipt_dump_state_json(struct json_value *out,
+                                              const char *key)
+{
+    (void)key;
+    return boot_zcode_swarm_receipt_dump_session_json(out, s_session);
 }

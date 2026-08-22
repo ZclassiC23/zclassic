@@ -23,7 +23,9 @@
  *   7. Release envelope storage through the acceptance layer.
  *   8. dump_state_json: disabled shape, enabled totals, key drilldown.
  *      Swarm engine dumpstate (`zcode_swarm`): hosting-off shape, injected
- *      engine peer rows, dumpstate registry key.
+ *      engine peer rows, dumpstate registry key. Receipt dumpstate
+ *      (`zcode_swarm_receipts`): hosting-off shape, open-session peer
+ *      rows, dumpstate registry key.
  *   9. Blob surface (vcs/blob_store.h): the FROZEN golden root vector,
  *      root purity across independent constructions, length commitment,
  *      put/get round-trip, idempotent re-put, the size ceiling refused by
@@ -45,8 +47,10 @@
 #include "vcs/package_swarm_status.h"
 #include "vcs/zcode_work_output.h"
 
+#include "config/boot_zcode_swarm_receipt.h"
 #include "controllers/diagnostics_internal.h"
 
+#include "base/hex.h"
 #include "chain/chainparams.h"
 #include "core/uint256.h"
 #include "json/json.h"
@@ -1916,6 +1920,140 @@ static int t_swarm_engine_dump_state(void)
     return failures;
 }
 
+/* ── 13: swarm receipt dump_state_json ────────────────────────────── */
+static int t_swarm_receipt_dump_state(void)
+{
+    int failures = 0;
+
+    struct json_value v;
+    json_init(&v);
+    ZS_CHECK("receipt dump: closed session reports present=false",
+             boot_zcode_swarm_receipt_dump_state_json(&v, NULL) &&
+             json_get(&v, "enabled") &&
+             !json_get_bool(json_get(&v, "enabled")) &&
+             json_get(&v, "present") &&
+             !json_get_bool(json_get(&v, "present")) &&
+             json_get_int(json_get(&v, "settled_peers")) == 0 &&
+             json_get(&v, "peers") &&
+             json_get(&v, "peers")->type == JSON_ARR &&
+             json_size(json_get(&v, "peers")) == 0 &&
+             json_get(&v, "local_pub_prefix") == NULL);
+    char rendered[2048];
+    size_t rendered_len = json_write(&v, rendered, sizeof(rendered));
+    ZS_CHECK("receipt dump: hosting-off snapshot leaks no paths or keys",
+             rendered_len < sizeof(rendered) &&
+             strstr(rendered, "datadir") == NULL &&
+             strstr(rendered, "wallet") == NULL &&
+             strstr(rendered, "/home/") == NULL &&
+             strstr(rendered, "secret") == NULL);
+    json_free(&v);
+
+    struct json_value params;
+    json_init(&params);
+    json_set_array(&params);
+    struct json_value sub;
+    json_init(&sub);
+    json_set_str(&sub, "zcode_swarm_receipts");
+    bool dumpstate_ok = json_push_back(&params, &sub);
+    json_free(&sub);
+    struct json_value result;
+    json_init(&result);
+    dumpstate_ok = dumpstate_ok &&
+                   diag_rpc_dumpstate(&params, false, &result);
+    const struct json_value *state = json_get(&result, "state");
+    const char *sys = json_get_str(json_get(&result, "subsystem"));
+    ZS_CHECK("receipt dump: dumpstate includes zcode_swarm_receipts",
+             dumpstate_ok && sys && strcmp(sys, "zcode_swarm_receipts") == 0 &&
+             state && state->type == JSON_OBJ &&
+             json_get(state, "enabled") &&
+             !json_get_bool(json_get(state, "enabled")) &&
+             json_get(state, "present") &&
+             !json_get_bool(json_get(state, "present")) &&
+             json_get_int(json_get(state, "settled_peers")) == 0 &&
+             json_get(state, "peers") &&
+             json_size(json_get(state, "peers")) == 0);
+    json_free(&params);
+    json_free(&result);
+
+    uint8_t sec_a[32];
+    uint8_t sec_b[32];
+    memset(sec_a, 0, sizeof(sec_a));
+    memset(sec_b, 0, sizeof(sec_b));
+    sec_a[31] = 0x91;
+    sec_b[31] = 0x92;
+    struct vcs_swarm_receipt_session *local =
+        vcs_swarm_receipt_session_open_secret(sec_a);
+    struct vcs_swarm_receipt_session *remote =
+        vcs_swarm_receipt_session_open_secret(sec_b);
+    ZS_CHECK("receipt dump: secret-backed sessions open",
+             local != NULL && remote != NULL);
+    if (!local || !remote) {
+        vcs_swarm_receipt_session_free(local);
+        vcs_swarm_receipt_session_free(remote);
+        return failures;
+    }
+
+    uint8_t ident[VCS_SWARM_RECEIPT_IDENTITY_BYTES];
+    size_t ident_len = 0;
+    ZS_CHECK("receipt dump: remote identity noted",
+             vcs_swarm_receipt_identity_take(remote, 7, ident, sizeof(ident),
+                                             &ident_len) &&
+             vcs_swarm_receipt_identity_note(local, 7, ident, ident_len));
+
+    uint64_t ids[VCS_SWARM_MAX_PEERS];
+    size_t n = vcs_swarm_receipt_session_peer_ids(local, ids,
+                                                  VCS_SWARM_MAX_PEERS);
+    ZS_CHECK("receipt dump: enumerator returns the noted peer",
+             n == 1 && ids[0] == 7 &&
+             !vcs_swarm_receipt_session_settled(local, 7));
+
+    uint8_t pub[33];
+    char expect_prefix[9];
+    memset(pub, 0, sizeof(pub));
+    memset(expect_prefix, 0, sizeof(expect_prefix));
+    ZS_CHECK("receipt dump: local pub is present",
+             vcs_swarm_receipt_session_local_pub(local, pub));
+    zcl_hex_encode(pub, 4, expect_prefix);
+
+    json_init(&v);
+    bool ok = boot_zcode_swarm_receipt_dump_session_json(&v, local);
+    const struct json_value *peers = json_get(&v, "peers");
+    const struct json_value *row0 = peers ? json_at(peers, 0) : NULL;
+    const char *prefix = json_get_str(json_get(&v, "local_pub_prefix"));
+    ZS_CHECK("receipt dump: open session reports prefix and peer row",
+             ok && json_get_bool(json_get(&v, "enabled")) &&
+             json_get_bool(json_get(&v, "present")) &&
+             prefix && strcmp(prefix, expect_prefix) == 0 &&
+             strlen(prefix) == 8 &&
+             json_get_int(json_get(&v, "settled_peers")) == 0 &&
+             peers && json_size(peers) == 1 &&
+             row0 && json_get_int(json_get(row0, "peer_id")) == 7 &&
+             json_get(row0, "settled") &&
+             !json_get_bool(json_get(row0, "settled")) &&
+             json_get(row0, "have_remote") &&
+             json_get_bool(json_get(row0, "have_remote")));
+    rendered_len = json_write(&v, rendered, sizeof(rendered));
+    ZS_CHECK("receipt dump: live snapshot leaks no secrets or paths",
+             rendered_len < sizeof(rendered) &&
+             strstr(rendered, "datadir") == NULL &&
+             strstr(rendered, "wallet") == NULL &&
+             strstr(rendered, "secret") == NULL &&
+             strstr(rendered, "/home/") == NULL &&
+             strstr(rendered, expect_prefix) != NULL);
+    json_free(&v);
+
+    json_init(&v);
+    ZS_CHECK("receipt dump: boot singleton stays closed",
+             boot_zcode_swarm_receipt_dump_state_json(&v, NULL) &&
+             !json_get_bool(json_get(&v, "enabled")) &&
+             !json_get_bool(json_get(&v, "present")));
+    json_free(&v);
+
+    vcs_swarm_receipt_session_free(local);
+    vcs_swarm_receipt_session_free(remote);
+    return failures;
+}
+
 /* A live daemon may be receiving verified chunks while one-shot commands
  * inspect the same datadir. Recovery includes orphan GC, so the second open
  * must serialize with manifest/CAS writes without denying the offline reader
@@ -1985,6 +2123,7 @@ int test_zcode_store(void)
     failures += t_store_serialized_recovery();
     failures += t_store_dump_state();
     failures += t_swarm_engine_dump_state();
+    failures += t_swarm_receipt_dump_state();
     printf("=== zcode_store complete: %d failure(s) ===\n", failures);
     return failures;
 }

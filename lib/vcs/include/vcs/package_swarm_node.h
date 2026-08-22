@@ -245,6 +245,10 @@ bool vcs_swarm_receipt_session_remote_pub(
 bool vcs_swarm_receipt_session_settled(
     const struct vcs_swarm_receipt_session *s, uint64_t peer);
 
+/* Used receipt-session peer ids (bounded, slot order). Read-only. */
+size_t vcs_swarm_receipt_session_peer_ids(
+    const struct vcs_swarm_receipt_session *s, uint64_t *out, size_t max);
+
 bool vcs_swarm_receipt_identity_encode(
     const struct vcs_swarm_receipt_session *s, uint8_t *out, size_t cap,
     size_t *len);
