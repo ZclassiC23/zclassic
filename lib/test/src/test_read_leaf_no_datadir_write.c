@@ -359,6 +359,11 @@ static const struct rlw_leaf g_rlw_leaves[] = {
      * STORE_UNREADABLE, not an empty shelf. */
     { "zcode.package.library",  zcl_native_handle_zcode_package_library,
       NULL, NULL,               NULL, NULL, "zcode/manifests" },
+    /* Live ANNOUNCE catalog. One-shot (no global engine) returns
+     * live:false and an empty list without opening the store. A
+     * non-directory zcode/manifests is STORE_UNREADABLE, same as library. */
+    { "zcode.package.offered",  zcl_native_handle_zcode_package_offered,
+      NULL, NULL,               NULL, NULL, "zcode/manifests" },
     /* Local sovereignty policy inspection is a READ leaf even though the
      * sibling mutate leaf persists policy.v1.  Its loader must not create
      * zcode/policy on an absent datadir or repair an unreadable policy store. */
@@ -466,7 +471,6 @@ static const struct rlw_uncovered g_rlw_uncovered[] = {
     { "zcode.package.recipe",         RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.package.verify",         RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.package.peers",          RLW_UNCOVERED_REASON_PREEXISTING },
-    { "zcode.package.offered",        RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.contributor.packages",   RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.contributor.badges",     RLW_UNCOVERED_REASON_PREEXISTING },
     { "zcode.reward.score",           RLW_UNCOVERED_REASON_PREEXISTING },

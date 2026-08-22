@@ -58,6 +58,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 /* Render cap for peer rows (the LIST budget). */
@@ -666,6 +667,23 @@ void zcl_native_handle_zcode_package_offered(
 {
     if (!request || !reply)
         return;
+
+    const char *datadir = zw_datadir(request);
+    if (datadir && datadir[0]) {
+        char manifests[4400];
+        int n = snprintf(manifests, sizeof(manifests), "%s/zcode/manifests",
+                         datadir);
+        struct stat st;
+        if (n > 0 && (size_t)n < sizeof(manifests) &&
+            stat(manifests, &st) == 0 && !S_ISDIR(st.st_mode)) {
+            zcl_command_reply_fail(
+                reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "STORE_UNREADABLE", "execute", false, false,
+                "package manifests path exists and is not enumerable",
+                manifests);
+            return;
+        }
+    }
 
     struct vcs_swarm_engine *engine = vcs_swarm_engine_global();
     bool live = engine != NULL;
