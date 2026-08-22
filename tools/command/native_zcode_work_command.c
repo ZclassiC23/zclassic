@@ -1620,6 +1620,9 @@ void zcl_native_handle_zcode_work_status(
             proof.facts.compile_satisfied && proof.facts.test_satisfied &&
             proof.facts.fuzz_satisfied && !proof.facts.review_satisfied
             ? "Review the exact candidate evidence." :
+        proof_in_flight &&
+            strcmp(proof.async_proof_state, "REQUESTED") == 0
+            ? "Run zcode toolchain show here and on the proving node; independent compile evidence needs the same capsule_root." :
               "Keep thinking while the missing proof arrives.";
     char continuation_workspace[ZWORK_PATH_MAX] = {0};
     char continuation_datadir[ZWORK_PATH_MAX] = {0};
@@ -1653,9 +1656,14 @@ void zcl_native_handle_zcode_work_status(
     else if (!proof.available)
         (void)snprintf(remaining_risks, sizeof(remaining_risks),
                        "canonical proof ledger is unavailable; no proof result inferred");
-    else if (compile_required && !proof.facts.compile_satisfied)
-        (void)snprintf(remaining_risks, sizeof(remaining_risks),
-                       "required compile or matching-build evidence is pending");
+    else if (compile_required && !proof.facts.compile_satisfied) {
+        if (strcmp(proof.async_proof_state, "REQUESTED") == 0)
+            (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                           "independent compile evidence is still REQUESTED; run zcode toolchain show on this node and the proving node so capsule_root matches");
+        else
+            (void)snprintf(remaining_risks, sizeof(remaining_risks),
+                           "required compile or matching-build evidence is pending");
+    }
     else if (test_required && !proof.facts.test_satisfied)
         (void)snprintf(remaining_risks, sizeof(remaining_risks),
                        "required candidate behavior evidence is pending");

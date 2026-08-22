@@ -79,8 +79,10 @@ struct vcs_build_action_v1 {
 bool vcs_toolchain_capsule_v1_root(
     const struct vcs_toolchain_capsule_v1 *capsule, uint8_t out[32]);
 /* Capture the fixed Linux V1 GCC capsule by content: driver, cc1 backend,
- * assembler, startup/sysroot objects, target probe output, and ABI libraries.
- * No mtime participates. */
+ * GNU as --version identity, startup/sysroot objects, target probe output,
+ * and ABI libraries. Assembler identity is the version string, not the
+ * assembler file bytes, so two ordinary hosts with the same GNU as version
+ * can independently compile. No mtime participates. */
 bool vcs_toolchain_capsule_v1_capture_gcc(
     struct vcs_toolchain_capsule_v1 *out);
 #ifdef ZCL_TESTING

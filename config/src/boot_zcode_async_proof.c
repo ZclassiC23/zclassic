@@ -511,9 +511,31 @@ static void async_dispatch(
     struct vcs_zcode_work_capability_v1 capability;
     int64_t selection_started_us = platform_time_monotonic_us();
     if (!async_select_peer(work, event, &job, work_kind, now,
-                           &peer, &capability) ||
-        !async_identity(svc))
+                           &peer, &capability)) {
+        uint64_t peers[VCS_ZCODE_WORK_NODE_MAX_PEERS];
+        struct vcs_zcode_work_capability_v1 caps[VCS_ZCODE_WORK_NODE_MAX_PEERS];
+        size_t capable = vcs_zcode_work_node_capable_peers(
+            work, now, peers, caps, VCS_ZCODE_WORK_NODE_MAX_PEERS);
+        char peer_toolchain[65];
+        peer_toolchain[0] = '\0';
+        if (capable > 0)
+            zcl_hex_encode(caps[0].toolchain_capsule_root, 32,
+                           peer_toolchain);
+        LOG_WARN("net.zcode_async",
+                 "dispatch refused action=%s stage=peer_selection "
+                 "reason=no-eligible-worker capable=%zu job_toolchain=%s "
+                 "peer0_toolchain=%s",
+                 event->action_id, capable,
+                 job.toolchain_sha3[0] ? job.toolchain_sha3 : "none",
+                 peer_toolchain[0] ? peer_toolchain : "none");
         return;
+    }
+    if (!async_identity(svc)) {
+        LOG_WARN("net.zcode_async",
+                 "dispatch refused action=%s stage=requester_identity",
+                 event->action_id);
+        return;
+    }
     int64_t selection_us = platform_time_monotonic_us() - selection_started_us;
     uint32_t requested_lease =
         task.max_cpu_seconds < UINT32_MAX - ASYNC_PROOF_TRANSPORT_SECONDS

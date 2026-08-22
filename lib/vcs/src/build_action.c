@@ -120,6 +120,40 @@ static bool build_gcc_file(const char *arg, const char *fallback,
     return build_sha3_file(resolved, out, &file->stamp);
 }
 
+/* Assembler identity is GNU as --version, not the assembler file bytes.
+ * Distro patch levels of the same GNU as version change the binary and
+ * would otherwise refuse an independent worker on an ordinary second
+ * machine. The file stamp still participates in the capture cache so an
+ * assembler upgrade recaptures. */
+static bool build_assembler_identity(uint8_t out[32],
+                                     struct build_toolchain_file *file)
+{
+    char named[4096];
+    if (!build_gcc_query("-print-prog-name=as", named, sizeof(named)))
+        return false;
+    const char *candidate = strchr(named, '/') ? named : "/usr/bin/as";
+    char resolved[4096];
+    if (!file || !realpath(candidate, resolved) ||
+        strlen(resolved) >= sizeof(file->path))
+        return false;
+    (void)snprintf(file->path, sizeof(file->path), "%s", resolved);
+    if (stat(resolved, &file->stamp) != 0 || !S_ISREG(file->stamp.st_mode))
+        return false;
+    char version[512];
+    const char *const argv[] = { resolved, "--version", NULL };
+    if (zcl_spawn_capture(argv, version, sizeof(version), 10000) != 0 ||
+        !version[0])
+        return false;
+    version[strcspn(version, "\r\n")] = '\0';
+    struct sha3_256_ctx sha;
+    sha3_256_init(&sha);
+    static const char domain[] = "zcl.toolchain.assembler_identity.v1";
+    sha3_256_write(&sha, (const uint8_t *)domain, sizeof(domain));
+    build_hash_text(&sha, version);
+    sha3_256_finalize(&sha, out);
+    return true;
+}
+
 static void build_hash_pair(struct sha3_256_ctx *sha, const char *label,
                             const uint8_t digest[32])
 {
@@ -206,8 +240,7 @@ static bool build_toolchain_capture_uncached(
     file_count++;
     if (!build_gcc_file("-print-prog-name=cc1", NULL,
                         out->compiler_backend_sha3, &files[file_count++]) ||
-        !build_gcc_file("-print-prog-name=as", "/usr/bin/as",
-                        out->assembler_sha3, &files[file_count++]))
+        !build_assembler_identity(out->assembler_sha3, &files[file_count++]))
         return false;
     static const char *const sysroot_args[] = {
         "-print-file-name=crt1.o", "-print-file-name=crti.o",

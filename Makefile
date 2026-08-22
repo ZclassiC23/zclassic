@@ -2372,7 +2372,7 @@ secure-release-regressions-locked: $(TEST_PARALLEL_REL_CANDIDATE) dev-package-ve
 # It is deliberately not part of `make ci`: it spawns three real regtest
 # daemons, mines a regtest chain and runs confined package builds.
 .PHONY: commons-demo commons-journey-acceptance
-commons-demo: zclassic23 zcl-rpc zclassic23-package-sign tools/arena-product-journey-c23
+commons-demo: zclassic23 zcl-rpc zclassic23-package-sign zclassic23-package-verify tools/arena-product-journey-c23
 	@bash tools/dev/commons_journey_acceptance.sh
 
 # The same proof under its acceptance name, for scripts and release notes.
@@ -2387,7 +2387,7 @@ commons-journey-acceptance: commons-demo
 # Fails closed without them. Deliberately not part of `make ci` and not the
 # front door: `make commons-demo` stays the fast same-host proof.
 .PHONY: commons-multihost-acceptance
-commons-multihost-acceptance: zclassic23 zcl-rpc zclassic23-package-sign tools/arena-product-journey-c23
+commons-multihost-acceptance: zclassic23 zcl-rpc zclassic23-package-sign zclassic23-package-verify tools/arena-product-journey-c23
 	@ZCL_COMMONS_MULTIHOST=1 bash tools/dev/commons_journey_acceptance.sh
 
 .PHONY: zcode-development-acceptance zcode-adapter-readiness-acceptance zcode-c23-commons-alpha zcode-dht-harness-selftest zcode-async-proof-acceptance zcode-async-proof-scaling public-node-coin-generation-matrix sovereign-source-roundtrip native-agent-ui-alpha native-agent-ui-physical-acceptance arena-product-journey

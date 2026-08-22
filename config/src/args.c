@@ -176,6 +176,7 @@ static const char *const k_extra_getarg_flags[] = {
     "-debug", "-nodebug",
     "-txindex", "-notxindex", /* also GetBoolArg'd in txindex_projection.c */
     "-packagehost", "-nopackagehost", "-packagequota",
+    "-buildworker", "-nobuildworker",
     "-v2transport", "-nov2transport",
 };
 
@@ -480,7 +481,11 @@ int args_parse_node_options(int argc, char **argv, struct app_context *ctx,
             atomic_store(&g_enforce_checkdatasig_sigops, true);
         }
         else if (strcmp(argv[i], "-nobgvalidation") == 0) ctx->no_bg_validation = true;
-        else if (strcmp(argv[i], "-buildworker") == 0) ctx->build_worker = true;
+        else if (strcmp(argv[i], "-buildworker") == 0 ||
+                 strcmp(argv[i], "-buildworker=1") == 0)
+            ctx->build_worker = true;
+        else if (strcmp(argv[i], "-buildworker=0") == 0)
+            ctx->build_worker = false;
         /* K3 throughput levers, default OFF (see boot.h / hw_profile.h). The
          * derive gate is set here (pre-boot) so the reducer activation fold sees
          * the derived cadence. */

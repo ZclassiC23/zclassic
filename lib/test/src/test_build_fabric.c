@@ -29,6 +29,7 @@
 #include "vcs/vcs_object.h"
 #include "vcs/zcode_dev.h"
 #include "crypto/sha3.h"
+#include "sha3/sha3.h"
 #include "util/safe_alloc.h"
 
 #include <sqlite3.h>
@@ -1355,6 +1356,34 @@ static int test_bf_toolchain_capture_cache(void)
     return failures;
 }
 
+static int test_bf_assembler_identity_is_version(void)
+{
+    int failures = 0;
+    TEST("build_fabric: assembler identity is GNU as --version, not file bytes") {
+        struct vcs_toolchain_capsule_v1 capsule;
+        uint8_t file_sha3[32];
+        FILE *f;
+        vcs_toolchain_capsule_v1_cache_reset_for_test();
+        ASSERT(vcs_toolchain_capsule_v1_capture_gcc(&capsule));
+        f = fopen("/usr/bin/as", "rb");
+        ASSERT(f != NULL);
+        {
+            struct sha3_256_ctx sha;
+            uint8_t buf[65536];
+            size_t got;
+            sha3_256_init(&sha);
+            while ((got = fread(buf, 1, sizeof(buf), f)) > 0)
+                sha3_256_write(&sha, buf, got);
+            ASSERT(ferror(f) == 0);
+            sha3_256_finalize(&sha, file_sha3);
+        }
+        ASSERT(fclose(f) == 0);
+        ASSERT(memcmp(capsule.assembler_sha3, file_sha3, 32) != 0);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_bf_confined_test_worker(void)
 {
     int failures = 0;
@@ -1684,6 +1713,7 @@ int test_build_fabric(void)
     failures += test_bf_leases();
     failures += test_bf_local_enrollment();
     failures += test_bf_toolchain_capture_cache();
+    failures += test_bf_assembler_identity_is_version();
     failures += test_bf_execution_observation_codec();
     failures += test_bf_confined_worker();
     failures += test_bf_confined_test_worker();

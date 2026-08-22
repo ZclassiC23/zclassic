@@ -521,6 +521,9 @@ void zcl_native_handle_zcode_package_dev_score_show(
 void zcl_native_handle_zcode_guide(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
+void zcl_native_handle_zcode_toolchain_show(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 bool zcl_native_zcode_workspace_is_explicit_scratch(const char *workspace);
 void zcl_native_handle_zcode_commons_status(
     const struct zcl_command_request *request,

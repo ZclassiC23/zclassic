@@ -314,7 +314,7 @@ dht_spawn() {
     case "$DHT_PACKAGEHOST" in 0|1) ;; *) dht_die "DHT_PACKAGEHOST must be 0 or 1" ;; esac
     case "$DHT_BUILDWORKERS" in 0|1) ;; *) dht_die "DHT_BUILDWORKERS must be 0 or 1" ;; esac
     local worker_args=() params_args=()
-    [ "$DHT_BUILDWORKERS" = 1 ] && worker_args+=("-buildworker")
+    [ "$DHT_BUILDWORKERS" = 1 ] && worker_args+=("-buildworker=1")
     [ -z "$DHT_PARAMS_DIR" ] || params_args+=("-paramsdir=$DHT_PARAMS_DIR")
     if [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
         # Same flags, on the node's own host. setsid detaches the group from
