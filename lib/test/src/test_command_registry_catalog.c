@@ -180,6 +180,47 @@ static int test_yardsale_guide(void)
     return failures;
 }
 
+static int test_code_guide_leaf(void)
+{
+    int failures = 0;
+    const struct zcl_command_registry *reg = zcl_command_catalog();
+    TEST("code.guide is a public local read that names lint-fast") {
+        const struct zcl_command_spec *s = find_spec(reg, "code.guide");
+        ASSERT(s != NULL);
+        ASSERT_EQ(s->availability, ZCL_COMMAND_READY);
+        ASSERT_EQ(s->effect, ZCL_COMMAND_EFFECT_READ);
+        ASSERT_EQ(s->authority, ZCL_COMMAND_AUTH_PUBLIC);
+        ASSERT_EQ(s->scope, ZCL_COMMAND_SCOPE_LOCAL);
+        ASSERT(s->handler == zcl_native_handle_code_guide);
+        struct json_value input;
+        json_init(&input);
+        json_set_object(&input);
+        struct zcl_command_request request;
+        memset(&request, 0, sizeof(request));
+        request.spec = s;
+        request.input = &input;
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.test.code_guide.v1");
+        zcl_native_handle_code_guide(&request, &reply);
+        ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "start_command")),
+                      "z23 code impact --input='{\"path\":\"<file.c>\"}'") ==
+               0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "lint_command")),
+                      "make lint-fast") == 0);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "push_command")),
+                      "make pre-push-ci") == 0);
+        ASSERT(strstr(json_get_str(json_get(&reply.data, "never")),
+                      "test_zcl") != NULL);
+        ASSERT(strcmp(json_get_str(json_get(&reply.data, "docs")),
+                      "docs/DEVELOPING.md") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&input);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 static int test_root_menu_budget(void)
 {
     int failures = 0;
@@ -970,7 +1011,8 @@ static int test_status_journey_safe_money_frontdoor(void)
         ASSERT_STR_EQ(json_get_str(json_get(data, "error_code")),
                       "NODE_TYPED_BLOCKER");
         ASSERT_STR_EQ(json_get_str(json_get(data, "next_action")),
-                      "z23 ops snapshot");
+                      "z23 core sync blockers");
+        ASSERT(json_get_bool(json_get(data, "owner_review_required")));
         json_free(&root);
         PASS();
     } _test_next:;
@@ -3361,6 +3403,7 @@ int test_command_registry_catalog(void)
     failures += test_domain_leaf_counts();
     failures += test_six_roots();
     failures += test_yardsale_guide();
+    failures += test_code_guide_leaf();
     failures += test_root_menu_budget();
     failures += test_branch_menus_shallow();
     failures += test_search_bounded();

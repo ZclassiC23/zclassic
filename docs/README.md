@@ -19,8 +19,8 @@ the user. **Software made for you, not imposed on you.** The whole product is
 one journey — describe desired behavior, reuse existing C23 first, create only
 the missing code, build fast, show the real consequence, reproduce it on
 another node, accept the exact version, use it in a real application. Ask the
-node for that journey with `z23 zcode guide`; every step returns the next safe
-command.
+node for that journey with `z23 zcode guide`; every step returns the next
+safe command. Checkout edits start with `z23 code guide`.
 
 AI workers are replaceable. Z23 is the durable layer: exact source identity,
 reusable packages, dependency graphs, bounded builds, independent

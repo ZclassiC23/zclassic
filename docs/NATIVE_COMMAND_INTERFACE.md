@@ -1020,10 +1020,12 @@ body. Its default one-line render is at most 320 bytes and ends with the exact
 second output line. An unexpectedly oversized action is never rendered as a
 partial command; the line directs the operator to `z23 status --format=json`
 instead. `--format=json` returns the same fields in `zcl.result.v1`.
-When a typed node blocker owns the verdict, `next_action` routes to
-`z23 ops snapshot`, whose authoritative operator snapshot carries the owning
-subsystem's posture and remedy; it does not guess that every blocker is a sync
-fault.
+When a typed node blocker owns the verdict, `next_action` is
+`z23 core sync blockers` — inspect the named blocker. It does not send the
+agent into snapshot surgery, and `review_required_*` posture sets
+`owner_review_required` so agents do not treat inspection as permission to
+mutate the live datadir. `z23 ops snapshot` remains the composite diagnostic
+when an operator asked for it.
 The strict chain-only
 brief is `z23 core status brief`; the large diagnostic document is explicit as
 `z23 core status --format=json`.

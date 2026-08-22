@@ -129,6 +129,7 @@ catalogs from the binary instead of copying counts into prose.
 4. Ask the built binary for the current command tree and source map:
 
    ```bash
+   build/bin/z23 code guide
    build/bin/z23 discover help
    build/bin/z23 code map
    ```

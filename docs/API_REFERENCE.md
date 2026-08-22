@@ -74,11 +74,11 @@ z23 discover schema <path> --side=input|output
 
 | Catalog fact | Count |
 |---|---|
-| Registry entries (branches + leaves) | 703 |
+| Registry entries (branches + leaves) | 704 |
 | Top-level roots | 11 |
 | Branches | 162 |
-| Leaves (dispatchable command paths) | 541 |
-| … `ready` (live handler in this build) | 487 |
+| Leaves (dispatchable command paths) | 542 |
+| … `ready` (live handler in this build) | 488 |
 | … `compat` (metadata only, names a fallback) | 25 |
 | … `planned` (fail-closed BLOCKED, exit 3) | 29 |
 | … dev-gated 🔧 (`ready` only in `z23-dev`) | 24 |
@@ -97,7 +97,7 @@ Per source file:
 | `config/commands/store.def` | 18 | 0 | 18 |
 | `config/commands/ops.def` | 44 | 8 | 36 |
 | `config/commands/dev.def` | 55 | 13 | 42 |
-| `config/commands/code.def` | 16 | 2 | 14 |
+| `config/commands/code.def` | 17 | 2 | 15 |
 | `config/commands/accounts.def` | 11 | 2 | 9 |
 | `config/commands/vault.def` | 24 | 4 | 20 |
 | `config/commands/zcode.def` | 218 | 51 | 167 |
@@ -915,6 +915,7 @@ represented by its children's sections.
 
 | Command | Avail | Policy | Input keys (**required**) | Output schema | Example | Summary |
 |---|---|---|---|---|---|---|
+| `code guide` | ready | read / read / public · instant/tiny | none | `zcl.code_guide.v1` | `z23 code guide` | How to edit and prove a change in this checkout |
 | `code group` | ready | read / read / public · foreground/tiny | **`group`** | `zcl.code_group.v1` | `z23 code group app/services` | Top source groups, or one group's subgroups and files |
 | `code map` | ready | read / read / public · foreground/tiny | none | `zcl.code_map.v1` | `z23 code map` | Map the tree: root groups and app shapes with file counts |
 | `code tests` | ready | read / read / public · fast/tiny | **`path`** | `zcl.code_tests.v1` | `z23 code tests lib/net/src/download.c` | Which focused test group a change to one file routes to |

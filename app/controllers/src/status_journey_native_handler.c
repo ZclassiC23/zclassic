@@ -66,7 +66,7 @@ static const struct journey_reason_row g_journey_reasons[] = {
         "z23 core status brief", true,
         ZCL_STATUS_REASON_HEALTHCHECK_UNHEALTHY },
     [JOURNEY_NODE_TYPED_BLOCKER] = {
-        "NODE_TYPED_BLOCKER", "NODE_BLOCKED", "z23 ops snapshot",
+        "NODE_TYPED_BLOCKER", "NODE_BLOCKED", "z23 core sync blockers",
         false, ZCL_STATUS_REASON_TYPED_BLOCKER },
     [JOURNEY_NODE_NOT_READY] = {
         "NODE_NOT_READY", "NODE_BLOCKED", "z23 core sync diagnose", true,
@@ -114,6 +114,23 @@ static const struct journey_reason_row g_journey_reasons[] = {
 _Static_assert(sizeof(g_journey_reasons) / sizeof(g_journey_reasons[0]) ==
                    JOURNEY_REASON_COUNT,
                "status journey reason table is incomplete");
+
+/* Typed blockers are inspected, not repaired, by the first agent command.
+ * Snapshot is a composite diagnostic; it is not the first action, and it is
+ * never a permission to mutate a live datadir. review_required_* posture
+ * names stay owner-reviewed. */
+static const char *journey_typed_blocker_next_action(const char *blocker)
+{
+    (void)blocker;
+    return "z23 core sync blockers";
+}
+
+static bool journey_owner_review_required(const char *blocker)
+{
+    return blocker &&
+           strncmp(blocker, "review_required_",
+                   sizeof("review_required_") - 1) == 0;
+}
 
 static bool journey_obj(struct json_value *out, const char *raw)
 {
@@ -348,7 +365,16 @@ char *zcl_native_status_journey_body(const struct json_value *args,
     (void)json_push_kv_bool(
         &out, "human_action_required",
         node_status_reason_operator_needed(reason_row->node_reason, 0));
-    (void)json_push_kv_str(&out, "next_action", reason_row->next_action);
+    {
+        const char *next = reason_row->next_action;
+        bool owner_review = false;
+        if (reason == JOURNEY_NODE_TYPED_BLOCKER) {
+            next = journey_typed_blocker_next_action(primary_blocker);
+            owner_review = journey_owner_review_required(primary_blocker);
+        }
+        (void)json_push_kv_str(&out, "next_action", next);
+        (void)json_push_kv_bool(&out, "owner_review_required", owner_review);
+    }
 
     char *body = zcl_json_value_to_body(&out, "status_journey_body");
     json_free(&out);

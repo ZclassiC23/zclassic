@@ -210,10 +210,14 @@ void zcl_native_handle_service_status(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
 
-/* ── code.* — the source-code navigator (tools/command/native_code_command.c).
- * Local, read-only, deterministic leaves backed by the in-binary lib/codeindex
+/* ── code.* — the source-code navigator (tools/command/native_code_command.c
+ * plus native_code_guide_command.c for the inner-loop guide). Local,
+ * read-only, deterministic leaves backed by the in-binary lib/codeindex
  * index. Each renders one bounded JSON document (structured array + human
  * one-liners) well within ZCL_COMMAND_RESULT_BUDGET. */
+void zcl_native_handle_code_guide(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply);
 void zcl_native_handle_code_group(
     const struct zcl_command_request *request,
     struct zcl_command_reply *reply);
