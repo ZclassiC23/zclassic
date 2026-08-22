@@ -2304,6 +2304,47 @@ static int test_response_budget_views(void)
         ASSERT(!json_get_bool(json_get(page, "truncated")));
         zcl_command_reply_free(&reply);
 
+        json_free(&body);
+        json_init(&body);
+        json_set_array(&body);
+        {
+            const struct {
+                const char *addr;
+                bool z23;
+                bool bean;
+            } mix[] = {
+                { "203.0.113.1:8033", false, true },
+                { "203.0.113.2:8033", false, true },
+                { "203.0.113.10:8033", true, false },
+            };
+            for (size_t i = 0; i < 3; i++) {
+                struct json_value row;
+                json_init(&row);
+                json_set_object(&row);
+                (void)json_push_kv_int(&row, "id", (int64_t)i);
+                (void)json_push_kv_str(&row, "addr", mix[i].addr);
+                (void)json_push_kv_bool(&row, "zclassic23", mix[i].z23);
+                (void)json_push_kv_bool(&row, "magicbean", mix[i].bean);
+                (void)json_push_back(&body, &row);
+                json_free(&row);
+            }
+        }
+        req = (struct zcl_command_request){ .spec = peers, .view = "normal" };
+        zcl_command_reply_init(&reply, peers->output_schema);
+        zcl_native_bridge_project(&req, &body, &reply);
+        {
+            const struct json_value *listed = json_get(&reply.data, "items");
+            ASSERT(listed && listed->type == JSON_ARR &&
+                   listed->num_children == 3);
+            ASSERT(json_get_bool(json_get(&listed->children[0],
+                                          "zclassic23")));
+            ASSERT_STR_EQ(json_get_str(json_get(&listed->children[0], "addr")),
+                          "203.0.113.10:8033");
+            ASSERT(!json_get_bool(json_get(&listed->children[1],
+                                           "zclassic23")));
+        }
+        zcl_command_reply_free(&reply);
+
         /* A fat nested blob must not stall the default view: cursor continues. */
         json_free(&body);
         json_init(&body);

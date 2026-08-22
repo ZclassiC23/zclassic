@@ -472,7 +472,7 @@ static int test_guide_tree_render(void)
             "{\"schema\":\"zcl.result.v1\","
             "\"command\":\"core.network.peers.list\",\"ok\":true,"
             "\"data\":{\"items\":["
-            "{\"addr\":\"205.209.104.118:8033\",\"inbound\":false,"
+            "{\"addr\":\"203.0.113.10:8033\",\"inbound\":false,"
             "\"startingheight\":100,\"zclassic23\":true,\"magicbean\":false}"
             "],\"_page\":{\"total_items\":28,\"included\":1,\"truncated\":true,"
             "\"continue\":\"z23 core network peers list --cursor=2\"}}}";
@@ -483,7 +483,7 @@ static int test_guide_tree_render(void)
                                       sizeof(out));
         ASSERT(n > 0);
         ASSERT(strstr(out, "peers") != NULL);
-        ASSERT(strstr(out, "205.209.104.118:8033") != NULL);
+        ASSERT(strstr(out, "203.0.113.10:8033") != NULL);
         ASSERT(strstr(out, "z23") != NULL);
         ASSERT(strstr(out, "z23 core network peers list --cursor=2") != NULL);
         ASSERT(strstr(out, "lifecycle") == NULL);

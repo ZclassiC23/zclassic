@@ -532,6 +532,33 @@ static size_t nc_json_size(const struct json_value *value)
     return (n == 0 || n >= sizeof(scratch)) ? sizeof(scratch) : n;
 }
 
+static int nc_peer_kind(const struct json_value *row)
+{
+    if (json_get_bool(json_get(row, "zclassic23")))
+        return 0;
+    if (json_get_bool(json_get(row, "magicbean")))
+        return 1;
+    return 2;
+}
+
+/* Stable kind order: Z23, then MagicBean, then other. No host list. */
+static void nc_peer_order(const struct json_value *body, size_t *ord, size_t n)
+{
+    for (size_t i = 0; i < n; i++)
+        ord[i] = i;
+    for (size_t i = 1; i < n; i++) {
+        size_t v = ord[i];
+        size_t j = i;
+        int vk = nc_peer_kind(&body->children[v]);
+        while (j > 0 &&
+               nc_peer_kind(&body->children[ord[j - 1]]) > vk) {
+            ord[j] = ord[j - 1];
+            j--;
+        }
+        ord[j] = v;
+    }
+}
+
 static void nc_project_array(const struct zcl_command_request *request,
                              const struct json_value *body,
                              struct zcl_command_reply *reply)
@@ -560,18 +587,28 @@ static void nc_project_array(const struct zcl_command_request *request,
             start = (size_t)c;
     }
 
+    size_t ord[256];
+    const size_t *map = NULL;
+    size_t nbody = body->num_children;
+    if (request->spec && request->spec->path &&
+        strcmp(request->spec->path, "core.network.peers.list") == 0 &&
+        nbody > 0 && nbody <= 256) {
+        nc_peer_order(body, ord, nbody);
+        map = ord;
+    }
+
     struct json_value items;
     json_init(&items);
     json_set_array(&items);
     size_t included = 0;
-    size_t next_cursor = body->num_children;
+    size_t next_cursor = nbody;
     bool truncated = summary && body->num_children > 0;
     bool skipped_oversize = false;
     size_t skipped_index = 0;
     if (summary)
         next_cursor = 0;
 
-    for (size_t i = start; !summary && i < body->num_children; i++) {
+    for (size_t i = start; !summary && i < nbody; i++) {
         if (full && request->max_items > 0 && included >= request->max_items) {
             truncated = true;
             next_cursor = i;
@@ -581,7 +618,7 @@ static void nc_project_array(const struct zcl_command_request *request,
         json_init(&probe);
         json_init(&copy);
         json_copy(&probe, &items);
-        json_copy(&copy, &body->children[i]);
+        json_copy(&copy, &body->children[map ? map[i] : i]);
         (void)json_push_back(&probe, &copy);
         size_t sz = nc_json_size(&probe);
         json_free(&probe);
