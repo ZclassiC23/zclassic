@@ -395,9 +395,13 @@ dht_wait_rpc() {
     deadline=$(( $(date +%s) + DHT_WAIT ))
     while [ "$(date +%s)" -lt "$deadline" ]; do
         if [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
-            dht_node_exec "$rpc" kill -0 "-$pid" 2>/dev/null || return 1
-            dht_node_file_exists "$rpc" "$dd/.cookie" &&
-                dht_height "$dd" "$rpc" >/dev/null 2>&1 && return 0
+            # A remote spawn's pid can race the first kill -0: ssh returns
+            # as soon as echo $! runs, before setsid is visible. Retry until
+            # the deadline instead of treating one miss as a dead node.
+            if dht_node_exec "$rpc" kill -0 "-$pid" 2>/dev/null; then
+                dht_node_file_exists "$rpc" "$dd/.cookie" &&
+                    dht_height "$dd" "$rpc" >/dev/null 2>&1 && return 0
+            fi
         else
             kill -0 "$pid" 2>/dev/null || return 1
             [ -f "$dd/.cookie" ] &&
@@ -405,6 +409,10 @@ dht_wait_rpc() {
         fi
         sleep 0.5
     done
+    if [ -n "${DHT_REMOTE_HOST[$rpc]:-}" ]; then
+        echo "dht_wait_rpc: remote $dd/node.log:" >&2
+        dht_node_exec "$rpc" tail -n 40 "$dd/node.log" >&2 || true
+    fi
     return 1
 }
 dht_wait_height() {
