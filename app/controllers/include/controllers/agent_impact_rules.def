@@ -865,6 +865,7 @@ AGENT_IMPACT_RULE("lib/test/src/test_hotswap_module_v2.c|lib/hotswap/include/hot
  * static caller; otherwise an explicitly admitted live edit is mislabeled as
  * an unmapped code change. Public contract headers still classify as restart. */
 AGENT_IMPACT_RULE("app/services/src/zcode_c23_corpus_service.c|app/services/include/services/zcode_c23_corpus_service.h|app/services/src/zcode_c23_economics_service.c|app/services/src/zcode_c23_economics_internal.h|app/services/include/services/zcode_c23_economics_service.h|lib/test/src/test_zcode_commons_v2.c", "zcode_commons_v2")
+AGENT_IMPACT_RULE("tools/command/native_zcode_commons_command.c|lib/test/src/test_zcode_creation_attribution.c", "zcode_creation_attribution cli_render command_registry_catalog make_lint_gates")
 /* Package search/show presentation is a pure service island. The resident
  * host continues to own CAS/index reads and every publication or execution
  * effect, while the package suite proves byte-compatible rendered results. */

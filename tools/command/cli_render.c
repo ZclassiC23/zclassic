@@ -952,8 +952,21 @@ static bool tree_render_leaf(const char *command_path)
 {
     return command_path &&
            (strcmp(command_path, "ops.state") == 0 ||
-            strcmp(command_path, "ops.logs") == 0 ||
-            strcmp(command_path, "zcode.guide") == 0);
+            strcmp(command_path, "ops.logs") == 0);
+}
+
+/* zcode.guide is a recipe: one sentence, one copyable start command. */
+static void render_zcode_guide(struct buf *b, const struct zcl_cli_render_env *e,
+                               const struct json_value *root)
+{
+    emit_header(b, e, "zcode.guide");
+    buf_putc(b, '\n');
+    const struct json_value *data = json_get(root, "data");
+    const char *mission = json_get_str(json_get(data, "mission"));
+    if (mission && mission[0])
+        emit_kv(b, e, 4, "do", mission);
+    emit_kv(b, e, 4, "run",
+            json_get_str(json_get(data, "start_command")));
 }
 
 /* code.guide is a recipe, not a schema dump: four copyable commands. */
@@ -1105,6 +1118,9 @@ size_t zcl_cli_render_doc(const char *doc, size_t doc_len,
         else if (command_path &&
                  strcmp(command_path, "code.guide") == 0)
             render_code_guide(&b, env, &root);
+        else if (command_path &&
+                 strcmp(command_path, "zcode.guide") == 0)
+            render_zcode_guide(&b, env, &root);
         else if (command_path &&
                  strcmp(command_path, "core.network.peers.list") == 0)
             render_peer_list(&b, env, &root);

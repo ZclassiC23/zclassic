@@ -565,8 +565,7 @@ static int commons_mission_api_test(void)
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "next_action")),
                       "Describe the behavior you want.") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "start_command")),
-                      "zcode work start --input='{\"workspace\":\".\","
-                      "\"goal\":\"<desired behavior>\"}'") == 0);
+                      "z23 zcode work start . \"<desired behavior>\"") == 0);
         ASSERT(strstr(json_get_str(json_get(&reply.data, "journey")),
                       "reuse C23 -> create only missing code") != NULL);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "continue_rule")),

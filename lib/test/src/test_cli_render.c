@@ -427,20 +427,20 @@ static int test_data_tree_render(void)
 static int test_guide_tree_render(void)
 {
     int failures = 0;
-    TEST("zcode.guide renders its journey as a human tree, not raw JSON") {
+    TEST("zcode.guide renders a copyable start, not JSON keys") {
         const char *doc =
             "{\"schema\":\"zcl.result.v1\",\"command\":\"zcode.guide\","
             "\"ok\":true,\"status\":\"passed\",\"data\":{"
             "\"mission\":\"Tell Z23 what you want C23 software to do.\","
-            "\"next_action\":\"Describe the behavior you want.\"}}";
+            "\"start_command\":\"z23 zcode work start . \\\"<desired behavior>\\\"\"}}";
         struct zcl_cli_render_env e = cr_env(80, false);
         char out[8192];
         size_t n = zcl_cli_render_doc(doc, strlen(doc), "zcode.guide", &e,
                                       out, sizeof(out));
         ASSERT(n > 0);
         ASSERT(strstr(out, "zcode.guide") != NULL);
-        ASSERT(strstr(out, "next_action") != NULL);
-        ASSERT(strstr(out, "Describe the behavior you want.") != NULL);
+        ASSERT(strstr(out, "z23 zcode work start .") != NULL);
+        ASSERT(strstr(out, "next_action") == NULL);
         ASSERT(strstr(out, "\"schema\"") == NULL); /* not the raw envelope */
         ASSERT(cr_max_line_width(out) <= 80);
         PASS();
