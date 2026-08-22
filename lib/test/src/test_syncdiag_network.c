@@ -964,6 +964,7 @@ int syncdiag_cases_network(void)
             result.type == JSON_ARR ? json_at(&result, 0) : NULL;
         ok = ok && peer0 && json_get_bool(json_get(peer0, "zclassic23"));
         ok = ok && peer0 && json_get_bool(json_get(peer0, "zclassic_c23"));
+        ok = ok && peer0 && json_get(peer0, "lifecycle") == NULL;
 
 syncdiag_net_split_done:
         json_free(&params);

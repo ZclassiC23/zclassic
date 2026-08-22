@@ -627,17 +627,16 @@ static bool rpc_getpeerinfo(const struct json_value *params, bool help,
             json_push_kv_real(&entry, "avg_latency_ms",
                                (double)node->avg_latency_us / 1000.0);
 
+        /* Classification stays on the list row. The per-peer lifecycle blob
+         * lives on dumpstate peer_lifecycle — embedding it here made
+         * core.network.peers.list fit only two of ~29 live peers. */
         {
             bool is_mb = false, is_z23 = false;
-            struct json_value lifecycle = {0};
             msg_version_classify_peer(node->sub_ver, node->services,
                                       &is_mb, &is_z23);
             json_push_kv_bool(&entry, "magicbean", is_mb);
             json_push_kv_bool(&entry, "zclassic23", is_z23);
             json_push_kv_bool(&entry, "zclassic_c23", is_z23);
-            peer_lifecycle_peer_json(node, &lifecycle);
-            json_push_kv(&entry, "lifecycle", &lifecycle);
-            json_free(&lifecycle);
         }
 
         json_push_back(result, &entry);

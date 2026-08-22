@@ -480,14 +480,15 @@ static bool bridge_build_args(const char *path,
 }
 
 /* ── progressive-disclosure projection (contract §8/§9) ──────────────────
- * A bridged command body can exceed the 4096-byte ordinary-result budget. Rather
+ * A bridged command body can exceed the ordinary-result budget. Rather
  * than fail with RESPONSE_BUDGET_EXCEEDED, project the top-level object to fit:
  *   summary — scalar top-level fields only (containers dropped);
- *   normal  — greedy top-level fields in order until the budget (default);
+ *   normal  — greedy from --cursor until the leaf budget (default);
  *   full    — greedy from --cursor, honoring --max-items, paging via a cursor.
  * Truncation is always explicit: a `_page` object records the advancing
  * cursor, while `next` points at the leaf contract instead of creating an
- * executable self-loop. */
+ * executable self-loop. `--cursor` is honored in normal and full so a
+ * truncated list can actually continue. */
 enum { NC_ENVELOPE_RESERVE = 768 };
 
 static void nc_add_describe_next(struct zcl_command_reply *reply,
@@ -540,6 +541,8 @@ static void nc_project_array(const struct zcl_command_request *request,
     bool summary = strcmp(view, "summary") == 0;
     bool full = strcmp(view, "full") == 0;
     size_t contract = ZCL_COMMAND_RESULT_BUDGET;
+    if (request->spec && request->spec->budget_bytes > (int)contract)
+        contract = (size_t)request->spec->budget_bytes;
     if (request->budget_bytes > 0 && request->budget_bytes < contract)
         contract = request->budget_bytes;
     size_t data_budget = contract > NC_ENVELOPE_RESERVE
@@ -550,7 +553,7 @@ static void nc_project_array(const struct zcl_command_request *request,
                                              : data_budget / 2;
 
     size_t start = 0;
-    if (full && request->cursor && request->cursor[0]) {
+    if (!summary && request->cursor && request->cursor[0]) {
         char *end = NULL;
         unsigned long long c = strtoull(request->cursor, &end, 10);
         if (end && !*end)
@@ -664,7 +667,7 @@ void zcl_native_bridge_project(const struct zcl_command_request *request,
                              : contract / 2;
 
     size_t start = 0;
-    if (full && request->cursor && request->cursor[0]) {
+    if (!summary && request->cursor && request->cursor[0]) {
         char *end = NULL;
         unsigned long long c = strtoull(request->cursor, &end, 10);
         if (end && !*end)

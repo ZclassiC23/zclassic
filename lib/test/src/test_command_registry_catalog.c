@@ -2275,6 +2275,84 @@ static int test_response_budget_views(void)
         zcl_command_reply_free(&reply);
         json_free(&body);
         PASS();
+    }
+    TEST("peer list projection: slim rows fill the list budget; cursor continues") {
+        const struct zcl_command_spec *peers =
+            find_spec(reg, "core.network.peers.list");
+        ASSERT(peers != NULL);
+        struct json_value body;
+        json_init(&body);
+        json_set_array(&body);
+        for (int i = 0; i < 29; i++) {
+            struct json_value row;
+            json_init(&row);
+            json_set_object(&row);
+            (void)json_push_kv_int(&row, "id", i);
+            (void)json_push_kv_str(&row, "addr", "203.0.113.10:8033");
+            (void)json_push_kv_str(&row, "subver", "/ZClassic23:0.1.0/");
+            (void)json_push_kv_bool(&row, "zclassic23", true);
+            (void)json_push_back(&body, &row);
+            json_free(&row);
+        }
+        struct zcl_command_request req = { .spec = peers, .view = "normal" };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, peers->output_schema);
+        zcl_native_bridge_project(&req, &body, &reply);
+        const struct json_value *page = json_get(&reply.data, "_page");
+        ASSERT(page != NULL);
+        ASSERT_EQ(json_get_int(json_get(page, "total_items")), (int64_t)29);
+        ASSERT_EQ(json_get_int(json_get(page, "included")), (int64_t)29);
+        ASSERT(!json_get_bool(json_get(page, "truncated")));
+        zcl_command_reply_free(&reply);
+
+        /* A fat nested blob must not stall the default view: cursor continues. */
+        json_free(&body);
+        json_init(&body);
+        json_set_array(&body);
+        char fat[1200];
+        memset(fat, 'x', sizeof(fat) - 1);
+        fat[sizeof(fat) - 1] = 0;
+        for (int i = 0; i < 8; i++) {
+            struct json_value row, life;
+            json_init(&row);
+            json_init(&life);
+            json_set_object(&row);
+            json_set_object(&life);
+            (void)json_push_kv_int(&row, "id", i);
+            (void)json_push_kv_str(&row, "addr", "203.0.113.10:8033");
+            (void)json_push_kv_str(&life, "blob", fat);
+            (void)json_push_kv(&row, "lifecycle", &life);
+            (void)json_push_back(&body, &row);
+            json_free(&life);
+            json_free(&row);
+        }
+        req = (struct zcl_command_request){ .spec = peers, .view = "normal" };
+        zcl_command_reply_init(&reply, peers->output_schema);
+        zcl_native_bridge_project(&req, &body, &reply);
+        page = json_get(&reply.data, "_page");
+        ASSERT(page != NULL);
+        ASSERT(json_get_bool(json_get(page, "truncated")));
+        const struct json_value *nc = json_get(page, "next_cursor");
+        ASSERT(nc != NULL && json_get_int(nc) > 0);
+        char cursor[32];
+        (void)snprintf(cursor, sizeof(cursor), "%lld",
+                       (long long)json_get_int(nc));
+        size_t first_included = (size_t)json_get_int(json_get(page, "included"));
+        ASSERT(first_included > 0 && first_included < 8);
+        zcl_command_reply_free(&reply);
+
+        req = (struct zcl_command_request){
+            .spec = peers, .view = "normal", .cursor = cursor,
+        };
+        zcl_command_reply_init(&reply, peers->output_schema);
+        zcl_native_bridge_project(&req, &body, &reply);
+        page = json_get(&reply.data, "_page");
+        ASSERT(page != NULL);
+        ASSERT_EQ(json_get_int(json_get(page, "included")),
+                  (int64_t)(8 - (long long)first_included));
+        zcl_command_reply_free(&reply);
+        json_free(&body);
+        PASS();
     } _test_next:;
 
     return failures;
