@@ -13,6 +13,24 @@ ZCL_COMMAND_BRANCH("yardsale", "",
                    "For-sale-by-owner signed ads, settled bilaterally",
                    ZCL_COMMAND_LAYER_APP)
 
+ZCL_COMMAND_READY_READ(
+    "yardsale.guide", "yardsale", "",
+    "Pay ZCL and sell a 1/1 collectible",
+    "One read-only map from intent to the exact plan commands: pay ZCL at "
+    "the min-relay fee, mint a 1/1 ZSLP collectible, arm a yardsale ad, "
+    "announce a file on the package swarm, or open an onion shop. It reads "
+    "no wallet, gossip, or network state and never broadcasts.",
+    ZCL_COMMAND_LIST_BUDGET,
+    "yardsale,guide,nft,sell,pay,onion,torrent,market,fee,zslp,shop",
+    "zcl.yardsale_guide.input.v1", "zcl.yardsale_guide.v1", "", "",
+    "z23 yardsale guide",
+    ZCL_COMMAND_LAYER_APP, ZCL_COMMAND_SCOPE_LOCAL,
+    ZCL_COMMAND_AUTH_PUBLIC, ZCL_COMMAND_LATENCY_INSTANT,
+    ZCL_COMMAND_COST_TINY,
+    ZCL_COMMAND_LANE_LOCAL | ZCL_COMMAND_LANE_ALL_NODE,
+    ZCL_COMMAND_CAP_NONE, ZCL_COMMAND_TRAIT_IDEMPOTENT,
+    ZCL_COMMAND_TRANSPORT_NATIVE, zcl_native_handle_yardsale_guide)
+
 ZCL_COMMAND_BRANCH("yardsale.seller", "yardsale",
                    "Seller profile: arm, disarm, status",
                    ZCL_COMMAND_LAYER_APP)

@@ -85,6 +85,7 @@ declare -A EXEMPT=(
     [bot]="whole-node relink over \$(ALL_SRCS) — minutes, not seconds"
     # Outside the base toolchain.
     [zcl-blog]="needs webkit2gtk-4.1 via pkg-config (not a base toolchain dep)"
+    [arena_view]="optional raylib GUI; needs raylib via pkg-config (not a base toolchain dep)"
 )
 
 # ── Derive the tool list from the Makefile ───────────────────────────────

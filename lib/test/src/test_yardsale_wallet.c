@@ -66,7 +66,7 @@
 #define YW_TOKEN_DUST_VALUE 10000LL
 #define YW_ZCL_PRICE 50000ULL
 #define YW_FUND_VALUE 100000LL
-#define YW_WALLET_FEE 10000LL
+#define YW_WALLET_FEE WALLET_DEFAULT_FEE_ZAT
 
 static void yw_pattern32(uint8_t out[32], uint8_t base)
 {

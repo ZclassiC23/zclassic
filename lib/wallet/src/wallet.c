@@ -139,8 +139,8 @@ void wallet_init(struct wallet *w)
     w->hd_external_counter = 0;
     w->hd_internal_counter = 0;
     w->hd_account = 0;
-    w->default_fee = 10000;
-    w->min_fee = 1000;
+    w->default_fee = WALLET_DEFAULT_FEE_ZAT;
+    w->min_fee = WALLET_MIN_FEE_ZAT;
     w->spend_zero_conf_change = true;
     w->best_block = NULL;
     sapling_keystore_init(&w->sapling_keys);

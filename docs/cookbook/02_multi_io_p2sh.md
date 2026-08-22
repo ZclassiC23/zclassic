@@ -47,8 +47,8 @@ tip height = <n>
 ```
 
 Exact fee/size numbers are deterministic given the fixed seed and the
-node wallet's default fee rate (`wallet_init()->default_fee`, currently
-10,000 zats/kB) — see `docs/SIMULATOR_TXNS.md`'s transaction catalog table
+simnet catalog fee rate (`SIMNET_WALLET_DEFAULT_FEE_PER_K`, 10,000 zats/kB)
+— see `docs/SIMULATOR_TXNS.md`'s transaction catalog table
 for the shape-by-shape reference values measured by
 `test_simnet_txkit.c` (multi-input consolidation: 164 bytes / 1640 zats;
 P2SH HTLC fund: 162 bytes / 1620 zats; HTLC redeem: 325 bytes / 3250 zats

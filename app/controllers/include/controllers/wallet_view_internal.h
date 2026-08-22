@@ -31,7 +31,9 @@
 /* ── Constants ────────────────────────────────────────────── */
 
 #define PRIMARY_ADDR "t1YRBXKYLhrb4X8sTkBeRysAzBTMMHpUXrn"
-#define FEE_ZCL 0.0001
+/* GUI send/shield fee: the live wallet min-relay floor (100 zat). */
+#define WALLET_VIEW_FEE_ZAT 100
+#define FEE_ZCL ((double)WALLET_VIEW_FEE_ZAT / (double)ZATOSHI_PER_ZCL)
 
 /* ── Shared global state ──────────────────────────────────── */
 

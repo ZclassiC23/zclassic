@@ -37,29 +37,28 @@ session. A remembered 0.30000000 ZCL observation is not spend authority.
 
 ## What “smallest possible fee” means
 
-The current node has two different fee numbers:
+The current node has one supported money fee:
 
-- Its local minimum relay policy is 100 zatoshi per transaction.
-- Every supported wallet, shielded, vault-intent, swap, market, and overlay
-  builder currently uses the wallet default of 10,000 zatoshi.
+- Local minimum relay policy is 100 zatoshi per transaction
+  (`DEFAULT_MIN_RELAY_TX_FEE` / `WALLET_DEFAULT_FEE_ZAT`).
+- Wallet, shielded, vault-intent, swap, market, overlay, and yardsale builders
+  use that same flat default.
 
-There is no connected live fee estimator or safe per-plan fee override. The
-smallest fee the typed custody workflow can currently construct and bind is
-therefore **10,000 zatoshi (0.00010000 ZCL)**. Sending at the theoretical
-100-zatoshi relay floor would bypass the supported workflow and would not prove
-that peers or miners accept it. This campaign does not do that.
+There is no connected live fee estimator. The smallest fee the typed custody
+workflow constructs and binds is therefore **100 zatoshi (0.00000100 ZCL)**.
+Every plan still exposes its exact fee before `confirm:true`. Simnet catalog
+fees remain a separate size-proportional 10,000 zat/kB rate; they do not set
+live `paytxfee`.
 
-Every plan must expose its exact fee. The checked campaign currently requires
-exactly 10,000 zatoshi. If a future implementation safely lowers the wallet default,
-the manifest and its checks must be deliberately revised and the lower fee
-validated on an isolated chain before mainnet. “Lowest” is an evidence-backed
-policy choice, never a hard-coded guess about miner behavior.
+A running node keeps the fee it booted with until that binary is restarted. Do
+not treat a remembered 10,000-zat campaign as current once this default is
+live.
 
 ## Exact budget
 
 ```text
 100 recipients x 1,000 zat       100,000 zat   0.00100000 ZCL
-100 fees x <=10,000 zat        1,000,000 zat   0.01000000 ZCL
+100 fees x <=100 zat              10,000 zat   0.00010000 ZCL
 bounded setup envelope           900,000 zat   0.00900000 ZCL
 campaign maximum               2,000,000 zat   0.02000000 ZCL
 ```

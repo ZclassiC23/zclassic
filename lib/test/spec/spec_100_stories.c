@@ -391,7 +391,7 @@ int spec_100_stories(void)
 
     STORY("Send: shows network fee");
     G("/wallet/send");
-    CHECK(H("0.0001") || H("fee") || H("Fee"), "no fee shown");
+    CHECK(H("0.000001") || H("fee") || H("Fee"), "no fee shown");
     if(!_skip) ok();
 
     STORY("Send: tab is active");

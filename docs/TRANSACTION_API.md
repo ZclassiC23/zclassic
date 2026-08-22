@@ -53,6 +53,7 @@ create a vault session, approve a plan, or broadcast a transaction.
 Use the native interface when operating the node:
 
 ```bash
+z23 yardsale guide
 z23 app transaction-types list
 z23 app transaction-types wire
 z23 app transaction-types show --type=znam_register
@@ -61,6 +62,10 @@ z23 app transaction-types command core.wallet.transaction.send
 z23 discover describe app.names.register
 z23 discover schema app.names.register
 ```
+
+`z23 yardsale guide` is the one-call map for paying ZCL at the min-relay fee
+and selling a 1/1 collectible through yardsale, the package swarm, or an onion
+shop. It grants no authority. See [`SELL.md`](./SELL.md).
 
 Public read-only clients may use the REST mirror:
 

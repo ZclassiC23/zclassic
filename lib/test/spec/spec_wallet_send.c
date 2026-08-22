@@ -27,7 +27,7 @@ int spec_wallet_send(void)
                 GET("/wallet/send");
             THEN("fee is visible before user commits")
                 EXPECT(has("Network fee"));
-                EXPECT(has("0.0001"));
+                EXPECT(has("0.000001"));
             PASS();
         }
     }

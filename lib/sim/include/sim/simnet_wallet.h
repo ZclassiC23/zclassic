@@ -43,6 +43,9 @@ void simnet_wallet_free(struct simnet_wallet *w);
 const char *simnet_wallet_address(const struct simnet_wallet *w);
 const struct script *simnet_wallet_script(const struct simnet_wallet *w);
 int64_t simnet_wallet_balance(struct simnet_wallet *w);
+/* Size-proportional catalog rate for simnet fees, in zats per kB. This is
+ * not the live wallet's flat WALLET_DEFAULT_FEE_ZAT min-relay floor. */
+#define SIMNET_WALLET_DEFAULT_FEE_PER_K 10000
 int64_t simnet_wallet_default_fee_per_k(void);
 struct fee_rate simnet_wallet_default_fee_rate(void);
 

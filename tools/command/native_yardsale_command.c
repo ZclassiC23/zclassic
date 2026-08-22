@@ -21,6 +21,7 @@
 #include "json/json.h"
 #include "kernel/command_registry.h"
 #include "util/log_macros.h"
+#include "wallet/wallet.h"
 
 #include <stdbool.h>
 #include <stdio.h>
@@ -154,4 +155,85 @@ void zcl_native_handle_yardsale_buy(
     struct zcl_command_reply *reply)
 {
     ys_forward(request, reply, "yardsale_buy", true);
+}
+
+void zcl_native_handle_yardsale_guide(
+    const struct zcl_command_request *request,
+    struct zcl_command_reply *reply)
+{
+    if (!reply)
+        return;
+    if (!request || !request->input || request->input->type != JSON_OBJ ||
+        request->input->num_children != 0) {
+        ys_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INVALID,
+                "BAD_YARDSALE_GUIDE_INPUT", "validate", false,
+                "yardsale guide accepts no input keys", "yardsale.guide");
+        return;
+    }
+    bool ok = json_push_kv_str(
+            &reply->data, "mission",
+            "Pay ZCL and sell a 1/1 collectible without giving anyone "
+            "custody of your keys.") &&
+        json_push_kv_str(
+            &reply->data, "next_action",
+            "See whether this node holds confirmed ZCL, then plan. "
+            "Nothing broadcasts until confirm:true.") &&
+        json_push_kv_str(&reply->data, "start_command", "z23 vault list") &&
+        json_push_kv_int(&reply->data, "fee_zat", WALLET_DEFAULT_FEE_ZAT) &&
+        json_push_kv_str(&reply->data, "fee_zcl", "0.00000100") &&
+        json_push_kv_str(
+            &reply->data, "fee_policy",
+            "Wallet default_fee is the min-relay floor (100 zat). This "
+            "node's mempool and miners accept that amount. Plans render "
+            "the exact fee before commit.") &&
+        json_push_kv_str(
+            &reply->data, "pay_plan",
+            "printf '%s' '{\"wallet_scope\":\"dev\",\"route\":\"transparent\","
+            "\"idempotency_key\":\"pay-001\",\"effects\":[{\"asset\":\"ZCL\","
+            "\"to\":\"<recipient>\",\"amount\":\"0.01\"}]}' | "
+            "z23 vault intent plan --input=-") &&
+        json_push_kv_str(
+            &reply->data, "pay_commit",
+            "z23 vault intent commit --input='{\"wallet_scope\":\"dev\","
+            "\"plan_id\":\"<64hex>\",\"confirm\":true}'") &&
+        json_push_kv_str(
+            &reply->data, "nft_create",
+            "z23 app tokens create --input='{\"wallet_scope\":\"dev\","
+            "\"ticker\":\"ART1\",\"name\":\"One of one\",\"decimals\":0,"
+            "\"supply\":\"1\",\"idempotency_key\":\"nft-genesis-1\"}'") &&
+        json_push_kv_str(
+            &reply->data, "yardsale_sell",
+            "z23 yardsale.seller.arm --input='{\"token_txid\":\"<64hex>\","
+            "\"token_vout\":1,\"ad_root\":\"<64hex>\"}'") &&
+        json_push_kv_str(
+            &reply->data, "yardsale_buy",
+            "z23 yardsale.buy --input='{\"ad_root\":\"<64hex>\"}'") &&
+        json_push_kv_str(
+            &reply->data, "torrent_announce",
+            "z23 app market offer --input='{\"filepath\":\"/data/file\","
+            "\"price_per_mb_zat\":100}'") &&
+        json_push_kv_str(
+            &reply->data, "torrent_fetch",
+            "z23 zcode package fetch --input='{\"root\":\"<64hex>\"}'") &&
+        json_push_kv_str(
+            &reply->data, "onion_shop",
+            "z23 app shop init") &&
+        json_push_kv_str(
+            &reply->data, "confirm_rule",
+            "Every money leaf is plan then confirm:true on that exact plan. "
+            "A guide never spends, never prints keys or addresses.") &&
+        json_push_kv_str(
+            &reply->data, "funding_rule",
+            "An empty wallet refuses at plan time and names the shortfall. "
+            "Fund this node's wallet first; do not export keys or invent a "
+            "balance.") &&
+        json_push_kv_str(
+            &reply->data, "continue_rule",
+            "Follow the plan reply's commit_input. Discover exact keys with "
+            "z23 discover schema <leaf>.") &&
+        json_push_kv_str(&reply->data, "docs", "docs/SELL.md");
+    if (!ok)
+        ys_fail(reply, ZCL_COMMAND_STATUS_FAILED, ZCL_COMMAND_EXIT_INTERNAL,
+                "YARDSALE_GUIDE_OUTPUT", "render", false,
+                "the sell guide could not be rendered", "yardsale.guide");
 }
