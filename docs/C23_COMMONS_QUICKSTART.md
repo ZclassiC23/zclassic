@@ -118,6 +118,13 @@ input spelling with `z23 discover schema <leaf>`.
    z23 zcode create --input='{"mode":"commit","release_hex":"<same>","manifest_hex":"<same>","recipe_hex":"<same>","dir":"/absolute/path/to/package","datadir":"/tmp/z23-commons"}'
    ```
 
+   Commit is local CAS admission, not network publication. The reply
+   names `package_root`, `transport_root`, and one copy-paste
+   `next_command`: `zcode network publish` in `mode=plan` for a
+   `pointer` that already contains those roots. Run that, then commit
+   the returned `plan_token`. Repeat for a `provider` record so peers
+   can fetch after this node is gone.
+
 5. On the running package-hosting node, publish a POINTER binding
    `package_root` to `transport_root`, then a PROVIDER record for that
    `transport_root`. Each uses `zcode network publish` first with `mode=plan`

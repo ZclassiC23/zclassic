@@ -17,6 +17,8 @@ stream plus the final state — and two cryptographic roots over it.
 
 ```bash
 make arena-demo
+# or, from the fetched C23 package after `zcode use`:
+#   zdogfight play --seed 7 --planes 2
 ```
 
 No blockchain sync, no Tor, no wallet, no browser, no JavaScript, no Python, no

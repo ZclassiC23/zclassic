@@ -945,6 +945,23 @@ static int t_commit_roundtrip(void)
              c.reply.error.mutated);
     ZP_CHECK("commit: all chunks admitted",
              json_get_int(json_get(&c.reply.data, "chunks_stored")) == 3);
+    {
+        const char *pkg =
+            json_get_str(json_get(&c.reply.data, "package_root"));
+        const char *tr =
+            json_get_str(json_get(&c.reply.data, "transport_root"));
+        const char *next =
+            json_get_str(json_get(&c.reply.data, "next_command"));
+        ZP_CHECK("commit: next_command is a filled pointer publish plan",
+                 pkg && tr && next && strstr(next, pkg) && strstr(next, tr) &&
+                     strstr(next, "zcode network publish") &&
+                     strstr(next, "\"kind\":\"pointer\"") &&
+                     strstr(next, "zclassic23.package"));
+        ZP_CHECK("commit: next_kind is pointer",
+                 json_get_str(json_get(&c.reply.data, "next_kind")) &&
+                     strcmp(json_get_str(json_get(&c.reply.data, "next_kind")),
+                            "pointer") == 0);
+    }
     zp_cmd_free(&c);
 
     /* On-disk truth: manifest, release envelope, and the CAS chunk. */

@@ -29,8 +29,12 @@ ascending plane index order.
 - `zdog_obs_encode/decode`, `zdog_ctl_encode/decode` — exact-size
   wire codec for the process pilot ABI (82 and 7 bytes)
 
-`zdogfight selftest` runs a fixed-seed match between two built-in
-trivial pilots and prints the final state root (FNV-1a/64) as hex.
+`zdogfight play [--seed N] [--planes N]` runs a match between two
+built-in trivial pilots (straight vs weave) and prints the score,
+winner, tick count, and FNV-1a/64 state checksum. Default seed is 7
+and default planes-per-team is 2. `zdogfight selftest` is the same
+loop with seed 42 and 2 planes — keep that as the package's smoke
+command. Same seed + same pilots is a byte-identical match.
 
 ## Provenance
 

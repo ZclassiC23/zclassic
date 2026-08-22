@@ -860,10 +860,13 @@ void zcl_native_handle_zcode_package_publish_commit(
     zcl_hex_encode(report.release_id, 32, hex);
     (void)json_push_kv_str(&reply->data, "release_id", hex);
     (void)json_push_kv_str(&reply->data, "plan_token", hex);
-    zcl_hex_encode(root, 32, hex);
-    (void)json_push_kv_str(&reply->data, "package_root", hex);
-    zcl_hex_encode(transport.transport_root, 32, hex);
-    (void)json_push_kv_str(&reply->data, "transport_root", hex);
+    char package_root_hex[65];
+    char transport_root_hex[65];
+    zcl_hex_encode(root, 32, package_root_hex);
+    (void)json_push_kv_str(&reply->data, "package_root", package_root_hex);
+    zcl_hex_encode(transport.transport_root, 32, transport_root_hex);
+    (void)json_push_kv_str(&reply->data, "transport_root",
+                           transport_root_hex);
     (void)json_push_kv_str(&reply->data, "name", cand.release.name);
     (void)json_push_kv_int(&reply->data, "files",
                            (int64_t)report.file_count);
@@ -894,6 +897,29 @@ void zcl_native_handle_zcode_package_publish_commit(
                 "degraded (the local commit itself succeeded)");
         (void)json_push_kv(&reply->data, "policy", &pol);
         json_free(&pol);
+    }
+    {
+        /* Local CAS admission is not network publication. Name the one
+         * next command that binds package_root to transport_root on the
+         * DHT so another node can fetch without this publisher. */
+        int64_t now = platform_time_wall_unix();
+        int64_t expiry = now + 2592000;
+        char next[900];
+        int nn = snprintf(
+            next, sizeof(next),
+            "z23 zcode network publish --input='{\"mode\":\"plan\","
+            "\"kind\":\"pointer\",\"namespace\":\"zclassic23.package\","
+            "\"semantic_root\":\"%s\",\"transport_root\":\"%s\","
+            "\"sequence\":1,\"not_before\":%lld,\"expiry\":%lld}'",
+            package_root_hex, transport_root_hex, (long long)now,
+            (long long)expiry);
+        if (nn > 0 && (size_t)nn < sizeof(next))
+            (void)json_push_kv_str(&reply->data, "next_command", next);
+        (void)json_push_kv_str(&reply->data, "next_kind", "pointer");
+        (void)json_push_kv_str(
+            &reply->data, "next_action",
+            "plan then commit the pointer record so peers can discover "
+            "this exact package_root after this node is gone");
     }
     reply->error.mutated = committed;
     vcs_package_transport_free(&transport);

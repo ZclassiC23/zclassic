@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "name": "zdogfight/zdogfight",
-  "semver": "0.1.0",
+  "semver": "0.1.1",
   "language": "c23",
   "license": "Apache-2.0",
   "include_dir": "include",
