@@ -98,8 +98,9 @@ void print_usage(const char *prog)
     printf("  -hotswap-activate   Arm Tier-1 live hot-swap ACTIVATION (dev only;\n");
     printf("                      also needs ZCL_HOTSWAP_ACTIVATE=1 and the exact\n");
     printf("                      ~/.zclassic-c23-dev datadir; canonical refused).\n");
-    printf("  -buildworker        Opt in to confined metaverse C23 compile work\n");
-    printf("                      (public preprocessed inputs only; no network).\n");
+    printf("  -buildworker[=0|1]  Opt in to confined C23 compile work and advertise\n");
+    printf("                      it to package peers (bare flag or =1; =0 clears).\n");
+    printf("                      Independent proof also needs -packagehost=1.\n");
     printf("  -allow-plaintext-wallet  Create a new wallet UNENCRYPTED at rest\n");
     printf("                      (loud opt-in; otherwise set ZCL_WALLET_PASSPHRASE\n");
     printf("                      or first-run wallet creation refuses).\n");

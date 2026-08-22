@@ -5,11 +5,13 @@
 
 #include "base/hex.h"
 #include "json/json.h"
+#include "platform/os_proc.h"
 #include "util/spawn.h"
 #include "vcs/build_action.h"
 
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 static bool ztc_first_line(const char *const argv[], char *out, size_t cap)
 {
@@ -18,6 +20,36 @@ static bool ztc_first_line(const char *const argv[], char *out, size_t cap)
         return false;
     out[strcspn(out, "\r\n")] = '\0';
     return out[0] != '\0';
+}
+
+static bool ztc_verifier_name(const char **name_out)
+{
+    static const char *const names[] = {
+        "zclassic23-package-verify-dev",
+        "zclassic23-package-verify",
+    };
+    char exe[4096], path[4400];
+    if (!os_proc_exe_path(exe, sizeof(exe))) return false;
+    char *deleted = strstr(exe, " (deleted)");
+    if (deleted) *deleted = '\0';
+    char *slash = strrchr(exe, '/');
+    if (!slash) return false;
+    *slash = '\0';
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        int n = snprintf(path, sizeof(path), "%s/%s", exe, names[i]);
+        if (n > 0 && (size_t)n < sizeof(path) && access(path, X_OK) == 0) {
+            if (name_out) *name_out = names[i];
+            return true;
+        }
+    }
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        int n = snprintf(path, sizeof(path), "build/bin/%s", names[i]);
+        if (n > 0 && (size_t)n < sizeof(path) && access(path, X_OK) == 0) {
+            if (name_out) *name_out = names[i];
+            return true;
+        }
+    }
+    return false;
 }
 
 void zcl_native_handle_zcode_toolchain_show(
@@ -71,10 +103,22 @@ void zcl_native_handle_zcode_toolchain_show(
         (void)json_push_kv_str(&reply->data, "dumpfullversion", full_version);
     if (as_version[0])
         (void)json_push_kv_str(&reply->data, "assembler_version", as_version);
+    const char *verifier_name = "";
+    bool verifier_present = ztc_verifier_name(&verifier_name);
+    const char *blocker = verifier_present ? "NONE" : "VERIFIER_MISSING";
+    (void)json_push_kv_bool(&reply->data, "verifier_present", verifier_present);
+    (void)json_push_kv_bool(&reply->data, "can_prove", verifier_present);
+    (void)json_push_kv_str(&reply->data, "blocker", blocker);
+    if (verifier_present && verifier_name[0])
+        (void)json_push_kv_str(&reply->data, "verifier_name", verifier_name);
     (void)json_push_kv_str(
         &reply->data, "next_action",
-        "Compare capsule_root with zcode work toolchain on the proving node. "
-        "Independent compile evidence needs the same capsule.");
+        verifier_present
+            ? "Compare capsule_root with zcode work toolchain on the proving "
+              "node. Independent compile evidence needs the same capsule."
+            : "Place zclassic23-package-verify next to this binary, then rerun "
+              "zcode work toolchain. A worker cannot prove without the "
+              "confined verifier.");
     (void)json_push_kv_str(&reply->data, "next_safe_command",
                            "zcode work toolchain");
 }

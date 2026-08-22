@@ -1487,7 +1487,10 @@ int test_qr(void)
              vcs_zcode_work_node_dump_state_json(&work_dump, NULL) &&
              !json_get_bool(json_get(&work_dump, "enabled")) &&
              json_get_int(json_get(&work_dump, "worker_capacity")) == 0 &&
-             json_get_int(json_get(&work_dump, "worker_available")) == 0);
+             json_get_int(json_get(&work_dump, "worker_available")) == 0 &&
+             json_get_int(json_get(&work_dump, "capable_peers")) == 0 &&
+             strstr(json_get_str(json_get(&work_dump, "next_action")),
+                    "-buildworker=1") != NULL);
     json_free(&work_dump);
 
     struct zcl_present_model_bitmap_v1 visual_bitmap;

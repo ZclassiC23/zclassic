@@ -21,7 +21,8 @@
 
     DIAG_RUNTIME("zcode_work", vcs_zcode_work_node_dump_state_json,
                "bounded local package-work capacity: enabled, total slots, "
-               "active slots, and available slots; no peer or request data",
+               "active slots, available slots, capable_peers, and one "
+               "next_action; no peer identity, request, or key data",
                "lib/vcs/src/zcode_work_node.c",
                "lib/test/src/test_zcode_dev_objects.c"),
 

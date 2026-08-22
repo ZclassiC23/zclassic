@@ -2378,6 +2378,45 @@ static int zpd_test_admitted_single_interpretation(void)
     return failures;
 }
 
+static int zpd_test_work_toolchain(void)
+{
+    int failures = 0;
+    TEST("zcode work toolchain: names capsule and whether this binary can prove") {
+        struct json_value extra;
+        json_init(&extra); json_set_object(&extra);
+        ASSERT(json_push_kv_str(&extra, "unexpected", "1"));
+        struct zcl_command_request request = { .input = &extra };
+        struct zcl_command_reply reply;
+        zcl_command_reply_init(&reply, "zcl.zcode_toolchain_show.v1");
+        zcl_native_handle_zcode_toolchain_show(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_FAILED);
+        ASSERT(strcmp(reply.error.code, "BAD_TOOLCHAIN_SHOW_INPUT") == 0);
+        zcl_command_reply_free(&reply);
+        json_free(&extra);
+
+        request.input = NULL;
+        zcl_command_reply_init(&reply, "zcl.zcode_toolchain_show.v1");
+        zcl_native_handle_zcode_toolchain_show(&request, &reply);
+        ASSERT(reply.status == ZCL_COMMAND_STATUS_PASSED);
+        const char *capsule = json_get_str(json_get(&reply.data, "capsule_root"));
+        const char *blocker = json_get_str(json_get(&reply.data, "blocker"));
+        const char *next = json_get_str(json_get(&reply.data, "next_action"));
+        bool present = json_get_bool(json_get(&reply.data, "verifier_present"));
+        bool can_prove = json_get_bool(json_get(&reply.data, "can_prove"));
+        ASSERT(capsule && strlen(capsule) == 64);
+        ASSERT(blocker && (strcmp(blocker, "NONE") == 0 ||
+                           strcmp(blocker, "VERIFIER_MISSING") == 0));
+        ASSERT(present == can_prove);
+        ASSERT(present == (strcmp(blocker, "NONE") == 0));
+        ASSERT(next && next[0]);
+        if (!present)
+            ASSERT(strstr(next, "zclassic23-package-verify") != NULL);
+        zcl_command_reply_free(&reply);
+        PASS();
+    } _test_next:;
+    return failures;
+}
+
 int test_zcode_package_dev(void)
 {
     secp256k1_context *ctx = secp256k1_context_create(
@@ -2397,6 +2436,7 @@ int test_zcode_package_dev(void)
                    zpd_test_project_init() +
                    zpd_test_reuse_plan() +
                    zpd_test_work_start() +
+                   zpd_test_work_toolchain() +
                    zpd_test_standard_profile() +
                    zpd_test_admitted_single_interpretation() +
                    zpd_test_twelve_task_benchmark();

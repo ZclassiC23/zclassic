@@ -233,7 +233,7 @@ static struct zcl_result boot_zcode_work_admit(
 }
 static void boot_zcode_work_drain_admissions(int64_t now)
 {
-    if (!s_work || !GetBoolArg("-buildworker", false)) return;
+    if (!s_work || !s_svc || !s_svc->app_ctx || !s_svc->app_ctx->build_worker) return;
     for (;;) {
         uint64_t peer = 0;
         struct vcs_zcode_work_request_v1 request;
@@ -414,7 +414,7 @@ static void boot_zcode_work_observe_results(int64_t now)
 }
 static bool boot_zcode_work_refresh(struct boot_svc_ctx *svc, int64_t wall)
 {
-    if (!s_work || !GetBoolArg("-buildworker", false)) return true;
+    if (!s_work || !svc || !svc->app_ctx || !svc->app_ctx->build_worker) return true;
     if (!s_work_key_ready) {
         struct db_build_worker worker;
         struct zcl_result loaded = build_fabric_worker_identity_load(
@@ -672,7 +672,7 @@ static void boot_zcode_swarm_periodic(struct msg_processor *mp,
          * in the same supervised turn instead of imposing another timer
          * boundary; canonical rows still gate every transition. */
         boot_zcode_async_proof_tick(svc, s_work, wall);
-        if (GetBoolArg("-buildworker", false) && wall % 300 == 0)
+        if (svc->app_ctx && svc->app_ctx->build_worker && wall + 60 >= s_work_capability_expires)
             (void)boot_zcode_work_refresh(svc, wall);
     }
 }

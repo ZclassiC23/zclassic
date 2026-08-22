@@ -211,14 +211,18 @@ z23 zcode work toolchain
 z23 zcode package verify --input='{"root":"<package_root>","datadir":"/tmp/z23-commons"}'
 ```
 
-`zcode work toolchain` reports this node's `capsule_root`. Independent compile
-evidence needs the same capsule on the requester and the proving worker. A
-mismatch is evidence and must remain visible; never pick one result because
-it arrived first or came from a preferred signer. Signed asynchronous worker
-receipts currently bind candidate action IDs, while released-package
-reproduction uses exact local build receipts. A direct signed-worker request
-bound to a released `package_root` is not yet exposed, and the live guide says
-so rather than claiming it exists.
+`zcode work toolchain` reports this node's `capsule_root`, whether
+`zclassic23-package-verify` sits next to the binary (`verifier_present` /
+`can_prove`), and a named `blocker` (`NONE` or `VERIFIER_MISSING`). Independent
+compile evidence needs the same capsule on the requester and the proving
+worker, and the confined verifier next to the worker. `dumpstate zcode_work`
+names the ordinary-node join path: restart with `-packagehost=1
+-buildworker=1`. A mismatch is evidence and must remain visible; never pick
+one result because it arrived first or came from a preferred signer. Signed
+asynchronous worker receipts currently bind candidate action IDs, while
+released-package reproduction uses exact local build receipts. A direct
+signed-worker request bound to a released `package_root` is not yet exposed,
+and the live guide says so rather than claiming it exists.
 
 ## Portability
 

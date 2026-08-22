@@ -506,12 +506,14 @@ ZCL_COMMAND_READY_READ(
     "Show this node's C23 compile toolchain capsule",
     "Captures the fixed Linux V1 GCC capsule on this host and reports its "
     "64-hex capsule_root plus the compiler, dumpmachine, dumpfullversion, "
-    "and GNU as --version identity an agent can compare across nodes. "
+    "GNU as --version identity, and whether zclassic23-package-verify sits "
+    "next to this binary (verifier_present / can_prove / blocker). "
     "Independent compile evidence requires the same capsule_root on the "
-    "requester and the proving worker. Accepts no input. Does not write "
-    "the datadir, start a worker, or grant proof authority.",
+    "requester and the proving worker, and the confined verifier next to "
+    "the worker binary. Accepts no input. Does not write the datadir, "
+    "start a worker, or grant proof authority.",
     ZCL_COMMAND_RESULT_BUDGET,
-    "zcode,work,toolchain,capsule,gcc,assembler,reproduce,agent",
+    "zcode,work,toolchain,capsule,gcc,assembler,reproduce,agent,verifier",
     "zcl.zcode_toolchain_show.input.v1", "zcl.zcode_toolchain_show.v1",
     "", "",
     "z23 zcode work toolchain",

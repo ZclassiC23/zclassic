@@ -39,6 +39,10 @@
 # touches no production datadir, no wallet key of yours, and no live port.
 
 set -euo pipefail
+# Display I/O (echo/printf/cat to a closed make/CI pipe) must not abort a
+# journey whose assertions already passed. SIGPIPE 141 under pipefail is how
+# `cj_strip | tee` un-earned an 11/11 PASS. Writes return EPIPE instead.
+trap '' PIPE
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # tools/dev/node_lifecycle.sh is the single owner of process-group ownership,
@@ -138,8 +142,10 @@ JSON
 }
 
 cj_die()  { dht_die "commons-journey: $*"; }
-cj_note() { echo "commons-journey: $*"; }
-cj_step() { echo; echo "commons-journey: ── $* ──"; }
+# Display only: a closed stdout (make/CI pipe, SIGPIPE 141 under pipefail)
+# must not abort a journey whose assertions already passed.
+cj_note() { echo "commons-journey: $*" || true; }
+cj_step() { { echo; echo "commons-journey: ── $* ──"; } || true; }
 
 # Every leaf answers with one JSON line, and that line is the contract: a
 # refusal is a named `ok:false` document, not a shell status. `pipefail` would
@@ -2327,7 +2333,12 @@ fi
 # run writes only into its own work directory and changes nothing in the tree.
 CJ_SECS_TOTAL=$(( $(date +%s) - CJ_T0 ))
 cj_step "what just happened"
-cj_strip | tee "$DHT_WORK/commons-demo.strip"
+# Write the strip to the evidence file first. `cj_strip | tee` under
+# pipefail surfaces printf's SIGPIPE 141 after 11/11 already passed, so
+# the earned PASS never prints a verdict. A closed stdout cannot un-earn it.
+cj_strip > "$DHT_WORK/commons-demo.strip" ||
+    cj_die "could not write the journey strip"
+cat "$DHT_WORK/commons-demo.strip" || true
 cj_write_facts "$DHT_WORK/commons-demo.facts" "$DHT_WORK/commons-demo.strip"
 if [ "${ZCL_COMMONS_DEMO_RECORD:-0}" = 1 ]; then
     cp "$DHT_WORK/commons-demo.strip" \
@@ -2338,4 +2349,4 @@ if [ "${ZCL_COMMONS_DEMO_RECORD:-0}" = 1 ]; then
 fi
 
 cj_step "verdict"
-printf '%s\n' "$CJ_VERDICT"
+printf '%s\n' "$CJ_VERDICT" || true

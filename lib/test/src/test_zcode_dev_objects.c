@@ -1804,6 +1804,38 @@ static int test_zd_work_node(void)
             requester, 1000, capable_peers, capable, 2), 1);
         ASSERT_EQ(capable_peers[0], 11);
         ASSERT(memcmp(capable[0].signer_pubkey, worker_key, 32) == 0);
+        struct vcs_zcode_work_node *prior = vcs_zcode_work_node_global();
+        struct json_value dump;
+        char requester_next[160] = {0}, worker_next[160] = {0};
+        int64_t requester_capable = -1;
+        bool requester_dumped = false, worker_dumped = false;
+        bool requester_enabled = true, worker_enabled = false;
+        vcs_zcode_work_node_set_global(requester);
+        json_init(&dump);
+        requester_dumped = vcs_zcode_work_node_dump_state_json(&dump, NULL);
+        if (requester_dumped) {
+            requester_capable = json_get_int(json_get(&dump, "capable_peers"));
+            requester_enabled = json_get_bool(json_get(&dump, "enabled"));
+            (void)snprintf(requester_next, sizeof(requester_next), "%s",
+                           json_get_str(json_get(&dump, "next_action")));
+        }
+        json_free(&dump);
+        vcs_zcode_work_node_set_global(worker);
+        json_init(&dump);
+        worker_dumped = vcs_zcode_work_node_dump_state_json(&dump, NULL);
+        if (worker_dumped) {
+            worker_enabled = json_get_bool(json_get(&dump, "enabled"));
+            (void)snprintf(worker_next, sizeof(worker_next), "%s",
+                           json_get_str(json_get(&dump, "next_action")));
+        }
+        json_free(&dump);
+        vcs_zcode_work_node_set_global(prior);
+        ASSERT(requester_dumped && worker_dumped);
+        ASSERT_EQ(requester_capable, 1);
+        ASSERT(!requester_enabled);
+        ASSERT(strstr(requester_next, "-buildworker=1") != NULL);
+        ASSERT(worker_enabled);
+        ASSERT(strstr(worker_next, "zcode work toolchain") != NULL);
 
         uint8_t requester_seed[32], requester_secret[32], requester_key[32];
         zd_root(requester_seed, 73);

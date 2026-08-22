@@ -94,13 +94,29 @@ void boot_zcode_async_log_no_peer(
         work, now, peers, caps, VCS_ZCODE_WORK_NODE_MAX_PEERS);
     char peer_toolchain[65];
     peer_toolchain[0] = '\0';
+    bool toolchain_match = false;
+    const char *job_toolchain =
+        job && job->toolchain_sha3[0] ? job->toolchain_sha3 : "none";
     if (capable > 0)
         zcl_hex_encode(caps[0].toolchain_capsule_root, 32, peer_toolchain);
+    for (size_t i = 0; i < capable; i++) {
+        char hex[65];
+        zcl_hex_encode(caps[i].toolchain_capsule_root, 32, hex);
+        if (strcmp(hex, job_toolchain) == 0) {
+            toolchain_match = true;
+            break;
+        }
+    }
+    const char *reason = capable == 0 ? "no-capable-worker" :
+        toolchain_match ? "worker-busy-or-target-mismatch" :
+        "toolchain-capsule-mismatch";
     LOG_WARN("net.zcode_async",
              "dispatch refused action=%s stage=peer_selection "
-             "reason=no-eligible-worker capable=%zu job_toolchain=%s "
-             "peer0_toolchain=%s",
-             action_id, capable,
-             job && job->toolchain_sha3[0] ? job->toolchain_sha3 : "none",
-             peer_toolchain[0] ? peer_toolchain : "none");
+             "reason=%s capable=%zu job_toolchain=%s "
+             "peer0_toolchain=%s next_action=%s",
+             action_id, reason, capable, job_toolchain,
+             peer_toolchain[0] ? peer_toolchain : "none",
+             capable == 0
+                 ? "restart a peer with -packagehost=1 -buildworker=1"
+                 : "run zcode work toolchain here and on the proving node");
 }

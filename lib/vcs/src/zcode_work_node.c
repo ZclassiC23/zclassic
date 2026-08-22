@@ -187,6 +187,10 @@ bool vcs_zcode_work_node_dump_state_json(struct json_value *out,
         json_push_kv_int(out, "worker_capacity", 0);
         json_push_kv_int(out, "worker_active", 0);
         json_push_kv_int(out, "worker_available", 0);
+        json_push_kv_int(out, "capable_peers", 0);
+        json_push_kv_str(out, "next_action",
+            "restart this node with -packagehost=1 -buildworker=1 to join "
+            "independent compile work");
         return true;
     }
     pthread_mutex_lock(&node->lock);
@@ -197,10 +201,20 @@ bool vcs_zcode_work_node_dump_state_json(struct json_value *out,
     size_t active = 0;
     for (size_t i = 0; i < capacity; i++)
         active += node->slots[i].used ? 1u : 0u;
+    size_t advertised = 0;
+    for (size_t i = 0; i < VCS_ZCODE_WORK_NODE_MAX_PEERS; i++)
+        if (node->peers[i].used && node->peers[i].has_capability)
+            advertised++;
     json_push_kv_bool(out, "enabled", node->has_local_capability);
     json_push_kv_int(out, "worker_capacity", (int64_t)capacity);
     json_push_kv_int(out, "worker_active", (int64_t)active);
     json_push_kv_int(out, "worker_available", (int64_t)(capacity - active));
+    json_push_kv_int(out, "capable_peers", (int64_t)advertised);
+    json_push_kv_str(out, "next_action",
+        node->has_local_capability
+            ? "zcode work toolchain"
+            : "restart this node with -packagehost=1 -buildworker=1 to join "
+              "independent compile work");
     pthread_mutex_unlock(&node->lock);
     return true;
 }
