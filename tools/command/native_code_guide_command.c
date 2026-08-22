@@ -31,40 +31,14 @@ void zcl_native_handle_code_guide(
         return;
     }
     bool ok = json_push_kv_str(
-            &reply->data, "mission",
-            "Edit the smallest owned surface and prove it without touching "
-            "the live node.") &&
-        json_push_kv_str(
-            &reply->data, "next_action",
-            "Ask code impact for the changed file, then run only those "
-            "focused tests.") &&
-        json_push_kv_str(
-            &reply->data, "start_command",
-            "z23 code impact --input='{\"path\":\"<file.c>\"}'") &&
-        json_push_kv_str(
-            &reply->data, "tests_command",
-            "z23 code tests --input='{\"path\":\"<file.c>\"}'") &&
-        json_push_kv_str(
-            &reply->data, "proof_command",
-            "make -j\"$(nproc)\" t-fast ONLY=<group from code tests>") &&
+            &reply->data, "start_command", "z23 code impact <file.c>") &&
+        json_push_kv_str(&reply->data, "proof_command",
+                         "make -j\"$(nproc)\" t-fast ONLY=<group>") &&
         json_push_kv_str(&reply->data, "lint_command", "make lint-fast") &&
         json_push_kv_str(&reply->data, "push_command", "make pre-push-ci") &&
         json_push_kv_str(
             &reply->data, "never",
-            "Do not run full make lint on an ordinary slice, do not invoke "
-            "test_zcl, do not omit --datadir when a leaf accepts datadir, "
-            "do not stash unrelated dirty work, do not restart or deploy.") &&
-        json_push_kv_str(
-            &reply->data, "umbrella_lint",
-            "make lint is the full umbrella. Run it only when the impact "
-            "rule names a gate that lint-fast excludes.") &&
-        json_push_kv_str(
-            &reply->data, "product_guide",
-            "z23 zcode guide") &&
-        json_push_kv_str(
-            &reply->data, "continue_rule",
-            "Follow next_action. Discover exact keys with "
-            "z23 discover schema <leaf>.") &&
+            "full make lint; test_zcl; omit -datadir; stash; restart") &&
         json_push_kv_str(&reply->data, "docs", "docs/DEVELOPING.md");
     if (!ok) {
         LOG_ERROR(CG_TAG, "CODE_GUIDE_OUTPUT: the develop guide could not "

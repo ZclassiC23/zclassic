@@ -204,8 +204,7 @@ static int test_code_guide_leaf(void)
         zcl_native_handle_code_guide(&request, &reply);
         ASSERT(reply.exit_code == ZCL_COMMAND_EXIT_OK);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "start_command")),
-                      "z23 code impact --input='{\"path\":\"<file.c>\"}'") ==
-               0);
+                      "z23 code impact <file.c>") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "lint_command")),
                       "make lint-fast") == 0);
         ASSERT(strcmp(json_get_str(json_get(&reply.data, "push_command")),
@@ -2339,6 +2338,8 @@ static int test_response_budget_views(void)
                        (long long)json_get_int(nc));
         size_t first_included = (size_t)json_get_int(json_get(page, "included"));
         ASSERT(first_included > 0 && first_included < 8);
+        ASSERT(strstr(json_get_str(json_get(page, "continue")),
+                      "z23 core network peers list --cursor=") != NULL);
         zcl_command_reply_free(&reply);
 
         req = (struct zcl_command_request){

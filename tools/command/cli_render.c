@@ -953,8 +953,90 @@ static bool tree_render_leaf(const char *command_path)
     return command_path &&
            (strcmp(command_path, "ops.state") == 0 ||
             strcmp(command_path, "ops.logs") == 0 ||
-            strcmp(command_path, "zcode.guide") == 0 ||
-            strcmp(command_path, "code.guide") == 0);
+            strcmp(command_path, "zcode.guide") == 0);
+}
+
+/* code.guide is a recipe, not a schema dump: four copyable commands. */
+static void render_code_guide(struct buf *b, const struct zcl_cli_render_env *e,
+                              const struct json_value *root)
+{
+    emit_header(b, e, "code.guide");
+    buf_putc(b, '\n');
+    const struct json_value *data = json_get(root, "data");
+    emit_kv(b, e, 6, "run",
+            json_get_str(json_get(data, "start_command")));
+    emit_kv(b, e, 6, "prove",
+            json_get_str(json_get(data, "proof_command")));
+    emit_kv(b, e, 6, "lint",
+            json_get_str(json_get(data, "lint_command")));
+    emit_kv(b, e, 6, "push",
+            json_get_str(json_get(data, "push_command")));
+    const char *never = json_get_str(json_get(data, "never"));
+    if (never && never[0]) {
+        buf_putc(b, '\n');
+        emit_kv(b, e, 6, "never", never);
+    }
+}
+
+/* Who is connected: address, direction, advertised height, kind.
+ * Lifecycle, bytes, ping, and services stay behind JSON. */
+static void render_peer_list(struct buf *b, const struct zcl_cli_render_env *e,
+                             const struct json_value *root)
+{
+    const struct json_value *data = json_get(root, "data");
+    const struct json_value *items = data ? json_get(data, "items") : NULL;
+    const struct json_value *page = data ? json_get(data, "_page") : NULL;
+    int64_t total = page ? json_get_int(json_get(page, "total_items")) : 0;
+    size_t n = items && items->type == JSON_ARR ? items->num_children : 0;
+    char head[96];
+    if (total > (int64_t)n)
+        snprintf(head, sizeof(head), "peers — %zu of %lld connected", n,
+                 (long long)total);
+    else
+        snprintf(head, sizeof(head), "peers — %zu connected", n);
+    emit_header(b, e, head);
+    buf_putc(b, '\n');
+
+    size_t rows = n > e->max_rows ? e->max_rows : n;
+    if (rows > 24)
+        rows = 24;
+    const char *headers[4] = { "ADDR", "DIR", "HEIGHT", "KIND" };
+    const char *cellbuf[24 * 4];
+    char dirbuf[24][4];
+    char hbuf[24][12];
+    char kindbuf[24][8];
+    for (size_t r = 0; r < rows; r++) {
+        const struct json_value *row = json_at(items, r);
+        const struct json_value *inb = json_get(row, "inbound");
+        const struct json_value *z23 = json_get(row, "zclassic23");
+        const struct json_value *bean = json_get(row, "magicbean");
+        const struct json_value *ht = json_get(row, "startingheight");
+        bool inbound = inb && inb->type == JSON_BOOL && json_get_bool(inb);
+        bool is_z23 = z23 && z23->type == JSON_BOOL && json_get_bool(z23);
+        bool is_bean = bean && bean->type == JSON_BOOL && json_get_bool(bean);
+        snprintf(dirbuf[r], sizeof(dirbuf[r]), "%s", inbound ? "in" : "out");
+        if (ht && ht->type == JSON_INT)
+            snprintf(hbuf[r], sizeof(hbuf[r]), "%lld",
+                     (long long)json_get_int(ht));
+        else
+            snprintf(hbuf[r], sizeof(hbuf[r]), "?");
+        snprintf(kindbuf[r], sizeof(kindbuf[r]), "%s",
+                 is_z23 ? "z23" : (is_bean ? "bean" : "other"));
+        cellbuf[r * 4 + 0] = json_get_str(json_get(row, "addr"));
+        cellbuf[r * 4 + 1] = dirbuf[r];
+        cellbuf[r * 4 + 2] = hbuf[r];
+        cellbuf[r * 4 + 3] = kindbuf[r];
+    }
+    if (rows > 0)
+        emit_table(b, e, 4, headers, cellbuf, rows);
+    if (n > rows)
+        emit_more_footer(b, n - rows);
+
+    const char *cont = page ? json_get_str(json_get(page, "continue")) : NULL;
+    if (cont && cont[0]) {
+        buf_putc(b, '\n');
+        emit_hint_line(b, e, "run: ", cont);
+    }
 }
 
 static void render_data_tree(struct buf *b,
@@ -1020,6 +1102,12 @@ size_t zcl_cli_render_doc(const char *doc, size_t doc_len,
         const struct json_value *okv = json_get(&root, "ok");
         if (okv && okv->type == JSON_BOOL && !json_get_bool(okv))
             render_error(&b, env, &root);
+        else if (command_path &&
+                 strcmp(command_path, "code.guide") == 0)
+            render_code_guide(&b, env, &root);
+        else if (command_path &&
+                 strcmp(command_path, "core.network.peers.list") == 0)
+            render_peer_list(&b, env, &root);
         else if (tree_render_leaf(command_path))
             render_data_tree(&b, env, &root, command_path);
         else

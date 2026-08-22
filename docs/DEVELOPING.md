@@ -198,8 +198,8 @@ Ask the node for this loop; do not remember it:
 
 ```bash
 z23 code guide
-z23 code impact --input='{"path":"<file.c>"}'
-z23 code tests --input='{"path":"<file.c>"}'
+z23 code impact <file.c>
+z23 code tests <file.c>
 ```
 
 Use the narrowest honest loop:
