@@ -114,6 +114,7 @@ mkdir -p "$REPO_ROOT/build" 2>/dev/null || true
 
 echo "pre-push: running local CI gate ($CMD) before push to origin…" >&2 || true
 echo "pre-push: semantic changed-file count: $(wc -l < "$changed_files" | tr -d ' ')." >&2 || true
+echo "pre-push: mapped focused tests for those files; unmapped code fails closed." >&2 || true
 echo "pre-push: full-suite/fuzz/coverage lanes run via 'make install-quality-linger'." >&2 || true
 echo "pre-push: bypass one push with 'git push --no-verify' if you must." >&2 || true
 echo "pre-push: verbose CI output -> $LOG_FILE (only a summary prints here)." >&2 || true

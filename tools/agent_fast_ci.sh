@@ -1258,6 +1258,20 @@ main() {
             log "PASS: verify-change green artifact=$VERIFY_ARTIFACT"
             return
             ;;
+        pre-push)
+            # Push gate: strict compile + lint-fast + mapped focused tests.
+            # A missing impact rule must not expand to the 941-group suite.
+            select_test_groups
+            log "pre-push focused groups=${TEST_GROUPS:-none} unmapped=${UNMAPPED_CODE_CHANGES:-none}"
+            run_shell_checks
+            run_compile_gate
+            log "lint-fast"
+            make_fast lint-fast
+            run_mapped_focused_tests
+            maybe_live_probe
+            log "PASS: pre-push focused gate complete; full-suite/fuzz/coverage via make install-quality-linger"
+            return
+            ;;
         rebuild-dev|dev-rebuild|fast-rebuild|hot-rebuild)
             run_dev_rebuild
             return

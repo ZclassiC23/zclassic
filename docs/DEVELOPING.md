@@ -267,7 +267,8 @@ Before committing:
 8. Verify local HEAD, `origin/main`, and the remote branch SHA agree.
 
 Every changed C path must map to focused proof through the repository's impact
-rules. If the pre-push hook reports a write/SIGPIPE failure after its underlying
+rules. The pre-push hook runs those mapped groups only; an unmapped code path
+fails closed so it cannot expand to the full suite. If the pre-push hook reports a write/SIGPIPE failure after its underlying
 gate genuinely completed, inspect the saved log and reproduce the gate
 out-of-band before considering the documented verified bypass. Never bypass an
 unknown or failing gate.

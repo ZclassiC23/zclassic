@@ -632,9 +632,12 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "domain_consensus_tx_structural") != NULL);
         ASSERT(strstr(buf, "consensus_parity") != NULL);
         ASSERT(strstr(buf, "replay-canary-anchor") != NULL);
+        ASSERT(strstr(buf, "ZCL_FAST_LIVE=0 ZCL_FAST_COMPILE=strict")
+               != NULL);
+        ASSERT(strstr(buf, "tools/agent_fast_ci.sh pre-push") != NULL);
         ASSERT(strstr(buf,
                       "ZCL_FAST_LIVE=0 ZCL_FAST_COMPILE=strict $(MAKE) fast-ci")
-               != NULL);
+               == NULL);
         ASSERT(strstr(buf, "check-agent-cli: zclassic23") != NULL);
         ASSERT(strstr(buf,
                       "tools/scripts/check_agentdeployguard_cli_exit.sh")
@@ -800,6 +803,9 @@ int t_agent_fast_ci_contract(void)
         ASSERT(strstr(buf, "record_fast_cache_pass") != NULL);
         ASSERT(strstr(buf, "not full release CI") != NULL);
         ASSERT(strstr(buf, "make pre-push-ci") != NULL);
+        ASSERT(strstr(buf, "pre-push)") != NULL);
+        ASSERT(strstr(buf, "pre-push focused groups=") != NULL);
+        ASSERT(strstr(buf, "run_mapped_focused_tests") != NULL);
         ASSERT(strstr(buf, "make install-quality-linger") != NULL);
         free(buf);
         buf = NULL;

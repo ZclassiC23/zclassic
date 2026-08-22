@@ -7374,8 +7374,9 @@ release:
 	@./tools/release.sh
 
 # Install the tracked git hooks (shared across all worktrees via core.hooksPath).
-# pre-push runs the bounded LOCAL CI gate (`make pre-push-ci`) so changed
-# files get strict focused tests. Full-suite/fuzz/coverage proof work runs
+# pre-push runs the bounded LOCAL CI gate (`make pre-push-ci`): strict
+# compile, lint-fast, and mapped focused tests for the files being pushed.
+# Unmapped code fails closed. Full-suite/fuzz/coverage proof work runs
 # through the linger timers installed by `make install-quality-linger`.
 .PHONY: install-hooks
 install-hooks:
@@ -7665,8 +7666,15 @@ coverage-clean:
 #   make ci                 # full pipeline
 #   make ci SKIP_FUZZ=1     # skip the fuzz stage (faster)
 #   make ci SKIP_COV=1      # skip coverage (faster)
+# Mapped focused tests for the files being pushed. Unmapped code fails
+# closed (add an impact rule) instead of expanding to the 941-group suite.
+# Full-suite/fuzz/coverage remain on make install-quality-linger.
 pre-push-ci:
-	@ZCL_FAST_LIVE=0 ZCL_FAST_COMPILE=strict $(MAKE) fast-ci
+	@mkdir -p "$(BUILD_DIR)"
+	@$(CHECKOUT_LOCK_TOOL) $(CHECKOUT_LOCK_MODE) "$(CHECKOUT_LOCK)" -- \
+	  env ZCL_FAST_LIVE=0 ZCL_FAST_COMPILE=strict \
+	      ZCL_FAST_BUILD_SOURCE_RECORD="$(BUILD_SOURCE_RECORD)" \
+	      tools/agent_fast_ci.sh pre-push
 
 check-agent-cli: zclassic23
 	@tools/scripts/check_agentdeployguard_cli_exit.sh
