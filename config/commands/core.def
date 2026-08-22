@@ -576,7 +576,9 @@ ZCL_COMMAND_READY_READ(
     "List connected peers",
     "Every currently connected peer's address, version, and stats, "
     "read live from the running node's peer table at call time; "
-    "bounded to the list budget row cap.", ZCL_COMMAND_LIST_BUDGET,
+    "bounded to the list budget row cap. Per-peer lifecycle is "
+    "dumpstate peer_lifecycle, not this list. Continue with --cursor "
+    "when _page.truncated is true.", ZCL_COMMAND_LIST_BUDGET,
     "peers,list,addresses,latency",
     "zcl.command.empty_input.v1", "zcl.peers.v1", "", "",
     "z23 core network peers list",
