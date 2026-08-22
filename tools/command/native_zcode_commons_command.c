@@ -149,8 +149,7 @@ void zcl_native_handle_zcode_guide(
                          "Describe the behavior you want.") &&
         json_push_kv_str(
             &reply->data, "start_command",
-            "zcode work start --input='{\"workspace\":\".\","
-            "\"goal\":\"<desired behavior>\"}'") &&
+            "z23 zcode work start . \"<desired behavior>\"") &&
         json_push_kv_str(
             &reply->data, "journey",
             "reuse C23 -> create only missing code -> build and test -> show "
